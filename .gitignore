@@ -5,6 +5,14 @@
 .claude/
 .claude-flow/
 
+# Build output and the pinned toolchain built into it — derived, never shared
+bin/
+coverage.out
+
+# Fetched-at-boot artefacts: beckn.yaml is cached here, not committed. Only a
+# pinned CI fixture of the spec is in the tree.
+.cache/
+
 # Secrets and deployment-local config (see Config in the design doc)
 .env
 .env.*

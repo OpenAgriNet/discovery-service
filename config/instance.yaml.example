@@ -1,0 +1,42 @@
+# Deployment-local overrides — layer three of four, and the only optional one.
+# Copy to config/instance.yaml, which is gitignored; a missing instance.yaml is
+# not an error.
+#
+# NO SECRETS. DATABASE_URL and every other credential arrive from the process
+# environment, which sits above this file precisely so a secret store beats a
+# checked-out path (TRD §8).
+
+app:
+  # The network this deployment serves — mahavistar, bharatvistar, and so on.
+  # On publish it fills an empty publishDirectives.visibleTo (C8). It has no
+  # repo-wide default because there is no repo-wide answer.
+  network: mahavistar
+
+server:
+  port: 8080
+
+database:
+  # Sized by the concurrency model, not guessed: discover runs its retrieval
+  # modes concurrently (A2), so one in-flight discover holds as many
+  # connections as it has enabled modes.
+  #
+  #   maxConns >= (enabled modes) x (expected in-flight discovers)
+  #
+  # Two modes in Phase 1, three once semantic lands. maxConns must also stay
+  # under the server's own max_connections less whatever else shares it.
+  # minConns is a warm-start knob only — idle backends cost the server memory
+  # to save a connection handshake.
+  maxConns: 32
+  minConns: 4
+
+log:
+  level: info
+
+# Uncomment when an Ollama deployment exists to turn semantic search on (A5).
+# embeddings:
+#   provider: ollama
+
+# Uncomment to export traces and metrics to a collector (T2).
+# otel:
+#   exporter: otlp
+#   endpoint: http://localhost:4317

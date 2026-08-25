@@ -1,0 +1,17 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # The migrations are the schema. sqlc reads the same DDL PostgreSQL does,
+    # which is what makes a renamed column fail at `make build` rather than in
+    # production (D2).
+    schema: migrations
+    queries: src/storage/postgres/queries
+    gen:
+      go:
+        package: gen
+        out: src/storage/postgres/gen
+        sql_package: pgx/v5
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        emit_result_struct_pointers: false

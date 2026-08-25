@@ -1,0 +1,25 @@
+# Local dependencies for development and for the integration suites. The
+# service itself is not defined here: it is run from the host against this
+# stack, and in CI it is exercised through testcontainers.
+
+services:
+  postgres:
+    # pgvector 0.8 on PostgreSQL 16 (D6). Pinned rather than floating on :pg16,
+    # because the HNSW index options this service uses arrived in 0.8.
+    image: pgvector/pgvector:0.8.0-pg16
+    environment:
+      POSTGRES_USER: discovery
+      POSTGRES_PASSWORD: discovery
+      POSTGRES_DB: discovery
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U discovery -d discovery"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres-data:

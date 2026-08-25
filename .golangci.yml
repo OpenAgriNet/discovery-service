@@ -1,0 +1,92 @@
+version: "2"
+
+run:
+  timeout: 5m
+  # tools/ is a separate module pinning the build toolchain; its dependency
+  # graph is not this service's and must not be linted as if it were.
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - revive
+    - staticcheck
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment optimises struct padding at the cost of grouping
+        # related fields together, and the wire and domain structs in this
+        # service are read far more often than they are allocated.
+        - fieldalignment
+
+    revive:
+      # Rules that encode Global Constraints. Without them the constraints are
+      # review conventions, and a review convention is enforced only as
+      # reliably as the reviewer's attention on the day.
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: function-length
+          # [maxStatements, maxLines]; 0 disables the statement bound, so the
+          # 50-line ceiling is the only one that speaks.
+          arguments: [0, 50]
+        - name: max-control-nesting
+          arguments: [3]
+        - name: early-return
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: error-strings
+        - name: error-return
+        - name: error-naming
+        - name: errorf
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: var-naming
+        - name: receiver-naming
+        - name: unexported-return
+        - name: time-naming
+        - name: range
+        - name: blank-imports
+        - name: dot-imports
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: increment-decrement
+        - name: var-declaration
+        - name: redefines-builtin-id
+
+  exclusions:
+    generated: lax
+    rules:
+      # sqlc writes src/storage/postgres/gen; it is regenerated, not edited, so
+      # a finding there is a finding against sqlc's templates.
+      - path: src/storage/postgres/gen/
+        linters: [errcheck, gosec, govet, revive, staticcheck]
+      # Test helpers assert on hard-coded fixtures and deliberately construct
+      # bad input; the ceilings and the audit rules that guard the request path
+      # buy nothing there.
+      - path: _test\.go
+        linters: [gosec]
+      - path: _test\.go
+        text: "function-length"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/OpenAgriNet/discovery-service
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

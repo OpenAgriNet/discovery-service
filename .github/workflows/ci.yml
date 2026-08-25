@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned rather than inherited: production defaults to noop (A5), and without
+  # this the whole semantic path would go untested from the day semantic search
+  # was deferred.
+  EMBEDDING_PROVIDER: hashing
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: the service module has no dependencies yet, so
+          # a literal go.sum path would fail to resolve and disable the cache.
+          cache-dependency-path: "**/go.sum"
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: the service module has no dependencies yet, so
+          # a literal go.sum path would fail to resolve and disable the cache.
+          cache-dependency-path: "**/go.sum"
+      - run: make build
+      - run: make test
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: the service module has no dependencies yet, so
+          # a literal go.sum path would fail to resolve and disable the cache.
+          cache-dependency-path: "**/go.sum"
+
+      # T4, half one: known vulnerabilities in the Go dependency graph.
+      - name: govulncheck
+        run: make security
+
+      # T4, half two: the shipped image. The scan is of the image and not of
+      # go.sum so that the toolchain pinned in tools/go.mod — which is never
+      # linked into the binary — cannot fail a release it does not ship in.
+      - name: Build image
+        run: docker build -t discovery-service:${{ github.sha }} .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: discovery-service:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table

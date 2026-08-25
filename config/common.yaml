@@ -1,0 +1,45 @@
+# Reviewed repository defaults — layer two of four. Lowest first:
+#
+#   envDefault struct tags  →  config/common.yaml  →  config/instance.yaml
+#                           →  process environment
+#
+# Only settings this project has actually decided a value for belong here. A
+# key that matches no Config field fails startup, so a typo cannot silently do
+# nothing; by the same token, a value nobody has chosen is better left to the
+# struct tag than invented here.
+#
+# Secrets — DATABASE_URL above all — never appear in this file or in
+# instance.yaml. That is why the environment sits on top of both (TRD §8).
+
+app:
+  # Validated with time.LoadLocation at startup: a typo must fail the boot
+  # rather than silently shift every daily validity window.
+  defaultTimezone: Asia/Kolkata
+
+search:
+  maxRadiusMeters: 200000
+  # How many ids one retrieval mode may return into fusion. Not a page size —
+  # it is also the reachable pagination depth.
+  maxCandidatesPerMode: 500
+  # A missing retrieval mode degrades and is named in X-Beckn-Degraded (C11).
+  # true turns the same request into a 400. Phase 1 ships with the semantic
+  # mode absent by design, so refusing would break the common case.
+  failOnUnavailableMode: false
+
+embeddings:
+  # Semantic search is deferred (A5). The column, the HNSW index and the
+  # Embedder seam all ship; the provider does not.
+  provider: noop
+
+validation:
+  enableL1Schema: true
+  enableL2Context: true
+
+auth:
+  # Phase 2. The crypto, the middleware slot and the Keyring seam ship now; the
+  # key registry they read is another team's, and does not exist yet.
+  enableSignatureVerification: false
+
+otel:
+  # A collector-less deploy still boots (T2).
+  exporter: none
