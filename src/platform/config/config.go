@@ -43,6 +43,9 @@ type Config struct {
 	Auth        Auth
 	OTel        OTel
 	Replication Replication
+	Errors      Errors
+	Ext         Ext
+	Geo         Geo
 }
 
 // App identifies the deployment itself.
@@ -198,6 +201,33 @@ type Replication struct {
 	// implementation behind it fails the boot rather than silently dropping
 	// every announcement. No queue table ships until a target needs one.
 	Targets []string `env:"REPLICATION_TARGETS"`
+}
+
+// Errors shapes the error body, not the error handling (C1).
+type Errors struct {
+	// The spec's Error is {code, message, details} with additionalProperties:
+	// false, so the five PRD categories travel in X-Beckn-Error-Type instead.
+	// true re-injects type into the body for v1-style clients that require it,
+	// which is a deliberate spec violation and therefore off by default.
+	IncludeLegacyType bool `env:"ERROR_INCLUDE_LEGACY_TYPE" envDefault:"false"`
+}
+
+// Ext configures where L2's extended schemas come from.
+type Ext struct {
+	// The SSRF boundary. A registry URL configured by an operator is trusted
+	// and is fetched; a @context URL that arrived in a request body is not, and
+	// while this is false it cannot be — which is why the default is false and
+	// not merely the recommended setting.
+	AllowNetworkFetch bool `env:"EXT_ALLOW_NETWORK_FETCH" envDefault:"false"`
+}
+
+// Geo configures the H3 index the spatial path is built on.
+type Geo struct {
+	// r8 is ~0.74 km2 per cell, ~531 m average edge, ~1.1 km MAYBE band. It is
+	// configuration rather than a constant because the accuracy against storage
+	// trade is a property of one deployment's data, not of the service. Every
+	// stored cover is at this resolution, so changing it means reindexing.
+	ResolutionCells int `env:"GEO_RESOLUTION_CELLS" envDefault:"8"`
 }
 
 // Load reads the four layers in precedence order and validates the result.
@@ -374,11 +404,19 @@ func validate(cfg Config) error {
 		validateSearch(cfg.Search),
 		validateEmbeddings(cfg.Embeddings),
 		validateRateLimit(cfg.RateLimit),
+		validateGeo(cfg.Geo),
 	)
 	if problems != nil {
 		return fmt.Errorf("invalid configuration: %w", problems)
 	}
 	return nil
+}
+
+// H3 defines resolutions 0 through 15 and nothing else, so an out-of-range
+// value must fail the boot rather than the first cover that reaches h3.
+func validateGeo(geo Geo) error {
+	return require(geo.ResolutionCells >= 0 && geo.ResolutionCells <= 15,
+		"geo.resolutionCells %d is not an H3 resolution (GEO_RESOLUTION_CELLS): H3 defines 0 through 15", geo.ResolutionCells)
 }
 
 func validateApp(app App) error {

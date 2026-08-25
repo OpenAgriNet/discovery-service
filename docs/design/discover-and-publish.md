@@ -3058,7 +3058,7 @@ implementer writes the source against the interfaces named in **Produces**.
 
 ### Task 2 — Configuration & Feature Flags
 
-**Files:** `src/platform/config/config.go`, `config/common.yaml`
+**Files:** `src/platform/config/config.go`; Modify: `config/common.yaml`
 
 **Produces:** `config.Config`, `config.Load() (Config, error)`, `config.Defaults()`
 
@@ -3083,7 +3083,9 @@ Load():
   `MaxPageSize`, `MaxRadiusMeters` = 200000, `ReadDeadline`,
   `FailOnUnavailableMode` = false, `MaxCandidatesPerMode` = 500), `Embeddings` (one
   struct — A3), `RateLimit` (`RPS`, `Burst`), `Log`, `Validation`, `Auth`,
-  `OTel`, `Replication` (A7).
+  `OTel`, `Replication` (A7), `Errors` (`IncludeLegacyType` = false — C1),
+  `Ext` (`AllowNetworkFetch` = false — the SSRF boundary under Task 10), `Geo`
+  (`ResolutionCells` = 8).
 
 Three of those `Search` names used to be guessable only from this table.
 `DefaultPageSize` and `MaxPageSize` clamp the request's `limit`: they bound a
@@ -3092,6 +3094,20 @@ return into fusion — a different and much larger number, and the old `MaxLimit
 sat next to it saying only "max". `FailOnUnavailableMode` says what happens when
 a requested mode is missing, a `400` rather than a degraded header, where
 `StrictModes` said only that something somewhere was strict.
+
+**The last three groups are defined here because groups are defined only here.**
+`Errors.IncludeLegacyType` is read by Task 5, `Ext.AllowNetworkFetch` by Task 10
+and `Geo.ResolutionCells` by Task 12; a task that only *reads* a knob must not
+have to reopen `config.go` to invent the group it lives in, so all three arrive
+with the rest of the schema. Each gets its own group rather than a home under an
+existing one for the reason the `Search` names were renamed — an
+`AllowNetworkFetch` sitting beside `Validation.SpecURL` would read as though it
+gated the L1 spec fetch, which always happens, when what it actually forbids is
+dereferencing a `@context` URL that arrived in a request body. `ResolutionCells`
+appears in the Constants table but is marked *config, not a constant*, so 8 is a
+default here and not a `const`; `validate` rejects anything outside H3's 0–15,
+since an out-of-range resolution would otherwise fail deep inside a cover rather
+than at startup.
 
 **`Database.MaxConns` is sized by the concurrency model, not guessed.** Discover
 runs its retrieval modes concurrently (A2), so ONE in-flight discover holds as
@@ -3113,7 +3129,9 @@ a missing `instance.yaml` is not an error; `validate` rejects
 `MaxPageSize < DefaultPageSize`, and rejects `MaxCandidatesPerMode < MaxPageSize` — a
 candidate pool smaller than one page cannot fill it, and since the pool is also
 the reachable pagination depth, that ratio is how many pages deep a caller may
-go; an unloadable `DefaultTimezone` fails startup.
+go; an unloadable `DefaultTimezone` fails startup; `IncludeLegacyType` and
+`AllowNetworkFetch` default to `false` and `ResolutionCells` to 8, since all
+three are security- or output-shaping defaults that must not drift silently.
 
 ---
 

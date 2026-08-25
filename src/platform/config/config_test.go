@@ -53,6 +53,13 @@ func TestDefaultsAreTheFloor(t *testing.T) {
 	assertEqual(t, "Validation.EnableL2Context", cfg.Validation.EnableL2Context, true)
 	assertEqual(t, "Auth.EnableSignatureVerification", cfg.Auth.EnableSignatureVerification, false)
 	assertEqual(t, "OTel.Exporter", cfg.OTel.Exporter, "none")
+
+	// The three knobs the tasks that read them do not get to define. Two are
+	// security- or conformance-shaping and false is the safe end of both; the
+	// third is a resolution the whole geo index is built at.
+	assertEqual(t, "Errors.IncludeLegacyType", cfg.Errors.IncludeLegacyType, false)
+	assertEqual(t, "Ext.AllowNetworkFetch", cfg.Ext.AllowNetworkFetch, false)
+	assertEqual(t, "Geo.ResolutionCells", cfg.Geo.ResolutionCells, 8)
 }
 
 func TestEveryLayerBeatsTheOneBelowIt(t *testing.T) {
@@ -225,6 +232,11 @@ func TestValidateRejects(t *testing.T) {
 		},
 		"an unloadable timezone": {
 			"app:\n  defaultTimezone: Mars/Olympus_Mons\n", "defaultTimezone",
+		},
+		// H3 stops at 15. Caught here, this is one startup error; caught later
+		// it is a failure inside the first cover a publish or discover builds.
+		"an H3 resolution that does not exist": {
+			"geo:\n  resolutionCells: 16\n", "resolutionCells",
 		},
 	}
 
