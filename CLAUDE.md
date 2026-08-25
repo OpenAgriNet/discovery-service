@@ -87,9 +87,9 @@ if someone changes it back. A commit message that restates the diff is wasted.
   something it explains what the old name failed to say, and later tasks
   reference the new one. Do not simplify them back.
 - **A pin that holds only because you remembered it is not a pin.** Encode it —
-  a lint rule, a reflection assertion over the struct, a conformance fixture. The
-  logger's "no `Sugar()` on the request path" is a `.golangci.yml` rule, not a
-  habit.
+  a lint rule, a reflection assertion over the struct, a conformance fixture.
+  When the plan says a constraint is "asserted by `make lint`", it is telling you
+  to add the rule to `.golangci.yml`, not merely to comply with it.
 - **Secrets never touch a config file or a log field.** `DATABASE_URL` and its
   kind arrive from the environment; that is precisely why the environment layer
   sits on top of both YAML files (TRD §8). `config/common.yaml` is reviewed and
@@ -114,7 +114,8 @@ if someone changes it back. A commit message that restates the diff is wasted.
 | `src/domain/` | Catalog, query, validity, merge-patch — no I/O |
 | `src/publish/`, `src/discover/` | The two request paths |
 | `src/indexing/` | H3 geometry covers and the embedding seam |
-| `src/storage/` | `postgres/`, `memory/`, and the `conformance/` suite both must pass |
+| `src/storage/` | `postgres/` and `memory/`, plus the `conformance/` suite both must pass |
 | `src/platform/` | Config, logging, errors, crypto, middleware, validation, telemetry |
 | `config/` | `common.yaml` (committed, reviewed); `instance.yaml` is mounted per deployment |
+| `tests/` | `acceptance/`, `dbtest/`, `testdata/`, and `architecture/boundary_test.go` — the import-graph guard on the TRD §5 swap boundary |
 | `docs/design/`, `docs/adr/` | The plan, and the 15 ADRs behind it |
