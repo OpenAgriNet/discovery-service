@@ -33,11 +33,25 @@ linters:
       # helper a test shares with it is on the request path, and the cost of
       # the strict form is one nolint with a reason on a startup line that
       # genuinely wants Sugar.
+      #
+      # These are matched against the source text, not resolved types. Setting
+      # analyze-types would close the aliased-import spelling (import z
+      # "go.uber.org/zap"; z.Any) but costs more than it buys: the resolved name
+      # of a chained call is the method at the end of the chain, so zap.S().Infow
+      # resolves to SugaredLogger.Infow and stops matching anything here. Text
+      # matching catches the chain; leave it.
       forbid:
         - pattern: '\.Sugar\b'
           msg: use the typed zap fields in src/platform/logger; Sugar() is banned on the request path
         - pattern: '\bzap\.Any\b'
           msg: zap.Any defeats typed fields and prints whatever it is given; use a typed field constructor
+        # zap.S() and zap.L() are the same hole reached without a logger in
+        # hand, which is precisely the position of anyone who was not passed the
+        # context one — so this is the spelling the ban is most likely to meet.
+        # They are package-level singletons besides, which the No globals
+        # constraint forbids on its own.
+        - pattern: 'zap\.[SL]\(\)'
+          msg: zap.S and zap.L are package-level globals; take the request logger from logger.FromContext(ctx)
 
     govet:
       enable-all: true
