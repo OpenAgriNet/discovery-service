@@ -55,13 +55,19 @@ Every task inherits these.
 | File names | Go `snake_case`; `PascalCase` exported, `camelCase` unexported |
 | Functions | Under 50 lines, early-return errors, nesting depth ≤ 3 |
 | Godoc | Every exported symbol. Non-obvious maths (H3 cover, RRF, haversine) gets inline comments |
+| Comments | Only the **why** — a hidden constraint, a workaround, an invariant not visible at the call site. A comment restating the code is a second thing to keep true, and it is the one that rots first. The model is the `STRICT` / `NOT STRICT` asymmetry on `geo_haversine_m` and `geo_distance_m`: the comment says PostgreSQL declines to inline a STRICT function with a non-strict body, which no reader could recover from the signature. `// returns the distance` is the anti-model |
 | DRY | Envelope parsing, signature verification, error construction, response writing and timing each live in exactly one package |
+| Abstraction | **A seam ships with a conformance test or a second implementation behind it, or it does not ship.** The A6/A7 rule applied generally: an unused abstraction is a guess, one a test drives is a contract. Config knobs meet the same bar — a flag no scenario sets is not shipped. This is not a ban on the seams already named (`Embedder` under A5, `CatalogReplicator` under A7, `Keyring`): each has a task that constructs it and a test that exercises it, which is exactly the difference the rule draws |
 | DI | Explicit constructors only. `dig` / `wire` / reflection containers prohibited (D3) |
+| No globals | No package-level mutable state, and no `init()` that does work. Config, the pool, the logger, clocks and clients are built in `container.go` and passed down; nothing reaches for them through a `var` at call time. This is the DI rule seen from the other end — a dependency injected explicitly **and** reachable globally is not injected, it is a suggestion. A6 already applies it to query scope: a value, not a hidden global |
 | Logging | zap JSON, typed field constructors. Never `zap.Any` or `Sugar()` on the request path |
+| Errors | Every error crossing a package boundary is `%w`-wrapped with enough context to name the failing call — `fmt.Errorf("upsert catalog %s: %w", id, err)`, never a bare `return err`. Wrapping is for Go errors only: a validation `Fault` is a value carrying its own `Path` and `Code`, is aggregated rather than returned, and is never wrapped into an error |
 | SQL | Always parameterised. String-concatenated SQL prohibited. JSONPath expressions never interpolated |
+| Test doubles | The memory backend is the **only** double for the repository interface. No per-file mocks, no hand-rolled stubs. Every behaviour pinned against Postgres is pinned against memory by the same `conformance/` fixtures, which is the one thing keeping the two from drifting; a mock written by the test that asserts on it proves only that both were written by the same person |
 | Naming | A config key, constant or column names **what it bounds and in what unit** — not merely that it is a bound. `MaxCandidatesPerMode`, not `CandidatesPerMode`; `MaxRadiusMeters`, with the unit in the name. Two names that differ only by which side of the system they serve must say which side: `MaxQueryCoverCells` and `MaxIndexCoverCells`, `target_path` and `source_path`. A reader who has to open the table to tell a pair apart will eventually pick the wrong one |
 | Flags | `VALIDATION_ENABLE_L1_SCHEMA=true`, `VALIDATION_ENABLE_L2_CONTEXT=true`, `AUTH_ENABLE_SIGNATURE_VERIFICATION=false` (deferred; seam ships) |
 | Commits | Conventional commits, one per task step marked *Commit* |
+| TODOs | None on `main`. Anything deferred goes in **Deferred** or **Out of Scope** in this document, where a reader deciding scope will find it — not into a source comment only the next person to open that file will ever read. Scope drift belongs in the plan, visible, not buried at the call site |
 
 ---
 
