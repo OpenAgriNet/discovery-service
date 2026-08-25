@@ -134,6 +134,7 @@ implementation is a guess; one with a conformance test is a contract.
 | **T4** | §8 Supply chain | `govulncheck` + Trivy image scan failing on HIGH/CRITICAL in CI | 1 |
 | **T5** | §2, §9 | ADR-0012 names which interfaces are promises and which are internal. ADR-0013 records the protocol-version-coexistence shape (version-keyed `SpecIndex`, accepted-versions set, response echoes request version) without building it | 1 |
 | **T6** | all | An explicit statement of what this service does not own — below | — |
+| **T7** | §5 Not tied to one database | Three swaps at three costs: vector store and geo index are one `Retriever` each; metadata and transactions are one package under `src/storage/` plus one line in `container.go`. Enforced by `boundary_test.go` over the import graph, admitted by `conformance/`, not by review. YugabyteDB is reachable on those terms — it is not free, and the plan names which parts are not | 11, 14, 16, 20 |
 
 ---
 
@@ -186,7 +187,7 @@ Recorded as ADRs in `documentations/adr/`.
 | D3 | DI | explicit constructors | `dig` | A missing provider must fail at compile time, not panic at startup |
 | D4 | L1 validation | kin-openapi (MIT) | hand-rolled | The published `beckn.yaml` *is* the validator |
 | D5 | Spatial index | uber/h3-go v4 (Apache-2.0) | PostGIS | H3 cells are plain `bigint`s — btree/GIN-indexable, shardable, portable to Elasticsearch or Redis without rewriting the query. PostGIS binds the spatial layer to Postgres. Exact distance is a plain SQL expression, so no spatial extension is installed at all |
-| D6 | Vector store | pgvector 0.8 + HNSW, cosine | Qdrant, OpenSearch | Single-node deployment; swappable behind `Retriever` alone (A6) |
+| D6 | Vector store | pgvector 0.8 + HNSW, cosine | Qdrant, OpenSearch | Single-node deployment; swappable behind `Retriever` alone (A6) — that is the **vector** store only. What the other two swaps cost is in [Data Model](#data-model), because "swappable" unqualified reads as a claim about the metadata store too |
 | D7 | Lexical | PostgreSQL FTS (`tsvector` + GIN) | Elasticsearch | No extra infrastructure for v1; fused with vectors by RRF |
 | D8 | Embeddings | `Embedder` interface — `noop` default (A5), `hashing` in CI, `ollama` when enabled | OpenAI, Cohere | Self-hosted keeps the DPG mandate |
 | D9 | Config | `caarlos0/env/v11` + `yaml.v3`, layered (amended by T1) | viper | Reviewed YAML files under the environment |
@@ -250,6 +251,7 @@ src/app/                            COMPOSITION ROOT
 
 config/  migrations/  schemas/  .cache/beckn/
 tests/   acceptance/  dbtest/  testdata/
+  architecture/boundary_test.go     import graph — the TRD §5 swap boundary
 documentations/  adr/  plans/  archive/
 Makefile  Dockerfile  docker-compose.yml  sqlc.yaml  .golangci.yml
 ```
@@ -296,6 +298,42 @@ swappability; it is defeated in three ways, each forbidden explicitly:
 | Type | `pgtype.UUID`, `pgvector.Vector` in a domain signature | `src/domain/` imports stdlib + `google/uuid` only, enforced by `purity_test.go` |
 | Dialect | The service composes SQL fragments or passes a `WHERE` string down | Queries are **data** — a `SearchQuery` the backend interprets. No caller names a column |
 | Capability | A weaker backend silently returns worse results | Backends declare `Capabilities`; unsupported modes fail loudly or degrade **observably** |
+| Grammar | The accepted wire grammar is whatever the engine happens to parse, so changing the engine changes what callers may send | The filter subset is validated in `src/platform/jsonpath/` **before any store sees it** (C10). A backend that cannot execute it declares the capability missing and degrades; the accepted grammar does not move |
+
+**Three swaps, three costs (TRD §5).** The TRD names PostgreSQL for a small
+instance, and YugabyteDB for metadata with Qdrant for vectors at scale.
+"Swappable" covers three different amounts of work, and collapsing them into one
+word is how it stops being something anyone can act on:
+
+| Swap | What it costs | Why that little |
+|---|---|---|
+| **Vector store** — pgvector → Qdrant | One new `Retriever` | A6 split retrieval into one `Retriever` per mode for exactly this. No other mode learns it changed |
+| **Geo index** — PostgreSQL → Elasticsearch, Redis | One new `Retriever` | D5: H3 cells are plain `BIGINT`s computed in Go, and no PostGIS is installed. Nothing spatial is being ported — only an integer set-membership test |
+| **Metadata and transactions** — PostgreSQL → YugabyteDB | One new package under `src/storage/`, plus one line in `container.go` | Everything engine-specific already lives under `src/storage/postgres/`. What makes that a fact rather than an intention is the test below |
+
+**`boundary_test.go` — the twin of `purity_test.go`, one level out.**
+`purity_test.go` guards `src/domain/`, and says nothing about the packages that
+*consume* the ports. `boundary_test.go` walks the whole module's import graph and
+fails the build if any package other than `src/storage/postgres/**` and
+`src/app/container.go` imports `pgx`, `pgvector`, `sqlc`-generated code, or
+`src/storage/postgres` itself.
+
+That one allowance for `container.go` is what turns "minimal code changes" into a
+number: a second engine is **a new directory under `src/storage/` and one
+constructor call in the composition root.** Without the test the claim decays on
+the first afternoon somebody reaches for `pgx.ErrNoRows` in
+`src/publish/service.go` — a one-line change that compiles, passes every existing
+test, and moves the swap boundary a layer outward in silence.
+
+**What stays PostgreSQL-shaped, and why that is not a portability failure.**
+`tsvector` + GIN (D7), GIN `fastupdate = off`, the expression-based unique index
+on `COALESCE(resource_id, '')`, `pgx.Batch` pipelining, and `sqlc` compiling
+`.sql` against a live server at build time. All five are engine-specific, all
+five sit inside `src/storage/postgres/`, and none of them crosses the port. A
+second engine reimplements them, or declares the capability missing and degrades
+observably — it does not inherit them. `src/storage/conformance/` is what admits
+it: a backend is accepted by **passing the suite both existing backends pass**,
+not by review.
 
 **B — the PostgreSQL realisation: four tables.** Shaped by the query modes, not
 by the Beckn object graph. Beckn's aggregate boundary is the *catalog*, so
@@ -2067,6 +2105,16 @@ silent ignoring.
 > examples are PG-shaped. This service executes **PostgreSQL SQL/JSON path
 > only**, and an expression it cannot parse is a `400` / `SCH_INVALID_JSONPATH`.
 > Task 22 is therefore rebasing and validation, not translation.
+>
+> **The grammar is this service's, and it coincides with PostgreSQL's — the two
+> are not the same statement.** Task 22 validates the expression against the
+> stated subset in `src/platform/jsonpath/`, beside `Canonicalise`, **before any
+> store sees it**; the store is handed an already-accepted expression. A backend
+> that cannot execute the subset declares `jsonpath` missing in its
+> `Capabilities`, and `filters` reports `structured` in `Degraded` — the answer
+> Phase 1 already gives with Task 22 parked. What must never happen is the
+> accepted grammar changing because a deployment changed a backing service: that
+> is a protocol break shipped as an infrastructure decision (TRD §5).
 
 ---
 
@@ -2879,6 +2927,15 @@ currently produce.
 **Tests pin:** `purity_test.go` walks the package's imports and fails on
 anything outside stdlib + `google/uuid`. This is the swap boundary, enforced
 rather than requested.
+
+Its twin `tests/architecture/boundary_test.go` is written **here**, in the task
+that names the boundary, and walks every package in the module: an import of
+`pgx`, `pgvector`, `sqlc` output or `src/storage/postgres` from anywhere but
+`src/storage/postgres/**` and `src/app/container.go` fails the build. It passes
+trivially today, because no adapter exists yet — which is the point. A guard
+written after the thing it guards is written against code somebody already has a
+reason to keep. `purity_test.go` protects the contract; this protects everything
+that consumes it, which is where the leak actually happens (TRD §5, T7).
 
 `MergePatch` gets the exhaustive table it deserves, because it is a pure
 function and there is no excuse not to: key absent → kept; key present →
