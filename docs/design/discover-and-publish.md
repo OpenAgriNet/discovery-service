@@ -3158,16 +3158,34 @@ three are security- or output-shaping defaults that must not drift silently.
 
 ### Task 3 — Structured Logging
 
-**Files:** `src/platform/logger/logger.go`
+**Files:** `src/platform/logger/logger.go`, `.golangci.yml`
 
-**Produces:** `logger.New(cfg)`, `logger.FromContext(ctx)`, `logger.With(ctx, fields)`
+**Produces:** `logger.New(cfg.Log)`, `logger.NewContext(ctx, log)`,
+`logger.FromContext(ctx)`, `logger.With(ctx, fields...)`, and the four field
+constructors `RequestID`, `TransactionID`, `MessageID`, `Action` — the field
+names are spelled there and nowhere else, because one key spelled two ways is
+two fields to whatever queries the logs.
 
 - zap production JSON. Request-scoped logger carried in `context.Context`,
   pre-populated with `request_id`, `transaction_id`, `message_id`, `action`.
+  `NewContext` installs it; `With` derives a context whose logger carries more
+  fields, so a middleware adds to what the one above it set rather than
+  replacing it, and a sibling request cannot inherit them.
+- `New` takes `cfg.Log`, not the whole `Config`. `Database.URL` carries a
+  password, and the one component whose job is writing things down should not be
+  handed it.
+- `LOG_LEVEL` is the single constrained field `validate` does not check. The
+  level table belongs to zap and a copy in config would be a second one to keep
+  true; a level nobody can spell fails the boot in `New`, naming the value. Do
+  not "fix" this by adding a list that can drift.
 - `FromContext` on a bare context returns a no-op logger, never nil.
 
-**Tests pin:** fields survive context propagation; no `Sugar()` on the request
-path (a lint rule, asserted by `make lint`).
+**Tests pin:** fields survive context propagation; `With` leaves the parent
+context unchanged; a level that will not parse fails the boot and names it;
+sampling is off, since every request line shares one message and production
+sampling would drop most of the request log at exactly the load worth reading it
+at. No `Sugar()`, `zap.Any`, `zap.S()` or `zap.L()` anywhere — a lint rule,
+asserted by `make lint`, with no carve-out for `_test.go`.
 
 ---
 
