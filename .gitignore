@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Agent tooling state — machine-local, regenerated, never shared
+.claude/
+.claude-flow/
+
+# Secrets and deployment-local config (see Config in the design doc)
+.env
+.env.*
+config/instance.yaml
+
+# Working notes, drafts and source requirements — not the shared record.
+# The shared record lives in docs/. Anything here that should be shared
+# gets moved into docs/ and committed, not un-ignored in place.
+documentations/
