@@ -537,6 +537,16 @@ CREATE TABLE resources (
     -- the resource stays discoverable lexically and geospatially. NULL for
     -- every row in Phase 1 (A5) — which makes `embedding IS NULL` the backfill
     -- queue, and is why no outbox table exists.
+    --
+    -- That queue gets no index HERE and wants one THEN. In Phase 1 every row
+    -- is NULL, so a sequential scan is the optimal plan and a partial index
+    -- would be a second copy of the whole table. During the Phase 2 backfill
+    -- the remainder shrinks while the table does not, so the same scan gets
+    -- steadily more wasteful with each batch. `CREATE INDEX … ON resources
+    -- (catalog_id, id) WHERE embedding IS NULL` is the Phase 2 migration, and
+    -- it self-empties as the backfill drains it. Written down here because the
+    -- absence is deliberate now and a bug later, which is not something the
+    -- schema can say on its own.
     embedding   VECTOR(768),
 
     -- blake2b-256 of the derived text `embedding` was (or will be) computed
@@ -594,7 +604,12 @@ CREATE INDEX idx_resources_name_trgm  ON resources USING GIN (name gin_trgm_ops)
 -- btree leading with schema_context serves both shapes from one structure.
 CREATE INDEX idx_resources_schema ON resources (schema_context, schema_type)
     WHERE active;
-CREATE INDEX idx_resources_catalog_id ON resources (catalog_id);
+-- NO `idx_resources_catalog_id`. `PRIMARY KEY (catalog_id, id)` builds a btree
+-- leading with catalog_id, which serves every catalog_id-prefix lookup this
+-- plan issues — the per-catalog rewrite, the FULL-republish delete, and the
+-- cascade probe from resource_geometries — at no extra write cost. A second
+-- index on the same leading column is a duplicate that only the write path
+-- pays for.
 
 -- jsonb_path_ops, not the default jsonb_ops: a third the size and faster for
 -- the path-exists queries this service issues (Task 22). It cannot serve
@@ -603,6 +618,14 @@ CREATE INDEX idx_resources_attributes ON resources USING GIN (attributes jsonb_p
 
 -- HNSW, not IVFFlat: no training pass, so it works from the first row. Not
 -- partial: a partial HNSW would have to be rebuilt when `active` flips.
+--
+-- It ships EMPTY, because Phase 1 writes no vectors, and an empty HNSW costs
+-- nothing to carry. The Phase 2 backfill should DROP and recreate it rather
+-- than insert through it: building a graph incrementally, one row at a time,
+-- over a corpus that is already there is markedly slower than one bulk build
+-- at the end, and the index is useless until the backfill completes anyway.
+-- Noted here beside the "not partial" decision because both are choices about
+-- when this index is built, and only one of them was written down.
 CREATE INDEX idx_resources_embedding ON resources
     USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 ```
@@ -708,8 +731,11 @@ CREATE TABLE resource_geometries (
     --
     -- They are NULL as a pair, never one without the other: a row holding a
     -- `cells_full` with no `cells_cover` would prove positives it cannot
-    -- bound, and the predicate has no branch for that state because the
-    -- writer cannot produce it.
+    -- bound, and the predicate has no branch for that state. Stated as a
+    -- CHECK below rather than left to the writer, on the same argument the
+    -- `CHECK (id <> '')` block on `catalogs` makes: enforcing an invariant
+    -- only where something currently depends on it is how it stops being true
+    -- somewhere else.
 
     -- NOT NULL: a row exists only because a geometry parsed, and a geometry
     -- that parsed has a box. Load-bearing in a way it was not when the box was
@@ -719,6 +745,35 @@ CREATE TABLE resource_geometries (
     max_lat DOUBLE PRECISION NOT NULL,
     min_lon DOUBLE PRECISION NOT NULL,
     max_lon DOUBLE PRECISION NOT NULL,
+
+    -- ---- three invariants the predicate's correctness rests on -----------
+    -- Both cell columns NULL or neither. The predicate short-circuits on
+    -- `cells_cover IS NULL` alone and never re-tests `cells_full`, so a
+    -- half-NULL row would reach the operator CASE with a NULL operand, and a
+    -- NULL inside EXISTS is a miss.
+    CHECK ((cells_full IS NULL) = (cells_cover IS NULL)),
+
+    -- A stored cover is never the EMPTY array. `cells_full` legitimately is —
+    -- a Point contains no cell — but `cells_cover` cannot be, because every
+    -- geometry that parsed touches at least one cell. The constraint is
+    -- load-bearing rather than tidy: `S_WITHIN`, `S_CONTAINS` and `S_DISJOINT`
+    -- are all refuted through `cells_cover <@ …`, and `'{}' <@ anything` is
+    -- TRUE in PostgreSQL, so an empty cover would silently answer those three
+    -- operators with "cannot refute" for the row it belongs to. It is also the
+    -- backstop for a geometry whose `coordinates` is a well-formed but EMPTY
+    -- array — `looksLikeGeoJSON` accepts the shape, and the parser must fault
+    -- it rather than emit a row with nothing in it.
+    CHECK (cells_cover IS NULL OR cardinality(cells_cover) > 0),
+
+    -- The box is well-ordered. A geometry crossing the antimeridian gets
+    -- min_lon = -179, max_lon = 179 — the whole globe, which is over-inclusive
+    -- and therefore safe under the superset rule, and matters only for an
+    -- oversize row where the box is the entire predicate. This CHECK exists to
+    -- stop the well-meant "fix" that stores [179, -179] instead: `max_lon >=
+    -- $min AND min_lon <= $max` is then false for every query, and the
+    -- geometry becomes undiscoverable rather than over-discoverable, which is
+    -- the one direction this design never moves in.
+    CHECK (min_lat <= max_lat AND min_lon <= max_lon),
 
     -- Catalog-level rows hang off the catalog directly, which is also what
     -- cascades them when it is deleted.
@@ -793,14 +848,31 @@ return corrects neither: `Total` counts rows the caller never sees, page 3
 overlaps page 2, and each retrieval mode sees a different candidate set.
 
 ```sql
--- IMMUTABLE so PostgreSQL INLINES this body into the calling query instead of
--- paying a function call per candidate row, and so the function stays eligible
--- for an expression index later. Not constant folding: the arguments are
--- columns, so there is nothing to fold. PARALLEL SAFE so a parallel seq scan
--- may evaluate it.
--- STRICT so a NULL coordinate propagates instead of reading as zero — (0,0) is
--- in the Gulf of Guinea, and a resource that teleports there matches a radius
--- query from any point on the equator.
+-- IMMUTABLE so the function stays eligible for an expression index later, and
+-- so PostgreSQL MAY inline this body into the calling query. Not constant
+-- folding: the arguments are columns, so there is nothing to fold. PARALLEL
+-- SAFE so a parallel seq scan may evaluate it.
+--
+-- STRICT so a NULL coordinate propagates instead of reading as zero — and
+-- here that is not the usual argument, because without STRICT this body does
+-- something worse than return zero. `least()` IGNORES NULLs: with a NULL
+-- latitude the haversine term is NULL, `least(1, NULL)` is 1, `asin(1)` is
+-- pi/2, and the function confidently returns ~20,015 km — half the Earth's
+-- circumference — for a coordinate it could not read. STRICT is what makes it
+-- return NULL instead, which the call site is written to expect.
+--
+-- STRICT and inlining are in tension here, and the plan states which side it
+-- takes rather than assuming the question away. `least()` is non-strict, so
+-- this body is non-strict, and PostgreSQL declines to inline a STRICT SQL
+-- function whose body is non-strict — the same rule cited two functions down
+-- as the reason `geo_distance_m` is NOT marked STRICT. The clamp cannot simply
+-- go: floating-point overshoot puts the argument at 1 + 1e-16 for antipodal
+-- points and `asin()` then raises "input is out of range", a hard error on a
+-- live query. So correctness wins and this one is expected NOT to inline,
+-- costing a function call per candidate row on the Point-to-Point refinement
+-- path only. Task 14 asserts the outcome with `EXPLAIN (VERBOSE)` rather than
+-- leaving the reader to assume it was checked — if a later PostgreSQL inlines
+-- it after all, the test is what tells us.
 CREATE OR REPLACE FUNCTION geo_haversine_m(
     lat1 DOUBLE PRECISION, lon1 DOUBLE PRECISION,
     lat2 DOUBLE PRECISION, lon2 DOUBLE PRECISION
@@ -947,7 +1019,9 @@ CREATE TABLE offers (
     PRIMARY KEY (catalog_id, id)
 );
 
-CREATE INDEX idx_offers_catalog_id ON offers (catalog_id);
+-- NO `idx_offers_catalog_id`, for the same reason: `PRIMARY KEY (catalog_id,
+-- id)` already leads with catalog_id, and the delete-then-prune pair above and
+-- the hydration fetch are both catalog_id-prefix scans.
 
 -- Hydration asks "which offers touch any of these resource ids" — an array
 -- overlap (&&), which is a GIN scan.
@@ -1038,6 +1112,28 @@ one clause in this block that used to be unconditional. A caller who supplies
 `networkId` still gets exactly that network's rows; nothing about the scoped
 case changes.
 
+**`plan_cache_mode = force_custom_plan`, and it is this pattern that requires
+it.** `$1 IS NULL OR r.visible_to @> ARRAY[$1]` is only index-usable when
+PostgreSQL knows `$1`: with the value in hand it folds the first arm to FALSE
+and is left with a sargable `@>`. With the value unknown it must keep both arms,
+and an `OR` whose first arm does not mention the column cannot be answered by an
+index on that column — so the GIN index is dropped and the clause becomes a
+sequential-scan filter. pgx speaks the extended protocol, and PostgreSQL builds
+a **custom** plan for the first five executions of a prepared statement and may
+switch to a **generic** one thereafter. So the fast plan is the one a cold
+connection gets, and the slow plan is the one a warm connection settles into —
+the exact opposite of how a performance problem is usually shaped, and
+invisible to any `EXPLAIN` run once.
+
+Every nullable clause in this plan has the property: `network_id` here,
+`target_paths`, `spatial_op` and the four box bounds in the spatial `EXISTS`,
+and `schema_contexts` above. That is the whole read path, so the setting is not
+a tuning knob but the condition under which the query shapes in this document
+mean what they say. It is applied in `pool.go`'s on-acquire block beside
+`hnsw.ef_search` and `statement_timeout`, and Task 14's `EXPLAIN` assertions run
+their query **six times before asserting**, because a test that only ever sees
+the custom plan is a test that cannot observe this at all.
+
 **Every column here is on `resources`.** No query in the read path joins
 `catalogs` — the provider document is fetched once per catalog on the page, at
 hydration, after the page is already decided. Task 16 has a test that reads the
@@ -1121,12 +1217,26 @@ arrays, one element per entry, compared as a pair.
 -- NULL, and a filter that evaluates to NULL is a filter that matches nothing.
 AND (   sqlc.narg('schema_contexts')::text[] IS NULL
      OR cardinality(sqlc.narg('schema_contexts')::text[]) = 0
-     OR EXISTS (SELECT 1
-                  FROM unnest(sqlc.narg('schema_contexts')::text[],
-                              sqlc.narg('schema_types')::text[]) AS s(ctx, typ)
-                 WHERE r.schema_context = s.ctx
-                   AND (s.typ = '' OR r.schema_type = s.typ)))
+     OR (    r.schema_context = ANY(sqlc.narg('schema_contexts')::text[])
+         AND EXISTS (SELECT 1
+                       FROM unnest(sqlc.narg('schema_contexts')::text[],
+                                   sqlc.narg('schema_types')::text[]) AS s(ctx, typ)
+                      WHERE r.schema_context = s.ctx
+                        AND (s.typ = '' OR r.schema_type = s.typ))))
 ```
+
+**The `= ANY` is redundant and deliberate.** Every row the `EXISTS` admits
+already satisfies it, so it changes no answer — it exists to give the planner
+something `idx_resources_schema` can drive. `EXISTS (… unnest … WHERE
+r.schema_context = s.ctx)` is correlated to `r`, which makes it a per-row
+subplan filter over whatever scan was chosen for other reasons; the btree on
+`(schema_context, schema_type)` cannot be the access path for a predicate
+phrased that way. `r.schema_context = ANY($1)` is a plain sargable
+array-membership test on the index's leading column, so the pair is an index
+scan with a cheap filter rather than a sequential scan with an expensive one.
+The pairing semantics stay entirely inside the `EXISTS`, which is the only
+clause that may reject a cross-match, so the redundant conjunct cannot loosen
+the filter even if someone later widens it.
 
 **Static, because `sqlc` compiles `.sql` files at build time.** A clause list
 assembled in Go — one `AND (… OR …)` per entry — has no compiled form, so it
@@ -1215,7 +1325,25 @@ service.Publish(ctx, reqContext, action):
     network ← reqContext.networkId or config.App.Network       # C6 note
     results ← []
 
+    seen ← {}
     for each catalog in action.catalogs:                       # sequential
+        if catalog.id ∈ seen:
+            results += REJECTED(SCH_DUPLICATE_CATALOG_ID, jsonPath(catalog))
+            continue
+            # One transaction per catalog means two entries with one id are two
+            # transactions against one row, and the second wins: its merge
+            # overwrites the first's document and its geometry delete wipes the
+            # first's rows. Under FULL the first entry's resources are deleted
+            # outright. That is a publisher's own mistake either way, but it is
+            # currently reported as two ACCEPTEDs — one of which did not
+            # survive the request that returned it. A map lookup is the whole
+            # cost of saying so. `SCH_`, because the fault is in the shape of
+            # the request rather than in what it asks for, and that is the
+            # family Task 5 gives to a body this service will not accept as
+            # written. The verdict is per-catalog, not a NACK: the other
+            # catalogs in the request are unaffected and land normally, which
+            # is the same rule A1's MASTER refusal follows.
+        seen += catalog.id
         directive ← action.DirectiveFor(catalog.id)
         results += publishOne(ctx, network, catalog, directive)
 
@@ -1550,6 +1678,11 @@ repo.UpsertCatalog(ctx, patch, updateMode, derive):
            valid_time_to   = gate.validTimeTo
      where catalog_id = ?
        and id != ALL(@touched)          # the UNTOUCHED ones only
+       and (visible_to, active, valid_from, valid_to,
+            valid_time_from, valid_time_to)
+             IS DISTINCT FROM (gate.visibleTo, gate.active,
+                               gate.validFrom, gate.validTo,
+                               gate.validTimeFrom, gate.validTimeTo)
     # All SIX, spelled out rather than elided. A column left off this list
     # keeps its previous value forever, because `Resource` has no validity of
     # its own for a later publish to correct it with.
@@ -1561,6 +1694,22 @@ repo.UpsertCatalog(ctx, patch, updateMode, derive):
     # change. An empty `@touched` — a catalog-only publish, which is the case
     # this statement exists for — makes `!= ALL('{}')` true for every row, so
     # the propagate still reaches all of them.
+    #
+    # `IS DISTINCT FROM` makes the ordinary republish free without weakening
+    # the rule. The rule is that every resource ENDS this transaction carrying
+    # the catalog's gate, not that every resource is rewritten; a row already
+    # holding all six values reaches the same end state by not being touched.
+    # It matters because `visible_to` is GIN-indexed with `fastupdate = off`,
+    # so there is no HOT path: an unconditional statement is N dead tuples and
+    # N posting-tree updates on every publish of an N-resource catalog, for
+    # values that change on the rare publish that alters `visibleTo` or
+    # `validity` and on no other. Row-comparison rather than six ANDed tests
+    # because NULL validity is the common case and `=` on NULL is NULL.
+    #
+    # The unconditional-rewrite guarantee is unchanged and still the thing that
+    # keeps the denormalised copy honest — scenario 3's assertion is that a
+    # publisher who changes `visibleTo` while sending no resources moves every
+    # resource, and a changed gate is exactly what this clause lets through.
 
     for each offer in merged.Offers where the patch named it:
         dangling ← offer.ResourceIDs naming no resource in merged.Resources
@@ -1706,7 +1855,7 @@ walk(node, path, depth, owners):
         else:
             out += Geometry{
                 TargetPath: jsonpath.Canonicalise(wildcard(path)),
-                SourcePath: jsonpath.Canonicalise(path),
+                SourcePath: jsonpath.Canonicalise(wildcardCatalogIndex(path)),
                 Owners:       owners,       # empty ⇒ catalog-level
                 Type:         node.type,
                 GeoJSON:      node verbatim,
@@ -1747,6 +1896,31 @@ looksLikeGeoJSON(node) → bool:
 caller writes. The pair is what the table stores, and each column is named for
 its job: `target_path` is what a constraint's `targets` is matched against,
 `source_path` names where in the document this geometry was found.
+
+**`wildcardCatalogIndex` replaces the FIRST index and no other**, so a stored
+`source_path` reads `$['catalogs'][*]['provider']['availableAt'][2]['geo']` —
+concrete everywhere the disambiguation needs it, wildcard at the one position
+that is a property of the request rather than of the catalog. The walk itself
+keeps the concrete root, because a *fault* path must name the offending node in
+the payload the publisher actually sent; it is only the stored column that
+normalises.
+
+Without it the same geometry stores different bytes depending on where its
+catalog sat in the `catalogs` array — `[0]` when published alone, `[1]` when
+republished behind another catalog. Nothing breaks, because rows are deleted and
+re-inserted per catalog and `uq_resource_geometries` is `catalog_id`-scoped, so
+the varying component never has to collide with anything. But it makes a stored
+value depend on an unrelated property of the request that produced it, which is
+the kind of thing that is discovered by a test that passes on Tuesday.
+
+**`target_path` is a total function of `source_path`**, and two columns where
+one derives the other are a drift surface. It stays two columns rather than a
+`GENERATED ALWAYS AS` expression, because the wildcard rule would then exist in
+SQL as well as in Go — the second implementation this plan refuses everywhere
+else, as with haversine and `within_daily_window`. What replaces the constraint
+is an assertion, in Task 14: for every row in `resource_geometries`,
+`wildcard(source_path) = target_path`. That catches the walker change that
+updates one and forgets the other, which is the only way the two can disagree.
 
 Five rules that fall out of it:
 
@@ -2012,6 +2186,18 @@ already showed, or more than exist. So the counter's text clause is the **OR of
 every enabled mode's**, which makes `Total` exactly the size of the set the
 fusion draws from.
 
+**And that set is large, because `discover_tsquery` ORs its terms.** *"wheat
+seeds for sale"* matches every listing carrying any one of those words, so
+`Total` reports thousands where the caller can reach twenty-five pages, and the
+count query — which carries no `LIMIT`, deliberately — scans all of them
+whenever the four skip guards do not fire. Both are consequences of a decision
+made two sections up and neither is a defect: `Total` is honestly the size of
+the candidate set, and the alternative reading, "results worth showing you", is
+a number no `count(*)` can produce. It is recorded here because a caller
+rendering `Total` as "3,412 results" for a query with five relevant answers will
+read it as a bug in this service, and the answer is that precision is RRF's job
+and the ranking already did it — the count describes the pool, not the page.
+
 The count query has **no** `LIMIT`, so a capped mode does not make `Total`
 wrong — capping truncates the *page's* candidate pool, never the count. That is
 also what makes the skip above sound: with `offset == 0`, no mode degraded and
@@ -2146,9 +2332,28 @@ AND (
                    OR sqlc.narg('q_cover')::bigint[] IS NULL
                    OR CASE sqlc.narg('spatial_op')::text
                         WHEN 'S_INTERSECTS' THEN g.cells_cover && sqlc.narg('q_cover')
+                        -- Three refutations, not one, and all three are
+                        -- needed because a Point's `cells_full` is EMPTY and
+                        -- `NOT ('{}' && anything)` is TRUE — a single-disjunct
+                        -- branch answers `S_DISJOINT` with every Point in the
+                        -- corpus, which is the commonest stored type there is.
+                        -- The box cannot rescue it here: it is deliberately
+                        -- skipped for this operator. See the FALSE column in
+                        -- Geospatial Design for why each disjunct is sound.
                         WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && sqlc.narg('q_full'))
-                        WHEN 'S_WITHIN'     THEN g.cells_full  <@ sqlc.narg('q_cover')
-                        WHEN 'S_CONTAINS'   THEN sqlc.narg('q_full')::bigint[]
+                                            AND NOT (g.cells_cover
+                                                    <@ sqlc.narg('q_full'))
+                                            AND NOT (sqlc.narg('q_cover')::bigint[]
+                                                    <@ g.cells_full)
+                        -- `cover <@ cover`, NOT `full <@ cover`. `A ⊆ Q` implies
+                        -- every cell touching A touches Q, so this is sound —
+                        -- and it is strictly tighter, because `cells_full ⊆
+                        -- cells_cover`. The `full` form additionally reads TRUE
+                        -- for every Point and LineString, whose `cells_full` is
+                        -- empty and whose `'{}' <@ anything` is TRUE, leaving
+                        -- the bounding box as the only surviving predicate.
+                        WHEN 'S_WITHIN'     THEN g.cells_cover <@ sqlc.narg('q_cover')
+                        WHEN 'S_CONTAINS'   THEN sqlc.narg('q_cover')::bigint[]
                                                     <@ g.cells_cover
                         WHEN 'S_DWITHIN'    THEN g.cells_cover && sqlc.narg('q_cover')
                         WHEN 'S_OVERLAPS'   THEN g.cells_cover && sqlc.narg('q_cover')
@@ -2363,9 +2568,9 @@ PostgreSQL array operators, all GIN-indexable on `BIGINT[]`.
 | `op` | Provably TRUE | Provably FALSE |
 |---|---|---|
 | `S_INTERSECTS` | `A.full && Q.full` | `NOT (A.cover && Q.cover)` |
-| `S_DISJOINT` | `NOT (A.cover && Q.cover)` | `A.full && Q.full` |
-| `S_WITHIN` | `A.cover <@ Q.full` | `NOT (A.full <@ Q.cover)` |
-| `S_CONTAINS` | `Q.cover <@ A.full` | `NOT (Q.full <@ A.cover)` |
+| `S_DISJOINT` | `NOT (A.cover && Q.cover)` | `A.full && Q.full`, or `A.cover <@ Q.full`, or `Q.cover <@ A.full` |
+| `S_WITHIN` | `A.cover <@ Q.full` | `NOT (A.cover <@ Q.cover)` |
+| `S_CONTAINS` | `Q.cover <@ A.full` | `NOT (Q.cover <@ A.cover)` |
 | `S_DWITHIN` | `A.full && dilate(Q.full, k)` | `NOT (A.cover && dilate(Q.cover, k))` |
 | `S_OVERLAPS` | intersects ∧ ¬within ∧ ¬contains | `NOT (A.cover && Q.cover)`, or either containment proves |
 | `S_EQUALS` | *never* | `A.cover <> Q.cover OR A.full <> Q.full` |
@@ -2379,6 +2584,34 @@ other does not overlap it — and the third is plain disjointness, which is soun
 here for the same reason it is sound for `S_INTERSECTS`: a true overlap implies
 the true geometries meet, and covers are supersets, so covers that do not meet
 prove geometries that do not either. All three appear in the `CASE` arm above.
+
+**Refute with `cover`; prove with `full`. The two columns are not
+interchangeable and the direction is what decides which one is sound.** To
+*prove* `A ⊆ Q` you need every cell of `A.cover` to be a cell PostgreSQL knows
+lies entirely inside Q — `A.cover <@ Q.full`, the TRUE column. To *refute* it
+you need a necessary condition, and the tightest available one is
+`A.cover <@ Q.cover`: if `A ⊆ Q` then every cell touching A touches Q, so a
+cell of A's cover that is absent from Q's cover proves `A ⊄ Q`. `S_CONTAINS`
+is the same statement with the arguments swapped. `S_DISJOINT` gains two
+refutations beside `A.full && Q.full` by the same reasoning in reverse:
+`A.cover <@ Q.full` means `A ⊆ Q`, and a non-empty A inside Q meets it.
+
+**This is not a micro-optimisation, and the reason is degenerate `cells_full`.**
+A Point and a LineString contain no cell, so their `cells_full` is the empty
+array — correctly, and permanently. PostgreSQL's `'{}' <@ anything` is **TRUE**
+and `'{}' && anything` is **FALSE**, so a refutation phrased over `full` on the
+degenerate side does not merely lose precision, it stops being a predicate:
+`S_WITHIN` and `S_CONTAINS` fall back to the bounding box, and `S_DISJOINT` —
+which skips the box on purpose — returns every Point in the corpus. Since a
+shopfront is a Point, that is the commonest row in the table. Phrasing all three
+over `cover` restores them to the resolution's precision, which is the accuracy
+this design claims everywhere else.
+
+The three `cover`-side arrays it now rests on are guaranteed non-empty by
+`CHECK (cells_cover IS NULL OR cardinality(cells_cover) > 0)` in Migration 004.
+That constraint is load-bearing here rather than tidy: an empty `cells_cover`
+would make `A.cover <@ anything` trivially TRUE and quietly reintroduce the
+failure this paragraph exists to remove, one column over.
 
 Between the two columns is a band where neither proof fires. That band is the
 boundary, it is one cell wide, and what happens in it is a decision this plan
@@ -2662,10 +2895,12 @@ goes looking for.
 | 4 | `InvalidPayloadIsRejected` | A resource with no `id` NACKs with a `SCH_` code and a JSON pointer, **and nothing is stored** — asserted by searching afterwards and finding nothing. Run twice: once with the key absent, once with `"id": ""`, because the schema requires the key and says nothing about its length, so a presence check alone admits the one value `uq_resource_geometries` cannot key |
 | 5 | `MasterCatalogAndInheritanceAreRefused` | A1: both a MASTER catalog and a child carrying `extends` come back `REJECTED` / `SCH_TYPE_NOT_SUPPORTED`, neither stored. Not "inheritance works" — "inheritance is refused, visibly" |
 | 6 | `ARejectedMasterDoesNotBlockTheRegularCatalogsBesideIt` | One request, two catalogs, two verdicts in one results array. The per-catalog transaction boundary, end to end |
+| 6a | `TheSameCatalogIdTwiceInOneRequestIsRefused` | One request carrying the same `catalog.id` twice. The first is `ACCEPTED`, the second `REJECTED` / `SCH_DUPLICATE_CATALOG_ID`, and the catalog that is stored is the **first** one — asserted on a field the two entries disagree about. Without the check both are `ACCEPTED` and the stored catalog is the second, so one of the two success verdicts describes a document that no longer exists; under `FULL` the second entry additionally deletes the first's resources. The pin is on the stored document rather than on the status array, because two `ACCEPTED`s is exactly what the bug looks like from outside |
 | 7 | `MissingSignatureIsUnauthorized` | With verification on, an unsigned publish is `401` / `AUT_SIGNATURE_MISSING` |
 | 8 | `UnsignedRequestSucceedsWhenVerificationIsOff` | The same request succeeds with the flag off. With #7 this is what makes shipping the deferral honest: the flag is the only thing between here and enforcement |
 | 9 | `ACallerOverItsRateGetsA429` | Burst+1 requests: the last is `429` / `AUT_RATE_LIMITED` with `Retry-After`. Also pins that the limiter is *mounted* — an unmounted middleware is invisible to every other test |
 | 10 | `ChangingVisibleToWithNoResourcesInThePayloadTakesEffect` | Publish a catalog with resources, then republish the same catalog with `visibleTo` narrowed and **no resources at all**. The resources must stop being discoverable. The gate lives on `resources`, so without the unconditional `UPDATE resources` the catalog row changes and discover ignores it — a visibility change that reports success and does nothing |
+| 10a | `ChangingTheGateRewritesOnlyTheRowsItChanges` | Publish a forty-resource catalog, then republish the catalog document with no `visibleTo` change and no resources. Every resource still carries the catalog's gate — that is scenario 10's guarantee and it does not move — but `xmin` on the untouched rows is unchanged, so no row was rewritten. Then narrow `visibleTo` and republish: now every row moves. The `IS DISTINCT FROM` guard on the propagate is what separates the two, and it is worth a scenario because the failure it prevents is invisible in every response — forty dead tuples and forty `fastupdate = off` GIN insertions per publish, paid on the write path and observed as a slow one |
 | 11 | `AFullRepublishPrunesOrphanedOffers` | A FULL republish that drops a resource must delete the offer that pointed only at it, and shorten the offer that pointed at it plus a survivor. Pins that a pruned-to-empty offer is deleted rather than silently promoted to catalog-wide |
 
 ### Discover — `discover_test.go`
@@ -2730,11 +2965,12 @@ repository tests instead.
 | # | Scenario | Pins |
 |---|---|---|
 | 30 | `TheOperatorSetIsAnsweredAsSetAlgebra` | One stored Polygon (a district service area) and one query Polygon overlapping half of it. `S_INTERSECTS` matches, `S_DISJOINT` does not, `S_WITHIN` does not, `S_CONTAINS` does not, `S_OVERLAPS` does. Then a query Polygon strictly inside the stored one: `S_CONTAINS` matches and `S_OVERLAPS` no longer does. Five operators in two fixtures, because each is one `CASE` arm and an arm that is never executed is an arm that only compiles |
+| 30a | `DegenerateFullCoversDoNotDisableTheOperator` | The same three operators against a stored **Point** — a shopfront, the commonest geometry in the corpus and the one whose `cells_full` is empty. A Point inside the query Polygon: `S_WITHIN` matches, `S_DISJOINT` does not. A Point 400 km outside it: `S_WITHIN` does **not** match, and `S_DISJOINT` does. Then a query **Point** against a stored Polygon containing it: `S_CONTAINS` matches, and against a Polygon 400 km away it does not. Scenario 30 cannot catch any of this — Polygon-vs-Polygon is exactly the case where both `cells_full` are non-empty and a `full`-phrased refutation still behaves. Phrased over `full`, every one of the negative assertions here fails: `'{}' <@ anything` is TRUE, `NOT ('{}' && anything)` is TRUE, and the operators degrade to the bounding box or, for `S_DISJOINT`, to nothing at all |
 | 31 | `DisjointIsNotBoundingBoxFiltered` | A third fixture 400 km away, queried with `S_DISJOINT`. It matches — and would not if the bounding box were ANDed in for every operator, which is the one place a box pre-rejection is not merely conservative but inverted. Split out from #30 because it is the only scenario whose failure looks like an empty result rather than a wrong one, and an empty result reads as "no data" |
 | 32 | `TouchesAndCrossesAreRefused` | `S_TOUCHES` and `S_CROSSES` NACK with `SPT_UNSUPPORTED_OPERATOR` and a `400`. Asserted rather than left to the schema, because both are valid `beckn.yaml` enum values — L1 validation passes them, and the only thing standing between a caller and a silently wrong answer is this refusal |
 | 33 | `AnOversizeGeometryIsFoundByItsBoundingBox` | A polygon over `MaxIndexCoverCells` stores NULL in both cell columns and is still returned by a search inside its bounding box. Pins the `cells_cover IS NULL` short-circuit — without it a NULL array makes the operator branch NULL, NULL is a miss inside `EXISTS`, and the largest service areas in the catalogue become the only ones nobody can find |
 | 34 | `QuantifierAllRequiresEveryTargetedGeometry` | A catalog with two `availableAt` locations, one inside the radius and one outside. `ANY` returns it, `ALL` does not; a second catalog with both locations inside is returned by both. `ALL` is answerable only because every geometry type is now decidable, so this scenario is also the assertion that it stopped being a fault |
-| 35 | `AnOfferGeometryFindsOnlyThatOffersResources` | A catalog with three resources and one offer whose `resourceIds` names only the second, its `provider.availableAt` in Koramangala. A search targeting `$.catalogs[*].offers[*].provider.availableAt[*].geo` within 1 km returns **that resource only**, with that offer hydrated onto it — not the other two. Then republish the same offer with `resourceIds` emptied: the search now returns all three, because empty means catalog-wide in `resource_geometries` exactly as it already does in `offers.resource_ids`. The republish half is the half that matters: it patches the OFFER and names no resource, so it fails unless `touched` follows `resourceIds` |
+| 35 | `AnOfferGeometryFindsOnlyThatOffersResources` | A catalog with three resources and one offer whose `resourceIds` names only the second, its `provider.availableAt` in Koramangala. A search targeting `$.catalogs[*].offers[*].provider.availableAt[*].geo` within 1 km returns **that resource only**, with that offer hydrated onto it — not the other two. Then republish the same offer with `resourceIds` emptied: the search now returns all three, because empty means catalog-wide in `resource_geometries` exactly as it already does in `offers.resource_ids`. The republish half is the half that matters: it patches the OFFER and names no resource, so it fails unless `touched` follows `resourceIds`. **A third leg, and the one an assertion on the response cannot make:** republish the offer again with `resourceIds` naming only the *third* resource, then assert both directions — the search returns the third resource and not the second, **and** `resource_geometries` holds no row for the second. Only the direct table assertion catches a relocation, because the stale row it leaves behind is a row too many rather than a row too few, and a search that returns it looks like a search that worked. This is what pins `touched` to the union of the offer's pre- and post-merge ids rather than to the merged ones |
 
 ### Not covered, deliberately
 
@@ -2941,7 +3177,7 @@ allowlisted deviations and no others.
 `src/platform/httpx/response_writer.go`
 
 **Produces:** `errors.AppError`, one constructor per code family
-(`CTX_`, `AUT_`, `SCH_`, `NET_`, `BIZ_`, `POL_`), `httpx.WriteJSON`,
+(`CTX_`, `AUT_`, `SCH_`, `SPT_`, `NET_`, `BIZ_`, `POL_`), `httpx.WriteJSON`,
 `httpx.WriteNack`
 
 - C1: body stays spec-conformant; `error_type` goes on the
@@ -3221,13 +3457,25 @@ MergeCatalog(stored Catalog, patch CatalogPatch) (Catalog, touched []string)
     # makes the exhaustive merge table a table-driven unit test rather than a
     # database fixture.
     #
-    # `touched` is every resource the patch named, PLUS every resource named by
-    # the `resourceIds` of an offer the patch named. The second half is not
-    # decoration: an offer's geometry is written in its resources' loop
-    # iteration, so a patch that moves a shopfront and mentions no resource at
-    # all would otherwise re-derive the geometry and then write it nowhere.
+    # `touched` is every resource the patch named, PLUS — for every offer the
+    # patch named — the UNION of that offer's `resourceIds` BEFORE and AFTER
+    # the merge. The second half is not decoration: an offer's geometry is
+    # written in its resources' loop iteration, so a patch that moves a
+    # shopfront and mentions no resource at all would otherwise re-derive the
+    # geometry and then write it nowhere.
+    #
+    # The union, rather than the merged ids alone, is what makes a RELOCATION
+    # correct. An offer whose `resourceIds` goes from ["r1"] to ["r2"] touches
+    # only r2 under the merged reading, so r1 is never visited, its
+    # `resource_geometries` row is never deleted, and a spatial search on the
+    # offer path keeps returning a resource that offer no longer covers —
+    # for ever, since no later publish has any reason to name r1 either. The
+    # stored ids are the only record of where the geometry currently IS, and
+    # deleting a row requires visiting its owner.
+    #
     # A resource is touched when something that is stored ON it changed —
-    # which, since offer geometry is stored on it, includes its offers.
+    # which, since offer geometry is stored on it, includes both the offers
+    # that cover it now and the ones that just stopped.
 
 Offer{ID, CatalogID, ResourceIDs []string, Document json.RawMessage,
       ValidFrom, ValidTo,
@@ -3247,9 +3495,11 @@ Geometry{TargetPath, SourcePath string, Owners []string,
     # TargetPath is the wildcard form, byte-identical to a constraint's
     # `targets` — it is the only one a query compares against.
     # SourcePath carries concrete indices, which is what makes two geometries
-    # under one wildcard distinguishable. It is positional, so it is NOT stable
-    # across a republish that reorders the array — which is why geometries are
-    # deleted and reinserted rather than merged.
+    # under one wildcard distinguishable — EXCEPT the catalog's own index,
+    # which is wildcarded because it is a property of the request rather than
+    # of the catalog. It is positional in every other position, so it is NOT
+    # stable across a republish that reorders an array — which is why
+    # geometries are deleted and reinserted rather than merged.
     # Owners is empty for a catalog-level geometry, and carries one id per
     # resource that owns it — one for a geometry found inside a resource, N for
     # one found inside an offer covering N of them. `[]string` rather than
@@ -3472,6 +3722,23 @@ rather than a truncated one.
 - **A Point and a LineString produce an EMPTY `cells_full`** — the behaviour
   that looks like a bug on first reading and is the reason `S_INTERSECTS`
   against a Point is answered in the MAYBE band.
+- **And a NON-EMPTY `cells_cover`, always.** Asserted as a property over every
+  generated geometry of every type, because three of `MatchesOp`'s branches
+  refute through `aCover ⊆ qCover` and the empty set is a subset of everything:
+  an empty cover does not lose precision, it silently stops refuting. The
+  companion case is a geometry whose `coordinates` is a well-formed but EMPTY
+  array — `looksLikeGeoJSON` accepts the shape, so `CoverGeometry` must **fault
+  it** rather than return a cover with nothing in it. Postgres carries the same
+  rule as `CHECK (cells_cover IS NULL OR cardinality(cells_cover) > 0)`; this
+  is the half of it that runs before a row exists.
+- **`MatchesOp` degrades no operator on a degenerate `cells_full`.** The same
+  fixtures as scenario 30a, run against the Go twin: a stored Point inside a
+  query Polygon is `S_WITHIN` and not `S_DISJOINT`; one 400 km outside is
+  neither `S_WITHIN` nor anything but `S_DISJOINT`. Phrased over `full`, as the
+  table in Geospatial Design once was, every negative assertion here passes
+  vacuously — which is precisely why the conformance suite could not have
+  caught it: both backends would have been wrong in the same direction, and
+  agreeing.
 - A polygon's cover contains interior sample points; **holes are honoured**; a
   polygon smaller than one cell yields an empty `full` and a non-empty `cover`.
 - A LineString's cover includes cells between vertices, not just at them.
@@ -3548,11 +3815,43 @@ absence of a path index: `idx_rg_catalog_target_path` exists, and it exists
 because the walker made `target_path` a column of many distinct values rather
 than the single constant it held when that absence was written down. A
 well-meant re-add of the bbox index then comes back as a test failure with a
-reason attached, rather than as a slow write path nobody attributes.
+reason attached, rather than as a slow write path nobody attributes. The
+absence list also names `idx_resources_catalog_id` and `idx_offers_catalog_id`,
+which are **not** dropped indexes but indexes that were never justified: both
+tables are keyed `(catalog_id, id)`, so the primary key's own btree already
+leads with `catalog_id` and serves every prefix scan either one would have.
+
+**The three `resource_geometries` CHECK constraints get a test each**, because a
+constraint nobody has watched reject anything is a constraint that may have been
+written wrong: a half-NULL cell pair, an empty `cells_cover`, and a box with
+`min_lon > max_lon` are each rejected by the database. The second is the one
+that matters most — it is what the `cover <@ cover` refutations in the operator
+`CASE` rest on, since `'{}' <@ anything` is TRUE.
+
+**`wildcard(source_path) = target_path`, asserted over every row** after each
+publish scenario. The two columns are one string and its wildcarding, and
+nothing in the schema can hold them in step; this assertion is what catches the
+walker change that updates one and forgets the other. It runs alongside the
+`offers.resource_ids` invariant in Migration 006, for the same reason and in the
+same place.
+
+**`geo_haversine_m` is asserted NOT to inline**, with `EXPLAIN (VERBOSE)` on a
+query that calls it, because the plan claims it as a consequence of `STRICT`
+over a `least()` body rather than as something anybody measured. If a later
+PostgreSQL inlines it after all, this test is what reports the good news.
 
 Two more: `EXPLAIN` tests asserting the cell predicate uses
-`idx_rg_cells_cover` **and `idx_rg_cells_full`**, and that the scope gate uses
-`idx_resources_visible_to`; and up-then-down-then-up leaving no residue. Both
+`idx_rg_cells_cover` **and `idx_rg_cells_full`**, that the scope gate uses
+`idx_resources_visible_to`, and that the schema filter uses
+`idx_resources_schema`; and up-then-down-then-up leaving no residue.
+
+**Every `EXPLAIN` assertion runs its query six times before asserting**, on one
+connection, through the extended protocol. Five is where PostgreSQL may abandon
+the custom plan for a generic one, and a generic plan cannot fold
+`$1 IS NULL OR …` — so the index every one of these tests is looking for
+disappears at exactly the execution the test never reached. The assertion is
+that `plan_cache_mode = force_custom_plan` on the pool holds the plan steady;
+without the sixth execution the test cannot tell that setting from its absence. Both
 cell indexes are named because the operators split across them — `S_DISJOINT`
 and `S_WITHIN` read `cells_full` where `S_INTERSECTS` reads `cells_cover`, so an
 `EXPLAIN` asserting only the overlap case leaves half the operator set
@@ -3667,8 +3966,14 @@ one `Retriever` per mode, `Hydrator`, `RRF`
 - Composition and concurrency are the pseudocode in
   [Discover](#discover--how-it-works). RRF is `1/(k + rank)`, `k = 60`.
 - Every query embeds the scope gate and the geo `EXISTS` block printed there.
-- Per-connection tuning (`hnsw.ef_search`, `statement_timeout`) is applied by
-  `pool.go` on connection acquire, not per query.
+- Per-connection tuning (`hnsw.ef_search`, `statement_timeout`,
+  **`plan_cache_mode = force_custom_plan`**) is applied by `pool.go` on
+  connection acquire, not per query. The third is not tuning: every nullable
+  predicate in `discover.sql` — the network gate, `target_paths`, `spatial_op`,
+  the box bounds, `schema_contexts` — is index-usable only when the planner can
+  see the parameter and fold the `IS NULL` arm away, which a generic plan
+  cannot. It is the setting under which the query shapes in this plan mean what
+  they say.
 
 **Tests pin:**
 - A **SQL source test** that reads `discover.sql` and asserts every query
