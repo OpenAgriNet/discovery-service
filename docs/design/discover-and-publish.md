@@ -114,7 +114,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 
 | | What changes | Tasks |
 |---|---|---|
-| **A1** | An explicit `catalogType: MASTER`, and any resource carrying `extends`, are rejected at intake; inheritance ships later. **An absent directive is REGULAR, not inferred (C9).** Rejection is **per catalog** — nine regular catalogs land, the one master reports `REJECTED`. Nothing about it reaches the schema: `catalog_type` and the master columns are dropped, so refusal lives in the publish service, checked before the mapper runs | 15, 17, 18, 21 |
+| **A1** | An explicit `catalogType: MASTER`, and any resource carrying `extends`, are rejected at intake; inheritance ships later. **An absent directive is REGULAR, not inferred (C9).** Rejection is **per catalog** — nine regular catalogs land, the one master reports `REJECTED`. Nothing about it reaches the schema: `catalog_type` and the master columns are dropped, so refusal lives in the publish service, checked before the mapper runs | 15, 18, 21 |
 | **A2** | Discover runs its retrieval modes concurrently, under one deadline | 16 |
 | **A3** | One embedding config struct; the read path gets its own deadline, separate from the write path's | 2, 13, 16 |
 | **A4** | Per-caller rate limiting on the protocol routes, `429` + `Retry-After` + `AUT_RATE_LIMITED` | 5, 8, 20 |
@@ -123,7 +123,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A7** | Publish gains a write fan-out seam and a reconciliation queue. The `pending_targets` **column** is dropped — it was written on every resource and read by nothing, so it was debt recorded in the hot table. The seam survives in `Retriever`/`Hydrator` and the fan-out interface; a queue table arrives with the second store that needs one | 1, 2, 11, 15, 16, 18, 20 |
 | **A8** | `updateMode` becomes a **content** rule, not only a row-set rule. **MERGE** is RFC 7396 JSON Merge Patch against the stored documents — an absent key keeps its stored value, an explicit `null` deletes it, an array replaces wholesale — with `resources` and `offers` matched by `id` rather than by array position. **FULL** replaces the catalog outright, its own columns included: omissions reset to defaults, and resources and offers the payload omits are deleted. Publish therefore becomes read-modify-write under a row lock, and every derived column is computed **after** the merge | 11, 15, 17, 18, 21 |
 | **A10** | **Spatial search is answered as cell-set algebra, not as a prefilter in front of an exact stage.** Every geometry stores two H3 covers — `CONTAINMENT_FULL` (a guaranteed subset, which proves positives) and `CONTAINMENT_OVERLAPPING` (a guaranteed superset, which proves negatives) — and each CQL2 operator becomes an array predicate over the pair. **Seven of the nine operators are answered** where the previous design answered `S_DWITHIN` alone; `S_TOUCHES` and `S_CROSSES` are refused as unapproximable at any resolution rather than deferred. All seven RFC 7946 types work on **both** sides of the constraint, so the Point-only limit and the `NONE`-inversion it caused are gone. The costs are accuracy of one cell (~1.1 km at r8), oversize geometries decided by bounding box, and no path to cadastral precision without PostGIS | 11, 12, 14, 16, 17, 21 |
-| **A9** | **Declared defaults are resolved in the mapper and apply in both update modes.** A field the spec gives a default — `catalogType`, `updateMode`, `isActive`, `visibleTo`, an offer's `resourceIds` — is filled in before the merge runs, so an omitted one reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule | 11, 15, 17, 18, 21 |
+| **A9** | **Declared defaults are resolved before the merge runs and apply in both update modes.** The directive fields — `catalogType`, `updateMode`, `visibleTo` — are filled by `applyDirectiveDefaults` in `publishOne`, before the mapper runs; `catalog.isActive` and an offer's `resourceIds` are filled in the mapper when it builds the patch. Either way, an omitted field reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule | 11, 15, 17, 18, 21 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -265,7 +265,9 @@ src/app/                            COMPOSITION ROOT
 config/  migrations/  schemas/  .cache/beckn/
 tests/   acceptance/  dbtest/  testdata/
   architecture/boundary_test.go     import graph — the TRD §5 swap boundary
-documentations/  adr/  plans/  archive/
+docs/
+  adr/                               ADR-0001–0015, template, README
+  design/discover-and-publish.md    this document
 Makefile  Dockerfile  docker-compose.yml  sqlc.yaml  .golangci.yml
 ```
 
@@ -1392,10 +1394,11 @@ nothing else, because "remove this resource" and "clear this field" are one
 typo apart and only one of them is recoverable.
 
 **Declared defaults are resolved first, and they do not care which mode this
-is (A9).** Before anything is merged, the mapper fills every field the spec
-gives a default. The publisher contract is then one sentence — *a default means
-the default, always* — rather than a sentence that has to name the update mode
-to be true.
+is (A9).** Before anything is merged, every field the spec gives a default is
+filled — the directive fields (`catalogType`, `updateMode`, `visibleTo`) in
+`publishOne`, `isActive` and an offer's `resourceIds` in the mapper. The
+publisher contract is then one sentence — *a default means the default,
+always* — rather than a sentence that has to name the update mode to be true.
 
 | Field | Default | Absent under MERGE means |
 |---|---|---|
@@ -3019,16 +3022,20 @@ precedes `Signature`).
   caller; the trace goes to the log.
 - `RateLimit` (A4): per-caller token bucket keyed by subscriber id, falling back
   to remote IP. Evicts idle buckets so the map is not a leak.
-- `Trace` is a **no-op pass-through here** — it exists so Task 20 can wire the
-  full fixed chain, including `Trace`'s position, before Task 23 gives it a
-  body. Task 23 replaces the inside of this function with `otelhttp`
-  instrumentation; its exported signature does not change, so nothing built
-  against the chain in Task 20 needs to change when Task 23 lands.
+- `Trace` is a **no-op pass-through here**, but not side-effect-free: before
+  calling the next handler it stamps a response header,
+  `X-Beckn-Trace-Seen: 1`, purely so Task 20's chain-order test has something
+  to observe at `Trace`'s slot — a pass-through with no marker would be the one
+  link in the chain no order test could place. Task 23 replaces the inside of
+  this function with `otelhttp` instrumentation and drops the marker header;
+  `Trace`'s exported signature does not change, so nothing built against the
+  chain in Task 20 needs to change when Task 23 lands.
 
 **Tests pin:** a panic below `Recover` yields 500 with no stack in the body;
 burst+1 requests from one caller yields `429`; two different callers do not
-share a bucket; `Trace` passes the request through unmodified (it has no
-behaviour to test yet — Task 23 pins that).
+share a bucket; `Trace` passes the request through unmodified except for the
+`X-Beckn-Trace-Seen: 1` marker (no other behaviour to test yet — Task 23 pins
+the real span).
 
 ---
 
@@ -3140,10 +3147,12 @@ CatalogPatch{ID, NetworkID string,
     # distinction into the difference between keeping a publisher's data and
     # deleting it.
     #
-    # Active and VisibleTo are deliberately NOT pointers (A9). A declared
-    # default is resolved in the mapper, so by the time the merge runs there is
-    # no absence left to represent — and a pointer that can never be nil is an
-    # invitation to write the branch that makes it nil.
+    # Active and VisibleTo are deliberately NOT pointers (A9). Active's default
+    # is resolved here, in the mapper; VisibleTo arrives already resolved from
+    # publishOne's applyDirectiveDefaults, and the mapper only copies it.
+    # Either way, by the time the merge runs there is no absence left to
+    # represent — and a pointer that can never be nil is an invitation to
+    # write the branch that makes it nil.
 
 ResourcePatch{ID string,
               Descriptor json.RawMessage,     # nil = absent, `null` = delete
@@ -3822,7 +3831,7 @@ Flow is the pseudocode in [Publish](#publish--how-it-works).
 **Tests pin:** a MASTER catalog beside a REGULAR one produces two verdicts in
 one response and lands the regular one; the HTTP status is 200 even when every
 catalog is REJECTED; a validation failure stores nothing; a directive-less
-catalog is treated as **MERGE**, not FULL — `defaultDirective` is the only thing
+catalog is treated as **MERGE**, not FULL — `applyDirectiveDefaults` is the only thing
 standing between an omitted `publishDirectives` and a republish that deletes
 every resource the payload did not mention (A8). One route test: `POST /publish`
 is the mount, and `POST /catalog/publish` is a `404` — the action lives in the
@@ -3883,7 +3892,10 @@ all off this page.
 - `DATABASE_AUTO_MIGRATE` applies embedded migrations at boot.
 
 **Tests pin:** the middleware chain is in the specified order (asserted by
-observing side effects, not by reading a slice); `/healthz` answers with the
+observing side effects, not by reading a slice — including `Trace`'s
+position: its `X-Beckn-Trace-Seen: 1` marker is confirmed present even on a
+response where `Recover` has caught a panic, which is what proves `Trace`
+wraps `Recover` rather than the reverse); `/healthz` answers with the
 database down and `/readyz` does not; shutdown completes an in-flight request.
 
 ---
@@ -3912,11 +3924,18 @@ job would be a slower and much later version of.
 
 ### Task 22 — Structured Attribute Filtering
 
-**Files:** `src/discover/filter_parser.go`, `src/storage/postgres/jsonpath.go`
+**Files:** `src/platform/jsonpath/subset.go`, `src/discover/filter_parser.go`,
+`src/storage/postgres/jsonpath.go`
 
-Validate the caller's expression, **rebase** it from the response-document root
-onto the stored column, and evaluate it with the `@?` operator. The mechanics,
-and which predicates the GIN index can actually serve, are in
+`src/platform/jsonpath/subset.go` validates the caller's expression against the
+accepted grammar and **rebases** it from the response-document root onto the
+stored column — backend-agnostic, beside `Canonicalise`, because the accepted
+grammar must not move if the backend does ([Data Model](#data-model), Grammar
+leak). `src/discover/filter_parser.go` calls it to turn the wire expression
+into a `SearchQuery` filter value; `src/storage/postgres/jsonpath.go` only
+casts and evaluates the already-validated, already-rebased expression with
+`@filter::jsonpath` and the `@?` operator. The mechanics, and which predicates
+the GIN index can actually serve, are in
 [Attribute filters](#attribute-filters--what-postgresql-can-and-cannot-do).
 
 **This is not a translation (C10).** Only PostgreSQL SQL/JSON path is executed
@@ -3956,7 +3975,9 @@ Modify: `src/platform/middlewares/trace.go`
 - `otelhttp` on the server, W3C Trace Context propagated **in and out** — a
   correlation id that stops at the process boundary satisfies the letter of
   "logged" and none of the point (TRD §6). This replaces Task 8's no-op
-  `Trace` middleware body; the chain Task 20 wired and tested does not move.
+  `Trace` middleware body — including dropping the `X-Beckn-Trace-Seen: 1`
+  marker Task 8 added only so Task 20's order test had something to observe —
+  and the chain Task 20 wired and tested does not move.
 - OTLP exporter configured by `OTEL_*`, defaulting to `none` so a deployment
   with no collector still starts.
 - `search_degraded_modes` and `embedding_duration_ms` become metrics rather than
