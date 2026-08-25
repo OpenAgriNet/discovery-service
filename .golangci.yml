@@ -10,6 +10,7 @@ linters:
   default: none
   enable:
     - errcheck
+    - forbidigo
     - gosec
     - govet
     - revive
@@ -19,6 +20,24 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: true
+
+    forbidigo:
+      # The Logging constraint, as a build failure rather than a review habit.
+      # Sugar() and zap.Any both take any: the field names stop being greppable
+      # and whatever a value's %v prints goes to the log, which is how a
+      # connection string with a password in it reaches a log line nobody
+      # audited. The typed constructors in src/platform/logger are the way to
+      # add a field.
+      #
+      # No carve-out for _test.go. The rule is about the request path, but a
+      # helper a test shares with it is on the request path, and the cost of
+      # the strict form is one nolint with a reason on a startup line that
+      # genuinely wants Sugar.
+      forbid:
+        - pattern: '\.Sugar\b'
+          msg: use the typed zap fields in src/platform/logger; Sugar() is banned on the request path
+        - pattern: '\bzap\.Any\b'
+          msg: zap.Any defeats typed fields and prints whatever it is given; use a typed field constructor
 
     govet:
       enable-all: true
