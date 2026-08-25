@@ -3249,6 +3249,26 @@ allowlisted deviations and no others.
 - **The single writer.** A second place that serialises a NACK is a review
   rejection.
 - A4: `AUT_RATE_LIMITED` → `429` + `Retry-After`.
+- **Settle the code families against the enum before writing the
+  constructors.** This section was written assuming `SPT_` and `DOM_` are
+  families the spec admits. Verified against the pinned fixture, neither is:
+  `ErrorCode` has 76 members across exactly `CTX_`, `NET_`, `AUT_`, `SCH_`,
+  `POL_` and `BIZ_`. `SPT_` appears nowhere in the document; `DOM_` appears
+  only in the prose of `Error.code`'s own description, with zero enum members
+  behind it. Six codes this plan spends are absent from the enum:
+  `SCH_DUPLICATE_CATALOG_ID`, `SCH_INVALID_GEOMETRY`, `SPT_UNSUPPORTED_OPERATOR`,
+  `BIZ_CAPABILITY_UNAVAILABLE`, `CTX_UNKNOWN_ACTION` and `CTX_INVALID_ENVELOPE`.
+
+  What makes this a decision rather than a bug: `Error.code` is declared
+  `type: string`, **not** `$ref: ErrorCode`. The enum constraint is prose —
+  "MUST be a value from the ErrorCode enum schema" — so L1 validation will not
+  reject a code that is not in it, and neither will the conformance walk, which
+  compares property names. Nothing fails loudly either way, which is exactly
+  why it has to be chosen on purpose: either map the six onto enum members that
+  already exist and lose some precision in the message, or keep them and record
+  here that this service treats `code` as open, with the prose it is departing
+  from quoted. Whichever is chosen, `SPT_` and `DOM_` in the Produces line and
+  the Tests pin below change with it.
 
 **Tests pin:** every code prefix maps to the right `error_type`, `DOM_`
 included; three faults produce a `cause` chain three levels deep and lose none;

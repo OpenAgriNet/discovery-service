@@ -64,7 +64,7 @@ summarize what you built — don't continue to the next task until I say go.
 | 2 | Configuration & Feature Flags | |
 | 3 | Structured Logging | |
 | 4 | Beckn Wire Types & Envelope Parsing | |
-| 5 | Error Model & Response Writer | |
+| 5 | Error Model & Response Writer | **Read the task's code-families bullet first.** `SPT_` is not a prefix the spec has and `DOM_` has no enum members; six codes this plan spends are absent from `ErrorCode`. `Error.code` is a bare `type: string`, so nothing fails loudly — the families have to be settled deliberately before the constructors are written |
 | 6 | Ed25519 Signature Primitives | *Deferred, but built* — implement the primitive now, but `AUTH_ENABLE_SIGNATURE_VERIFICATION` stays `false`. Don't wire it live ahead of schedule |
 | 7 | Signature & Envelope Middleware | |
 | 8 | Request Logger & Rate Limit Middleware | Also builds `Trace` as a **no-op pass-through** that stamps `X-Beckn-Trace-Seen: 1` — the marker exists purely so Task 20's order test can observe `Trace`'s position before Task 23 gives it a real body |
@@ -83,6 +83,16 @@ summarize what you built — don't continue to the next task until I say go.
 | 21 | End-to-End Acceptance Suite | The 35 scenarios in the doc's Scenarios section get pinned here, over real HTTP against a real Postgres — this is the integration/e2e layer, not unit tests. Covers publish and discover each in their own `_test.go` file, plus offers, validity, performance, defaults, geopath and spatial-operator groups. Runs against **Postgres only** — memory-backend parity is `storage/conformance`'s job (Tasks 11/12/15/16), not this suite's |
 | 22 | Structured Attribute Filtering | *Phase 1, per the doc's Open Items table* — do not skip unless you've deliberately decided to push it to Phase 2. Validation + rebase live in `src/platform/jsonpath/subset.go` (backend-agnostic, beside `Canonicalise`); `storage/postgres/jsonpath.go` only casts/executes the already-accepted expression |
 | 23 | OpenTelemetry Tracing & Metrics | Replaces Task 8's no-op `Trace` body with real `otelhttp` instrumentation and drops the `X-Beckn-Trace-Seen` marker — the chain itself doesn't move |
+
+---
+
+## Carried chores
+
+Not tied to a task — pick one up whenever its area is already open.
+
+| Chore | Why it is still here |
+|---|---|
+| Reword `a4b970e`, `5646909`, `af3c84d`, `71e36c5` to carry `[#11]`; `71e36c5` also needs the colon after `fix` and cites an amendment "A18" that does not exist | The issue tag is what makes `git log --grep="#11"` answer honestly, and four plan-design commits currently fall out of it. All four are already on `origin`, so this needs `git push --force-with-lease` and is the human's call, not an agent's |
 
 ---
 
