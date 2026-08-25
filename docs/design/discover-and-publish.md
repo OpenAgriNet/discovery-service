@@ -59,7 +59,7 @@ Every task inherits these.
 | DI | Explicit constructors only. `dig` / `wire` / reflection containers prohibited (D3) |
 | Logging | zap JSON, typed field constructors. Never `zap.Any` or `Sugar()` on the request path |
 | SQL | Always parameterised. String-concatenated SQL prohibited. JSONPath expressions never interpolated |
-| Naming | A config key, constant or column names **what it bounds and in what unit** — not merely that it is a bound. `MaxCandidatesPerMode`, not `CandidatesPerMode`; `CoarseCoverThresholdM`, with the `M` for metres. Two names that differ only by which side of the system they serve must say which side: `MaxQueryCoverCells` and `MaxIndexCoverCells`, `target_path` and `source_path`. A reader who has to open the table to tell a pair apart will eventually pick the wrong one |
+| Naming | A config key, constant or column names **what it bounds and in what unit** — not merely that it is a bound. `MaxCandidatesPerMode`, not `CandidatesPerMode`; `MaxRadiusMeters`, with the unit in the name. Two names that differ only by which side of the system they serve must say which side: `MaxQueryCoverCells` and `MaxIndexCoverCells`, `target_path` and `source_path`. A reader who has to open the table to tell a pair apart will eventually pick the wrong one |
 | Flags | `VALIDATION_ENABLE_L1_SCHEMA=true`, `VALIDATION_ENABLE_L2_CONTEXT=true`, `AUTH_ENABLE_SIGNATURE_VERIFICATION=false` (deferred; seam ships) |
 | Commits | Conventional commits, one per task step marked *Commit* |
 
@@ -115,6 +115,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A6** | Retrieval splits into one `Retriever` per mode plus a `Hydrator`; query scope becomes a value, not a hidden global | 1, 2, 11, 16, 20 |
 | **A7** | Publish gains a write fan-out seam and a reconciliation queue. The `pending_targets` **column** is dropped — it was written on every resource and read by nothing, so it was debt recorded in the hot table. The seam survives in `Retriever`/`Hydrator` and the fan-out interface; a queue table arrives with the second store that needs one | 1, 2, 15, 16, 18, 20 |
 | **A8** | `updateMode` becomes a **content** rule, not only a row-set rule. **MERGE** is RFC 7396 JSON Merge Patch against the stored documents — an absent key keeps its stored value, an explicit `null` deletes it, an array replaces wholesale — with `resources` and `offers` matched by `id` rather than by array position. **FULL** replaces the catalog outright, its own columns included: omissions reset to defaults, and resources and offers the payload omits are deleted. Publish therefore becomes read-modify-write under a row lock, and every derived column is computed **after** the merge | 11, 15, 17, 18, 21 |
+| **A10** | **Spatial search is answered as cell-set algebra, not as a prefilter in front of an exact stage.** Every geometry stores two H3 covers — `CONTAINMENT_FULL` (a guaranteed subset, which proves positives) and `CONTAINMENT_OVERLAPPING` (a guaranteed superset, which proves negatives) — and each CQL2 operator becomes an array predicate over the pair. **Seven of the nine operators are answered** where the previous design answered `S_DWITHIN` alone; `S_TOUCHES` and `S_CROSSES` are refused as unapproximable at any resolution rather than deferred. All seven RFC 7946 types work on **both** sides of the constraint, so the Point-only limit and the `NONE`-inversion it caused are gone. The costs are accuracy of one cell (~1.1 km at r8), oversize geometries decided by bounding box, and no path to cadastral precision without PostGIS | 11, 12, 14, 16, 17, 21 |
 | **A9** | **Declared defaults are resolved in the mapper and apply in both update modes.** A field the spec gives a default — `catalogType`, `updateMode`, `isActive`, `visibleTo`, an offer's `resourceIds` — is filled in before the merge runs, so an omitted one reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule | 11, 15, 17, 18, 21 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
@@ -134,7 +135,7 @@ implementation is a guess; one with a conformance test is a contract.
 | **T4** | §8 Supply chain | `govulncheck` + Trivy image scan failing on HIGH/CRITICAL in CI | 1 |
 | **T5** | §2, §9 | ADR-0012 names which interfaces are promises and which are internal. ADR-0013 records the protocol-version-coexistence shape (version-keyed `SpecIndex`, accepted-versions set, response echoes request version) without building it | 1 |
 | **T6** | all | An explicit statement of what this service does not own — below | — |
-| **T7** | §5 Not tied to one database | Three swaps at three costs: vector store and geo index are one `Retriever` each; metadata and transactions are one package under `src/storage/` plus one line in `container.go`. Enforced by `boundary_test.go` over the import graph, admitted by `conformance/`, not by review. YugabyteDB is reachable on those terms — it is not free, and the plan names which parts are not | 11, 14, 16, 20 |
+| **T7** | §5 Not tied to one database | Three swaps at three costs: vector store and geo index are one `Retriever` each; metadata and transactions are one package under `src/storage/` plus one line in `container.go`. Enforced by `boundary_test.go` over the import graph, admitted by `conformance/`, not by review. YugabyteDB is reachable on those terms — it is not free, and the plan names which parts are not. The geo swap is the cheapest of the three **because** the spatial layer is cell-set algebra (A10): the predicates are array overlap and containment, which Elasticsearch `terms` and Redis sets answer natively. Choosing PostGIS would have made it the most expensive | 11, 12, 14, 16, 20 |
 
 ---
 
@@ -171,8 +172,8 @@ Two sit on the boundary and are called out rather than dismissed:
 | Signature verification | Phase 2; the key registry is another team's | Crypto + middleware slot + `Keyring` seam, flag off |
 | Publish-time embedding (A5) | 15–40 ms of inference on the write path for one mode of four | `noop` provider; nullable `embedding` column doubles as the backfill queue |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
-| JSONPath attribute filtering (Task 22) | The expression must be validated and rebased onto the stored column before it can run, and a half-correct rebase is worse than none. It is **not** a translation: only PostgreSQL SQL/JSON path is accepted (C10) | Columns + GIN indexes ship now on both `resources.attributes` and `offers.offer`; `filters` reports `structured` in `Degraded` |
-| Exact geo for non-Point geometries | See [Geospatial Design](#geospatial-design) | All seven types stored and cell-indexed now; exact predicate answers Point. No migration when the rest land |
+| Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
+| `S_TOUCHES` and `S_CROSSES` | **Not deferred — refused.** A cell decomposition has no measure-zero boundary, so no resolution answers them. Listing them as "later" would be a promise nothing in this design can keep | `400` + `SPT_UNSUPPORTED_OPERATOR`, naming the operator |
 
 ---
 
@@ -186,7 +187,7 @@ Recorded as ADRs in `documentations/adr/`.
 | D2 | Data access | sqlc + pgx/v5 (MIT) | GORM | GORM resolves columns by reflection at runtime; a renamed column fails in production. sqlc fails at `make build` |
 | D3 | DI | explicit constructors | `dig` | A missing provider must fail at compile time, not panic at startup |
 | D4 | L1 validation | kin-openapi (MIT) | hand-rolled | The published `beckn.yaml` *is* the validator |
-| D5 | Spatial index | uber/h3-go v4 (Apache-2.0) | PostGIS | H3 cells are plain `bigint`s — btree/GIN-indexable, shardable, portable to Elasticsearch or Redis without rewriting the query. PostGIS binds the spatial layer to Postgres. Exact distance is a plain SQL expression, so no spatial extension is installed at all |
+| D5 | Spatial index | uber/h3-go v4 (Apache-2.0) | PostGIS | H3 cells are plain `bigint`s — GIN-indexable, shardable, portable to Elasticsearch or Redis without rewriting the query. Two covers per geometry (`CONTAINMENT_FULL` and `CONTAINMENT_OVERLAPPING`) turn the CQL2 operators into **set algebra**, so seven of the nine are answered with array operators and no spatial extension is installed at all. The cost is stated rather than elided: accuracy is one cell, `S_TOUCHES` and `S_CROSSES` are refused as unapproximable, and cadastral precision would require PostGIS — see [Geospatial Design](#geospatial-design) |
 | D6 | Vector store | pgvector 0.8 + HNSW, cosine | Qdrant, OpenSearch | Single-node deployment; swappable behind `Retriever` alone (A6) — that is the **vector** store only. What the other two swaps cost is in [Data Model](#data-model), because "swappable" unqualified reads as a claim about the metadata store too |
 | D7 | Lexical | PostgreSQL FTS (`tsvector` + GIN) | Elasticsearch | No extra infrastructure for v1; fused with vectors by RRF |
 | D8 | Embeddings | `Embedder` interface — `noop` default (A5), `hashing` in CI, `ollama` when enabled | OpenAI, Cohere | Self-hosted keeps the DPG mandate |
@@ -662,28 +663,44 @@ CREATE TABLE resource_geometries (
     -- for addresses in the hole. Keeping the original costs one JSONB column.
     geojson       JSONB NOT NULL,
 
-    -- H3 cover at two resolutions, ContainmentOverlapping: a guaranteed
-    -- superset, which is what a prefilter must be to never lose a row.
-    -- r8 (~530 m edge) serves radii to 20 km; r5 (~9,850 m) above that.
+    -- The two covers the CQL2 operator set is answered from, both at
+    -- `ResolutionCells`. See [Geospatial Design](#geospatial-design) — the
+    -- invariant is `cells_full ⊆ the true geometry ⊆ cells_cover`, and it is
+    -- the reason there are two columns rather than one.
     --
-    -- Nullable, and NULL is load-bearing: it means "too large to cover inside
-    -- geo.MaxIndexCoverCells", not "covers nothing". The discover predicate ORs
-    -- `IS NULL` so such a row skips the cell stage and is decided by the box
-    -- and the exact test. A truncated array instead would make a state-sized
-    -- service polygon undiscoverable outside whichever corner the fill reached.
-    cells_r8      BIGINT[],
-    cells_r5      BIGINT[],
+    -- ContainmentFull: cells lying ENTIRELY inside the geometry. A guaranteed
+    -- SUBSET, and therefore the only column that can prove a positive. Empty
+    -- for every Point and LineString and for any polygon smaller than a cell —
+    -- correctly, since none of them contains a cell.
+    cells_full    BIGINT[],
 
-    -- No `cells_in_r8`. A ContainmentFull cover — the guaranteed subset that
-    -- lets a later phase answer "definitely inside" from the index alone — was
-    -- here as an always-NULL array, on the reasoning that adding it later
-    -- would cost a migration. It would not: `ALTER TABLE ADD COLUMN` with no
-    -- default is instant in PostgreSQL 11+, which is the same argument that
-    -- removed `catalog_type` from `catalogs`. A column no code writes is not
-    -- preparation, it is a comment with storage overhead.
+    -- ContainmentOverlapping: cells touching the geometry at all. A guaranteed
+    -- SUPERSET, and therefore the only column that can prove a negative.
+    cells_cover   BIGINT[],
+
+    -- Both arrays are stored ASCENDING and DEDUPLICATED, and the writer is the
+    -- only place that can guarantee it. `&&` and `<@` do not care, but
+    -- `S_EQUALS` compares with array `=`, which in PostgreSQL is element-wise
+    -- IN ORDER: two identical cell sets emitted by H3 in different orders
+    -- compare unequal. That is a false negative on the one operator whose
+    -- stated property is that it has none. Query covers are sorted the same
+    -- way, in `geo.CoverQuery`, for the same reason.
+
+    -- Both nullable together, and NULL is load-bearing: it means "over
+    -- geo.MaxIndexCoverCells", not "covers nothing". Such a row is decided by
+    -- the bounding box alone and is always MAYBE inside it. A truncated array
+    -- instead would make a state-sized service polygon undiscoverable outside
+    -- whichever corner the fill happened to reach.
+    --
+    -- They are NULL as a pair, never one without the other: a row holding a
+    -- `cells_full` with no `cells_cover` would prove positives it cannot
+    -- bound, and the predicate has no branch for that state because the
+    -- writer cannot produce it.
 
     -- NOT NULL: a row exists only because a geometry parsed, and a geometry
-    -- that parsed has a box.
+    -- that parsed has a box. Load-bearing in a way it was not when the box was
+    -- merely a second filtering stage — for an oversize row (both cell columns
+    -- NULL) this box is the ENTIRE predicate.
     min_lat DOUBLE PRECISION NOT NULL,
     max_lat DOUBLE PRECISION NOT NULL,
     min_lon DOUBLE PRECISION NOT NULL,
@@ -712,16 +729,25 @@ CREATE TABLE resource_geometries (
 CREATE UNIQUE INDEX uq_resource_geometries
     ON resource_geometries (catalog_id, COALESCE(resource_id, ''), source_path);
 
--- Stage 1: "share any cell with this cover" as an index scan.
+-- The operator predicates are array overlap (`&&`) and containment (`<@`,
+-- `@>`), which is precisely what GIN's array_ops answers.
+--
 -- fastupdate = off for the reason spelled out on idx_resources_visible_to in
 -- Migration 003: a pending list is scanned by every search and flushed by none
--- of them. These two carry it worst — a cover is up to MaxIndexCoverCells entries
--- for ONE geometry, so a single republish can bloat the list far past anything
--- a scalar column would.
-CREATE INDEX idx_rg_cells_r8 ON resource_geometries USING GIN (cells_r8)
+-- of them. These two carry it worst — a cover is up to MaxIndexCoverCells
+-- entries for ONE geometry, so a single republish can bloat the list far past
+-- anything a scalar column would.
+CREATE INDEX idx_rg_cells_full ON resource_geometries USING GIN (cells_full)
     WITH (fastupdate = off);
-CREATE INDEX idx_rg_cells_r5 ON resource_geometries USING GIN (cells_r5)
+CREATE INDEX idx_rg_cells_cover ON resource_geometries USING GIN (cells_cover)
     WITH (fastupdate = off);
+
+-- A note on `<@` for the reader who checks: GIN supports contained-by, but
+-- PostgreSQL estimates its selectivity poorly, and `S_WITHIN`/`S_CONTAINS` are
+-- built on it. Both predicates are correlated inside an EXISTS already scoped
+-- to one catalog_id, so the row count reaching them is small whatever the
+-- planner believes. Task 16's EXPLAIN assertions cover the operators, not just
+-- the overlap case, for exactly this reason.
 
 -- The cascade delete and the per-resource rewrite.
 CREATE INDEX idx_rg_catalog_resource ON resource_geometries (catalog_id, resource_id);
@@ -738,9 +764,11 @@ CREATE INDEX idx_rg_catalog_target_path
 -- A bounding-box overlap is `max_lat >= $1 AND min_lat <= $2` — two open-ended
 -- ranges. A btree leading with min_lat can only range-scan on the first column,
 -- so it reads up to half the table before max_lat can help; btrees do not do
--- overlap, which is what GiST exists for. Stage 1 has already narrowed to a
--- handful of rows by then, so stage 2 is a cheap FILTER on those rows and wants
--- no index at all.
+-- overlap, which is what GiST exists for. The box is evaluated inside an EXISTS
+-- already correlated to one catalog_id, so it is a cheap FILTER over that
+-- catalog's geometry rows and wants no index of its own — including for the
+-- oversize rows where it is the only predicate, because there are few of them
+-- and they are reached through the same correlation.
 ```
 
 ### Migration 005 — SQL functions
@@ -771,12 +799,19 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT AS $$
     )));
 $$;
 
--- Distance to one stored geometry. Point in Phase 1, NULL for the other six —
--- NULL fails `<= radius`, so a Polygon survives the cell prefilter and is then
--- excluded here. Under ANY that is a miss, not a wrong hit — the honest
--- direction. Under NONE it INVERTS: the same NULL satisfies NOT EXISTS, and a
--- Polygon sitting inside the radius comes back from a "nowhere near here"
--- query. Scenario 16 asserts both halves.
+-- Distance to one stored Point, and ONLY a stored Point. Every geometry type
+-- including this one is decided by the cell algebra in
+-- [Geospatial Design](#geospatial-design); this function exists to SHARPEN the
+-- single commonest case — `S_DWITHIN` from a Point to a stored Point — from
+-- cell accuracy (~1.1 km at r8) to exact.
+--
+-- It returns NULL for the other six types, and the call site guards on
+-- `geom->>'type' = 'Point'` so that NULL is never compared. The guard is not
+-- belt-and-braces: an unguarded `NULL <= radius` is UNKNOWN, which fails inside
+-- EXISTS and SUCCEEDS inside NOT EXISTS, and that asymmetry is what previously
+-- returned a Polygon lying inside the radius from a "nowhere near here" query.
+-- The function keeps returning NULL because that is honest; the predicate is
+-- what must never ask.
 --
 -- GeoJSON is [longitude, latitude]: index 0 is lon, index 1 is lat, the reverse
 -- of every argument list in this file. Swapping them puts Bengaluru (12.97,
@@ -956,11 +991,11 @@ UPDATE offers o
 
 | Mode | Predicate | Index | Phase |
 |---|---|---|---|
-| Geospatial | cell overlap → bbox → `geo_distance_m(...) <= radius` | `GIN(cells_r8)`, `GIN(cells_r5)` | 1 |
+| Geospatial | bbox → CQL2 operator as cell-set algebra (+ exact haversine for Point↔Point `S_DWITHIN`) | `GIN(cells_full)`, `GIN(cells_cover)` | 1 |
 | Lexical | `search_tsv @@ discover_tsquery($q)` | `GIN(search_tsv) WHERE active` | 1 |
 | Fuzzy | `name % $q` | `GIN(name gin_trgm_ops) WHERE active` | 1 |
-| Semantic | `embedding <=> $vec` | `HNSW(embedding vector_cosine_ops)` | 2 (A5) |
-| Structured | `attributes @? $path` (the operator — the function form is not indexed) | `GIN(attributes jsonb_path_ops)` | 2 (Task 22) |
+| Semantic | `embedding <=> $vec` | `HNSW(embedding vector_cosine_ops)` | 2 (A5) — the one mode still deferred |
+| Structured | `attributes @? $path` (the operator — the function form is not indexed) | `GIN(attributes jsonb_path_ops)` | 1 |
 | Schema | `(schema_context, schema_type)` pairs, OR-ed | `btree(schema_context, schema_type) WHERE active` | 1 |
 
 The ranked modes are fused by Reciprocal Rank Fusion. **Geo is a pure
@@ -1265,8 +1300,12 @@ derive — a domain.DeriveFunc (merged domain.Catalog, touched []string)
     # re-derives the same rows, which is what makes the unconditional geometry
     # replacement in UpsertCatalog idempotent.
     found, faults ← extractGeometries(i, merged)
-    merged.Geometries                 ← found where ResourceID is nil
-    merged.Resources[k].Geometries    ← found where ResourceID == that id
+    merged.Geometries                 ← found where Owners is empty
+    merged.Resources[k].Geometries    ← found where k ∈ Owners
+    # `∈`, not `==`: one offer geometry covering three resources lands on all
+    # three, as three rows. The cover is computed once per geometry below and
+    # the cells are copied, because H3 fills are the expensive half and the
+    # answer does not depend on who owns it.
 
     for each resource in merged.Resources where id ∈ touched:
         resource.SearchText ← deriveSearchText(resource)            # Task 13
@@ -1459,11 +1498,14 @@ repo.UpsertCatalog(ctx, patch, updateMode, derive):
     for each geometry in merged.Geometries:          # the MERGED provider
         cover ← geo.CoverGeometry(geometry)           # over budget → NULL cells
         insert resource_geometries (catalog_id, resource_id ← NULL,
-               target_path, source_path, geojson, cells_r8, cells_r5, bbox…)
+               target_path, source_path, geojson,
+               cells_full, cells_cover, bbox…)
         # Two H3 fills per geometry, not three: there is no ContainmentFull
         # cover to write, because there is no column to write it to.
 
     for each resource in merged.Resources where id ∈ touched:
+        # `touched` includes resources named only by a patched offer — see
+        # MergeCatalog. This loop is where an offer's geometry gets written.
         write the WHOLE row, INCLUDING the gate columns
         # Whole-row in both modes: the merge already happened, up in `merged`.
         # A second, partial UPDATE here would be a second implementation of
@@ -1566,8 +1608,8 @@ UPDATE` — cannot carry this table's array columns. PostgreSQL has no true
 array-of-arrays, so `unnest` on a `text[][]` flattens it completely rather than
 yielding one `text[]` per row: `visible_to` would arrive as one undifferentiated
 stream of network ids, silently, on the column whose wrong value is the fail-safe
-two paragraphs up. `resource_geometries.cells_r8` and `cells_r5` have the same
-shape. `unnest` would work only via a `jsonb_to_recordset` detour, which is more
+two paragraphs up. `resource_geometries.cells_full` and `cells_cover` have the
+same shape. `unnest` would work only via a `jsonb_to_recordset` detour, which is more
 machinery than `pgx.Batch` for the same number of round trips and one more place
 for a type to drift.
 
@@ -1592,6 +1634,32 @@ every geometry on the resource.
 
 This mapper is **structural, not name-based**:
 
+**An offer's geometry belongs to the offer's `resourceIds`, not to the whole
+catalog.** `Offer.resourceIds` is "references (IDs) to resources covered by this
+offer", and an offer's `provider.availableAt` is where *those* resources are
+sold. A shopfront attached to one SKU's offer is not a statement about the other
+thirty-nine resources in the catalog, so it must not be stored as one. Emitting
+one `resource_geometries` row per referenced id costs nothing the unique index
+does not already allow — it keys on `(catalog_id, COALESCE(resource_id, ''),
+source_path)`, so the same `source_path` under two owners is two legal rows —
+and it makes the geometry disappear from resources the offer never covered.
+
+**An offer with no `resourceIds`, or an empty one, is catalog-level.** That is
+not a special case invented here: `offers.resource_ids` already means
+CATALOG-WIDE when empty, in the hydration query and in Migration 006, and an
+offer that covers the provider's whole inventory should have its location
+searchable against all of it. One rule, two tables.
+
+Dangling ids need no rule of their own, and the reason is worth stating because
+the ordering looks wrong at first glance. Extraction runs *before* the check
+that faults an offer naming a resource this catalog does not have, so a geometry
+can be attributed to an id that resolves to nothing. It is then written nowhere:
+the insert loop iterates `merged.Resources`, and an id naming no resource is an
+iteration that never happens. The typo is still reported — as the named PARTIAL
+that check raises — and the geometry is dropped rather than stored against a
+resource that does not exist. Attributing to a bad id costs a row that is never
+inserted, not a row that is wrong.
+
 **A geo filter must work on ANY geo path, so the walker finds geometry
 anywhere in the document — not at one well-known field.** `targets` is a
 JSONPath, and a JSONPath that can only ever name one location is a constant with
@@ -1604,11 +1672,11 @@ answers.
 extractGeometries(catalogIndex, catalog) → []domain.Geometry, []domain.Fault:
     out, faults ← [], []
 
-    walk(catalog, path: "$.catalogs[{catalogIndex}]", depth: 0, owner: nil)
+    walk(catalog, path: "$.catalogs[{catalogIndex}]", depth: 0, owners: nil)
     return out, faults
 
 
-walk(node, path, depth, owner):
+walk(node, path, depth, owners):
     if depth > MaxCatalogWalkDepth: return          # a bound, not a hope — see below
 
     # ---- is this node itself a geometry? ---------------------------------
@@ -1622,7 +1690,7 @@ walk(node, path, depth, owner):
             out += Geometry{
                 TargetPath: jsonpath.Canonicalise(wildcard(path)),
                 SourcePath: jsonpath.Canonicalise(path),
-                ResourceID:   owner,        # nil ⇒ catalog-level
+                Owners:       owners,       # empty ⇒ catalog-level
                 Type:         node.type,
                 GeoJSON:      node verbatim,
             }
@@ -1630,17 +1698,19 @@ walk(node, path, depth, owner):
                         # are PART of this geometry, not separate finds.
 
     # ---- otherwise, descend ----------------------------------------------
+    # Ownership is decided at the array ELEMENT and then carried down
+    # unchanged. Both of the catalog's keyed collections name their resources
+    # there and nowhere else, so this is the only place that has to know.
     if node is an object:
         for key, child in node:
-            next ← owner
-            if path == "$.catalogs[{catalogIndex}]" and key == "resources":
-                next ← "the resource this branch is under"   # set on the index
-            walk(child, path + "['{key}']", depth+1, next)
+            walk(child, path + "['{key}']", depth+1, owners)
 
     if node is an array:
         for i, child in node:
-            walk(child, path + "[{i}]", depth+1,
-                 owner or (child.id if this array IS catalog.resources))
+            next ← owners
+            if this array IS catalog.resources:  next ← [child.id]
+            if this array IS catalog.offers:     next ← child.resourceIds
+            walk(child, path + "[{i}]", depth+1, next)
 
 
 looksLikeGeoJSON(node) → bool:
@@ -1705,7 +1775,7 @@ POST /discover
         "targets": "$.catalogs[*].provider.availableAt[*].geo",   // or an array
         "geometry": { "type": "Point", "coordinates": [77.5946, 12.9716] },
         "distanceMeters": 10000,
-        "quantifier": "ANY",          // ANY | NONE; omitted → ANY
+        "quantifier": "ANY",          // ANY | ALL | NONE; omitted → ANY
         "srid": "EPSG:4326"           // omitted → WGS84
       }],
       // Rooted at the response document; rebased onto the stored column
@@ -1804,35 +1874,56 @@ mapSchemaContext(reqContext) → []SchemaFilter, []domain.Fault:
 ```
 
 ```pseudo
-mapSpatial(constraints, config) → *ProximityFilter, []string targets, []domain.Fault:
+mapSpatial(constraints, config) → *SpatialFilter, []string targets, []domain.Fault:
     if len(constraints) == 0:  return nil, nil, nil
     if len(constraints) > 1:   fault("multiple spatial constraints unsupported")
 
     c ← constraints[0]
-    validate c.op == "S_DWITHIN"          # the only operator Phase 1 answers;
-                                          # any other is a fault, not a skip
+
+    # Seven of the nine CQL2 operators. S_TOUCHES and S_CROSSES are refused
+    # with SPT_UNSUPPORTED_OPERATOR — not "not yet", but "not approximable by
+    # a cell decomposition at any resolution" (see Geospatial Design). The
+    # message says which, because a caller deciding whether to wait for a later
+    # release needs to know it will never arrive.
+    validate c.op ∈ {S_INTERSECTS, S_DISJOINT, S_WITHIN, S_CONTAINS,
+                     S_OVERLAPS, S_EQUALS, S_DWITHIN}
     validate c.srid ∈ {"", "EPSG:4326", "urn:ogc:def:crs:OGC::CRS84", "CRS84"}
                                           else fault  (never ignore an SRID)
-    validate c.quantifier ∈ {"", "ANY", "NONE"}   # ALL is a fault — see below
-    validate c.geometry.type == "Point"   # Phase 1 query geometry
-    validate c.distanceMeters > 0 and <= config.Search.MaxRadiusMeters
+    validate c.quantifier ∈ {"", "ANY", "ALL", "NONE"}
+    validate c.geometry parses as any of the seven RFC 7946 types
+    if c.op == S_DWITHIN:
+        validate c.distanceMeters > 0 and <= config.Search.MaxRadiusMeters
+    else:
+        # `beckn.yaml` says distanceMeters is "Ignored for other ops". Ignored
+        # is what we do — but a caller who sent one believes it is filtering,
+        # so it is a PARTIAL naming the field rather than silence.
+        if c.distanceMeters is present: partial("distanceMeters ignored for " + c.op)
 
     targets ← jsonpath.Canonicalise(c.targets)      # the publish mapper's own
     if targets is empty after canonicalisation: fault("unrecognised targets")
 
-    return ProximityFilter{Center:  from geometry,
-                           RadiusM: c.distanceMeters,
-                           Negate:  c.quantifier == "NONE"},
+    full, cover ← geo.CoverQuery(c.geometry, c.op, c.distanceMeters)
+    bounds      ← geo.BoundsFor(c.geometry, c.op, c.distanceMeters)
+
+    return SpatialFilter{Op:        c.op,
+                         CellsFull: full, CellsCover: cover,
+                         Bounds:    bounds,
+                         # Populated only for Point↔Point S_DWITHIN, the one
+                         # shape the haversine refinement applies to.
+                         Center:    from geometry if Point and S_DWITHIN,
+                         RadiusM:   c.distanceMeters,
+                         Quantifier: c.quantifier},
            targets, nil
 ```
 
-**Quantifiers.** `ANY` (the default) means *at least one* targeted geometry is
-within the radius, and `NONE` means *not one of them is* — the two the funnel
-can answer honestly, because both are decided by whether a matching row exists.
-`ALL` is a fault, not a silent downgrade: proving every targeted geometry is
-inside the radius means visiting all of them, and a resource whose only indexed
-geometry is a non-Point is unprovable in Phase 1 (see the scope limit below), so
-`ALL` would quietly answer a weaker question than it was asked.
+**Quantifiers, all three.** `ANY` (the default) means *at least one* targeted
+geometry matches; `NONE` means *not one does*; `ALL` means *every one does*, and
+compiles to `NOT EXISTS (a targeted geometry that provably fails)`. `ALL` was a
+fault under the previous design and is answerable now for one reason: every
+geometry type is decidable, so "this one fails" is a claim the index can
+actually support. When a type could be proven neither way, `ALL` would have
+quietly answered a weaker question than it was asked — which is why it was
+refused rather than approximated.
 
 Every branch above is a **fault, not a skip**. The reference implementation
 skips constraints it cannot handle, which widens the result set: a caller who
@@ -1964,14 +2055,17 @@ therefore always applies; it is never treated as "no resources".
 **Offer validity is checked here and nowhere else.** The catalog's own validity
 does not cover it — a live catalog routinely carries last month's offer.
 
-### The geo predicate, as it appears in every query
+### The spatial predicate, as it appears in every query
+
+One `EXISTS` serves all seven answered operators. `@spatial_op` selects the
+branch, so the operators cannot drift apart in seven copies of a query.
 
 ```sql
 AND (
-  sqlc.narg('center_lat')::double precision IS NULL      -- no geo in the intent
+  sqlc.narg('spatial_op')::text IS NULL          -- no spatial in the intent
   -- `<>` on booleans is XOR: geo_negate=false gives EXISTS, true gives NOT
-  -- EXISTS. One query text serves both quantifiers, so ANY and NONE cannot
-  -- drift apart.
+  -- EXISTS. With @match_negate below, one query text serves all three
+  -- quantifiers.
   OR @geo_negate::boolean <> EXISTS (
     SELECT 1 FROM resource_geometries g
      WHERE g.catalog_id = r.catalog_id
@@ -1985,37 +2079,101 @@ AND (
        AND (sqlc.narg('target_paths')::text[] IS NULL
             OR g.target_path = ANY(sqlc.narg('target_paths')))
 
-       -- Stage 1: cell overlap. NULL cells mean "no complete cover exists",
-       -- not "covers nothing", so such a row falls through to stages 2 and 3.
-       AND (sqlc.narg('cells_r8')::bigint[] IS NULL
-            OR g.cells_r8 IS NULL OR g.cells_r8 && sqlc.narg('cells_r8'))
-       AND (sqlc.narg('cells_r5')::bigint[] IS NULL
-            OR g.cells_r5 IS NULL OR g.cells_r5 && sqlc.narg('cells_r5'))
+       -- Everything below is ONE boolean — "this geometry matches" — and
+       -- `@match_negate` XORs it. Three quantifiers out of two flags:
+       --   ANY  → geo_negate f, match_negate f →     EXISTS(matches)
+       --   NONE → geo_negate t, match_negate f → NOT EXISTS(matches)
+       --   ALL  → geo_negate t, match_negate t → NOT EXISTS(NOT matches)
+       -- ALL needs the INNER negation because "every targeted geometry
+       -- matches" is "not one of them provably fails" — a different question
+       -- from "not one of them matches", which is NONE. Two flags rather than
+       -- a three-valued parameter because each flag is one XOR at one place;
+       -- an enum would be a second CASE wrapping the first.
+       --
+       -- Every clause inside returns TRUE or FALSE and never NULL — which is
+       -- what makes the inner negation safe. Under `NOT`, a NULL stays NULL,
+       -- and a NULL is a miss under EXISTS: an operator that returned unknown
+       -- would silently satisfy ALL rather than failing it.
+       AND @match_negate::boolean <> (
 
-       -- Stage 2: bounding box. A FILTER, not an index scan — btrees cannot
-       -- do overlap, and stage 1 has already cut this to a handful of rows.
-       AND g.max_lat >= sqlc.narg('min_lat')::double precision
-       AND g.min_lat <= sqlc.narg('max_lat')::double precision
-       AND g.max_lon >= sqlc.narg('min_lon')::double precision
-       AND g.min_lon <= sqlc.narg('max_lon')::double precision
+              -- The bounding box. A cheap pre-rejection for indexed rows, and
+              -- the ONLY predicate for oversize ones. Skipped when the query
+              -- geometry declined a box (antimeridian, pole) — and skipped for
+              -- S_DISJOINT, the one operator a box cannot pre-reject for. Two
+              -- shapes whose boxes miss entirely ARE disjoint, so for that
+              -- operator non-overlap is the strongest possible match; ANDing
+              -- the box in would answer `S_DISJOINT` with only the rows near
+              -- the query, which is the exact complement of the truth.
+              (sqlc.narg('min_lat')::double precision IS NULL
+               OR @spatial_op::text = 'S_DISJOINT'
+               OR (    g.max_lat >= sqlc.narg('min_lat')::double precision
+                   AND g.min_lat <= sqlc.narg('max_lat')::double precision
+                   AND g.max_lon >= sqlc.narg('min_lon')::double precision
+                   AND g.min_lon <= sqlc.narg('max_lon')::double precision))
 
-       -- Stage 3: exact, and the only stage that decides.
-       AND geo_distance_m(g.geojson,
-                          sqlc.narg('center_lat')::double precision,
-                          sqlc.narg('center_lon')::double precision)
-           <= sqlc.narg('radius_m')::double precision
+              -- The operator, as set algebra. Each branch is the NEGATION of
+              -- that operator's "provably FALSE" column in Geospatial Design:
+              -- a row matches unless it can be proven not to. MAYBE therefore
+              -- matches, and the result set is a superset of the exact answer.
+              --
+              -- `cells_cover IS NULL` is the oversize row, already decided by
+              -- the box above. It short-circuits to TRUE here rather than
+              -- being compared, because a NULL array makes every operator
+              -- below return NULL, and a NULL inside EXISTS is a miss — which
+              -- would make the largest service areas in the catalogue the only
+              -- ones nobody can find.
+              AND (g.cells_cover IS NULL
+                   OR sqlc.narg('q_cover')::bigint[] IS NULL
+                   OR CASE @spatial_op::text
+                        WHEN 'S_INTERSECTS' THEN g.cells_cover && sqlc.narg('q_cover')
+                        WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && sqlc.narg('q_full'))
+                        WHEN 'S_WITHIN'     THEN g.cells_full  <@ sqlc.narg('q_cover')
+                        WHEN 'S_CONTAINS'   THEN sqlc.narg('q_full')::bigint[]
+                                                    <@ g.cells_cover
+                        WHEN 'S_DWITHIN'    THEN g.cells_cover && sqlc.narg('q_cover')
+                        WHEN 'S_OVERLAPS'   THEN g.cells_cover && sqlc.narg('q_cover')
+                                            AND NOT (g.cells_cover <@ sqlc.narg('q_full'))
+                                            AND NOT (sqlc.narg('q_cover')::bigint[]
+                                                         <@ g.cells_full)
+                        WHEN 'S_EQUALS'     THEN g.cells_cover = sqlc.narg('q_cover')
+                                            AND g.cells_full  = sqlc.narg('q_full')
+                        -- Unreachable: the mapper rejects anything else with a
+                        -- 400. TRUE rather than absent so the CASE cannot
+                        -- return NULL — see the note on the inner negation.
+                        ELSE TRUE
+                      END)
+
+              -- The one refinement: Point-to-Point S_DWITHIN is answered
+              -- exactly rather than to the nearest cell. It can only REMOVE
+              -- rows the algebra admitted, so the superset guarantee survives
+              -- it. Guarded on `type` so the NULL this returns for the other
+              -- six is never compared — see Migration 005.
+              AND (sqlc.narg('center_lat')::double precision IS NULL
+                   OR g.geojson->>'type' <> 'Point'
+                   OR geo_distance_m(g.geojson,
+                                     sqlc.narg('center_lat')::double precision,
+                                     sqlc.narg('center_lon')::double precision)
+                       <= sqlc.narg('radius_m')::double precision))
   )
 )
 ```
 
-**Every geo coordinate is `sqlc.narg`, and none of them is `@`.** sqlc types
-`@x` as a non-null Go value and `sqlc.narg('x')` as a nullable one, so naming
-the same parameter both ways in one query is not an inconsistency of style —
-it is two incompatible declarations of one argument, and sqlc generates from
-whichever it reads. They are all nullable together: an intent with no spatial
-constraint supplies none of them, which is what the `IS NULL` short-circuit on
-the first line tests. `@geo_negate` stays `@` because the mapper always sets
-it — `false` when there is no geo at all.
+**Every spatial parameter is `sqlc.narg`, and none of them is `@` except the two
+that are always set.** sqlc types `@x` as a non-null Go value and
+`sqlc.narg('x')` as a nullable one, so naming one parameter both ways is not an
+inconsistency of style — it is two incompatible declarations of one argument,
+and sqlc generates from whichever it reads. `@geo_negate`, `@match_negate` and
+`@spatial_op` stay `@` because the mapper always sets them — a `Quantifier` of
+`Any` is still a value, and the two flags are derived from it in one place; everything else is absent from an
+intent carrying no spatial constraint, which is what the `IS NULL`
+short-circuit on the first line tests.
+
+**`S_DWITHIN` and `S_INTERSECTS` share a branch, and that is not a copy-paste
+error.** Once the query geometry has been dilated by `k` rings (or replaced by
+its circumscribed circle for a Point), "within `d` of Q" *is* "intersects the
+buffered Q". The distance lives in the cover, not in the predicate. The two
+branches stay written out separately because `S_DWITHIN` additionally admits the
+haversine refinement below and `S_INTERSECTS` does not.
 
 `EXISTS`, not a join. A join needs `DISTINCT` to collapse a resource with three
 geometries back to one row, and `DISTINCT` forces a sort or hash over the whole
@@ -2027,8 +2185,20 @@ satisfied by the absence of rows, and a catalog whose provider published no
 `availableAt` gives its resources no geometry to be near. This is the correct
 reading — "not within 5 km of here" is true of something with no location — but
 it is surprising enough to be worth stating, because it means `ANY` and `NONE`
-over the same radius do **not** partition the catalogue: the geometry-less rows
-appear only in the `NONE` half. Scenario 19 asserts exactly that split.
+over the same constraint do **not** partition the catalogue: the geometry-less
+rows appear only in the `NONE` half. Scenario 19 asserts exactly that split.
+
+**`ALL` is the same subquery with both flags set.** It asks that *every*
+targeted geometry match, which is `NOT EXISTS (a targeted geometry that provably
+fails)`: `@geo_negate` true for the `NOT EXISTS`, and `@match_negate` true to
+turn the body from "matches" into "provably fails". `NONE` sets only the first,
+and the difference between them is the whole distinction between "not one of
+them matches" and "not one of them fails" — two flags because the two negations
+are at different depths, not two spellings of one.
+
+It is answerable now only because every geometry type is decidable; under the
+previous design a resource whose only geometry was a non-Point could be proven
+neither way, which is why `ALL` was a fault.
 
 ### Attribute filters — what PostgreSQL can and cannot do
 
@@ -2095,10 +2265,18 @@ than serving an unbounded scan on request.
 not a query that runs. The four-argument `jsonb_path_exists(target, path, vars,
 silent => true)` form is used only where a structural mismatch must not raise.
 
-**What is still deferred (Task 22):** validating and rebasing the caller's
-expression, and refusing the constructs above that cannot be served. Until it
-lands, `filters` reports `structured` in `Degraded`. What never happens is
-silent ignoring.
+**All of this ships in Phase 1 (Task 22).** Validating the expression, rebasing
+it, and refusing the constructs that cannot be served are the whole of the work;
+no migration is involved, because both columns and both GIN indexes already land
+in Task 14.
+
+`Degraded` does not go away with it. It stops describing *this phase* and starts
+describing *this backend*: a store whose `Capabilities` omit `jsonpath` — the
+memory backend is one — still reports `structured` in `X-Beckn-Degraded` rather
+than answering a filter it cannot evaluate. The rule that outlives the phase is
+the one underneath: **a filter the store cannot run must narrow nothing**,
+because a wrongly narrowed page and a correctly narrowed one are the same page
+at the caller.
 
 > **Settled (C10).** `beckn.yaml` names no grammar normatively; its one
 > `Intent.filters.expression` example is RFC 9535-shaped, and the network's own
@@ -2111,8 +2289,8 @@ silent ignoring.
 > stated subset in `src/platform/jsonpath/`, beside `Canonicalise`, **before any
 > store sees it**; the store is handed an already-accepted expression. A backend
 > that cannot execute the subset declares `jsonpath` missing in its
-> `Capabilities`, and `filters` reports `structured` in `Degraded` — the answer
-> Phase 1 already gives with Task 22 parked. What must never happen is the
+> `Capabilities`, and `filters` reports `structured` in `Degraded` — which is
+> now a statement about that BACKEND, not about the phase. What must never happen is the
 > accepted grammar changing because a deployment changed a backing service: that
 > is a protocol break shipped as an infrastructure decision (TRD §5).
 
@@ -2120,86 +2298,252 @@ silent ignoring.
 
 ## Geospatial Design
 
-### H3 is a candidate filter, never an answer
+### A geometry is a set of cells
 
-Every spatial index works this way, PostGIS's R-tree included: an approximate
-stage narrows, an exact stage decides. The design is a three-stage funnel.
+H3 exposes no geometric predicate. It has no point-in-polygon, no
+intersects, no distance-to-a-shape — its only distance function,
+`greatCircleDistance`, takes two points. Reading that as "H3 cannot answer
+spatial queries" is the wrong conclusion, and this section exists because the
+plan drew it once already.
+
+**Represent a geometry as a set of cells and the CQL2 operators stop being
+geometry problems.** They become set algebra, which every database does natively
+on an indexed array of integers, and which needs no spatial extension in any of
+them.
+
+Each stored geometry gets **two** covers at one fixed resolution:
+
+| Column | H3 containment mode | Meaning |
+|---|---|---|
+| `cells_full` | `CONTAINMENT_FULL` | cells lying **entirely inside** the geometry |
+| `cells_cover` | `CONTAINMENT_OVERLAPPING` | cells touching the geometry **at all** |
+
+which gives the invariant the whole design rests on:
 
 ```
-query: 10 km around (12.97, 77.59)
-        │
-   ┌────▼─────────────────────────────────────────────┐
-   │ 1. CELL OVERLAP   cells_r8 && $cover             │  GIN, ~µs
-   │    a superset: never loses a row, admits some    │
-   ├──────────────────────────────────────────────────┤
-   │ 2. BOUNDING BOX   max_lat >= … AND min_lat <= …  │  filter
-   │    cheap rejection of what the cover let through │
-   ├──────────────────────────────────────────────────┤
-   │ 3. EXACT          geo_distance_m(…) <= radius    │  IN SQL
-   │    the only stage whose answer is final          │
-   └──────────────────────────────────────────────────┘
+cells_full  ⊆  the true geometry  ⊆  cells_cover
 ```
 
-Because stage 3 decides, the index does not have to understand the operator.
-Stage 1 only has to be a **superset**, and a cell cover is a superset for every
-spatial predicate — so adding `S_INTERSECTS`, `S_CONTAINS` or `S_WITHIN` later
-is a stage-3 function each, with the same two stages in front of them and no
-schema change. **Phase 1 implements `S_DWITHIN` alone**, and anything else is a
-400 rather than a silent widening.
+**Two covers, because one proves positives and the other proves negatives.**
+A single cover can only ever say "maybe". `cells_full` is a guaranteed subset,
+so anything it asserts about the interior is true of the real shape;
+`cells_cover` is a guaranteed superset, so anything it *rules out* is really
+ruled out. An earlier revision of this plan stored only the cover and argued
+explicitly against adding the `CONTAINMENT_FULL` subset — correct while
+`S_DWITHIN` was the only operator, and exactly the missing half for the rest of
+CQL2.
 
-### Covering a query circle
+### Every operator is set algebra
 
-Not a k-ring. A k-ring sized from an average edge length is wrong at the edges
-of the resolution's cell-size distribution, and H3's own `restable` edge figures
-were mislabelled through v3 (uber/h3#310 — the column read "Average Hexagon Edge
-Length" where the values were radii).
+`A` is a stored geometry, `Q` the constraint geometry, both covered the same
+way. `&&` is array overlap, `<@` is contained-by, `@>` contains — all
+PostgreSQL array operators, all GIN-indexable on `BIGINT[]`.
+
+| `op` | Provably TRUE | Provably FALSE |
+|---|---|---|
+| `S_INTERSECTS` | `A.full && Q.full` | `NOT (A.cover && Q.cover)` |
+| `S_DISJOINT` | `NOT (A.cover && Q.cover)` | `A.full && Q.full` |
+| `S_WITHIN` | `A.cover <@ Q.full` | `NOT (A.full <@ Q.cover)` |
+| `S_CONTAINS` | `Q.cover <@ A.full` | `NOT (Q.full <@ A.cover)` |
+| `S_DWITHIN` | `A.full && dilate(Q.full, k)` | `NOT (A.cover && dilate(Q.cover, k))` |
+| `S_OVERLAPS` | intersects ∧ ¬within ∧ ¬contains | `NOT (A.cover && Q.cover)`, or either containment proves |
+| `S_EQUALS` | *never* | `A.cover <> Q.cover OR A.full <> Q.full` |
+| `S_TOUCHES` | *never* | *never* |
+| `S_CROSSES` | *never* | *never* |
+
+`S_OVERLAPS` is the one row whose FALSE column has three disjuncts rather than
+one, because overlap is a conjunction of three conditions and refuting any one
+of them refutes the whole. Two come from containment — a shape contained in the
+other does not overlap it — and the third is plain disjointness, which is sound
+here for the same reason it is sound for `S_INTERSECTS`: a true overlap implies
+the true geometries meet, and covers are supersets, so covers that do not meet
+prove geometries that do not either. All three appear in the `CASE` arm above.
+
+Between the two columns is a band where neither proof fires. That band is the
+boundary, it is one cell wide, and what happens in it is a decision this plan
+has to make rather than discover.
+
+### MAYBE resolves as a match, and the result set is a superset
+
+**The rule: a geometry that cannot be proven to fail is returned.** Every
+operator therefore over-includes and never under-includes, and the guarantee
+that falls out is worth stating as an invariant, because it is the thing a
+reviewer should check any future operator against:
+
+> For quantifier `ANY`, the result set is always a **superset** of the exact
+> answer. Never a subset.
+
+This is the correct bias for *discovery*. The word means candidates: a search
+for suppliers within 1 km that also returns one at 1.3 km has done its job, and
+the transaction that follows decides precisely. A search that **omits** a
+supplier at 900 m has failed silently, and nothing downstream can repair it.
+
+**Under `NONE` the direction inverts, and that is the safe way round.**
+`NOT EXISTS` over an over-inclusive predicate yields a **subset** of the exact
+answer — a "not near here" query may drop something that is genuinely far away,
+and can never return something that is close. Compare the arrangement this
+replaces, where a Polygon inside the radius came back from a "nowhere near here"
+query because its distance was NULL. The asymmetry has not gone away; it has
+been moved to the harmless side and stated as a rule rather than emerging from
+one type's missing implementation.
+
+`ALL` becomes answerable for the first time, for the same reason: every
+geometry is now decidable, so "every targeted geometry matches" is
+`NOT EXISTS (a targeted geometry that provably fails)`. It was a fault under the
+old design only because a non-Point could not be proven either way.
+
+### The two operators no resolution can reach
+
+**`S_TOUCHES` and `S_CROSSES` are not imprecise. They are undecidable.**
+
+`S_TOUCHES` means *the interiors are disjoint and the boundaries intersect*. A
+cell decomposition has no boundary — the boundary becomes a band of cells with
+area. Two polygons that touch, two that overlap by a millimetre, and two
+separated by a millimetre all produce the identical signature: shared `cover`
+cells, no shared `full` cells. Refining the resolution does not converge on an
+answer, because touching is a measure-zero condition and cells have measure.
+`S_CROSSES` fails the same way.
+
+They are a **400**, `SPT_UNSUPPORTED_OPERATOR`, naming the operator and saying
+that it is not approximable rather than not yet built — the distinction matters
+to a caller deciding whether to wait for a later release. They are also the two
+operators nothing in agricultural discovery asks for: they are cartographic
+predicates, for deciding whether two parcels in an editor share an edge.
+
+`S_EQUALS` is answered but **over-inclusively**, and it is the one operator
+whose limit is worth a caller's attention: identical geometries always produce
+identical cell sets, so there are no false negatives, but two *different*
+shapes occupying the same cells are indistinguishable. "No false negatives"
+holds only because both covers are stored **ascending and deduplicated** —
+PostgreSQL's array `=` is element-wise in order, so an unsorted pair of
+identical sets would compare unequal. It matches, in other
+words, at the resolution's precision and no better.
+
+### The MAYBE band, in metres
+
+The band is one cell wide, so the resolution is the accuracy knob:
+
+| Resolution | Avg edge | Avg area | MAYBE band | Cells per 1,000 km² |
+|---|---|---|---|---|
+| r7 | 1,406 m | 5.16 km² | ~2.8 km | ~194 |
+| **r8** | **531 m** | **0.737 km²** | **~1.1 km** | **~1,357** |
+| r9 | 201 m | 0.105 km² | ~400 m | ~9,494 |
+| r10 | 76 m | 0.015 km² | ~150 m | ~66,459 |
+
+Two columns fight each other and there is no resolution that wins both. **The
+default is `ResolutionCells = 8`**, which holds a district-scale service area
+inside the cell budget while keeping the boundary uncertainty near a kilometre —
+the right trade when the query is "farms near this town" and the wrong one if it
+ever becomes "is this plot inside this survey boundary". It is a config key, not
+a constant, because the right answer is a property of a deployment's data.
+
+### Oversize geometries, and the bounding box that catches them
+
+At r8 the 8,192-cell budget is about 6,000 km². A state-sized polygon is past
+it, and a cover truncated to fit would make a shape discoverable only in
+whichever corner the fill reached — the failure mode that made the previous
+design store NULL rather than truncate.
+
+**A geometry over budget stores `cells_full = NULL`, `cells_cover = NULL`, and
+is decided by its bounding box alone.** It is *always MAYBE* inside that box,
+which under the superset rule means it matches any query whose box overlaps it.
+That is the honest answer for a shape the index declined to represent, and the
+bounding box keeps it from being the answer to every query on Earth.
+
+This is why the four bbox columns survive a redesign that deleted the stage they
+were introduced for. They are no longer a general second stage; they are the
+**entire** predicate for oversize rows, and a cheap pre-rejection for the rest.
+
+**With one exception, and it is the kind that is easy to write and hard to
+notice.** The box pre-rejects only for operators that need the two shapes to
+meet — six of the seven. `S_DISJOINT` is the seventh and it inverts: two shapes
+whose boxes miss entirely *are* disjoint, so for that operator non-overlap is
+the strongest possible match. ANDing the box in would answer `S_DISJOINT` with
+exactly the rows near the query — the complement of the truth, returned with no
+error. The predicate therefore skips the box when `op = 'S_DISJOINT'`, and an
+oversize geometry (both cell columns NULL, box skipped) matches it
+unconditionally, which is the superset-correct answer for a shape the index
+declined to represent.
+
+### Covering a query geometry
+
+The constraint geometry is covered exactly like a stored one — same function,
+same resolution, both modes — with one addition for `S_DWITHIN`, which is the
+only operator carrying a distance.
 
 ```pseudo
-CoverRadius(filter) → cells, resolution:
-    circle ← circumscribed 64-gon around (center, radius)
-        # An INSCRIBED n-gon sags to R·cos(π/n) between vertices and would
-        # miss a sliver near the boundary. Scaling every vertex by 1/cos(π/n)
-        # makes the polygon contain the circle. At n=64 the scale is 1.0012.
+CoverQuery(geometry, op, distanceMeters) → full, cover cells:
+    if geometry is a Point and op is S_DWITHIN:
+        # The circle case, and worth special-casing because it is most of the
+        # traffic. An INSCRIBED n-gon sags to R·cos(π/n) between vertices and
+        # would miss a sliver near the boundary; scaling every vertex by
+        # 1/cos(π/n) makes the polygon CONTAIN the circle. At n=64, 1.0012.
+        shape ← circumscribed 64-gon around (center, distanceMeters)
+        return fill(shape, Full), fill(shape, Overlapping)
 
-    if the circle crosses the antimeridian or covers a pole:
-        return nil          # decline the prefilter; stages 2 and 3 still decide
+    full, cover ← fill(geometry, Full), fill(geometry, Overlapping)
 
-    resolutions ← [8, 5];  if radius > 20 km: resolutions ← [5]
+    if op is S_DWITHIN:
+        # "within 500 m of this canal" — a buffered LineString or Polygon.
+        # There is no geometry engine here to buffer with, so dilate on the
+        # grid instead: k rings of gridDisk around every cell.
+        k ← ceil(distanceMeters / minCenterDistanceM(ResolutionCells))
+        full, cover ← dilate(full, k), dilate(cover, k)
 
-    for res in resolutions:
-        cells, err ← h3.PolygonToCellsExperimental(
-                         circle, res, ContainmentOverlapping, MaxQueryCoverCells)
-        if err is ErrMemoryBounds:  continue      # a verdict, not a failure
-        if err:                     return error
-        return cells, res
-
-    return nil              # no cover fits the budget → no prefilter
+    return full, cover
 ```
 
-Returning `nil` is always safe: no prefilter means more candidates reach stages
-2 and 3, never fewer.
+`minCenterDistanceM` is deliberately not the average. Centre-to-centre spacing
+is `√3 × edge`, H3 cell areas vary by up to ~1.99× within a resolution, so the
+minimum edge is ≥ 0.71× the average — giving `1.23 × avgEdge` as the
+conservative step. Sizing `k` from the *average* would under-dilate wherever
+cells run small, and under-dilation is the one error direction this design does
+not permit.
+
+**Dilation is bounded like everything else.** `gridDisk(c, k)` is
+`3k² + 3k + 1` cells per seed, so a 500-cell river cover at k=5 is up to 45,500
+before deduplication. Past `MaxQueryCoverCells` the dilated cover is dropped and
+the constraint falls back to bounding box alone — wider, never narrower.
+
+**The antimeridian and the poles have no cell cover.** A circle crossing ±180°
+or containing a pole makes the 64-gon's vertices wrap, and the polygon H3
+receives is not the one that was asked for, so `CoverQuery` declines and returns
+nil. Nil disables the cell predicate only: the bounding box still runs, so the
+answer stays a superset and the query degrades to a scan of the scope-gated set.
+`BoundsFor` declines on the same input for the same reason. For an India
+deployment this is unreachable; it is written down because "it worked in
+testing" and "the cover silently stopped narrowing" look identical from
+outside, and because the day this service indexes Fiji the fix is a split cover
+rather than a schema change.
 
 ### Covering a stored geometry
 
 ```pseudo
 CoverGeometry(geometry) → Cover:
-    parts ← decode(geometry)         # points, lines, polygons; recurses into
-                                     # GeometryCollection to depth 8
+    parts ← decode(geometry)     # points, lines, polygons; recurses into
+                                 # GeometryCollection to depth 8
 
-    Cover.Bounds    ← bbox over every vertex
-    Cover.CellsR8   ← fill(parts, res 8, ContainmentOverlapping)  # superset
-    Cover.CellsR5   ← fill(parts, res 5, ContainmentOverlapping)
+    Cover.Bounds     ← bbox over every vertex
+    Cover.CellsFull  ← fill(parts, ResolutionCells, ContainmentFull)
+    Cover.CellsCover ← fill(parts, ResolutionCells, ContainmentOverlapping)
 
-    # Two fills, and no ContainmentFull "definitely inside" subset. `Cover` has
-    # no field for one because `resource_geometries` has no column for one: a
-    # struct field the storage layer silently discards is the dropped column
-    # again, moved one layer up and harder to notice.
-
-    any cover exceeding MaxIndexCoverCells (8192) is stored as NULL, not truncated
+    if len(CellsCover) > MaxIndexCoverCells:
+        Cover.CellsFull, Cover.CellsCover ← nil, nil   # oversize; bbox decides
 ```
 
-Lines are **densified**, not sampled by vertex — a segment can cross cells
-between its endpoints:
+Two facts about `CONTAINMENT_FULL` that a reader will otherwise rediscover
+through a failing test:
+
+- **A Point and a LineString have an empty `full` set**, always. Neither has
+  interior area, so no cell lies entirely inside one. This is correct, not a
+  bug: it means a Point can never *prove* `S_INTERSECTS` and is decided in the
+  MAYBE band — which, under the superset rule, matches. `S_DWITHIN` against a
+  Point is the case worth having exact, and it is handled below.
+- **A polygon smaller than one cell has an empty `full` set too**, and a
+  `cover` of one or two cells. It behaves like a Point, correctly.
+
+Lines are **densified**, not sampled at their vertices — a segment can cross
+cells between its endpoints:
 
 ```pseudo
 walk(a, b, stepM):
@@ -2210,68 +2554,76 @@ walk(a, b, stepM):
     emit a + (b-a)·i/n for i in 0..n
 ```
 
-`stepFineM = 130 m`, `stepCoarseM = 2400 m` — roughly a quarter of the average
-edge at each resolution. H3 cell areas vary by at most ~1.99× within a
-resolution, so the minimum edge is ≥ 0.71× the average and the minimum inradius
-≥ 0.61× the average edge. A quarter-edge step therefore cannot jump a cell.
+`stepM` is a quarter of the resolution's average edge (130 m at r8). The
+minimum inradius is ≥ 0.61× the average edge, so a quarter-edge step cannot
+jump a cell.
+
+### Point-to-point stays exact
+
+Cells are the whole predicate for every shape but one. **When `S_DWITHIN` is
+asked about a Point constraint against a stored Point, haversine decides**, and
+the cell cover is only a prefilter:
+
+```sql
+AND (g.geojson->>'type' <> 'Point'
+     OR geo_distance_m(g.geojson, @center_lat, @center_lon) <= @radius_m)
+```
+
+Point-to-point is the majority of real traffic — "suppliers near me" against
+providers with `availableAt` coordinates — it is the one case where the exact
+answer costs six lines of arithmetic and no extension, and a ±530 m band on a
+1 km search is a difference callers notice. The clause is a **refinement, never
+a widening**: it can only remove rows the cell predicate admitted, so the
+superset guarantee holds, and it applies to exactly one `type` so no other
+geometry's answer moves.
+
+This is not the old three-stage funnel returning under a new name. The funnel
+made an exact scalar the *decider* for every operator and every type, which is
+what left six of seven types answering NULL. Here the cell algebra decides
+everything, and one geometry type gets one operator sharpened.
+
+The Go side must agree with the SQL exactly. Haversine is written **twice and
+only twice** — `geo.HaversineM` in Go, `geo_haversine_m` in SQL — because SQL
+cannot import Go, and that is the only reason a second copy is tolerated. The
+memory backend imports `geo.HaversineM` rather than keeping a private one, and
+Task 16 pins the two against a fixed table of coordinate pairs, since a
+disagreement reaches the caller as a result 10.1 km from a 10 km search.
 
 ### Constants
 
 | Name | Value | Why |
 |---|---|---|
-| `ResolutionFine` | 8 | ~0.74 km², ~530 m average edge |
-| `ResolutionCoarse` | 5 | ~253 km², ~9,850 m average edge |
-| `CoarseCoverThresholdM` | 20,000 | Radius in **metres** above which a cover is built at `ResolutionCoarse` rather than `ResolutionFine`; past it an r8 cover runs to tens of thousands of cells. An optimisation, not a correctness boundary |
-| `MaxQueryCoverCells` | 4,096 | Cells one **discover** cover may produce, enforced by H3 via `maxNumCellsReturn` |
-| `MaxIndexCoverCells` | 8,192 | Cells one **publish** cover may produce; over it, the column is NULL |
-| `queryCircleVertices` | 64 | Vertices in the polygon that approximates a discover radius. Circumscribing scale 1.0012 |
+| `ResolutionCells` | 8 | ~0.74 km², ~531 m average edge, ~1.1 km MAYBE band. **Config, not a constant** — the accuracy/storage trade is a property of a deployment's data |
+| `MaxIndexCoverCells` | 8,192 | Cells one **publish** cover may produce (~6,000 km² at r8). Over it, both cell columns are NULL and the bounding box decides |
+| `MaxQueryCoverCells` | 4,096 | Cells one **discover** cover may produce, enforced by H3 via `maxNumCellsReturn`, and the ceiling on a dilated cover |
+| `queryCircleVertices` | 64 | Vertices in the polygon approximating an `S_DWITHIN` radius. Circumscribing scale 1.0012 |
 | `MaxCatalogWalkDepth` | 32 | The publish walker reads publisher-shaped documents. A cyclic or pathological nesting must cost a bounded walk, not a stack |
 | `MaxGeometriesPerCatalog` | 256 | Publish budget for the general walk. Over it, the extra finds are *partial* faults naming their paths — never a silent drop |
 
-### Phase 1 scope limit — stated plainly
+### Stated limits
 
-**Exact distance is answered for `Point` geometries only.** The other six RFC
-7946 types are parsed, bbox'd, cell-covered and stored today, and
-`geo_distance_m` returns NULL for them. NULL fails `<= radius`, so a stored
-Polygon survives the cell prefilter and is then excluded.
+Three, and they are properties of the representation rather than of this
+phase — none of them closes by writing more code against the same design:
 
-Under `ANY` that is a **miss, not a wrong hit** — the honest failure direction.
-**Under `NONE` it is a wrong hit, and that half has to be said out loud.** The
-same NULL that fails `EXISTS` satisfies `NOT EXISTS`, so a Polygon lying inside
-the radius is returned by a query asking for everything *not* near that point.
-This is not a defect in the predicate — it is what an unknown distance means on
-each side of a negation — but it is why the Phase 1 limit cannot be described as
-uniformly conservative, and why Scenario 16 asserts the `NONE` half too.
+1. **`S_TOUCHES` and `S_CROSSES` are refused**, because a cell decomposition
+   cannot express a measure-zero boundary relation at any resolution.
+2. **Everything else is accurate to one cell** (~1.1 km at r8), biased to
+   over-inclusion under `ANY` and to under-inclusion under `NONE`.
+3. **Geometries over ~6,000 km² are decided by bounding box**, and match more
+   widely than they should within it.
 
-Adding polygon and line distance later is a change to one SQL function and its
-Go twin, with **no migration**, because every geometry is already stored
-verbatim and already indexed. It closes both halves at once.
-
-The Go side must agree with the SQL exactly. Haversine is written **twice and
-only twice** — `geo.HaversineM` in Go and `geo_haversine_m` in SQL — because SQL
-cannot import Go, and that is the only reason a second copy is tolerated. The
-memory backend imports `geo.HaversineM`; it does not keep a private one. Task 16
-pins the two against each other over a fixed table of coordinate pairs, since a
-disagreement reaches the caller as a result 10.1 km away from a 10 km search.
-
-**The antimeridian and the poles have no cell prefilter.** A search circle that
-crosses ±180° longitude, or that contains a pole, makes `CoverRadius` return
-`nil`: the 64-gon's vertices wrap and the polygon H3 receives is not the circle
-that was asked for. Returning `nil` disables **stage 1 only** — stages 2 and 3
-still run, so the answer stays correct and the query degrades to a scan of the
-scope-gated set. Bounding boxes have the same wrap problem, and `BoundsFor`
-declines the same way.
-
-For an India deployment this is unreachable. It is written down because "it
-worked in testing" and "the prefilter silently stopped narrowing" look identical
-from the outside, and because the day this service indexes Fiji the fix is a
-split cover, not a schema change.
+If OAN ever needs *cadastral* precision — plot boundaries for subsidy
+eligibility, exact survey-number containment, a dispute resolved by which side
+of a line a well sits on — this design cannot deliver it and PostGIS becomes
+necessary. That is a fine trade to make deliberately for a discovery service,
+whose job is to return candidates. It is a bad one to discover from a support
+ticket, which is why it is a numbered limit and not a caveat in a paragraph.
 
 ---
 
 ## Scenarios
 
-Twenty-nine end-to-end scenarios in `tests/acceptance/`, run against the
+Thirty-five end-to-end scenarios in `tests/acceptance/`, run against the
 assembled service: real router, real PostgreSQL, real migrations, over HTTP.
 Only the embedder is stubbed.
 
@@ -2301,12 +2653,12 @@ goes looking for.
 |---|---|---|
 | 12 | `GeoSearchFindsNearbyResources` | A radius query returns what is inside it. Cover, bbox and haversine agree |
 | 13 | `GeoSearchOutsideTheRadiusReturnsNothing` | The negative half. Without it, a cover that returns everything passes #12 |
-| 14 | `TheRadiusBoundaryIsExact` | A point just inside and one just outside 10 km. Where a cell-only filter fails, and the reason stage 3 runs in SQL |
+| 14 | `TheRadiusBoundaryIsExact` | A point just inside and one just outside 10 km, 306 m apart. Cell algebra answers this to ~1.1 km and would return both; the Point↔Point haversine refinement is what separates them. The scenario that justifies the refinement existing, and the reason it runs in SQL rather than Go |
 | 15 | `CatalogGeometryIsCoveredOnceAndSharedByEveryResource` | A catalog with three `availableAt` locations and forty resources stores **three** geometry rows, not 120 — and a radius query around the third location still returns all forty. Pins the nullable `resource_id` in both directions: the storage saving, and the `g.resource_id IS NULL` half of the predicate without which every geo search returns nothing |
-| 16 | `ANonPointGeometryIsIndexedButNotMatched` | The Phase 1 scope limit, asserted rather than assumed: a stored Polygon has cells and a bbox and does not come back from an `S_DWITHIN` — **and does come back from the same radius under `quantifier: NONE`, though it lies inside it.** The second half is the one documenting a wrong hit rather than a miss; without it the limit reads as uniformly conservative, which it is not. Both become failing tests the day the limit is closed |
+| 16 | `ANonPointGeometryIsMatched` | A stored Polygon containing the search point comes back from an `S_DWITHIN` — **and does not come back from the same radius under `quantifier: NONE`.** Both halves, because this pair is the regression test for the design this section replaced, where a Polygon inside the radius was missing from `ANY` and present in `NONE`. A Point and a Polygon in one catalog assert that the two types now answer the same question the same way |
 | 17 | `HybridSpatialAndTextualSearch` | Text and proximity in one intent, both applied. Where a refactor quietly drops one constraint |
-| 18 | `AStructuredFilterIsReportedAsDegraded` | A `filters` expression this phase does not evaluate produces results **plus** an `X-Beckn-Degraded: structured` response header (C11) — and a `message` that still validates against `OnDiscoverAction`, which a `degraded` key in the body would not. Both halves asserted: the consumer is told, and told somewhere the schema permits |
-| 19 | `QuantifierNoneInvertsTheMatch` | The same radius as #12 with `quantifier: NONE` returns everything #12 did **not** — *plus* a third resource whose catalog published no location at all, because `NOT EXISTS` is satisfied by absence. Both halves are asserted: the inversion, and the geometry-less row that belongs only to this half. Pins the `geo_negate` XOR, one character away from silently inverting every geo search. An `ALL` quantifier NACKs rather than degrading |
+| 18 | `AStructuredFilterNarrowsTheResult` | Two resources differing only in `resourceAttributes.packagedGoodsDeclaration.manufacturerOrPacker.name`, filtered with `$.catalogs[*].resources[*] ? (@.resourceAttributes.packagedGoodsDeclaration.manufacturerOrPacker.name == "Hindustan Unilever Limited")`. One comes back. The same filter in RFC 9535 spelling is a `400` / `SCH_INVALID_JSONPATH` in the same scenario, because the thing being defended against is the two spellings looking alike while one of them silently returns nothing. Then the same expression against a backend declaring no `jsonpath` capability returns results **plus** `X-Beckn-Degraded: structured` (C11), with a `message` that still validates against `OnDiscoverAction` — a `degraded` key in the body would not |
+| 19 | `QuantifierNoneInvertsTheMatch` | The same radius as #12 with `quantifier: NONE` returns everything #12 did **not** — *plus* a third resource whose catalog published no location at all, because `NOT EXISTS` is satisfied by absence. Both halves are asserted: the inversion, and the geometry-less row that belongs only to this half. Pins the `geo_negate` XOR, one character away from silently inverting every geo search. Under `NONE` the result set is a **subset** of the exact answer rather than a superset — the inversion of the guarantee, and the safe direction |
 
 ### Offers on the read path — `offers_test.go`
 
@@ -2352,12 +2704,22 @@ repository tests instead.
 | # | Scenario | Pins |
 |---|---|---|
 | 29 | `OmittedNetworkIdSearchesEveryNetwork` | Two catalogs published to non-overlapping networks — `visibleTo: ["mahavistar"]` and `visibleTo: ["bharatvistar"]`. A discover with **no** `networkId` returns both. The same intent with `networkId: "mahavistar"` returns only the first. `visibleTo` restricts which networks a publisher chose to expose a catalog on; it is not an access boundary a network-less caller is presumed locked out of — a caller wanting isolation supplies `networkId` |
+### Spatial operators — `spatial_test.go`
+
+| # | Scenario | Pins |
+|---|---|---|
+| 30 | `TheOperatorSetIsAnsweredAsSetAlgebra` | One stored Polygon (a district service area) and one query Polygon overlapping half of it. `S_INTERSECTS` matches, `S_DISJOINT` does not, `S_WITHIN` does not, `S_CONTAINS` does not, `S_OVERLAPS` does. Then a query Polygon strictly inside the stored one: `S_CONTAINS` matches and `S_OVERLAPS` no longer does. Five operators in two fixtures, because each is one `CASE` arm and an arm that is never executed is an arm that only compiles |
+| 31 | `DisjointIsNotBoundingBoxFiltered` | A third fixture 400 km away, queried with `S_DISJOINT`. It matches — and would not if the bounding box were ANDed in for every operator, which is the one place a box pre-rejection is not merely conservative but inverted. Split out from #30 because it is the only scenario whose failure looks like an empty result rather than a wrong one, and an empty result reads as "no data" |
+| 32 | `TouchesAndCrossesAreRefused` | `S_TOUCHES` and `S_CROSSES` NACK with `SPT_UNSUPPORTED_OPERATOR` and a `400`. Asserted rather than left to the schema, because both are valid `beckn.yaml` enum values — L1 validation passes them, and the only thing standing between a caller and a silently wrong answer is this refusal |
+| 33 | `AnOversizeGeometryIsFoundByItsBoundingBox` | A polygon over `MaxIndexCoverCells` stores NULL in both cell columns and is still returned by a search inside its bounding box. Pins the `cells_cover IS NULL` short-circuit — without it a NULL array makes the operator branch NULL, NULL is a miss inside `EXISTS`, and the largest service areas in the catalogue become the only ones nobody can find |
+| 34 | `QuantifierAllRequiresEveryTargetedGeometry` | A catalog with two `availableAt` locations, one inside the radius and one outside. `ANY` returns it, `ALL` does not; a second catalog with both locations inside is returned by both. `ALL` is answerable only because every geometry type is now decidable, so this scenario is also the assertion that it stopped being a fault |
+| 35 | `AnOfferGeometryFindsOnlyThatOffersResources` | A catalog with three resources and one offer whose `resourceIds` names only the second, its `provider.availableAt` in Koramangala. A search targeting `$.catalogs[*].offers[*].provider.availableAt[*].geo` within 1 km returns **that resource only**, with that offer hydrated onto it — not the other two. Then republish the same offer with `resourceIds` emptied: the search now returns all three, because empty means catalog-wide in `resource_geometries` exactly as it already does in `offers.resource_ids`. The republish half is the half that matters: it patches the OFFER and names no resource, so it fails unless `touched` follows `resourceIds` |
 
 ### Not covered, deliberately
 
-Multi-tenant isolation, `on_publish` callback delivery, JSONPath *evaluation*
-(Task 22), real-model semantic ranking. Each is out of phase or covered closer
-to the code, and none has a passing scenario standing in for it.
+Multi-tenant isolation, `on_publish` callback delivery, real-model semantic
+ranking. Each is out of phase or covered closer to the code, and none has a
+passing scenario standing in for it.
 
 ### Worked example — scenario 14, the boundary
 
@@ -2368,8 +2730,8 @@ to the code, and none has a passing scenario standing in for it.
 //
 // Both sit NORTH-EAST of the centre, and that is the whole construction. A
 // point placed due north at 10,010 m is 0.0900 deg away while the bounding
-// box reaches 0.0899 — stage 2 would remove it, and the scenario would pass
-// while proving nothing about stage 3.
+// box reaches 0.0899 — the box would remove it, and the scenario would pass
+// while proving nothing about the exactness it exists to assert.
 
 POST /discover  { "message": { "intent": { "spatial": [{
   "op": "S_DWITHIN",
@@ -2380,9 +2742,13 @@ POST /discover  { "message": { "intent": { "spatial": [{
 // → 200, exactly one catalog, containing only `near`.
 // On a diagonal bearing the box corner is 1.41x the radius away, so `far` is
 // comfortably inside it (0.0654 / 0.0899 lat, 0.0674 / 0.0923 lon) and its r8
-// cell still touches the cover 306 m away. It survives stages 1 and 2 and is
-// removed by stage 3 -- which is why stage 3 cannot live in Go: a geometry Go
-// never sees cannot be measured in Go.
+// cell still touches the cover 306 m away. Cells and box both admit it; the
+// Point-to-Point haversine refinement is what removes it.
+//
+// This is THE scenario justifying that refinement. Cell algebra alone answers
+// this query to ~1.1 km, so `far` would match and 306 m of error would reach a
+// caller who asked for 10 km. It is also why the refinement runs in SQL: a
+// geometry Go never sees cannot be measured in Go.
 ```
 
 ---
@@ -2455,7 +2821,7 @@ Load():
   `time.LoadLocation` at startup so a typo fails the boot rather than silently
   shifting every daily window), `Server`, `Database`, `Search` (`DefaultPageSize`,
   `MaxPageSize`, `MaxRadiusMeters` = 200000, `ReadDeadline`,
-  `FailOnUnavailableMode`, `MaxCandidatesPerMode` = 500), `Embeddings` (one
+  `FailOnUnavailableMode` = false, `MaxCandidatesPerMode` = 500), `Embeddings` (one
   struct — A3), `RateLimit` (`RPS`, `Burst`), `Log`, `Validation`, `Auth`,
   `OTel`, `Replication` (A7).
 
@@ -2808,6 +3174,14 @@ MergeCatalog(stored Catalog, patch CatalogPatch) (Catalog, touched []string)
     # functions on values — no context, no storage, no clock — which is what
     # makes the exhaustive merge table a table-driven unit test rather than a
     # database fixture.
+    #
+    # `touched` is every resource the patch named, PLUS every resource named by
+    # the `resourceIds` of an offer the patch named. The second half is not
+    # decoration: an offer's geometry is written in its resources' loop
+    # iteration, so a patch that moves a shopfront and mentions no resource at
+    # all would otherwise re-derive the geometry and then write it nowhere.
+    # A resource is touched when something that is stored ON it changed —
+    # which, since offer geometry is stored on it, includes its offers.
 
 Offer{ID, CatalogID, ResourceIDs []string, Document json.RawMessage,
       ValidFrom, ValidTo,
@@ -2820,7 +3194,7 @@ Offer{ID, CatalogID, ResourceIDs []string, Document json.RawMessage,
     # a projection the storage layer does not keep is one the domain must not
     # pretend to have.
 
-Geometry{TargetPath, SourcePath string, ResourceID *string,
+Geometry{TargetPath, SourcePath string, Owners []string,
          Type string, GeoJSON json.RawMessage}
     # Type is read out of GeoJSON on the way in and on the way back; it is a
     # field of the value, not a column of the table.
@@ -2830,7 +3204,13 @@ Geometry{TargetPath, SourcePath string, ResourceID *string,
     # under one wildcard distinguishable. It is positional, so it is NOT stable
     # across a republish that reorders the array — which is why geometries are
     # deleted and reinserted rather than merged.
-    # ResourceID is nil for a catalog-level geometry.
+    # Owners is empty for a catalog-level geometry, and carries one id per
+    # resource that owns it — one for a geometry found inside a resource, N for
+    # one found inside an offer covering N of them. `[]string` rather than
+    # `*string` because the offer case is genuinely plural, and a pointer that
+    # has to become a slice later is a migration of every call site. Each entry
+    # becomes one `resource_geometries` row; the row itself still has the
+    # single `resource_id` column, which is what the discover join needs.
     # GeoJSON is kept VERBATIM — parsing at publish time is how the reference
     # implementation loses five of seven types and every polygon hole.
 
@@ -2844,11 +3224,36 @@ TimeOfDay{Hour, Minute, Second int}     # always UTC, already normalised
     # publish mapper, so nothing downstream has to know a timezone.
 
 GeoPoint{Lat, Lon}
-ProximityFilter{Center GeoPoint, RadiusM float64, Negate bool}
-    # Negate is the NONE quantifier: the same predicate, wrapped in NOT EXISTS.
+BBox{MinLat, MaxLat, MinLon, MaxLon float64}
+
+SpatialFilter{Op SpatialOp,
+              CellsFull, CellsCover []uint64,   # nil ⇒ no cell predicate
+              Bounds *BBox,                     # nil ⇒ declined (antimeridian)
+              Center *GeoPoint, RadiusM float64,
+              Quantifier Quantifier}
+    # ONE type for all seven answered operators, because they differ only in
+    # which set relation the repository applies — see the predicate in
+    # [Discover](#the-spatial-predicate-as-it-appears-in-every-query). Seven
+    # filter types would be seven places for the quantifier handling to drift.
+    #
+    # CellsFull and CellsCover are the query geometry's two covers, and they are
+    # nil TOGETHER: a cover that declined (antimeridian, over budget) disables
+    # the cell predicate entirely and leaves Bounds to decide. One without the
+    # other is a state the repository has no branch for, because CoverQuery
+    # cannot produce it.
+    #
+    # Center and RadiusM are populated ONLY for Point-to-Point S_DWITHIN — the
+    # single case the exact haversine refinement applies to. A non-nil Center on
+    # any other operator would silently narrow that operator's answer.
+
+Quantifier ∈ {Any, All, None}
+    # Not a bool. `Negate bool` held two of the three and there is no honest
+    # value for ALL, which is NOT EXISTS over the negated predicate rather than
+    # over the predicate. A third state added to a bool becomes a second bool,
+    # and then a pair with an unrepresentable-but-constructible combination.
 
 SearchQuery{Text, NetworkID, Schemas []SchemaFilter,
-            Near *ProximityFilter, TargetPaths []string,
+            Spatial *SpatialFilter, TargetPaths []string,
             Filters []AttributeFilter, Limit, Offset}
     # TargetPaths is the spatial constraint's `targets`, already canonicalised.
     # Empty means every geometry the resource can be found by — its own, plus
@@ -2858,13 +3263,14 @@ SchemaFilter{Context string, Type string}
     # Type == "" means "any type under this context". Empty Schemas means no
     # schema predicate at all — NOT a predicate that matches nothing.
 
-AttributeFilter{Root string, Expression string}       # Task 22, Phase 2
+AttributeFilter{Root string, Expression string}       # Task 22
     # Root names the column the expression is rebased onto: `attributes` on a
     # resource, `offer` on an offer. Expression is PostgreSQL SQL/JSON path
-    # (C10). In Phase 1 it is carried this far and no further — reported in
-    # `Degraded`, never executed. A filter the store cannot run must narrow
-    # NOTHING, because a wrongly narrowed page is indistinguishable from a
-    # correctly narrowed one at the caller.
+    # (C10), ALREADY validated and ALREADY rebased — the store is handed an
+    # expression it may cast and run, never one it must interpret.
+    # A store that cannot run it must narrow NOTHING and say so in `Degraded`,
+    # because a wrongly narrowed page is indistinguishable from a correctly
+    # narrowed one at the caller.
 
 SearchResult{Catalogs, Total, Degraded []string}
 
@@ -2920,9 +3326,9 @@ SearchRepository{Search, Capabilities}
 
 Helpers `PointGeometryAt(i, point)` and `PointGeometries(points…)` build the
 provider-path Point geometries that fixtures need, so "somewhere" is spelled one
-way across every test. They leave `ResourceID` nil, because a provider location
-is catalog-level — a fixture that sets it is testing a shape publish cannot
-currently produce.
+way across every test. They leave `Owners` empty, because a *catalog's* provider
+location is catalog-level. An offer's provider location is not, and the fixtures
+that need one set `Owners` to the ids that offer covers.
 
 **Tests pin:** `purity_test.go` walks the package's imports and fails on
 anything outside stdlib + `google/uuid`. This is the swap boundary, enforced
@@ -2954,41 +3360,81 @@ forty-resource catalog.
 **Files:** `src/indexing/geo/h3.go`, `distance.go`
 
 **Produces:** `geo.CoverGeometry(Geometry) → Cover`,
-`geo.CoverRadius(ProximityFilter) → cells, resolution`,
-`geo.BoundsFor`, `geo.HaversineM`, `geo.DistanceToM`, `geo.NearestGeometryM`,
+`geo.CoverQuery(geometry, op, distanceMeters) → full, cover []uint64`,
+`geo.BoundsFor`, `geo.HaversineM`, `geo.MatchesOp`, `geo.NearestGeometryM`,
 and the constants table in [Geospatial Design](#geospatial-design).
 
 This package knows about cells, boxes and metres. It knows nothing about
 JSONPath: the provider path is constructed by the mapper and normalised by
-`jsonpath.Canonicalise`, so `geo` never names a document location.
+`jsonpath.Canonicalise`, so `geo` never names a document location. It knows
+nothing about SQL either — `MatchesOp` is the **memory backend's twin** of the
+`CASE @spatial_op` block, and the two are written from the same table in
+Geospatial Design rather than from each other.
 
-`NearestGeometryM(center, geometries) → metres, ok` is the fold the **memory
-backend** runs where postgres runs `geo_distance_m` inside an `EXISTS`. It is a
-function rather than three lines at each call site for the same reason
-`WithinDailyWindow` is: the "nothing measurable here" answer is **not
-symmetric**. A resource whose only geometry is a Polygon falls OUT of a `near`
-filter and INTO its `NONE` negation (see [Geospatial
-Design](#geospatial-design)), and that asymmetry open-coded in the retriever and
-again in the hydrator is two chances to get it backwards in opposite
-directions.
+`MatchesOp(op, aFull, aCover, qFull, qCover) → bool` implements the seven
+operators as Go set operations over sorted `[]uint64`. **Sorted is a
+precondition, not a convenience**: `S_EQUALS` compares the slices element-wise,
+exactly as PostgreSQL's array `=` does, so the two backends agree only if both
+sides sort. `CoverGeometry` and `CoverQuery` are the two places that guarantee
+it.
 
-Algorithms are specified in that section — circumscribed 64-gon, polygon fill
-with `ContainmentOverlapping` (there is no `ContainmentFull` pass — see the
-section), line densification, the
-`ErrMemoryBounds`-as-verdict budget, NULL for over-budget covers.
+It takes no bounding box, and the memory backend must therefore apply the box
+itself — **skipping it for `S_DISJOINT`**, as the SQL does. Passing bounds into
+`MatchesOp` would have hidden that asymmetry inside a function whose name
+promises only the operator; leaving it out puts it in the backend, where the
+SQL's own version of the decision is visible next to it. It is one function
+rather than seven, and it takes the operator as a parameter rather than being
+dispatched by the caller, for the reason the SQL uses one `CASE`: the
+quantifier and NULL handling wrap all seven identically, and seven call sites
+is seven chances for one of them to forget the oversize short-circuit.
 
-**Tests pin (≈21):** a point's cover contains its own cell; **longitude is read
-first** (a swap puts Bengaluru in Somalia and nothing rejects it); a polygon's
-cover contains interior sample points; **holes are honoured**; a LineString's
-cover includes cells between vertices, not just at them; all seven RFC 7946
-types are accepted; a geometry that cannot be **parsed** is refused rather than
-returning silently empty (an over-budget one is a different case — it returns
-nil, not a truncation, and stays discoverable through stages 2 and 3); an
-antimeridian circle declines rather than wraps; `DistanceToM` returns false for
-every non-Point type; `NearestGeometryM` over two Points returns the nearer, and
-over a resource holding only a Polygon returns `ok = false` rather than `0` —
-the value the `NONE` branch reads, where a zero would place the resource exactly
-at the centre of every search.
+`NearestGeometryM(center, geometries) → metres, ok` is the fold the memory
+backend runs for the **Point-to-Point `S_DWITHIN` refinement only**. `ok` is
+false when no geometry in the set is a Point — meaning "no refinement applies",
+not "no match" — and the caller must then fall back to the cell answer rather
+than treating false as a miss. That inversion is the one this design most
+recently removed, so the test below asserts it directly.
+
+Algorithms are specified in that section — the two containment modes, the
+circumscribed 64-gon, `gridDisk` dilation sized from the *minimum* centre
+spacing, line densification, and the budget rules that produce a nil cover
+rather than a truncated one.
+
+**Tests pin (≈28):**
+
+- A point's cover contains its own cell; **longitude is read first** (a swap
+  puts Bengaluru in Somalia and nothing rejects it).
+- **The sandwich invariant**, as a property test over generated polygons:
+  `cells_full ⊆ cells_cover`, always. Everything in this design rests on it, so
+  it is asserted directly rather than inferred from the operators that use it.
+- **A Point and a LineString produce an EMPTY `cells_full`** — the behaviour
+  that looks like a bug on first reading and is the reason `S_INTERSECTS`
+  against a Point is answered in the MAYBE band.
+- A polygon's cover contains interior sample points; **holes are honoured**; a
+  polygon smaller than one cell yields an empty `full` and a non-empty `cover`.
+- A LineString's cover includes cells between vertices, not just at them.
+- All seven RFC 7946 types are accepted, as **stored and as query** geometry.
+- A geometry that cannot be **parsed** is refused rather than returning
+  silently empty. An over-budget one is a different case: both covers come back
+  nil, never truncated, and the row stays discoverable through its box.
+- An antimeridian circle declines rather than wraps.
+- **`MatchesOp` against the truth table**, one case per operator per relation
+  (disjoint / touching / overlapping / contained / containing / equal) — 42
+  assertions from one fixture pair, because each is a distinct arm.
+- **`S_EQUALS` on the same cell set built in two different orders** returns
+  true. It is the assertion that catches a sort dropped from either cover
+  function, and the only operator that can see the difference.
+- **`S_DISJOINT` against a far-away geometry** returns true — asserted in the
+  memory backend *including* its bounding-box stage, since the box is where the
+  operator inverts and `MatchesOp` alone would pass while the backend failed.
+- **Dilation is a superset**: for a sample of points at distance `d` from a
+  seed geometry, every one lands inside `dilate(cover, k)`. Sized from the
+  minimum centre spacing, so this must hold where cells run small — the test
+  seeds near an icosahedron vertex deliberately.
+- `NearestGeometryM` over two Points returns the nearer, and over a resource
+  holding only a Polygon returns `ok = false` — asserted **together with** the
+  caller's fallback, since `ok = false` meaning "no match" instead of "no
+  refinement" is precisely the regression this design corrected.
 
 ---
 
@@ -3042,9 +3488,13 @@ than the single constant it held when that absence was written down. A
 well-meant re-add of the bbox index then comes back as a test failure with a
 reason attached, rather than as a slow write path nobody attributes.
 
-Two more: `EXPLAIN` tests asserting the cell predicate uses `idx_rg_cells_r8`
-and the scope gate uses `idx_resources_visible_to`; and up-then-down-then-up
-leaving no residue.
+Two more: `EXPLAIN` tests asserting the cell predicate uses
+`idx_rg_cells_cover` **and `idx_rg_cells_full`**, and that the scope gate uses
+`idx_resources_visible_to`; and up-then-down-then-up leaving no residue. Both
+cell indexes are named because the operators split across them — `S_DISJOINT`
+and `S_WITHIN` read `cells_full` where `S_INTERSECTS` reads `cells_cover`, so an
+`EXPLAIN` asserting only the overlap case leaves half the operator set
+unproven, and `<@` is the half whose selectivity the planner estimates worst.
 
 `within_daily_window` gets a table-driven test of its own against a live
 database — forward window, wrap-around window, both bounds NULL, one bound NULL,
@@ -3253,9 +3703,10 @@ domain.CatalogPatch, fatal, partial` (the two fault kinds separately),
   weld the two capabilities together. Because one function produced both sides,
   the SQL comparison is plain equality. Bracket form
   (`$['availableAt'][*]['geo']`) and dot form normalise to the same string.
-- `MapIntent` rejects rather than skips: an unsupported op, a bad SRID, a
-  non-Point query geometry, a radius over `MaxRadiusMeters`, or unrecognised
-  `targets` each produce a 400. It also reads `context.schemaContext` — an
+- `MapIntent` rejects rather than skips: an unsupported op (`S_TOUCHES`,
+  `S_CROSSES`), a bad SRID, a query geometry that is not one of the seven
+  RFC 7946 types, a radius over `MaxRadiusMeters`, or unrecognised `targets`
+  each produce a 400. It also reads `context.schemaContext` — an
   envelope field, not an intent one — splitting each entry on its first `#`
   into a `SchemaFilter{Context, Type}`.
 - `MapCatalog` reads `validity` as a `TimePeriod` and fills **two** independent
@@ -3270,7 +3721,10 @@ domain.CatalogPatch, fatal, partial` (the two fault kinds separately),
 stored `TargetPath` equals the mapper's canonicalised `targets` byte for byte** — the
 one assertion that catches the empty-200; a geometry nested under
 `resourceAttributes` is found, wildcarded and owned by its resource while one on
-the provider is owned by the catalog (`ResourceID` nil); an object carrying
+the catalog's own provider is owned by the catalog (`Owners` empty), and one
+under `offers[*].provider.availableAt[*].geo` is owned by exactly that offer's
+`resourceIds` — with an offer carrying none of them falling back to
+catalog-level; an object carrying
 `"type": "Point"` but no `coordinates` is **not** recognised and raises **no**
 fault, while one carrying both but with a malformed ring does; a
 `GeometryCollection` is one find, not one per member; a document nested past
@@ -3280,8 +3734,10 @@ costs one geometry and names the offending value, and comes back as a *partial*
 fault on a `PARTIAL` verdict rather than sinking the catalog; a resource with no
 `id` is a *fatal* fault and stores nothing; a non-Point geometry is **indexed**
 (not skipped — the old behaviour, now wrong); an unknown SRID is a 400, not an
-ignore; an over-max radius is a 400; `quantifier: NONE` sets `Negate` and
-`quantifier: ALL` is a 400 rather than a silent downgrade to `ANY`;
+ignore; an over-max radius is a 400; each of `ANY`, `NONE` and `ALL` sets its
+own pair of `Quantifier`-derived flags, and an unrecognised quantifier is a 400
+rather than a silent downgrade to `ANY`; `S_TOUCHES` and `S_CROSSES` are 400s
+carrying `SPT_UNSUPPORTED_OPERATOR`;
 `"https://beckn.org/Agri#SeedLot"` splits into context and type while
 `"https://beckn.org/Agri"` leaves the type empty, and a URI whose fragment
 contains a second `#` splits only on the first; a validity with `startTime` and
@@ -3342,10 +3798,13 @@ does **not** call the replicator, asserted with a recording stub, because
 Flow, `negotiate` and the mapper gates are the pseudocode in
 [Discover](#discover--how-it-works).
 
-**Tests pin:** a `filters` expression yields results plus an
-`X-Beckn-Degraded: structured` header, and a body carrying no `degraded` key;
-with `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` the same request is
-`BIZ_CAPABILITY_UNAVAILABLE`; `networkId` absent falls back to
+**Tests pin:** a `textSearch` under `EMBEDDING_PROVIDER=noop` yields results
+plus an `X-Beckn-Degraded: semantic` header, and a body carrying no `degraded`
+key; with `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` the same request is
+`BIZ_CAPABILITY_UNAVAILABLE`. Semantic rather than `structured`, because
+`filters` is evaluated in Phase 1 and semantic is the mode a default Phase 1
+deployment actually lacks — a degradation pin whose trigger no longer degrades
+tests nothing; `networkId` absent falls back to
 `APP_NETWORK_ID`; limit is clamped to `MaxPageSize` rather than rejected; a
 rendered catalog carries its offers, and carries no offer whose resources are
 all off this page.
@@ -3384,7 +3843,7 @@ database down and `/readyz` does not; shutdown completes an in-flight request.
 `tests/acceptance/{suite,publish,discover,offers,validity,performance,
                   defaults,geopath}_test.go`
 
-The twenty-nine scenarios above, over HTTP against the assembled service with
+The thirty-five scenarios above, over HTTP against the assembled service with
 a real database. Only the embedder is stubbed. One file per scenario group, so
 the file a failure names is the section of this plan it came from.
 
@@ -3400,7 +3859,7 @@ job would be a slower and much later version of.
 
 ---
 
-### Task 22 — Structured Attribute Filtering  *(Phase 2)*
+### Task 22 — Structured Attribute Filtering
 
 **Files:** `src/discover/filter_parser.go`, `src/storage/postgres/jsonpath.go`
 
@@ -3418,8 +3877,13 @@ hand-written one — and **never** interpolated into SQL text.
 Both the resource path (`resources.attributes`) and the offer path
 (`offers.offer`) are supported, with their `jsonb_path_ops` GIN indexes. Both
 columns and both indexes already ship in Task 14, so this needs **no
-migration**. Until it lands, `filters` reports `structured` in `Degraded` — or
-fails under `SEARCH_FAIL_ON_UNAVAILABLE_MODE`. What never happens is silent ignoring.
+migration** — which is what makes it Phase 1 work at all: the expensive half
+landed eight tasks earlier, and this one is a parser, a rebase and a `WHERE`
+clause.
+
+A backend that cannot execute the subset still declares `jsonpath` missing and
+degrades — or fails under `SEARCH_FAIL_ON_UNAVAILABLE_MODE`. What never happens
+is silent ignoring.
 
 **Tests pin:** an RFC 9535 expression is `400` / `SCH_INVALID_JSONPATH` rather
 than an empty page; rebasing (`$.catalogs[*].resources[*] ? (@.resourceAttributes.A
@@ -3453,15 +3917,13 @@ increments the counter.
 
 ## Open Items
 
-| | Item | Owner decision needed |
-|---|---|---|
-| 1 | Exact geo for the six non-Point types | Which types matter first — Polygon (service areas) is the obvious candidate. No migration either way |
-| 2 | Whether `filters` should default to strict (`400`) rather than degraded | Currently degrades and reports. Strict is one config flag |
-| 3 | Semantic search activation (A5) | Needs an Ollama deployment and a backfill pass over `embedding IS NULL` |
+**None.** Every question this plan raised has an owner decision behind it.
 
-Everything else that was open has been decided. **The decisions are recorded
-below** rather than dropped, because the next reader's first question is why the
-schema looks the way it does:
+That is a statement with a short shelf life — implementation will raise more —
+so what matters is the table below, not this line. **The decisions are recorded
+rather than dropped**, because the next reader's first question is why the
+schema looks the way it does, and an undocumented decision is indistinguishable
+from an accident:
 
 | | Was open | Decided |
 |---|---|---|
@@ -3470,4 +3932,8 @@ schema looks the way it does:
 | `schemaContext` | Whether schema filtering is real | **Real, and it ships in Phase 1.** From `context.schemaContext`, matched as `@context` + `@type` pairs. C4 |
 | `validFrom`/`validTo` | Whether publishers send them | **Not under those names.** The wire field is `validity: TimePeriod` on `Catalog` and `Offer`, and it expands into four columns, not two. `Resource` has neither `validity` nor `isActive`, so every gate column on `resources` is a derived copy |
 | JSONPath grammar | Which grammar the spec mandates | **PostgreSQL SQL/JSON path only.** The spec names none normatively and its one example is RFC 9535, so this is a recorded deviation — C10 |
+| Offer-level geometry | Which resource a geometry under `offers[*].provider.availableAt[*].geo` belongs to | **The offer's `resourceIds`**, one `resource_geometries` row per id, falling back to catalog-level when that array is absent or empty — the same meaning `offers.resource_ids` already carries. `Geometry.ResourceID *string` became `Owners []string` and `touched` had to start following offers; no migration, the column was always there |
+| Unavailable retrieval mode | Whether a mode the backend cannot run should degrade or refuse | **Degrade by default; refuse on request.** `SEARCH_FAIL_ON_UNAVAILABLE_MODE` defaults to `false`: the modes that work run, results come back, and the missing one is named in `X-Beckn-Degraded` (C11). Setting it `true` makes the same request a `400` / `BIZ_CAPABILITY_UNAVAILABLE`. The default points at degrade for one reason: Phase 1 ships `EMBEDDING_PROVIDER=noop`, so `semantic` is missing on every fresh deployment, and defaulting to refuse would make every `textSearch` a `400` until an Ollama deployment exists — a default that breaks the common case is a default nobody keeps. Silently ignoring the mode remains the option that is never taken |
+| Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), rebased onto `resources.attributes` or `offers.offer`, run through the `@?` operator. Both columns and both `jsonb_path_ops` indexes were already landing in Task 14, so promoting it costs a parser and a rebase and no migration. Scenario 18 changed from asserting the degradation to asserting the filter |
+| Semantic search (A5) | When embeddings are turned on | **Not in Phase 1 — confirmed.** `EMBEDDING_PROVIDER=noop` ships; the column, the HNSW index and the `Embedder` seam ship with it, and `embedding IS NULL` is the backfill queue for whenever an Ollama deployment exists. Deferred deliberately, not undecided |
 | `networkId` default (discover) | Whether an omitted `networkId` scopes to `APP_NETWORK_ID` or searches every network | **Searches every network.** `visibleTo` is how a publisher restricts a catalog to specific networks; it is not an access boundary a network-less discover caller is presumed locked out of by default. A caller wanting isolation supplies `networkId`. Publish's own default — `APP_NETWORK_ID`, to fill an empty `visibleTo` — is unchanged (C8); the two fields answer different questions and no longer share a fallback |
