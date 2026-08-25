@@ -18,8 +18,13 @@ app:
 
 search:
   maxRadiusMeters: 200000
+  # The two page bounds. defaultPageSize is what a request naming no limit
+  # gets; maxPageSize is the ceiling a larger limit is clamped to.
+  defaultPageSize: 20
+  maxPageSize: 100
   # How many ids one retrieval mode may return into fusion. Not a page size —
-  # it is also the reachable pagination depth.
+  # it is also the reachable pagination depth, so it is this number over
+  # maxPageSize that says how many pages deep a caller may go.
   maxCandidatesPerMode: 500
   # A missing retrieval mode degrades and is named in X-Beckn-Degraded (C11).
   # true turns the same request into a 400. Phase 1 ships with the semantic

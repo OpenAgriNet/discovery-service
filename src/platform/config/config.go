@@ -1,0 +1,443 @@
+// Package config loads the service configuration from four layers — struct
+// tags, the reviewed repository defaults, an optional deployment file, and the
+// process environment — and refuses to start on a value it cannot use.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"os"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+	"gopkg.in/yaml.v3"
+)
+
+// The two YAML layers, relative to the working directory. The image sets
+// WORKDIR /app and copies config/common.yaml beside the binary; instance.yaml
+// is mounted there by the deployment, or absent.
+const (
+	commonPath   = "config/common.yaml"
+	instancePath = "config/instance.yaml"
+)
+
+const (
+	envTag        = "env"
+	sliceSeparate = ","
+)
+
+// Config is the whole of the service's configuration. Nothing reads it through
+// a package-level variable: it is built once in main and passed down.
+type Config struct {
+	App         App
+	Server      Server
+	Database    Database
+	Search      Search
+	Embeddings  Embeddings
+	RateLimit   RateLimit
+	Log         Log
+	Validation  Validation
+	Auth        Auth
+	OTel        OTel
+	Replication Replication
+}
+
+// App identifies the deployment itself.
+type App struct {
+	// The network this deployment serves. It has no default because there is no
+	// repo-wide answer, and publish falls back to it to fill an empty
+	// publishDirectives.visibleTo (C8). Discover has no such fallback: an
+	// omitted networkId there searches every network.
+	Network string `env:"APP_NETWORK_ID"`
+
+	// Every daily validity window is interpreted here. Validated with
+	// time.LoadLocation at startup, so a typo fails the boot rather than
+	// silently shifting every window by hours.
+	DefaultTimezone string `env:"APP_DEFAULT_TIMEZONE" envDefault:"Asia/Kolkata"`
+}
+
+// Server holds the HTTP listener's settings.
+type Server struct {
+	Port int `env:"SERVER_PORT" envDefault:"8080"`
+
+	// How long SIGTERM waits for in-flight requests before the listener is
+	// closed on them.
+	ShutdownTimeout time.Duration `env:"SERVER_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+}
+
+// Database holds the connection string and the pool's bounds.
+type Database struct {
+	// A secret: it arrives from the environment and appears in neither YAML
+	// file, which is why the environment layer sits on top of both (TRD §8).
+	URL string `env:"DATABASE_URL"`
+
+	// Sized by the concurrency model, not guessed. Discover runs its retrieval
+	// modes concurrently (A2), so one in-flight discover holds as many
+	// connections as it has enabled modes — two in Phase 1, three once semantic
+	// lands:
+	//
+	//	MaxConns >= (enabled modes) x (expected in-flight discovers)
+	//
+	// bounded above by the server's own max_connections less whatever else
+	// shares it. pgxpool's own default is max(4, numCPU), under which the
+	// sixteen concurrent discovers the performance scenario runs would queue in
+	// pool.Acquire() and measure the queue rather than the query.
+	MaxConns int32 `env:"DATABASE_MAX_CONNS" envDefault:"32"`
+
+	// A warm-start knob only: idle backends cost the server memory to save a
+	// connection handshake, so this stays small where MaxConns does not.
+	MinConns int32 `env:"DATABASE_MIN_CONNS" envDefault:"4"`
+
+	// Applies the embedded migrations at boot. Off by default: a process that
+	// rewrites the schema as it starts is a decision an operator makes, and
+	// `make migrate` is the other way to make it.
+	AutoMigrate bool `env:"DATABASE_AUTO_MIGRATE" envDefault:"false"`
+}
+
+// Search bounds the read path. The three numeric bounds below are three
+// different quantities and the names say which: two bound a page, one bounds a
+// retrieval mode's candidate list.
+type Search struct {
+	// The page size a request that names no limit gets.
+	DefaultPageSize int `env:"SEARCH_DEFAULT_PAGE_SIZE" envDefault:"20"`
+
+	// The ceiling a request's limit is clamped to — clamped rather than
+	// refused, because the caller still gets the results they asked about.
+	MaxPageSize int `env:"SEARCH_MAX_PAGE_SIZE" envDefault:"100"`
+
+	// How many ids one retrieval mode may return into fusion. Much larger than
+	// a page, and it is also the reachable pagination depth: a request whose
+	// offset + limit passes it is refused outright, because slicing past the
+	// end of the fused list would answer with an empty page that reads exactly
+	// like the end of the results.
+	MaxCandidatesPerMode int `env:"SEARCH_MAX_CANDIDATES_PER_MODE" envDefault:"500"`
+
+	// The largest S_DWITHIN radius a caller may ask for.
+	MaxRadiusMeters int `env:"SEARCH_MAX_RADIUS_METERS" envDefault:"200000"`
+
+	// One deadline for the whole concurrent retrieval (A2). The write path's
+	// twin is Embeddings.WriteDeadline; the two are separate because inference
+	// on a publish and a fan-out of queries on a discover fail at different
+	// speeds (A3).
+	ReadDeadline time.Duration `env:"SEARCH_READ_DEADLINE" envDefault:"2s"`
+
+	// What happens when a requested retrieval mode is missing. False names it
+	// in the X-Beckn-Degraded header and returns what the other modes found;
+	// true makes the same request a 400. It defaults to false because Phase 1
+	// ships EMBEDDING_PROVIDER=noop, so semantic is missing on every fresh
+	// deployment and refusing would break the common case (C11).
+	FailOnUnavailableMode bool `env:"SEARCH_FAIL_ON_UNAVAILABLE_MODE" envDefault:"false"`
+}
+
+// Embeddings configures the Embedder seam — one struct for both paths (A3).
+type Embeddings struct {
+	// noop (the default — semantic search is deferred, A5), hashing (CI),
+	// ollama, or fixture.
+	Provider string `env:"EMBEDDING_PROVIDER" envDefault:"noop"`
+
+	Model    string `env:"EMBEDDING_MODEL" envDefault:"nomic-embed-text"`
+	Endpoint string `env:"EMBEDDING_ENDPOINT" envDefault:"http://localhost:11434"`
+
+	// The vector width the column and the HNSW index are built for. A vector of
+	// any other length is refused before pgvector sees it.
+	Dimensions int `env:"EMBEDDING_DIMENSIONS" envDefault:"768"`
+
+	// Bounds one Embed call on the publish path. Named for the side it serves,
+	// because Search.ReadDeadline bounds the other one (A3).
+	WriteDeadline time.Duration `env:"EMBEDDING_WRITE_DEADLINE" envDefault:"2s"`
+}
+
+// RateLimit is the per-caller token bucket on the protocol routes (A4).
+type RateLimit struct {
+	RPS   int `env:"RATE_LIMIT_RPS" envDefault:"20"`
+	Burst int `env:"RATE_LIMIT_BURST" envDefault:"40"`
+}
+
+// Log configures the structured logger.
+type Log struct {
+	Level string `env:"LOG_LEVEL" envDefault:"info"`
+}
+
+// Validation switches the two schema layers and locates the protocol spec.
+type Validation struct {
+	EnableL1Schema  bool `env:"VALIDATION_ENABLE_L1_SCHEMA" envDefault:"true"`
+	EnableL2Context bool `env:"VALIDATION_ENABLE_L2_CONTEXT" envDefault:"true"`
+
+	// beckn.yaml is fetched at boot rather than baked into the image, so a
+	// deployment names the published document it validates against. No default:
+	// which spec URL a network trusts is not a repository-wide decision.
+	SpecURL string `env:"VALIDATION_SPEC_URL"`
+
+	// Where the fetched spec is cached, and what an air-gapped deployment
+	// mounts in place of the fetch.
+	SpecCachePath string `env:"VALIDATION_SPEC_CACHE_PATH" envDefault:".cache/beckn/beckn.yaml"`
+}
+
+// Auth switches signature verification, which is built but deferred.
+type Auth struct {
+	EnableSignatureVerification bool `env:"AUTH_ENABLE_SIGNATURE_VERIFICATION" envDefault:"false"`
+}
+
+// OTel configures the telemetry exporter.
+type OTel struct {
+	// none (the default, so a collector-less deployment still boots) or otlp.
+	Exporter string `env:"OTEL_EXPORTER" envDefault:"none"`
+
+	// Read from the OTel SDK's own variable rather than an invented one: a
+	// deployment that already exports traces has this set.
+	Endpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT"`
+}
+
+// Replication configures publish's write fan-out seam (A7).
+type Replication struct {
+	// The stores a committed catalog is announced to. Empty — the Phase 1
+	// value — selects the no-op replicator; a named target with no
+	// implementation behind it fails the boot rather than silently dropping
+	// every announcement. No queue table ships until a target needs one.
+	Targets []string `env:"REPLICATION_TARGETS"`
+}
+
+// Load reads the four layers in precedence order and validates the result.
+// Lowest first: the envDefault tags, config/common.yaml, config/instance.yaml,
+// then the process environment.
+func Load() (Config, error) {
+	return load(commonPath, instancePath, envMap(os.Environ()))
+}
+
+// Defaults returns the floor: every field as its envDefault tag declares it,
+// with no file and no environment read. It is not validated, because the floor
+// deliberately carries no network id and no database URL — there is no
+// repo-wide answer to either.
+func Defaults() (Config, error) {
+	return parse(map[string]string{})
+}
+
+// load is Load with its inputs as parameters, which is what the layer tests
+// drive. The environment is passed rather than read so a test asserts against
+// its own fixture and not against whatever the test runner exports.
+func load(common, instance string, environment map[string]string) (Config, error) {
+	// One env.Parse, not one per layer: env.Parse applies every envDefault tag
+	// whose variable is absent, so a second pass over an already-populated
+	// struct would reset each field the environment does not name. Handing it
+	// the YAML values as environment entries instead keeps the tags as the
+	// floor and leaves precedence to map insertion order.
+	overrides := map[string]string{}
+	if err := overlay(common, false, overrides); err != nil {
+		return Config{}, err
+	}
+	if err := overlay(instance, true, overrides); err != nil {
+		return Config{}, err
+	}
+	maps.Copy(overrides, environment)
+
+	cfg, err := parse(overrides)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := validate(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func parse(environment map[string]string) (Config, error) {
+	var cfg Config
+	if err := env.ParseWithOptions(&cfg, env.Options{Environment: environment}); err != nil {
+		return Config{}, fmt.Errorf("parse configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// overlay folds one YAML document into overrides, keyed by each matched field's
+// env tag. A key matching no field is a startup failure: a typo must not
+// silently do nothing.
+func overlay(path string, optional bool, overrides map[string]string) error {
+	// G304 is waived, not worked around: the only paths that reach here are the
+	// two constants above and the fixtures the layer tests write. A config file
+	// the operator points the process at is the input, so there is no
+	// user-supplied path to sanitise.
+	document, err := os.ReadFile(path) //nolint:gosec // see above
+	if errors.Is(err, fs.ErrNotExist) && optional {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal(document, &doc); err != nil {
+		return fmt.Errorf("parse config %s: %w", path, err)
+	}
+	return collect(reflect.TypeFor[Config](), doc, path, "", overrides)
+}
+
+func collect(group reflect.Type, doc map[string]any, path, prefix string, overrides map[string]string) error {
+	for key, value := range doc {
+		field, ok := fieldNamed(group, key)
+		if !ok {
+			return fmt.Errorf("config %s: unknown key %q", path, prefix+key)
+		}
+		if err := collectField(field, value, path, prefix+key, overrides); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectField(field reflect.StructField, value any, path, key string, overrides map[string]string) error {
+	if field.Type.Kind() == reflect.Struct {
+		block, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("config %s: key %q is a group and takes a nested block, not a value", path, key)
+		}
+		return collect(field.Type, block, path, key+".", overrides)
+	}
+
+	name, ok := field.Tag.Lookup(envTag)
+	if !ok {
+		return fmt.Errorf("config %s: key %q names field %s, which declares no %s tag", path, key, field.Name, envTag)
+	}
+	text, err := scalar(value)
+	if err != nil {
+		return fmt.Errorf("config %s: key %q: %w", path, key, err)
+	}
+	overrides[name] = text
+	return nil
+}
+
+// fieldNamed matches a YAML key to a field case-insensitively, which is what
+// lets the files read as camelCase against PascalCase fields.
+func fieldNamed(group reflect.Type, key string) (reflect.StructField, bool) {
+	for i := range group.NumField() {
+		if field := group.Field(i); strings.EqualFold(field.Name, key) {
+			return field, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+// scalar renders a YAML leaf as the env parser reads it. A sequence becomes the
+// comma-separated form env already understands for slices.
+func scalar(value any) (string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return "", errors.New("key has no value")
+	case map[string]any:
+		return "", errors.New("key takes a value, not a nested block")
+	case []any:
+		items := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, err := scalar(item)
+			if err != nil {
+				return "", err
+			}
+			items = append(items, text)
+		}
+		return strings.Join(items, sliceSeparate), nil
+	default:
+		return fmt.Sprint(value), nil
+	}
+}
+
+// envMap turns os.Environ's KEY=VALUE lines into the map env.ParseWithOptions
+// takes, so the environment is a value the loader is handed rather than a
+// global it reads.
+func envMap(lines []string) map[string]string {
+	environment := make(map[string]string, len(lines))
+	for _, line := range lines {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			environment[key] = value
+		}
+	}
+	return environment
+}
+
+// validate fails startup on a configuration the service cannot honour, and
+// reports every problem at once: an operator fixing a bad file should not have
+// to restart once per mistake.
+func validate(cfg Config) error {
+	problems := errors.Join(
+		validateApp(cfg.App),
+		validateServer(cfg.Server),
+		validateDatabase(cfg.Database),
+		validateSearch(cfg.Search),
+		validateEmbeddings(cfg.Embeddings),
+		validateRateLimit(cfg.RateLimit),
+	)
+	if problems != nil {
+		return fmt.Errorf("invalid configuration: %w", problems)
+	}
+	return nil
+}
+
+func validateApp(app App) error {
+	_, err := time.LoadLocation(app.DefaultTimezone)
+	if err != nil {
+		err = fmt.Errorf("app.defaultTimezone %q is not a loadable location: %w", app.DefaultTimezone, err)
+	}
+	return errors.Join(
+		require(app.Network != "", "app.network is required (APP_NETWORK_ID): it fills an empty publishDirectives.visibleTo"),
+		err,
+	)
+}
+
+func validateServer(server Server) error {
+	return errors.Join(
+		require(server.Port > 0 && server.Port < 65536, "server.port %d is not a port", server.Port),
+		require(server.ShutdownTimeout > 0, "server.shutdownTimeout %s is not positive", server.ShutdownTimeout),
+	)
+}
+
+func validateDatabase(database Database) error {
+	return errors.Join(
+		require(database.URL != "", "database.url is required (DATABASE_URL) and belongs in the environment, not a file"),
+		require(database.MinConns >= 0, "database.minConns %d is negative", database.MinConns),
+		require(database.MaxConns > 0, "database.maxConns %d is not positive", database.MaxConns),
+		require(database.MaxConns >= database.MinConns,
+			"database.maxConns %d is below database.minConns %d", database.MaxConns, database.MinConns),
+	)
+}
+
+func validateSearch(search Search) error {
+	return errors.Join(
+		require(search.DefaultPageSize > 0, "search.defaultPageSize %d is not positive", search.DefaultPageSize),
+		require(search.MaxPageSize >= search.DefaultPageSize,
+			"search.maxPageSize %d is below search.defaultPageSize %d — a ceiling under the value it clamps",
+			search.MaxPageSize, search.DefaultPageSize),
+		require(search.MaxCandidatesPerMode >= search.MaxPageSize,
+			"search.maxCandidatesPerMode %d is below search.maxPageSize %d — a candidate pool smaller than one page cannot fill it",
+			search.MaxCandidatesPerMode, search.MaxPageSize),
+		require(search.MaxRadiusMeters > 0, "search.maxRadiusMeters %d is not positive", search.MaxRadiusMeters),
+		require(search.ReadDeadline > 0, "search.readDeadline %s is not positive", search.ReadDeadline),
+	)
+}
+
+func validateEmbeddings(embeddings Embeddings) error {
+	return errors.Join(
+		require(embeddings.Provider != "", "embeddings.provider is empty"),
+		require(embeddings.Dimensions > 0, "embeddings.dimensions %d is not positive", embeddings.Dimensions),
+		require(embeddings.WriteDeadline > 0, "embeddings.writeDeadline %s is not positive", embeddings.WriteDeadline),
+	)
+}
+
+func validateRateLimit(rateLimit RateLimit) error {
+	return errors.Join(
+		require(rateLimit.RPS > 0, "rateLimit.rps %d is not positive", rateLimit.RPS),
+		require(rateLimit.Burst >= rateLimit.RPS,
+			"rateLimit.burst %d is below rateLimit.rps %d — a bucket smaller than one second's refill",
+			rateLimit.Burst, rateLimit.RPS),
+	)
+}
+
+// require reports a problem when the condition does not hold, so a validator
+// reads as the list of invariants it enforces.
+func require(ok bool, format string, args ...any) error {
+	if ok {
+		return nil
+	}
+	return fmt.Errorf(format, args...)
+}
