@@ -3148,9 +3148,11 @@ candidate pool smaller than one page cannot fill it, and since the pool is also
 the reachable pagination depth, that ratio is how many pages deep a caller may
 go; an unloadable `DefaultTimezone` fails startup; a blank environment variable
 leaves the layer below standing, a blank value in a file fails startup naming the
-key, and an explicit empty list clears what the layer below set; `IncludeLegacyType` and `AllowNetworkFetch` default to `false` and
-`ResolutionCells` to 8, since all three are security- or output-shaping defaults
-that must not drift silently.
+key, an explicit empty list clears what the layer below set, and a list where
+the field takes a value fails startup — empty or not, since empty would be that
+same erasure under a different spelling; `IncludeLegacyType` and
+`AllowNetworkFetch` default to `false` and `ResolutionCells` to 8, since all
+three are security- or output-shaping defaults that must not drift silently.
 
 ---
 

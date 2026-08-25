@@ -338,6 +338,22 @@ func collectField(field reflect.StructField, value any, path, key string, overri
 	if !ok {
 		return fmt.Errorf("config %s: key %q names field %s, which declares no %s tag", path, key, field.Name, envTag)
 	}
+	if list, ok := value.([]any); ok {
+		// A list is answerable only where the field is one. Joined into a
+		// scalar field it would become a string nobody asked for, and empty it
+		// would render blank and erase the layer below exactly as `key: ""`
+		// does — the failure the blank refusal exists to prevent, arriving
+		// under a different spelling.
+		if field.Type.Kind() != reflect.Slice {
+			return fmt.Errorf("config %s: key %q takes a value, not a list", path, key)
+		}
+		// Here empty is a value: it clears what the layer below set. env.Parse
+		// never sets a blank, so the field keeps its zero value.
+		if len(list) == 0 {
+			overrides[name] = ""
+			return nil
+		}
+	}
 	text, err := scalar(value)
 	if err != nil {
 		return fmt.Errorf("config %s: key %q: %w", path, key, err)
@@ -368,14 +384,11 @@ func fieldNamed(group reflect.Type, key string) (reflect.StructField, bool) {
 // keystroke and says so loudly; refusing costs only a spelling indistinguishable
 // from omitting the key, which is already how a layer defers to the one below.
 //
-// An empty sequence is not a blank and is written through. `key: ""` reads as
-// both "no value" and "the empty string", which is why it is refused; `[]` has
-// one meaning, and for a slice field empty is a value rather than an absence —
-// Replication.Targets spells the no-op replicator that way. It is also the only
-// way any layer can clear what a lower one set, since a blank cannot. That
-// holds because env.Parse never sets a blank, leaving the field zero, so a slice
-// field must carry no envDefault to come back in its place — pinned by
-// TestNoSliceFieldCarriesADefault.
+// An empty sequence is refused here too. The one place it means something is as
+// the whole value of a slice field, where it clears what the layer below set,
+// and collectField answers that before reaching this function — it is the only
+// caller that knows the field's type. Nested inside a list it is junk, and on a
+// scalar field it is a blank wearing a different spelling.
 func scalar(value any) (string, error) {
 	switch typed := value.(type) {
 	case nil:
@@ -388,6 +401,9 @@ func scalar(value any) (string, error) {
 	case map[string]any:
 		return "", errors.New("key takes a value, not a nested block")
 	case []any:
+		if len(typed) == 0 {
+			return "", errors.New("key has an empty list: omit the key to take the layer below")
+		}
 		items := make([]string, 0, len(typed))
 		for _, item := range typed {
 			text, err := scalar(item)

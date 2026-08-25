@@ -228,6 +228,39 @@ func TestAnExplicitEmptyListClearsTheLayerBelow(t *testing.T) {
 	assertEqual(t, "Replication.Targets below the instance layer", len(below.Replication.Targets), 2)
 }
 
+// The clearing spelling is a property of the field, not of the value's shape. A
+// list where the field takes a value is a mistake in either direction: an empty
+// one would resolve to a blank and so erase the layer below exactly as `key: ""`
+// would, which is the failure the refusal above exists to prevent, and a
+// populated one would be joined into a string the field never asked for. Nested,
+// an empty list would become an empty element inside a slice — junk that reaches
+// the field, where the same position spelled "" is refused.
+func TestOnlyASliceFieldTakesAList(t *testing.T) {
+	cases := map[string]struct{ body, names string }{
+		"an empty list where the field takes a value": {
+			"log:\n  level: []\n", "log.level",
+		},
+		"a populated list where the field takes a value": {
+			"log:\n  level: [warn, info]\n", "log.level",
+		},
+		"an empty list nested inside a list": {
+			"replication:\n  targets: [remote-a, []]\n", "replication.targets",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeYAML(t, tc.body)
+
+			if _, err := load(path, noInstance, baseEnv()); err == nil {
+				t.Fatalf("load accepted %q", tc.body)
+			} else if !strings.Contains(err.Error(), tc.names) {
+				t.Errorf("error %v does not name %q", err, tc.names)
+			}
+		})
+	}
+}
+
 // Clearing works because env.Parse never sets a blank value (env.go:507), so the
 // field keeps its zero value. That holds only where there is no envDefault to
 // come back in its place: a slice field carrying one would answer the clearing
