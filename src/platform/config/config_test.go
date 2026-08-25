@@ -176,13 +176,6 @@ func TestABlankValueInAFileFailsStartup(t *testing.T) {
 		"a blank string where there is no tag to restore": {
 			"validation:\n  specURL: \"\"\n", "validation.specURL",
 		},
-		// An empty sequence renders to the same empty string. It is the one
-		// blank YAML can spell unambiguously, and its effect today is exactly
-		// omitting the key — so it is refused for the same reason and at the
-		// same cost, and the loader keeps one rule instead of two.
-		"an empty sequence": {
-			"replication:\n  targets: []\n", "replication.targets",
-		},
 	}
 
 	common := writeYAML(t, "log:\n  level: warn\nvalidation:\n  specURL: https://spec.example/beckn.yaml\nreplication:\n  targets: [remote]\n")
@@ -203,6 +196,56 @@ func TestABlankValueInAFileFailsStartup(t *testing.T) {
 				t.Fatalf("load accepted %q in common.yaml", tc.blanked)
 			}
 		})
+	}
+}
+
+// An explicit empty sequence is not a blank, and is the one exception to the
+// rule above. `key: ""` is ambiguous — it reads as both "no value" and "the
+// empty string" — and earns the refusal. `[]` has one meaning in YAML, and for
+// Replication.Targets empty is a value rather than an absence: it is how the
+// no-op replicator is selected. Refusing it would leave a deployment no way to
+// say it replicates to nothing once the reviewed layer names a target, because
+// no other layer can clear one either.
+func TestAnExplicitEmptyListClearsTheLayerBelow(t *testing.T) {
+	common := writeYAML(t, "replication:\n  targets: [remote-a, remote-b]\n")
+	instance := writeYAML(t, "replication:\n  targets: []\n")
+
+	cfg, err := load(common, instance, baseEnv())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Replication.Targets) != 0 {
+		t.Errorf("Replication.Targets = %v, want empty", cfg.Replication.Targets)
+	}
+
+	// The fixture is a change and not a coincidence: without the instance layer
+	// the two targets stand, so the assertion above is the clearing and not the
+	// absence of a value to clear.
+	below, err := load(common, noInstance, baseEnv())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	assertEqual(t, "Replication.Targets below the instance layer", len(below.Replication.Targets), 2)
+}
+
+// Clearing works because env.Parse never sets a blank value (env.go:507), so the
+// field keeps its zero value. That holds only where there is no envDefault to
+// come back in its place: a slice field carrying one would answer the clearing
+// spelling above with the tag instead, silently. No slice field has a default
+// today, and this is what stops one arriving without the trap being noticed.
+func TestNoSliceFieldCarriesADefault(t *testing.T) {
+	var offenders []string
+	walkLeaves(reflect.TypeFor[Config](), "", func(path string, field reflect.StructField) {
+		if field.Type.Kind() != reflect.Slice {
+			return
+		}
+		if _, ok := field.Tag.Lookup("envDefault"); ok {
+			offenders = append(offenders, path)
+		}
+	})
+	if len(offenders) > 0 {
+		t.Errorf("slice fields with an envDefault, which an empty list cannot clear: %s",
+			strings.Join(offenders, ", "))
 	}
 }
 

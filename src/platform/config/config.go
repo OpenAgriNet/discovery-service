@@ -360,13 +360,22 @@ func fieldNamed(group reflect.Type, key string) (reflect.StructField, bool) {
 // scalar renders a YAML leaf as the env parser reads it. A sequence becomes the
 // comma-separated form env already understands for slices.
 //
-// An empty rendering is refused rather than written through. It would overwrite
+// A blank string is refused rather than written through. It would overwrite
 // whatever the layer below set, and env.Parse ignores a blank value — so the
 // envDefault tag comes back where a field has one and the zero value stands
 // where it does not, and neither is what the file said. A blank in the
 // environment is merely ignored, but in a reviewed file it is a deliberate
 // keystroke and says so loudly; refusing costs only a spelling indistinguishable
 // from omitting the key, which is already how a layer defers to the one below.
+//
+// An empty sequence is not a blank and is written through. `key: ""` reads as
+// both "no value" and "the empty string", which is why it is refused; `[]` has
+// one meaning, and for a slice field empty is a value rather than an absence —
+// Replication.Targets spells the no-op replicator that way. It is also the only
+// way any layer can clear what a lower one set, since a blank cannot. That
+// holds because env.Parse never sets a blank, leaving the field zero, so a slice
+// field must carry no envDefault to come back in its place — pinned by
+// TestNoSliceFieldCarriesADefault.
 func scalar(value any) (string, error) {
 	switch typed := value.(type) {
 	case nil:
@@ -379,9 +388,6 @@ func scalar(value any) (string, error) {
 	case map[string]any:
 		return "", errors.New("key takes a value, not a nested block")
 	case []any:
-		if len(typed) == 0 {
-			return "", errors.New("key has an empty list: omit the key to take the layer below")
-		}
 		items := make([]string, 0, len(typed))
 		for _, item := range typed {
 			text, err := scalar(item)

@@ -3085,7 +3085,15 @@ Load():
   in practice; a blank value in either YAML file is a deliberate keystroke and
   **fails startup naming the key** instead. One rule, two enforcements, and
   refusing costs only a spelling indistinguishable from omitting the key — which
-  is already how a layer defers to the one below.
+  is already how a layer defers to the one below. **An explicit empty sequence
+  is not a blank**: `key: ""` reads as both "no value" and "the empty string"
+  and so is refused, but `[]` has one meaning, and for a slice field empty is a
+  value rather than an absence — `Replication.Targets` spells the no-op
+  replicator that way. It is also the only way any layer can clear what a lower
+  one set, since a blank cannot; without it a deployment that must replicate to
+  nothing would have no spelling for that once the reviewed layer named a
+  target. A slice field therefore carries no `envDefault`, which would come back
+  in place of the cleared value.
 - Groups: `App` (`Network`, `DefaultTimezone` = `Asia/Kolkata`, validated by
   `time.LoadLocation` at startup so a typo fails the boot rather than silently
   shifting every daily window), `Server`, `Database`, `Search` (`DefaultPageSize`,
@@ -3139,8 +3147,8 @@ a missing `instance.yaml` is not an error; `validate` rejects
 candidate pool smaller than one page cannot fill it, and since the pool is also
 the reachable pagination depth, that ratio is how many pages deep a caller may
 go; an unloadable `DefaultTimezone` fails startup; a blank environment variable
-leaves the layer below standing and a blank value in a file fails startup naming
-the key; `IncludeLegacyType` and `AllowNetworkFetch` default to `false` and
+leaves the layer below standing, a blank value in a file fails startup naming the
+key, and an explicit empty list clears what the layer below set; `IncludeLegacyType` and `AllowNetworkFetch` default to `false` and
 `ResolutionCells` to 8, since all three are security- or output-shaping defaults
 that must not drift silently.
 
