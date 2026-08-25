@@ -1313,7 +1313,7 @@ derive — a domain.DeriveFunc (merged domain.Catalog, touched []string)
     # Run on the MERGE RESULT — a patch that never mentioned a geo field still
     # re-derives the same rows, which is what makes the unconditional geometry
     # replacement in UpsertCatalog idempotent.
-    found, faults ← extractGeometries(i, merged)
+    found, faults ← ExtractGeometries(i, merged)
     merged.Geometries                 ← found where Owners is empty
     merged.Resources[k].Geometries    ← found where k ∈ Owners
     # `∈`, not `==`: one offer geometry covering three resources lands on all
@@ -1515,8 +1515,10 @@ repo.UpsertCatalog(ctx, patch, updateMode, derive):
         insert resource_geometries (catalog_id, resource_id ← NULL,
                target_path, source_path, geojson,
                cells_full, cells_cover, bbox…)
-        # Two H3 fills per geometry, not three: there is no ContainmentFull
-        # cover to write, because there is no column to write it to.
+        # Two H3 fills per geometry, not three: `cells_full` is the
+        # ContainmentFull cover and `cells_cover` the ContainmentOverlapping
+        # one. There is no ContainmentCenter fill, because there is no column
+        # to write it to and no operator that could read it.
 
     for each resource in merged.Resources where id ∈ touched:
         # `touched` includes resources named only by a patched offer — see
@@ -1684,10 +1686,10 @@ be able to have a caller ask about either one, separately, and get different
 answers.
 
 ```pseudo
-extractGeometries(catalogIndex, catalog) → []domain.Geometry, []domain.Fault:
+ExtractGeometries(catalogIndex, merged) → []domain.Geometry, []domain.Fault:
     out, faults ← [], []
 
-    walk(catalog, path: "$.catalogs[{catalogIndex}]", depth: 0, owners: nil)
+    walk(merged, path: "$.catalogs[{catalogIndex}]", depth: 0, owners: nil)
     return out, faults
 
 
@@ -2075,7 +2077,7 @@ does not cover it — a live catalog routinely carries last month's offer.
 
 ### The spatial predicate, as it appears in every query
 
-One `EXISTS` serves all seven answered operators. `@spatial_op` selects the
+One `EXISTS` serves all seven answered operators. `spatial_op` selects the
 branch, so the operators cannot drift apart in seven copies of a query.
 
 ```sql
@@ -2123,7 +2125,7 @@ AND (
               -- the box in would answer `S_DISJOINT` with only the rows near
               -- the query, which is the exact complement of the truth.
               (sqlc.narg('min_lat')::double precision IS NULL
-               OR @spatial_op::text = 'S_DISJOINT'
+               OR sqlc.narg('spatial_op')::text = 'S_DISJOINT'
                OR (    g.max_lat >= sqlc.narg('min_lat')::double precision
                    AND g.min_lat <= sqlc.narg('max_lat')::double precision
                    AND g.max_lon >= sqlc.narg('min_lon')::double precision
@@ -2142,7 +2144,7 @@ AND (
               -- ones nobody can find.
               AND (g.cells_cover IS NULL
                    OR sqlc.narg('q_cover')::bigint[] IS NULL
-                   OR CASE @spatial_op::text
+                   OR CASE sqlc.narg('spatial_op')::text
                         WHEN 'S_INTERSECTS' THEN g.cells_cover && sqlc.narg('q_cover')
                         WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && sqlc.narg('q_full'))
                         WHEN 'S_WITHIN'     THEN g.cells_full  <@ sqlc.narg('q_cover')
@@ -2180,11 +2182,12 @@ AND (
 that are always set.** sqlc types `@x` as a non-null Go value and
 `sqlc.narg('x')` as a nullable one, so naming one parameter both ways is not an
 inconsistency of style — it is two incompatible declarations of one argument,
-and sqlc generates from whichever it reads. `@geo_negate`, `@match_negate` and
-`@spatial_op` stay `@` because the mapper always sets them — a `Quantifier` of
-`Any` is still a value, and the two flags are derived from it in one place; everything else is absent from an
-intent carrying no spatial constraint, which is what the `IS NULL`
-short-circuit on the first line tests.
+and sqlc generates from whichever it reads. `@geo_negate` and `@match_negate`
+stay `@` because the mapper always sets them — a `Quantifier` of `Any` is still
+a value, and the two flags are derived from it in one place. Everything else,
+`spatial_op` included, is absent from an intent carrying no spatial constraint —
+which is precisely what the `IS NULL` short-circuit on the first line tests, and
+why `spatial_op` cannot be one of the two.
 
 **`S_DWITHIN` and `S_INTERSECTS` share a branch, and that is not a copy-paste
 error.** Once the query geometry has been dilated by `k` rings (or replaced by
@@ -3023,18 +3026,27 @@ precedes `Signature`).
 - `RateLimit` (A4): per-caller token bucket keyed by subscriber id, falling back
   to remote IP. Evicts idle buckets so the map is not a leak.
 - `Trace` is a **no-op pass-through here**, but not side-effect-free: before
-  calling the next handler it stamps a response header,
-  `X-Beckn-Trace-Seen: 1`, purely so Task 20's chain-order test has something
-  to observe at `Trace`'s slot — a pass-through with no marker would be the one
-  link in the chain no order test could place. Task 23 replaces the inside of
-  this function with `otelhttp` instrumentation and drops the marker header;
-  `Trace`'s exported signature does not change, so nothing built against the
-  chain in Task 20 needs to change when Task 23 lands.
+  calling the next handler it appends `trace` to a response header,
+  `X-Beckn-Chain`, purely so Task 20's chain-order test has something to
+  observe at `Trace`'s slot — a pass-through with no marker would be the one
+  link in the chain no order test could place. **`Recover` appends `recover`
+  to the same header**, also before calling next, and the pair is what makes
+  the order *testable* rather than merely *visible*: `Header().Add` preserves
+  insertion order, so `Values("X-Beckn-Chain")` reads back as the order the
+  two links actually ran. A single presence marker could not do this. Both
+  middlewares run before anything calls `WriteHeader` — `Recover` writes the
+  500 only after catching — so a lone presence marker survives a recovered
+  panic under **either** nesting, and an assertion that it is present passes
+  whichever way round the two are mounted. Task 23 replaces the
+  inside of `Trace` with `otelhttp` and drops its `trace` entry; `Trace`'s
+  exported signature does not change, so nothing built against the chain in
+  Task 20 needs to change when Task 23 lands.
 
 **Tests pin:** a panic below `Recover` yields 500 with no stack in the body;
 burst+1 requests from one caller yields `429`; two different callers do not
-share a bucket; `Trace` passes the request through unmodified except for the
-`X-Beckn-Trace-Seen: 1` marker (no other behaviour to test yet — Task 23 pins
+share a bucket; `Trace` passes the request through unmodified except for its
+`X-Beckn-Chain: trace` entry, and `Recover` adds `recover` on every request and
+not only on the ones it catches (no other behaviour to test yet — Task 23 pins
 the real span).
 
 ---
@@ -3418,7 +3430,7 @@ This package knows about cells, boxes and metres. It knows nothing about
 JSONPath: the provider path is constructed by the mapper and normalised by
 `jsonpath.Canonicalise`, so `geo` never names a document location. It knows
 nothing about SQL either — `MatchesOp` is the **memory backend's twin** of the
-`CASE @spatial_op` block, and the two are written from the same table in
+`CASE spatial_op` block, and the two are written from the same table in
 Geospatial Design rather than from each other.
 
 `MatchesOp(op, aFull, aCover, qFull, qCover) → bool` implements the seven
@@ -3727,8 +3739,9 @@ one `Retriever` per mode, `Hydrator`, `RRF`
 
 **Produces:** `publish.MapCatalog(catalog, directive, network) →
 domain.CatalogPatch, fatal, partial` (the two fault kinds separately),
-`publish.ExtractCatalogGeometries(catalogIndex, provider) → []domain.Geometry,
-[]domain.Fault`, `discover.MapIntent`, `jsonpath.Canonicalise`
+`publish.ExtractGeometries(catalogIndex, merged domain.Catalog) →
+[]domain.Geometry, []domain.Fault`, `discover.MapIntent`,
+`jsonpath.Canonicalise`
 
 - **`MapCatalog` returns a `CatalogPatch`, not a `Catalog` (A8).** A `Catalog`
   is defaults-filled, and a defaults-filled struct cannot say whether the
@@ -3893,9 +3906,12 @@ all off this page.
 
 **Tests pin:** the middleware chain is in the specified order (asserted by
 observing side effects, not by reading a slice — including `Trace`'s
-position: its `X-Beckn-Trace-Seen: 1` marker is confirmed present even on a
-response where `Recover` has caught a panic, which is what proves `Trace`
-wraps `Recover` rather than the reverse); `/healthz` answers with the
+position: on a route that panics, `Values("X-Beckn-Chain")` is exactly
+`["trace", "recover"]`, and the reverse nesting yields `["recover", "trace"]`.
+It is the *order of the two entries* that carries the proof, not the presence
+of either: both are appended before `Recover` writes the 500, so a test
+asserting only that a marker survived the panic passes under both
+arrangements); `/healthz` answers with the
 database down and `/readyz` does not; shutdown completes an in-flight request.
 
 ---
@@ -3975,9 +3991,13 @@ Modify: `src/platform/middlewares/trace.go`
 - `otelhttp` on the server, W3C Trace Context propagated **in and out** — a
   correlation id that stops at the process boundary satisfies the letter of
   "logged" and none of the point (TRD §6). This replaces Task 8's no-op
-  `Trace` middleware body — including dropping the `X-Beckn-Trace-Seen: 1`
-  marker Task 8 added only so Task 20's order test had something to observe —
-  and the chain Task 20 wired and tested does not move.
+  `Trace` middleware body — including dropping the `X-Beckn-Chain: trace`
+  entry Task 8 added only so Task 20's order test had something to observe —
+  and the chain Task 20 wired and tested does not move. **Task 20's order
+  assertion moves with it**, from the header pair to the span: the 500 a
+  recovered panic produces must be recorded *inside* the exported span, which
+  is true only if `Trace` wraps `Recover`. `Recover` keeps its `recover`
+  entry, which is what still places it against `RequestLogger` and `Envelope`.
 - OTLP exporter configured by `OTEL_*`, defaulting to `none` so a deployment
   with no collector still starts.
 - `search_degraded_modes` and `embedding_duration_ms` become metrics rather than
