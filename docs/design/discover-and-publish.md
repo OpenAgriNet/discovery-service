@@ -2800,8 +2800,11 @@ implementer writes the source against the interfaces named in **Produces**.
   Production defaults to `noop` (A5), so without the pin the entire semantic
   path — query embedding, HNSW, RRF, the dimension guard, the degradation
   report — would go untested from the day semantic search was deferred.
-- ADRs 0001–0015, including **0012** (which interfaces are promises) and
-  **0013** (protocol version coexistence) — T5.
+- ADRs 0001–0015: **0001–0011** are the Technology Decisions table (D1–D11),
+  **0012** (which interfaces are promises) and **0013** (protocol version
+  coexistence) come from T5, **0014** is the seam-ships-with-a-test rule
+  applied to `CatalogReplicator`/`Keyring` (A7), and **0015** is the
+  master-catalog-and-inheritance rejection (A1).
 
 **Test:** `make build && make lint && make test` on a clean checkout.
 
