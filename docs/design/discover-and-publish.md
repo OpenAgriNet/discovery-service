@@ -1765,7 +1765,10 @@ POST /discover
 {
   "context": { "action": "discover", "version": "2.0.0",
                "messageId": "...", "transactionId": "...",
-               "timestamp": "...", "networkId": "mahavistar",     // OPTIONAL
+               "timestamp": "...", "networkId": "mahavistar",
+               // OPTIONAL → omitted searches EVERY network. NOT publish's
+               // default (line above in Publish); different field, different
+               // question.
                // A Context field, not an Intent one. `#fragment` is @type.
                "schemaContext": ["https://beckn.org/Agri#SeedLot"] },
   "message": { "intent": {
@@ -3804,8 +3807,10 @@ key; with `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` the same request is
 `BIZ_CAPABILITY_UNAVAILABLE`. Semantic rather than `structured`, because
 `filters` is evaluated in Phase 1 and semantic is the mode a default Phase 1
 deployment actually lacks — a degradation pin whose trigger no longer degrades
-tests nothing; `networkId` absent falls back to
-`APP_NETWORK_ID`; limit is clamped to `MaxPageSize` rather than rejected; a
+tests nothing; `networkId` absent searches EVERY network — the repository
+emits no network predicate, and no fallback to `APP_NETWORK_ID` happens, which
+is scenario 29 asserted from the other side; limit is clamped to `MaxPageSize`
+rather than rejected; a
 rendered catalog carries its offers, and carries no offer whose resources are
 all off this page.
 
