@@ -18,9 +18,10 @@ sqlc + pgx; wiring is explicit constructors, no reflection.
 > contract. Everything in a `pseudo` block describes intent and order; the
 > implementer writes idiomatic Go against the interfaces named in each task.
 >
-> The long-form version of this plan, with full source for every step, is
-> archived at `documentations/archive/`. It is history, not instruction — where
-> the two disagree, this file wins.
+> An earlier long-form version of this plan, with full source for every step,
+> existed but is superseded and has been moved out of this repository — it is
+> not present here and is not a reference for implementation. This file is the
+> only instruction.
 
 ---
 
@@ -185,7 +186,8 @@ Two sit on the boundary and are called out rather than dismissed:
 
 ## Technology Decisions
 
-Recorded as ADRs in `documentations/adr/`.
+Recorded as ADRs in `docs/adr/` — `documentations/` is gitignored as working
+notes, not the shared record (see `.gitignore`).
 
 | # | Layer | Choice | Rejected | Why |
 |---|---|---|---|---|
@@ -2779,7 +2781,7 @@ implementer writes the source against the interfaces named in **Produces**.
 
 **Files:** `go.mod`, `Makefile`, `Dockerfile`, `docker-compose.yml`,
 `.golangci.yml`, `.github/workflows/ci.yml`, `LICENSE`, `README.md`,
-`config/common.yaml`, `config/instance.yaml.example`, `documentations/adr/`
+`config/common.yaml`, `config/instance.yaml.example`, `docs/adr/`
 
 **Produces:** `make build|test|lint|sqlc|migrate`; a CI pipeline.
 
@@ -3852,7 +3854,7 @@ database down and `/readyz` does not; shutdown completes an in-flight request.
 
 **Files:**
 `tests/acceptance/{suite,publish,discover,offers,validity,performance,
-                  defaults,geopath}_test.go`
+                  defaults,geopath,spatial}_test.go`
 
 The thirty-five scenarios above, over HTTP against the assembled service with
 a real database. Only the embedder is stubbed. One file per scenario group, so
