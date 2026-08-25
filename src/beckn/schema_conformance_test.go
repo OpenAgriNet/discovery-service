@@ -70,6 +70,9 @@ func bindings() []binding {
 		{"DiscoverAction", DiscoverAction{}, schemaPath("DiscoverAction")},
 		{"OnDiscoverAction", OnDiscoverAction{}, schemaPath("OnDiscoverAction")},
 
+		{"Nack", Nack{}, schemaPath("NackBadRequest")},
+		{"NackMessage", NackMessage{}, schemaPath("NackBadRequest", "properties", "message")},
+
 		{"Error", Error{}, schemaPath("Error")},
 		{"ErrorDetails", ErrorDetails{}, schemaPath("Error", "properties", "details")},
 	}
@@ -338,6 +341,42 @@ func exportedStructNames(t *testing.T) []string {
 				return true
 			})
 		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// One Nack struct serves 400, 401, 403, 429 and 500, which is only sound while
+// those five schemas declare the same `message` shape. They do today — each is
+// {status, messageId, error} — so this asserts it rather than leaving a reader
+// to diff five nodes by eye. A spec that gave one of them a sixth key would
+// otherwise be answered with a body missing it, silently, on that status only.
+func TestEveryNackVariantSharesOneMessageShape(t *testing.T) {
+	spec := loadSpec(t)
+	want := propertyNames(t, resolve(t, spec, schemaPath("NackBadRequest", "properties", "message")))
+
+	for _, variant := range []string{
+		"NackUnauthorized", "NackForbidden", "NackTooManyRequests", "NackNotFound",
+		"NackConflict", "NackDiscretionary", "ServerError",
+	} {
+		got := propertyNames(t, resolve(t, spec, schemaPath(variant, "properties", "message")))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s.message declares %v, NackBadRequest.message declares %v; "+
+				"one Nack struct can no longer serve both", variant, got, want)
+		}
+	}
+}
+
+func propertyNames(t *testing.T, node map[string]any) []string {
+	t.Helper()
+
+	properties, ok := node["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("node declares no properties")
+	}
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names

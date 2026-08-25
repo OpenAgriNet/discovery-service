@@ -98,3 +98,38 @@ type ErrorDetails struct {
 	Path  string `json:"path,omitempty"`
 	Cause *Error `json:"cause,omitempty"`
 }
+
+// Nack is the synchronous rejection body: the Ack family with `status` pinned
+// to NACK and an `error` that is required rather than optional.
+//
+// One struct serves 400, 401, 403, 429 and 500. The spec names a separate
+// schema for each — NackBadRequest, NackUnauthorized, NackForbidden,
+// NackTooManyRequests, ServerError — but all five declare the same `message`
+// shape, and five identical Go structs would be five places for a sixth key to
+// be added to four of them. What actually distinguishes the five is the status
+// line and the headers, and those are the response writer's.
+//
+// There is no `context` key, on this or on any member of the Ack family. A
+// caller correlates a NACK by `message.messageId`, which is why the writer
+// needs the request's message id and needs nothing else from the envelope.
+type Nack struct {
+	Message NackMessage `json:"message"`
+}
+
+// NackMessage is the Nack body's single property.
+//
+// Error is a value and not a pointer because every schema that pins `status` to
+// NACK also lists `error` in its required set: a rejection with no error is a
+// body that fails its own schema, and a pointer would make that shape
+// constructible.
+type NackMessage struct {
+	Status    string `json:"status"`
+	MessageID string `json:"messageId"`
+	Error     Error  `json:"error"`
+}
+
+// The two members of the Ack family's status enum.
+const (
+	StatusAck  = "ACK"
+	StatusNack = "NACK"
+)
