@@ -51,8 +51,13 @@ func TestTargetsParsesBothWireForms(t *testing.T) {
 // whole index, which is the failure mode the plan refuses everywhere on the
 // spatial path: a caller who asked to be filtered must never be told 200 with
 // the world in it.
+//
+// `null` is in this list because encoding/json hands it to UnmarshalJSON like
+// any other value, and unmarshalling it into a string succeeds as a no-op — so
+// the obvious implementation reads `targets: null` as one empty pointer that
+// no sender wrote. `[null]` is the same hole one level down.
 func TestTargetsRefusesAShapeTheOneOfDoesNotAdmit(t *testing.T) {
-	for _, body := range []string{`12`, `{"path":"$"}`, `[1,2]`, `true`} {
+	for _, body := range []string{`12`, `{"path":"$"}`, `[1,2]`, `true`, `null`, `[null]`, `["$['a']",null]`} {
 		var got Targets
 		if err := json.Unmarshal([]byte(body), &got); err == nil {
 			t.Errorf("unmarshal %s: accepted, want an error (got %#v)", body, got)

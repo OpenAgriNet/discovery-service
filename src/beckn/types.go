@@ -24,6 +24,7 @@
 package beckn
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -256,18 +257,38 @@ type Targets []string
 // Refusing matters more than it looks: a shape read as "no targets" would drop
 // the spatial predicate and answer with the whole index, which is exactly the
 // silently-widened result the plan rejects on every branch of the spatial path.
+//
+// `null` is checked before anything else because encoding/json hands it to this
+// method like any other value, and unmarshalling it into a string succeeds as a
+// no-op — so reading the arms in order would turn `targets: null` into one
+// empty pointer that no sender wrote, with no error to show for it. The array
+// is read as []*string for the same reason one level down: `["$.a", null]` is
+// not an array of strings, and []string would quietly render that null as "".
+// Neither shape satisfies the oneOf, so neither is this package's to interpret.
 func (t *Targets) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("targets is null, which is neither a string nor an array of strings")
+	}
+
 	var one string
 	if err := json.Unmarshal(data, &one); err == nil {
 		*t = Targets{one}
 		return nil
 	}
 
-	var many []string
+	var many []*string
 	if err := json.Unmarshal(data, &many); err != nil {
 		return fmt.Errorf("targets is neither a string nor an array of strings: %w", err)
 	}
 
-	*t = Targets(many)
+	out := make(Targets, len(many))
+	for i, pointer := range many {
+		if pointer == nil {
+			return fmt.Errorf("targets[%d] is null, which is not a JSONPath pointer", i)
+		}
+		out[i] = *pointer
+	}
+
+	*t = out
 	return nil
 }

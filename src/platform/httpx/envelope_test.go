@@ -81,6 +81,10 @@ func TestParseEnvelopeRefusesABodyItCannotRead(t *testing.T) {
 		"a message scalar":  `{"context": {}, "message": 7}`,
 		"trailing garbage":  `{"context": {}, "message": {}} {}`,
 		"a bare JSON value": `"publish"`,
+		// json.Decode treats null as a no-op against a struct, so this is the
+		// one non-object that returns a zero envelope and no error at all.
+		"a JSON null":        `null`,
+		"a padded JSON null": "  null\n",
 	}
 
 	for name, body := range cases {

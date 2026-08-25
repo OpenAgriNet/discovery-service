@@ -37,8 +37,18 @@ type Envelope[T any] struct {
 func ParseEnvelope[T any](body []byte) (Envelope[T], error) {
 	var envelope Envelope[T]
 
-	if len(bytes.TrimSpace(body)) == 0 {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
 		return envelope, fmt.Errorf("read envelope: body is empty")
+	}
+
+	// Every other non-object — an array, a number, a bare string — fails the
+	// decode below with a type error. `null` does not: encoding/json treats it
+	// as a no-op against a struct, so it would be the one unreadable body that
+	// came back as a zero envelope and a nil error, and the request would be
+	// answered as a context fault rather than as the transport failure it is.
+	if bytes.Equal(trimmed, []byte("null")) {
+		return envelope, fmt.Errorf("read envelope: body is JSON null, not an object")
 	}
 
 	// A Decoder rather than json.Unmarshal, for More(): Unmarshal accepts a
