@@ -114,13 +114,13 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 
 | | What changes | Tasks |
 |---|---|---|
-| **A1** | An explicit `catalogType: MASTER`, and any resource carrying `extends`, are rejected at intake; inheritance ships later. **An absent directive is REGULAR, not inferred (C9).** Rejection is **per catalog** — nine regular catalogs land, the one master reports `REJECTED`. Nothing about it reaches the schema: `catalog_type` and the master columns are dropped, so refusal lives entirely in the mapper | 15, 17, 18, 21 |
+| **A1** | An explicit `catalogType: MASTER`, and any resource carrying `extends`, are rejected at intake; inheritance ships later. **An absent directive is REGULAR, not inferred (C9).** Rejection is **per catalog** — nine regular catalogs land, the one master reports `REJECTED`. Nothing about it reaches the schema: `catalog_type` and the master columns are dropped, so refusal lives in the publish service, checked before the mapper runs | 15, 17, 18, 21 |
 | **A2** | Discover runs its retrieval modes concurrently, under one deadline | 16 |
 | **A3** | One embedding config struct; the read path gets its own deadline, separate from the write path's | 2, 13, 16 |
-| **A4** | Per-caller rate limiting on the protocol routes, `429` + `Retry-After` + `AUT_RATE_LIMITED` | 5, 20 |
+| **A4** | Per-caller rate limiting on the protocol routes, `429` + `Retry-After` + `AUT_RATE_LIMITED` | 5, 8, 20 |
 | **A5** | Semantic search is deferred. `EMBEDDING_PROVIDER=noop` by default; the column, the index and the `Embedder` seam all ship | 1, 2, 13, 14 |
 | **A6** | Retrieval splits into one `Retriever` per mode plus a `Hydrator`; query scope becomes a value, not a hidden global | 1, 2, 11, 16, 20 |
-| **A7** | Publish gains a write fan-out seam and a reconciliation queue. The `pending_targets` **column** is dropped — it was written on every resource and read by nothing, so it was debt recorded in the hot table. The seam survives in `Retriever`/`Hydrator` and the fan-out interface; a queue table arrives with the second store that needs one | 1, 2, 15, 16, 18, 20 |
+| **A7** | Publish gains a write fan-out seam and a reconciliation queue. The `pending_targets` **column** is dropped — it was written on every resource and read by nothing, so it was debt recorded in the hot table. The seam survives in `Retriever`/`Hydrator` and the fan-out interface; a queue table arrives with the second store that needs one | 1, 2, 11, 15, 16, 18, 20 |
 | **A8** | `updateMode` becomes a **content** rule, not only a row-set rule. **MERGE** is RFC 7396 JSON Merge Patch against the stored documents — an absent key keeps its stored value, an explicit `null` deletes it, an array replaces wholesale — with `resources` and `offers` matched by `id` rather than by array position. **FULL** replaces the catalog outright, its own columns included: omissions reset to defaults, and resources and offers the payload omits are deleted. Publish therefore becomes read-modify-write under a row lock, and every derived column is computed **after** the merge | 11, 15, 17, 18, 21 |
 | **A10** | **Spatial search is answered as cell-set algebra, not as a prefilter in front of an exact stage.** Every geometry stores two H3 covers — `CONTAINMENT_FULL` (a guaranteed subset, which proves positives) and `CONTAINMENT_OVERLAPPING` (a guaranteed superset, which proves negatives) — and each CQL2 operator becomes an array predicate over the pair. **Seven of the nine operators are answered** where the previous design answered `S_DWITHIN` alone; `S_TOUCHES` and `S_CROSSES` are refused as unapproximable at any resolution rather than deferred. All seven RFC 7946 types work on **both** sides of the constraint, so the Point-only limit and the `NONE`-inversion it caused are gone. The costs are accuracy of one cell (~1.1 km at r8), oversize geometries decided by bounding box, and no path to cadastral precision without PostGIS | 11, 12, 14, 16, 17, 21 |
 | **A9** | **Declared defaults are resolved in the mapper and apply in both update modes.** A field the spec gives a default — `catalogType`, `updateMode`, `isActive`, `visibleTo`, an offer's `resourceIds` — is filled in before the merge runs, so an omitted one reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule | 11, 15, 17, 18, 21 |
@@ -218,7 +218,7 @@ src/publish/                        SYSTEM 1
   controller.go  service.go  mapper.go  geometry.go  text.go
 
 src/discover/                       SYSTEM 2
-  controller.go  service.go  intent_mapper.go  filter_parser.go(PARKED)
+  controller.go  service.go  intent_mapper.go  filter_parser.go
 
 src/domain/                         THE CONTRACT — stdlib + uuid only
   catalog.go        Catalog, Resource, Offer, GeoPoint, Geometry
@@ -241,9 +241,13 @@ src/indexing/
 src/storage/
   postgres/  pool.go  mapping.go  catalog_repository.go
              search_repository.go  retrievers.go  hydrator.go
-             fusion.go  jsonpath.go(PARKED)  queries/  gen/
-  memory/repository.go              proves the port is portable
-  conformance/                      one suite both backends must pass
+             fusion.go  jsonpath.go  queries/  gen/
+  memory/repository.go              proves the port is portable — built
+                                     incrementally from Task 11 onward, not
+                                     in one task; see Task 11's Files note
+  conformance/                      one suite both backends must pass —
+                                     scaffolded in Task 11, extended by every
+                                     task that adds repository behaviour
 
 src/platform/                       knows nothing of publish or discover
   config/  constants/  errors/  logger/  httpx/  registry/
@@ -253,7 +257,7 @@ src/platform/                       knows nothing of publish or discover
                schema_source, schema_cache, extended_validator(L2)
   telemetry/   telemetry.go  metrics.go
   middlewares/ recover, request_logger, envelope, signature,
-               ratelimit, schema_validator
+               ratelimit, schema_validator, trace
 
 src/app/                            COMPOSITION ROOT
   container.go  router.go  server.go
@@ -2889,7 +2893,7 @@ path (a lint rule, asserted by `make lint`).
 ### Task 4 — Beckn Wire Types & Envelope Parsing
 
 **Files:** `src/beckn/types.go`, `actions.go`, `errors.go`,
-`src/platform/httpx/envelope.go`
+`src/platform/httpx/envelope.go`, `tests/testdata/beckn-v2.0.0.yaml`
 
 **Produces:** `beckn.Context`, `Catalog`, `Resource`, `Offer`,
 `GeoJSONGeometry`, `CatalogPublishAction`, `PublishDirective`,
@@ -3004,9 +3008,10 @@ precedes `Signature`).
 ### Task 8 — Request Logger & Rate Limit Middleware
 
 **Files:** `src/platform/middlewares/request_logger.go`, `recover.go`,
-`ratelimit.go`
+`ratelimit.go`, `trace.go`
 
-**Produces:** `middlewares.RequestID`, `Recover`, `RequestLogger`, `RateLimit(cfg)`
+**Produces:** `middlewares.RequestID`, `Recover`, `RequestLogger`, `RateLimit(cfg)`,
+`Trace`
 
 - `RequestLogger` starts its timer before auth, writes `X-Response-Time`, and
   logs one completion line with status, duration and `error_type`.
@@ -3014,10 +3019,16 @@ precedes `Signature`).
   caller; the trace goes to the log.
 - `RateLimit` (A4): per-caller token bucket keyed by subscriber id, falling back
   to remote IP. Evicts idle buckets so the map is not a leak.
+- `Trace` is a **no-op pass-through here** — it exists so Task 20 can wire the
+  full fixed chain, including `Trace`'s position, before Task 23 gives it a
+  body. Task 23 replaces the inside of this function with `otelhttp`
+  instrumentation; its exported signature does not change, so nothing built
+  against the chain in Task 20 needs to change when Task 23 lands.
 
 **Tests pin:** a panic below `Recover` yields 500 with no stack in the body;
 burst+1 requests from one caller yields `429`; two different callers do not
-share a bucket.
+share a bucket; `Trace` passes the request through unmodified (it has no
+behaviour to test yet — Task 23 pins that).
 
 ---
 
@@ -3085,7 +3096,7 @@ with a bad attribute is rejected with a pointer into `resourceAttributes`.
 
 **Files:** `src/domain/catalog.go`, `query.go`, `validity.go`, `mergepatch.go`,
 `errors.go`, `catalog_repository.go`, `search_repository.go`, `retrieval.go`,
-`purity_test.go`
+`purity_test.go`, `src/storage/memory/repository.go`, `src/storage/conformance/`
 
 **Produces:**
 
@@ -3344,9 +3355,24 @@ way across every test. They leave `Owners` empty, because a *catalog's* provider
 location is catalog-level. An offer's provider location is not, and the fixtures
 that need one set `Owners` to the ids that offer covers.
 
+This task also **scaffolds, but does not finish, the memory backend**:
+`storage/memory` gets a minimal in-process implementation of
+`CatalogRepository` and `SearchRepository` — plain maps, no spatial or search
+behaviour yet, just enough to satisfy both interfaces — plus a
+`storage/conformance` package holding the fixture types (not yet the
+fixtures themselves) that later tasks add cases to. This is why the seam is
+named here and not deferred to whichever task happens to need it first: a
+memory backend built piecemeal, one undocumented task at a time, is the
+`pending_targets` mistake again — debt nobody owns because no task's Files
+list says so. **Tasks 12, 15 and 16 each modify `storage/memory/repository.go`
+and add fixtures to `storage/conformance/`** as they give the Postgres side
+the behaviour the memory side must match; none of them create the package.
+
 **Tests pin:** `purity_test.go` walks the package's imports and fails on
 anything outside stdlib + `google/uuid`. This is the swap boundary, enforced
-rather than requested.
+rather than requested. The memory backend's skeleton passes both interfaces'
+method sets at compile time — no behavioural test yet, since it has no
+behaviour yet.
 
 Its twin `tests/architecture/boundary_test.go` is written **here**, in the task
 that names the boundary, and walks every package in the module: an import of
@@ -3371,7 +3397,8 @@ forty-resource catalog.
 
 ### Task 12 — H3 Geospatial Indexing
 
-**Files:** `src/indexing/geo/h3.go`, `distance.go`
+**Files:** `src/indexing/geo/h3.go`, `distance.go`;
+Modify: `src/storage/memory/repository.go`, `src/storage/conformance/`
 
 **Produces:** `geo.CoverGeometry(Geometry) → Cover`,
 `geo.CoverQuery(geometry, op, distanceMeters) → full, cover []uint64`,
@@ -3520,7 +3547,8 @@ row that is never returned and never logged.
 ### Task 15 — PostgreSQL Catalog Repository (Write)
 
 **Files:** `src/storage/postgres/pool.go`, `mapping.go`,
-`catalog_repository.go`, `queries/publish.sql`, `sqlc.yaml`
+`catalog_repository.go`, `queries/publish.sql`, `sqlc.yaml`;
+Modify: `src/storage/memory/repository.go`, `src/storage/conformance/`
 
 **Produces:** `postgres.NewCatalogRepository(pool) → domain.CatalogRepository`
 
@@ -3609,7 +3637,8 @@ overwrites the first with a document that never contained it.
 ### Task 16 — PostgreSQL Search Repository (Read)
 
 **Files:** `src/storage/postgres/search_repository.go`, `retrievers.go`,
-`hydrator.go`, `fusion.go`, `queries/discover.sql`
+`hydrator.go`, `fusion.go`, `queries/discover.sql`;
+Modify: `src/storage/memory/repository.go`, `src/storage/conformance/`
 
 **Produces:** `postgres.NewSearchRepository(...) → domain.SearchRepository`,
 one `Retriever` per mode, `Hydrator`, `RRF`
@@ -3800,6 +3829,12 @@ is the mount, and `POST /catalog/publish` is a `404` — the action lives in the
 body, not the path. One ordering test: a publish whose transaction rolls back
 does **not** call the replicator, asserted with a recording stub, because
 "announced then rolled back" is the failure the after-commit rule exists for.
+One stats test: `stats.itemCount`/`providerCount`/`categoryCount` on a
+multi-resource, multi-`@type` catalog match the request-scoped reading C5/C12
+decided — `itemCount` counts what *this request* landed, not what the catalog
+now holds, which is the case a re-publish of one resource would get wrong if
+the count were read back from the row set instead of carried through from the
+merge.
 
 ---
 
@@ -3913,13 +3948,15 @@ expression is a `400` from the cast, never an interpolated query.
 
 ### Task 23 — OpenTelemetry Tracing & Metrics
 
-**Files:** `src/platform/telemetry/telemetry.go`, `metrics.go`
+**Files:** `src/platform/telemetry/telemetry.go`, `metrics.go`;
+Modify: `src/platform/middlewares/trace.go`
 
 **Produces:** `telemetry.Init(cfg)`, RED metrics, retrieval-mode counters
 
 - `otelhttp` on the server, W3C Trace Context propagated **in and out** — a
   correlation id that stops at the process boundary satisfies the letter of
-  "logged" and none of the point (TRD §6).
+  "logged" and none of the point (TRD §6). This replaces Task 8's no-op
+  `Trace` middleware body; the chain Task 20 wired and tested does not move.
 - OTLP exporter configured by `OTEL_*`, defaulting to `none` so a deployment
   with no collector still starts.
 - `search_degraded_modes` and `embedding_duration_ms` become metrics rather than
