@@ -64,7 +64,7 @@ summarize what you built — don't continue to the next task until I say go.
 | 2 | Configuration & Feature Flags | |
 | 3 | Structured Logging | |
 | 4 | Beckn Wire Types & Envelope Parsing | |
-| 5 | Error Model & Response Writer | **Read the task's code-families bullet first.** `SPT_` is not a prefix the spec has and `DOM_` has no enum members; six codes this plan spends are absent from `ErrorCode`. `Error.code` is a bare `type: string`, so nothing fails loudly — the families have to be settled deliberately before the constructors are written |
+| 5 | Error Model & Response Writer | **Settled** — `Error`'s own description makes Level 1 codes canonical and Level 2 (`details.cause`) codes open, so the six invented codes were mapped onto members that exist (table in the task). `SPT_` is not a family; `DOM_` keeps its `error_type` row and gets no constructor. `beckn.ErrorCode` constants are pinned against the fixture's enum |
 | 6 | Ed25519 Signature Primitives | *Deferred, but built* — implement the primitive now, but `AUTH_ENABLE_SIGNATURE_VERIFICATION` stays `false`. Don't wire it live ahead of schedule |
 | 7 | Signature & Envelope Middleware | |
 | 8 | Request Logger & Rate Limit Middleware | Also builds `Trace` as a **no-op pass-through** that stamps `X-Beckn-Trace-Seen: 1` — the marker exists purely so Task 20's order test can observe `Trace`'s position before Task 23 gives it a real body |

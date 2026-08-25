@@ -180,7 +180,7 @@ Two sit on the boundary and are called out rather than dismissed:
 | Publish-time embedding (A5) | 15–40 ms of inference on the write path for one mode of four | `noop` provider; nullable `embedding` column doubles as the backfill queue |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
 | Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
-| `S_TOUCHES` and `S_CROSSES` | **Not deferred — refused.** A cell decomposition has no measure-zero boundary, so no resolution answers them. Listing them as "later" would be a promise nothing in this design can keep | `400` + `SPT_UNSUPPORTED_OPERATOR`, naming the operator |
+| `S_TOUCHES` and `S_CROSSES` | **Not deferred — refused.** A cell decomposition has no measure-zero boundary, so no resolution answers them. Listing them as "later" would be a promise nothing in this design can keep | `400` + `SCH_TYPE_NOT_SUPPORTED`, naming the operator |
 
 ---
 
@@ -1302,7 +1302,7 @@ Response, per C3, is the callback shape returned inline:
         // array on CatalogProcessingResult — nothing is packed (C7).
         { "catalogId": "cat-3", "status": "PARTIAL",
           "stats": { "itemCount": 8, "providerCount": 1, "categoryCount": 1 },
-          "errors": [{ "code": "SCH_INVALID_GEOMETRY", "message": "...",
+          "errors": [{ "code": "SCH_INVALID_FORMAT", "message": "...",
                        "details": { "path": "$.message.catalogs[2]" } }] }
       ] } }
 ```
@@ -1328,7 +1328,7 @@ service.Publish(ctx, reqContext, action):
     seen ← {}
     for each catalog in action.catalogs:                       # sequential
         if catalog.id ∈ seen:
-            results += REJECTED(SCH_DUPLICATE_CATALOG_ID, jsonPath(catalog))
+            results += REJECTED(SCH_SCHEMA_VALIDATION_FAILED, jsonPath(catalog))
             continue
             # One transaction per catalog means two entries with one id are two
             # transactions against one row, and the second wins: its merge
@@ -2040,7 +2040,7 @@ negotiate(query, capabilities) → modes, degraded:
     wanted  ← modes the intent asks for
     missing ← wanted \ capabilities
     if missing is empty:          return wanted, []
-    if config.Search.FailOnUnavailableMode: fail BIZ_CAPABILITY_UNAVAILABLE naming missing
+    if config.Search.FailOnUnavailableMode: fail NET_CATALOG_SOURCE_UNAVAILABLE naming missing
     return wanted ∩ capabilities, missing
 ```
 
@@ -2075,7 +2075,7 @@ mapSpatial(constraints, config) → *SpatialFilter, []string targets, []domain.F
     c ← constraints[0]
 
     # Seven of the nine CQL2 operators. S_TOUCHES and S_CROSSES are refused
-    # with SPT_UNSUPPORTED_OPERATOR — not "not yet", but "not approximable by
+    # with SCH_TYPE_NOT_SUPPORTED — not "not yet", but "not approximable by
     # a cell decomposition at any resolution" (see Geospatial Design). The
     # message says which, because a caller deciding whether to wait for a later
     # release needs to know it will never arrive.
@@ -2658,7 +2658,7 @@ cells, no shared `full` cells. Refining the resolution does not converge on an
 answer, because touching is a measure-zero condition and cells have measure.
 `S_CROSSES` fails the same way.
 
-They are a **400**, `SPT_UNSUPPORTED_OPERATOR`, naming the operator and saying
+They are a **400**, `SCH_TYPE_NOT_SUPPORTED`, naming the operator and saying
 that it is not approximable rather than not yet built — the distinction matters
 to a caller deciding whether to wait for a later release. They are also the two
 operators nothing in agricultural discovery asks for: they are cartographic
@@ -2895,7 +2895,7 @@ goes looking for.
 | 4 | `InvalidPayloadIsRejected` | A resource with no `id` NACKs with a `SCH_` code and a JSON pointer, **and nothing is stored** — asserted by searching afterwards and finding nothing. Run twice: once with the key absent, once with `"id": ""`, because the schema requires the key and says nothing about its length, so a presence check alone admits the one value `uq_resource_geometries` cannot key |
 | 5 | `MasterCatalogAndInheritanceAreRefused` | A1: both a MASTER catalog and a child carrying `extends` come back `REJECTED` / `SCH_TYPE_NOT_SUPPORTED`, neither stored. Not "inheritance works" — "inheritance is refused, visibly" |
 | 6 | `ARejectedMasterDoesNotBlockTheRegularCatalogsBesideIt` | One request, two catalogs, two verdicts in one results array. The per-catalog transaction boundary, end to end |
-| 6a | `TheSameCatalogIdTwiceInOneRequestIsRefused` | One request carrying the same `catalog.id` twice. The first is `ACCEPTED`, the second `REJECTED` / `SCH_DUPLICATE_CATALOG_ID`, and the catalog that is stored is the **first** one — asserted on a field the two entries disagree about. Without the check both are `ACCEPTED` and the stored catalog is the second, so one of the two success verdicts describes a document that no longer exists; under `FULL` the second entry additionally deletes the first's resources. The pin is on the stored document rather than on the status array, because two `ACCEPTED`s is exactly what the bug looks like from outside |
+| 6a | `TheSameCatalogIdTwiceInOneRequestIsRefused` | One request carrying the same `catalog.id` twice. The first is `ACCEPTED`, the second `REJECTED` / `SCH_SCHEMA_VALIDATION_FAILED`, and the catalog that is stored is the **first** one — asserted on a field the two entries disagree about. Without the check both are `ACCEPTED` and the stored catalog is the second, so one of the two success verdicts describes a document that no longer exists; under `FULL` the second entry additionally deletes the first's resources. The pin is on the stored document rather than on the status array, because two `ACCEPTED`s is exactly what the bug looks like from outside |
 | 7 | `MissingSignatureIsUnauthorized` | With verification on, an unsigned publish is `401` / `AUT_SIGNATURE_MISSING` |
 | 8 | `UnsignedRequestSucceedsWhenVerificationIsOff` | The same request succeeds with the flag off. With #7 this is what makes shipping the deferral honest: the flag is the only thing between here and enforcement |
 | 9 | `ACallerOverItsRateGetsA429` | Burst+1 requests: the last is `429` / `AUT_RATE_LIMITED` with `Retry-After`. Also pins that the limiter is *mounted* — an unmounted middleware is invisible to every other test |
@@ -2967,7 +2967,7 @@ repository tests instead.
 | 30 | `TheOperatorSetIsAnsweredAsSetAlgebra` | One stored Polygon (a district service area) and one query Polygon overlapping half of it. `S_INTERSECTS` matches, `S_DISJOINT` does not, `S_WITHIN` does not, `S_CONTAINS` does not, `S_OVERLAPS` does. Then a query Polygon strictly inside the stored one: `S_CONTAINS` matches and `S_OVERLAPS` no longer does. Five operators in two fixtures, because each is one `CASE` arm and an arm that is never executed is an arm that only compiles |
 | 30a | `DegenerateFullCoversDoNotDisableTheOperator` | The same three operators against a stored **Point** — a shopfront, the commonest geometry in the corpus and the one whose `cells_full` is empty. A Point inside the query Polygon: `S_WITHIN` matches, `S_DISJOINT` does not. A Point 400 km outside it: `S_WITHIN` does **not** match, and `S_DISJOINT` does. Then a query **Point** against a stored Polygon containing it: `S_CONTAINS` matches, and against a Polygon 400 km away it does not. Scenario 30 cannot catch any of this — Polygon-vs-Polygon is exactly the case where both `cells_full` are non-empty and a `full`-phrased refutation still behaves. Phrased over `full`, every one of the negative assertions here fails: `'{}' <@ anything` is TRUE, `NOT ('{}' && anything)` is TRUE, and the operators degrade to the bounding box or, for `S_DISJOINT`, to nothing at all |
 | 31 | `DisjointIsNotBoundingBoxFiltered` | A third fixture 400 km away, queried with `S_DISJOINT`. It matches — and would not if the bounding box were ANDed in for every operator, which is the one place a box pre-rejection is not merely conservative but inverted. Split out from #30 because it is the only scenario whose failure looks like an empty result rather than a wrong one, and an empty result reads as "no data" |
-| 32 | `TouchesAndCrossesAreRefused` | `S_TOUCHES` and `S_CROSSES` NACK with `SPT_UNSUPPORTED_OPERATOR` and a `400`. Asserted rather than left to the schema, because both are valid `beckn.yaml` enum values — L1 validation passes them, and the only thing standing between a caller and a silently wrong answer is this refusal |
+| 32 | `TouchesAndCrossesAreRefused` | `S_TOUCHES` and `S_CROSSES` NACK with `SCH_TYPE_NOT_SUPPORTED` and a `400`. Asserted rather than left to the schema, because both are valid `beckn.yaml` enum values — L1 validation passes them, and the only thing standing between a caller and a silently wrong answer is this refusal |
 | 33 | `AnOversizeGeometryIsFoundByItsBoundingBox` | A polygon over `MaxIndexCoverCells` stores NULL in both cell columns and is still returned by a search inside its bounding box. Pins the `cells_cover IS NULL` short-circuit — without it a NULL array makes the operator branch NULL, NULL is a miss inside `EXISTS`, and the largest service areas in the catalogue become the only ones nobody can find |
 | 34 | `QuantifierAllRequiresEveryTargetedGeometry` | A catalog with two `availableAt` locations, one inside the radius and one outside. `ANY` returns it, `ALL` does not; a second catalog with both locations inside is returned by both. `ALL` is answerable only because every geometry type is now decidable, so this scenario is also the assertion that it stopped being a fault |
 | 35 | `AnOfferGeometryFindsOnlyThatOffersResources` | A catalog with three resources and one offer whose `resourceIds` names only the second, its `provider.availableAt` in Koramangala. A search targeting `$.catalogs[*].offers[*].provider.availableAt[*].geo` within 1 km returns **that resource only**, with that offer hydrated onto it — not the other two. Then republish the same offer with `resourceIds` emptied: the search now returns all three, because empty means catalog-wide in `resource_geometries` exactly as it already does in `offers.resource_ids`. The republish half is the half that matters: it patches the OFFER and names no resource, so it fails unless `touched` follows `resourceIds`. **A third leg, and the one an assertion on the response cannot make:** republish the offer again with `resourceIds` naming only the *third* resource, then assert both directions — the search returns the third resource and not the second, **and** `resource_geometries` holds no row for the second. Only the direct table assertion catches a relocation, because the stale row it leaves behind is a row too many rather than a row too few, and a search that returns it looks like a search that worked. This is what pins `touched` to the union of the offer's pre- and post-merge ids rather than to the merged ones |
@@ -3234,7 +3234,7 @@ allowlisted deviations and no others.
 `src/platform/httpx/response_writer.go`
 
 **Produces:** `errors.AppError`, one constructor per code family
-(`CTX_`, `AUT_`, `SCH_`, `SPT_`, `NET_`, `BIZ_`, `POL_`), `httpx.WriteJSON`,
+(`CTX_`, `AUT_`, `SCH_`, `NET_`, `BIZ_`, `POL_`), `httpx.WriteJSON`,
 `httpx.WriteNack`
 
 - C1: body stays spec-conformant; `error_type` goes on the
@@ -3249,32 +3249,55 @@ allowlisted deviations and no others.
 - **The single writer.** A second place that serialises a NACK is a review
   rejection.
 - A4: `AUT_RATE_LIMITED` → `429` + `Retry-After`.
-- **Settle the code families against the enum before writing the
-  constructors.** This section was written assuming `SPT_` and `DOM_` are
-  families the spec admits. Verified against the pinned fixture, neither is:
-  `ErrorCode` has 76 members across exactly `CTX_`, `NET_`, `AUT_`, `SCH_`,
-  `POL_` and `BIZ_`. `SPT_` appears nowhere in the document; `DOM_` appears
-  only in the prose of `Error.code`'s own description, with zero enum members
-  behind it. Six codes this plan spends are absent from the enum:
-  `SCH_DUPLICATE_CATALOG_ID`, `SCH_INVALID_GEOMETRY`, `SPT_UNSUPPORTED_OPERATOR`,
-  `BIZ_CAPABILITY_UNAVAILABLE`, `CTX_UNKNOWN_ACTION` and `CTX_INVALID_ENVELOPE`.
+- **Settled: the enum is closed at Level 1 and open at Level 2, so the six
+  invented codes are mapped onto members that exist.** This section was written
+  assuming `SPT_` and `DOM_` are families the spec admits. Verified against the
+  pinned fixture, neither is: `ErrorCode` has 76 members across exactly `CTX_`,
+  `NET_`, `AUT_`, `SCH_`, `POL_` and `BIZ_`. `SPT_` appears nowhere in the
+  document; `DOM_` appears only in the prose of `Error.code`'s own description,
+  with zero enum members behind it.
 
-  What makes this a decision rather than a bug: `Error.code` is declared
-  `type: string`, **not** `$ref: ErrorCode`. The enum constraint is prose —
-  "MUST be a value from the ErrorCode enum schema" — so L1 validation will not
-  reject a code that is not in it, and neither will the conformance walk, which
-  compares property names. Nothing fails loudly either way, which is exactly
-  why it has to be chosen on purpose: either map the six onto enum members that
-  already exist and lose some precision in the message, or keep them and record
-  here that this service treats `code` as open, with the prose it is departing
-  from quoted. Whichever is chosen, `SPT_` and `DOM_` in the Produces line and
-  the Tests pin below change with it.
+  Nothing fails loudly either way — `Error.code` is `type: string`, **not**
+  `$ref: ErrorCode`, so L1 will not reject an invented code and Task 4's
+  conformance walk compares property names, not values. What decides it is the
+  one normative sentence in `Error`'s own description, and it distinguishes the
+  two levels: *"The topmost (Level 1) Error in any payload MUST carry a code
+  from the canonical Beckn error code enum. The self-referencing details.cause
+  property (Level 2) MAY carry domain-specific or non-canonical error codes
+  from downstream systems."* A `MUST` in the document that `beckn.yaml` could
+  not express in JSON Schema is still a `MUST`, and this plan's own rule is
+  that the schema wins.
+
+  So: **every code this service mints is an enum member**, and the six that
+  were not become the nearest member that is, with the precision they carried
+  moving into `message` and `details.path` — which is where a human reads it
+  anyway. The chain is where the openness lives: a `details.cause` arriving
+  from downstream is Level 2 and is passed through verbatim, `DOM_` prefix and
+  all, which is exactly the case C1's `DOM_`→DOMAIN row exists for.
+
+  | Invented | Becomes | Why that member |
+  |---|---|---|
+  | `CTX_INVALID_ENVELOPE` | `SCH_INVALID_JSON` | Every way `Envelope` fails — empty body, `null`, an array, trailing content, a decode error — is "this is not a readable JSON object", which is the member's whole meaning. The fault is below the context, not in it: there is no `context` yet to be invalid |
+  | `CTX_UNKNOWN_ACTION` | `CTX_ACTION_MISMATCH` | The only action-specific member, and an action this service indexes no schema for *is* a mismatch between what the envelope declares and what the receiver serves |
+  | `SCH_DUPLICATE_CATALOG_ID` | `SCH_SCHEMA_VALIDATION_FAILED` | Stays in `SCH_` for the reason the publish flow already gives — the fault is in the shape of the request, not in what it asks for. No member names duplication, so the generic one carries it and the message names the id |
+  | `SCH_INVALID_GEOMETRY` | `SCH_INVALID_FORMAT` | An unreadable geometry is a value whose format is wrong, which is the member's meaning exactly. `details.path` still points at the geometry |
+  | `SPT_UNSUPPORTED_OPERATOR` | `SCH_TYPE_NOT_SUPPORTED` | `S_TOUCHES` and `S_CROSSES` are valid `beckn.yaml` enum values, so `SCH_INVALID_ENUM` would be a lie — the value is fine and the receiver refuses it. That is the same species of refusal as A1's `MASTER`, which already spends this member |
+  | `BIZ_CAPABILITY_UNAVAILABLE` | `NET_CATALOG_SOURCE_UNAVAILABLE` | A retrieval mode is a source of catalogs, and it is unavailable. `NET_` also attributes the fault correctly: the caller's request is valid and the identical request succeeds on a deployment that configured the mode, so this is the deployment's gap and `error_type` should read `SYSTEM`, not `DOMAIN` |
+
+  **`beckn.ErrorCode` is a named type with a constant per code this service
+  mints, and a test asserts every one of them is a member of the fixture's
+  enum.** That is what keeps the decision true after this paragraph is
+  forgotten: the `MUST` the schema could not encode is encoded here instead.
+  `DOM_` keeps its `error_type` row and gets no constructor — this service
+  never mints one, it only relays one.
 
 **Tests pin:** every code prefix maps to the right `error_type`, `DOM_`
-included; three faults produce a `cause` chain three levels deep and lose none;
-the serialised NACK validates against the spec's own `Error` schema — the
-assertion a list in `details` would have failed;
-`ERROR_INCLUDE_LEGACY_TYPE=true` re-injects `type` and `false` omits it.
+included, and every one of the fixture's 76 enum members lands on a type rather
+than on a blank header; every `beckn.ErrorCode` constant is a member of that
+enum; three faults produce a `cause` chain three levels deep and lose none; the
+serialised NACK validates against the spec's own `Error` schema — the assertion
+a list in `details` would have failed; `ERROR_INCLUDE_LEGACY_TYPE=true`
+re-injects `type` and `false` omits it.
 
 ---
 
@@ -3309,7 +3332,7 @@ from a bad signature.
 Envelope(next):
     body ← read and buffer          # signature and validation both re-read it
     envelope ← parse {context, message}
-    if parse fails: NACK CTX_INVALID_ENVELOPE
+    if parse fails: NACK SCH_INVALID_JSON
     stash envelope + raw body in ctx; restore r.Body for downstream
     next
 ```
@@ -3384,7 +3407,7 @@ request:
     ValidateEnvelope(ctx)      # C6 — runs even when L1 is disabled, because a
                                # response context cannot be built without it
     if L1 enabled:
-        schema ← index[ctx.action]  else NACK CTX_UNKNOWN_ACTION
+        schema ← index[ctx.action]  else NACK CTX_ACTION_MISMATCH
         faults ← validate whole envelope against schema
         if faults: NACK 400, faults chained through details.cause  # C7
 ```
@@ -4184,7 +4207,7 @@ fault on a `PARTIAL` verdict rather than sinking the catalog; a resource with no
 ignore; an over-max radius is a 400; each of `ANY`, `NONE` and `ALL` sets its
 own pair of `Quantifier`-derived flags, and an unrecognised quantifier is a 400
 rather than a silent downgrade to `ANY`; `S_TOUCHES` and `S_CROSSES` are 400s
-carrying `SPT_UNSUPPORTED_OPERATOR`;
+carrying `SCH_TYPE_NOT_SUPPORTED`;
 `"https://beckn.org/Agri#SeedLot"` splits into context and type while
 `"https://beckn.org/Agri"` leaves the type empty, and a URI whose fragment
 contains a second `#` splits only on the first; a validity with `startTime` and
@@ -4254,7 +4277,7 @@ Flow, `negotiate` and the mapper gates are the pseudocode in
 **Tests pin:** a `textSearch` under `EMBEDDING_PROVIDER=noop` yields results
 plus an `X-Beckn-Degraded: semantic` header, and a body carrying no `degraded`
 key; with `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` the same request is
-`BIZ_CAPABILITY_UNAVAILABLE`. Semantic rather than `structured`, because
+`NET_CATALOG_SOURCE_UNAVAILABLE`. Semantic rather than `structured`, because
 `filters` is evaluated in Phase 1 and semantic is the mode a default Phase 1
 deployment actually lacks — a degradation pin whose trigger no longer degrades
 tests nothing; `networkId` absent searches EVERY network — the repository
@@ -4409,7 +4432,7 @@ from an accident:
 | `validFrom`/`validTo` | Whether publishers send them | **Not under those names.** The wire field is `validity: TimePeriod` on `Catalog` and `Offer`, and it expands into four columns, not two. `Resource` has neither `validity` nor `isActive`, so every gate column on `resources` is a derived copy |
 | JSONPath grammar | Which grammar the spec mandates | **PostgreSQL SQL/JSON path only.** The spec names none normatively and its one example is RFC 9535, so this is a recorded deviation — C10 |
 | Offer-level geometry | Which resource a geometry under `offers[*].provider.availableAt[*].geo` belongs to | **The offer's `resourceIds`**, one `resource_geometries` row per id, falling back to catalog-level when that array is absent or empty — the same meaning `offers.resource_ids` already carries. `Geometry.ResourceID *string` became `Owners []string` and `touched` had to start following offers; no migration, the column was always there |
-| Unavailable retrieval mode | Whether a mode the backend cannot run should degrade or refuse | **Degrade by default; refuse on request.** `SEARCH_FAIL_ON_UNAVAILABLE_MODE` defaults to `false`: the modes that work run, results come back, and the missing one is named in `X-Beckn-Degraded` (C11). Setting it `true` makes the same request a `400` / `BIZ_CAPABILITY_UNAVAILABLE`. The default points at degrade for one reason: Phase 1 ships `EMBEDDING_PROVIDER=noop`, so `semantic` is missing on every fresh deployment, and defaulting to refuse would make every `textSearch` a `400` until an Ollama deployment exists — a default that breaks the common case is a default nobody keeps. Silently ignoring the mode remains the option that is never taken |
+| Unavailable retrieval mode | Whether a mode the backend cannot run should degrade or refuse | **Degrade by default; refuse on request.** `SEARCH_FAIL_ON_UNAVAILABLE_MODE` defaults to `false`: the modes that work run, results come back, and the missing one is named in `X-Beckn-Degraded` (C11). Setting it `true` makes the same request a `400` / `NET_CATALOG_SOURCE_UNAVAILABLE`. The default points at degrade for one reason: Phase 1 ships `EMBEDDING_PROVIDER=noop`, so `semantic` is missing on every fresh deployment, and defaulting to refuse would make every `textSearch` a `400` until an Ollama deployment exists — a default that breaks the common case is a default nobody keeps. Silently ignoring the mode remains the option that is never taken |
 | Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), rebased onto `resources.attributes` or `offers.offer`, run through the `@?` operator. Both columns and both `jsonb_path_ops` indexes were already landing in Task 14, so promoting it costs a parser and a rebase and no migration. Scenario 18 changed from asserting the degradation to asserting the filter |
 | Semantic search (A5) | When embeddings are turned on | **Not in Phase 1 — confirmed.** `EMBEDDING_PROVIDER=noop` ships; the column, the HNSW index and the `Embedder` seam ship with it, and `embedding IS NULL` is the backfill queue for whenever an Ollama deployment exists. Deferred deliberately, not undecided |
 | `networkId` default (discover) | Whether an omitted `networkId` scopes to `APP_NETWORK_ID` or searches every network | **Searches every network.** `visibleTo` is how a publisher restricts a catalog to specific networks; it is not an access boundary a network-less discover caller is presumed locked out of by default. A caller wanting isolation supplies `networkId`. Publish's own default — `APP_NETWORK_ID`, to fill an empty `visibleTo` — is unchanged (C8); the two fields answer different questions and no longer share a fallback |
