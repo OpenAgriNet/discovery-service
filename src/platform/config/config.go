@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"reflect"
 	"strings"
@@ -232,7 +231,15 @@ func load(common, instance string, environment map[string]string) (Config, error
 	if err := overlay(instance, true, overrides); err != nil {
 		return Config{}, err
 	}
-	maps.Copy(overrides, environment)
+	// A blank variable cannot express an empty value — env.Parse reads a
+	// present-but-blank entry as absent and applies the envDefault tag — so
+	// copying it over the YAML layer erases a reviewed value and resurrects the
+	// tag default in its place. Skipping it leaves the layer below intact.
+	for name, value := range environment {
+		if value != "" {
+			overrides[name] = value
+		}
+	}
 
 	cfg, err := parse(overrides)
 	if err != nil {

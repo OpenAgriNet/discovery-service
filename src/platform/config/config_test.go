@@ -118,6 +118,39 @@ func TestALayerDoesNotClobberAValueItDoesNotSet(t *testing.T) {
 	assertEqual(t, "App.DefaultTimezone (set by nothing)", cfg.App.DefaultTimezone, "Asia/Kolkata")
 }
 
+// A blank variable is not a value, at any layer. env.Parse reads a
+// present-but-blank entry as absent and applies the envDefault tag, so copying
+// one over the YAML layer erases a reviewed value and resurrects the tag
+// default in its place — neither the file's answer nor the operator's. A
+// `value: ""` in a pod spec and a blank key arriving through envFrom are the
+// ordinary shapes this arrives in, and instance.yaml is the layer an operator
+// is most likely to have set.
+func TestABlankVariableDoesNotEraseTheLayerBelow(t *testing.T) {
+	instance := writeYAML(t, "search:\n  maxPageSize: 40\nlog:\n  level: warn\nvalidation:\n  specURL: https://spec.example/beckn.yaml\n")
+
+	environment := baseEnv()
+	for _, blank := range []string{"SEARCH_MAX_PAGE_SIZE", "LOG_LEVEL", "VALIDATION_SPEC_URL"} {
+		environment[blank] = ""
+	}
+
+	cfg, err := load(repoCommonYAML, instance, environment)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// 40 is neither the tag default nor common.yaml's value, so this
+	// distinguishes the instance layer surviving from either one replacing it.
+	assertEqual(t, "Search.MaxPageSize", cfg.Search.MaxPageSize, 40)
+	assertEqual(t, "Log.Level", cfg.Log.Level, "warn")
+
+	// The same rule where there is no tag to resurrect: a blank variable used
+	// to win here and set the field empty, which made one spelling mean "clear
+	// this" for the five fields with no default and "restore the default" for
+	// the twenty with one. Uniform is the point — precedence is a property of
+	// the layer, not of whether a field happens to carry a tag.
+	assertEqual(t, "Validation.SpecURL", cfg.Validation.SpecURL, "https://spec.example/beckn.yaml")
+}
+
 func TestYAMLKeysMatchFieldsCaseInsensitively(t *testing.T) {
 	common := writeYAML(t, "APP:\n  defaulttimezone: Europe/Berlin\n")
 
