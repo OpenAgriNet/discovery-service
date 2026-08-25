@@ -158,6 +158,54 @@ func TestABlankVariableDoesNotEraseTheLayerBelow(t *testing.T) {
 	assertEqual(t, "Validation.SpecURL", cfg.Validation.SpecURL, "https://spec.example/beckn.yaml")
 }
 
+// The same rule one layer down, and there a refusal rather than a skip: a blank
+// in a reviewed file is a deliberate keystroke, so it must say so loudly rather
+// than quietly erase the layer below and put the envDefault tag back in its
+// place. One gesture with two opposite outcomes — ignored in the environment,
+// destructive in a file — is the ambiguity the unknown-key refusal exists to
+// prevent. Refusing costs only a spelling indistinguishable from omitting the
+// key, which is how a layer says "take the one below" already.
+func TestABlankValueInAFileFailsStartup(t *testing.T) {
+	cases := map[string]struct{ blanked, names string }{
+		// A field with a tag: "" would come back as info — neither the file's
+		// warn nor empty.
+		"a blank string over a value the layer below set": {
+			"log:\n  level: \"\"\n", "log.level",
+		},
+		// A field without one: "" used to win outright and clear it.
+		"a blank string where there is no tag to restore": {
+			"validation:\n  specURL: \"\"\n", "validation.specURL",
+		},
+		// An empty sequence renders to the same empty string. It is the one
+		// blank YAML can spell unambiguously, and its effect today is exactly
+		// omitting the key — so it is refused for the same reason and at the
+		// same cost, and the loader keeps one rule instead of two.
+		"an empty sequence": {
+			"replication:\n  targets: []\n", "replication.targets",
+		},
+	}
+
+	common := writeYAML(t, "log:\n  level: warn\nvalidation:\n  specURL: https://spec.example/beckn.yaml\nreplication:\n  targets: [remote]\n")
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			instance := writeYAML(t, tc.blanked)
+
+			if _, err := load(common, instance, baseEnv()); err == nil {
+				t.Fatalf("load accepted %q", tc.blanked)
+			} else if !strings.Contains(err.Error(), tc.names) {
+				t.Errorf("error %v does not name %q", err, tc.names)
+			}
+
+			// Refused in the reviewed file too: the rule is a property of the
+			// layer, not of which of the two files it is written in.
+			if _, err := load(instance, noInstance, baseEnv()); err == nil {
+				t.Fatalf("load accepted %q in common.yaml", tc.blanked)
+			}
+		})
+	}
+}
+
 func TestYAMLKeysMatchFieldsCaseInsensitively(t *testing.T) {
 	common := writeYAML(t, "APP:\n  defaulttimezone: Europe/Berlin\n")
 

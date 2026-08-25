@@ -3077,6 +3077,15 @@ Load():
   fails startup** — a typo must not silently do nothing.
 - Secrets (`DATABASE_URL` above all) never appear in either file. That is why
   the environment sits on top (TRD §8).
+- **A blank is not a value, at any layer.** `env.Parse` reads a present-but-blank
+  variable as absent, so applying one would erase the reviewed value it
+  overwrote and put the `envDefault` tag back in its place — neither the file's
+  answer nor the operator's. A blank variable is therefore **ignored**, which is
+  what `value: ""` in a pod spec and a blank key arriving through `envFrom` mean
+  in practice; a blank value in either YAML file is a deliberate keystroke and
+  **fails startup naming the key** instead. One rule, two enforcements, and
+  refusing costs only a spelling indistinguishable from omitting the key — which
+  is already how a layer defers to the one below.
 - Groups: `App` (`Network`, `DefaultTimezone` = `Asia/Kolkata`, validated by
   `time.LoadLocation` at startup so a typo fails the boot rather than silently
   shifting every daily window), `Server`, `Database`, `Search` (`DefaultPageSize`,
@@ -3129,9 +3138,11 @@ a missing `instance.yaml` is not an error; `validate` rejects
 `MaxPageSize < DefaultPageSize`, and rejects `MaxCandidatesPerMode < MaxPageSize` — a
 candidate pool smaller than one page cannot fill it, and since the pool is also
 the reachable pagination depth, that ratio is how many pages deep a caller may
-go; an unloadable `DefaultTimezone` fails startup; `IncludeLegacyType` and
-`AllowNetworkFetch` default to `false` and `ResolutionCells` to 8, since all
-three are security- or output-shaping defaults that must not drift silently.
+go; an unloadable `DefaultTimezone` fails startup; a blank environment variable
+leaves the layer below standing and a blank value in a file fails startup naming
+the key; `IncludeLegacyType` and `AllowNetworkFetch` default to `false` and
+`ResolutionCells` to 8, since all three are security- or output-shaping defaults
+that must not drift silently.
 
 ---
 

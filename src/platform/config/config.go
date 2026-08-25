@@ -359,13 +359,29 @@ func fieldNamed(group reflect.Type, key string) (reflect.StructField, bool) {
 
 // scalar renders a YAML leaf as the env parser reads it. A sequence becomes the
 // comma-separated form env already understands for slices.
+//
+// An empty rendering is refused rather than written through. It would overwrite
+// whatever the layer below set, and env.Parse ignores a blank value — so the
+// envDefault tag comes back where a field has one and the zero value stands
+// where it does not, and neither is what the file said. A blank in the
+// environment is merely ignored, but in a reviewed file it is a deliberate
+// keystroke and says so loudly; refusing costs only a spelling indistinguishable
+// from omitting the key, which is already how a layer defers to the one below.
 func scalar(value any) (string, error) {
 	switch typed := value.(type) {
 	case nil:
 		return "", errors.New("key has no value")
+	case string:
+		if typed == "" {
+			return "", errors.New("key has an empty value: omit the key to take the layer below")
+		}
+		return typed, nil
 	case map[string]any:
 		return "", errors.New("key takes a value, not a nested block")
 	case []any:
+		if len(typed) == 0 {
+			return "", errors.New("key has an empty list: omit the key to take the layer below")
+		}
 		items := make([]string, 0, len(typed))
 		for _, item := range typed {
 			text, err := scalar(item)
