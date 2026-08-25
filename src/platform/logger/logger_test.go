@@ -139,15 +139,22 @@ func TestNewRejectsALevelItCannotParse(t *testing.T) {
 	}
 }
 
-// The four field names are spelled in one place. Two spellings of one key are
-// two fields to the log pipeline, and the mistake is invisible until someone
+// The field names are spelled in one place. Two spellings of one key are two
+// fields to the log pipeline, and the mistake is invisible until someone
 // queries for the one that is missing.
+//
+// error_type is C1's: the PRD's five categories have no home in a body the
+// spec closed, so the header carries them to the caller and this field carries
+// them to the operator. Both or neither — a category that is only ever on the
+// wire cannot be aggregated over.
 func TestTheRequestFieldsAreNamedInSnakeCase(t *testing.T) {
 	cases := map[string]zap.Field{
 		"request_id":     RequestID("a"),
 		"transaction_id": TransactionID("a"),
 		"message_id":     MessageID("a"),
 		"action":         Action("a"),
+		"error_type":     ErrorType("a"),
+		"error_code":     ErrorCode("a"),
 	}
 
 	for want, field := range cases {

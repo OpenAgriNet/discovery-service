@@ -90,10 +90,11 @@ func With(ctx context.Context, fields ...zap.Field) context.Context {
 	return NewContext(ctx, FromContext(ctx).With(fields...))
 }
 
-// The four fields a request-scoped logger is pre-populated with. They are
-// spelled here and nowhere else: one key spelled two ways is two fields to
-// whatever queries the logs, and the mistake stays invisible until someone
-// searches for the spelling that is missing.
+// The fields a request-scoped logger is pre-populated with, and the two the
+// response writer adds when it writes a fault. They are spelled here and
+// nowhere else: one key spelled two ways is two fields to whatever queries the
+// logs, and the mistake stays invisible until someone searches for the
+// spelling that is missing.
 
 // RequestID names this service's own per-request identifier.
 func RequestID(id string) zap.Field { return zap.String("request_id", id) }
@@ -107,3 +108,14 @@ func MessageID(id string) zap.Field { return zap.String("message_id", id) }
 
 // Action names the Beckn action from the envelope's context.
 func Action(action string) zap.Field { return zap.String("action", action) }
+
+// ErrorType names the PRD error category (C1). The category was dropped from
+// the v2.0.0 body, so it reaches the caller as the X-Beckn-Error-Type header
+// and the operator as this field — both, because a category that exists only
+// on the wire is one nothing can be aggregated over.
+func ErrorType(category string) zap.Field { return zap.String("error_type", category) }
+
+// ErrorCode names the Beckn code that went out with the fault, so a log line
+// and the body the caller received can be reconciled without a timestamp
+// search.
+func ErrorCode(code string) zap.Field { return zap.String("error_code", code) }
