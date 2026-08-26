@@ -128,6 +128,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A7** | Publish gains a write fan-out seam and a reconciliation queue. The `pending_targets` **column** is dropped — it was written on every resource and read by nothing, so it was debt recorded in the hot table. The seam survives in `Retriever`/`Hydrator` and the fan-out interface; a queue table arrives with the second store that needs one | 1, 2, 11, 15, 16, 18, 20 |
 | **A8** | `updateMode` becomes a **content** rule, not only a row-set rule. **MERGE** is RFC 7396 JSON Merge Patch against the stored documents — an absent key keeps its stored value, an explicit `null` deletes it, an array replaces wholesale — with `resources` and `offers` matched by `id` rather than by array position. **FULL** replaces the catalog outright, its own columns included: omissions reset to defaults, and resources and offers the payload omits are deleted. Publish therefore becomes read-modify-write under a row lock, and every derived column is computed **after** the merge | 11, 15, 17, 18, 21 |
 | **A10** | **Spatial search is answered as cell-set algebra, not as a prefilter in front of an exact stage.** Every geometry stores two H3 covers — `CONTAINMENT_FULL` (a guaranteed subset, which proves positives) and `CONTAINMENT_OVERLAPPING` (a guaranteed superset, which proves negatives) — and each CQL2 operator becomes an array predicate over the pair. **Seven of the nine operators are answered** where the previous design answered `S_DWITHIN` alone; `S_TOUCHES` and `S_CROSSES` are refused as unapproximable at any resolution rather than deferred. All seven RFC 7946 types work on **both** sides of the constraint, so the Point-only limit and the `NONE`-inversion it caused are gone. The costs are accuracy of one cell (~1.1 km at r8), oversize geometries decided by bounding box, and no path to cadastral precision without PostGIS | 11, 12, 14, 16, 17, 21 |
+| **A11** | **`RequestLogger` moves above `Recover` in the fixed middleware order**, and `Recover` learns to abort rather than write a second body. Nested the other way, a recovered panic answers 500 *outside* the response wrapper, so the panicking request carries no `X-Response-Time` and produces no completion line — the failures are exactly the requests missing from the log. `RequestLogger` writes its line from a `defer`, so an unwinding panic does not take the line with it; `Recover` asks the writer below whether the response is already committed and, when it is, logs once and re-panics with `http.ErrAbortHandler` instead of appending a NACK document to a half-written body under an already-claimed 200 | 8, 20, 23 |
 | **A9** | **Declared defaults are resolved before the merge runs and apply in both update modes.** The directive fields — `catalogType`, `updateMode`, `visibleTo` — are filled by `applyDirectiveDefaults` in `publishOne`, before the mapper runs; `catalog.isActive` and an offer's `resourceIds` are filled in the mapper when it builds the patch. Either way, an omitted field reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule | 11, 15, 17, 18, 21 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
@@ -293,7 +294,7 @@ thing in the file: a general structural walk, bounded, over the whole catalog.
 **Middleware order — fixed, do not reorder:**
 
 ```
-RequestID → Trace → Recover → RequestLogger → Envelope
+RequestID → Trace → RequestLogger → Recover → Envelope
           → RateLimit → Signature → SchemaValidator → controller
 ```
 
@@ -302,9 +303,19 @@ not exist. The slot is where it goes when Phase 2 builds it; every other link
 closes up around the gap, and Task 20 wires the chain without it. The order
 below is the Phase 2 order, kept whole so the reasoning survives the parking.
 
-`Recover` is outermost of the handler chain so it catches everything below.
-`RequestLogger` starts the timer before auth, so rejected requests still report
-latency. `Envelope` precedes `Signature` because a NACK for a signature failure
+`Recover` is outermost of everything that touches the *request* — `Envelope`
+and below — so it catches every handler and every middleware that reads, parses
+or rejects. **`RequestLogger` sits above it, not below** (A11): the 500 a
+recovered panic produces has to go out through `RequestLogger`'s response
+wrapper, or the one request an operator most needs timed is the one request that
+logs nothing at all and any count of requests by status silently under-counts
+exactly the failures. The cost is that `RequestLogger` is itself outside
+`Recover`, so a panic *in it* is uncaught — the same exposure `RequestID` and
+`Trace` already carry, and the right one: a panic in our own logging middleware
+is a bug in this repo rather than a request-shaped fault, and `net/http`'s own
+recovery is where a bug in this repo belongs. `RequestLogger` also starts the
+timer before auth, so rejected requests still report latency. `Envelope`
+precedes `Signature` because a NACK for a signature failure
 needs the `messageId` to echo (C13), and only `Envelope` has read the body it is
 in. **Not `transactionId`** — no member of the Ack family declares one; all ten
 are exactly `{message: {status, messageId, error}}`, with no `context` key, so
@@ -3434,9 +3445,22 @@ then — the reason it exists is recorded here.)*
   reports. `error_type` is read back off `X-Beckn-Error-Type`, which
   `httpx.WriteNack` has already set (C1); deriving it a second time here would
   be a second place that decides a fault's category, and having exactly one is
-  the whole of C1.
+  the whole of C1. The line is written from a **`defer`**, not after
+  `next.ServeHTTP` returns: `Recover` re-panics by design on the committed-
+  response path, and a request that ended by having its connection dropped is
+  not one to leave unaccounted for.
 - `Recover` turns a panic into a 500 and **never leaks a stack trace** to the
-  caller; the trace goes to the log.
+  caller; the trace goes to the log. It sits *below* `RequestLogger` (A11) so
+  that 500 is written through the response wrapper and lands in the completion
+  line. When the response is already committed there is no second response to
+  write: `Recover` asks the writer below it — a small `committer` interface the
+  wrapper satisfies — and on a yes it logs the fault once and re-panics with
+  `http.ErrAbortHandler`, which is how `net/http` is told to drop the connection
+  without printing a stack of its own. Writing anyway would append a NACK
+  document to a half-written body under whatever status was already claimed: a
+  200 carrying two documents, neither valid, and a caller with no way to tell.
+  A dropped connection is the honest answer, because a truncated body served as
+  a clean 200 is the failure the caller cannot detect.
 - `RateLimit` (A4): per-caller token bucket, answering `429` + `Retry-After` +
   `AUT_RATE_LIMITED` through `apperrors.RateLimited` and `httpx.WriteNack` —
   which is why it takes `config.Errors` beside its own knobs, like every other
@@ -3475,7 +3499,11 @@ then — the reason it exists is recorded here.)*
 inbound one, and leaves a logger below it that carries `request_id` — pinned by
 observing a `WriteNack` from below land on it, since a request id in a field
 nothing writes to is not an id anyone can search. A panic below `Recover`
-yields 500 with no stack in the body. `X-Response-Time` is present on a
+yields 500 with no stack in the body, and — mounted under `RequestLogger`, the
+way Task 20 wires it — that 500 still carries `X-Response-Time` and still
+produces one completion line reporting `status = 500`; a panic raised *after*
+the handler has written leaves the half-written body untouched and re-panics
+with `http.ErrAbortHandler`, logging the fault exactly once. `X-Response-Time` is present on a
 response the handler wrote itself, which is exactly the case a header stamped
 after `WriteHeader` would miss, and the completion line carries the status and,
 on a rejection, the `error_type` the header named. Burst+1 requests from one
@@ -4437,7 +4465,10 @@ position: on a route that panics, `Values("X-Beckn-Chain")` is exactly
 It is the *order of the two entries* that carries the proof, not the presence
 of either: both are appended before `Recover` writes the 500, so a test
 asserting only that a marker survived the panic passes under both
-arrangements); `/healthz` answers with the
+arrangements); a panicking route produces exactly one completion line carrying
+`status = 500` and a response bearing `X-Response-Time` — the observable that
+places `RequestLogger` **above** `Recover` (A11), which the chain header cannot
+show because `RequestLogger` stamps no entry in it; `/healthz` answers with the
 database down and `/readyz` does not; shutdown completes an in-flight request.
 
 ---
@@ -4523,7 +4554,12 @@ Modify: `src/platform/middlewares/trace.go`
   assertion moves with it**, from the header pair to the span: the 500 a
   recovered panic produces must be recorded *inside* the exported span, which
   is true only if `Trace` wraps `Recover`. `Recover` keeps its `recover`
-  entry, which is what still places it against `RequestLogger` and `Envelope`.
+  entry, but on its own it is a single value and a single value orders
+  nothing — after this task the chain header proves no pair. What still places
+  `Recover` is the behavioural pin: a panicking route logs one completion line
+  at `status = 500` with `X-Response-Time` set, which holds only while
+  `RequestLogger` wraps `Recover` (A11). Keep that assertion when the header
+  pair goes.
 - OTLP exporter configured by `OTEL_*`, defaulting to `none` so a deployment
   with no collector still starts.
 - `search_degraded_modes` and `embedding_duration_ms` become metrics rather than
