@@ -46,6 +46,11 @@ func Recover(cfg config.Errors) func(http.Handler) http.Handler {
 				// which is the last frame that still has the panicking
 				// goroutine's stack. Captured anywhere else it is this
 				// middleware's own stack and names nothing that failed.
+				//
+				// %v, never %w: a panic is a bug in this service, so it is a
+				// 500 whatever it was carrying. Wrapping would let a panicked
+				// *AppError be found by errors.As and answer with its own
+				// status, handing the panicking value a say in the response.
 				httpx.WriteNack(r.Context(), w, cfg, "",
 					fmt.Errorf("recovered panic: %v\n%s", panicked, debug.Stack()))
 			}()

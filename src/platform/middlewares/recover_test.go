@@ -13,6 +13,7 @@ import (
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
+	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 )
 
@@ -100,5 +101,24 @@ func TestRecoverStampsItsChainEntryOnARequestItDoesNotCatch(t *testing.T) {
 	}
 	if got := recorded.Result().Header.Values(HeaderChain); !reflect.DeepEqual(got, []string{"recover"}) {
 		t.Errorf("%s = %v, want [recover]", HeaderChain, got)
+	}
+}
+
+// A panicked value must not steer the response. A panic is a bug in this
+// service, so it is a 500 whatever it happens to be carrying — and an
+// *apperrors.AppError is exactly the value that would slip past a Recover
+// wrapping with %w, because errors.As would find the caller's fault inside the
+// panic and answer with that status instead. The panic goes in with %v for that
+// reason; this test is what keeps it there.
+func TestAPanickedFaultIsStillA500(t *testing.T) {
+	recorded := serveRecover(t, zap.NewNop(), func(_ http.ResponseWriter, _ *http.Request) {
+		panic(apperrors.Schema(beckn.CodeSchemaInvalidJSON, "unreadable"))
+	})
+
+	if recorded.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 — the panicked fault chose the status", recorded.Code)
+	}
+	if got := nackOf(t, recorded).Message.Error.Code; got != beckn.CodeNetworkInternalError {
+		t.Errorf("code = %q, want %q", got, beckn.CodeNetworkInternalError)
 	}
 }
