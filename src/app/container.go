@@ -160,6 +160,27 @@ func wire(
 	}, nil
 }
 
+// EmptyAcquireCount reports how many pool acquires found no idle connection and
+// had to wait for one.
+//
+// The one thing this package exposes about the pool, and it exists for the
+// acceptance suite's latency scenario rather than for any caller here. Without
+// it an undersized pool fails that scenario as a slow QUERY — the request spent
+// its time waiting for a connection, the timing says only that it was slow, and
+// the fix goes looking in the SQL. A non-zero count says the query was never
+// the problem.
+//
+// A count rather than the whole pgxpool.Stat: the pool stays unexported for the
+// reason its own comment gives, and handing out the stat struct would put the
+// pool's full surface one dot away from every test that asks a question about
+// latency.
+func (a *App) EmptyAcquireCount() int64 {
+	if a.pool == nil {
+		return 0
+	}
+	return a.pool.Stat().EmptyAcquireCount()
+}
+
 // Close releases what Build opened. Safe on a partially built App, because
 // Build closes the pool itself on every path that fails after opening it.
 func (a *App) Close() {

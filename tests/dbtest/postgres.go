@@ -750,3 +750,66 @@ func ResourceGeometries(t *testing.T, pool Pool, catalogID string) []string {
 	}
 	return found
 }
+
+// ResourceTargetPaths reports the distinct target_path values one catalog's
+// geometry rows carry, in order.
+//
+// Scenario 28's subject. target_path is the side a caller's `targets` pointer
+// is compared against, and the comparison is string equality on the canonical
+// form — so a walker that stored the dot form, or stored a concrete index where
+// the caller sends a wildcard, produces a 200 with an empty list and no other
+// symptom. Reading the column is the only way to see the difference before it
+// becomes an absent result.
+//
+// Distinct, because one walk over an array of locations writes one row per
+// geometry and they all share the target; the count belongs to
+// ResourceGeometries, which reads the concrete path instead.
+func ResourceTargetPaths(t *testing.T, pool Pool, catalogID string) []string {
+	t.Helper()
+
+	rows, err := pool.Query(context.Background(),
+		`SELECT DISTINCT target_path
+		   FROM resource_geometries
+		  WHERE catalog_id = $1
+		  ORDER BY 1`, catalogID)
+	if err != nil {
+		t.Fatalf("read the target paths: %v", err)
+	}
+	defer rows.Close()
+
+	found := make([]string, 0)
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			t.Fatalf("scan a target path: %v", err)
+		}
+		found = append(found, path)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the target paths: %v", err)
+	}
+	return found
+}
+
+// CoveredGeometries counts how many of one catalog's geometry rows carry an H3
+// cover, as opposed to the NULL that means "too big to index".
+//
+// Scenario 33's guard rather than its assertion. The scenario publishes a
+// polygon it believes is over geo.MaxIndexCoverCells and then asserts that a
+// search inside it still answers — which a fixture UNDER the ceiling also
+// satisfies, by the ordinary path, testing nothing. Only the table can say
+// which of the two just happened.
+func CoveredGeometries(t *testing.T, pool Pool, catalogID string) int {
+	t.Helper()
+
+	var covered int
+	err := pool.QueryRow(context.Background(),
+		`SELECT count(*)
+		   FROM resource_geometries
+		  WHERE catalog_id = $1
+		    AND cells_cover IS NOT NULL`, catalogID).Scan(&covered)
+	if err != nil {
+		t.Fatalf("count the covered geometries: %v", err)
+	}
+	return covered
+}

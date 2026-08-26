@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,11 @@ const network = "oan"
 type service struct {
 	url  string
 	pool dbtest.Pool
+
+	// app is the built container, kept for the ONE question no response can
+	// answer: whether a slow request was slow in the database or slow waiting
+	// for a connection to it (scenario 25).
+	app *app.App
 }
 
 // newService boots the whole service against a migrated, empty database and
@@ -59,7 +65,7 @@ type service struct {
 //
 // opts mutate the configuration before Build sees it, because three scenarios
 // are about a knob rather than about a payload: 8a needs a low body ceiling, 9
-// a low rate limit, and 25 a pool it can starve. Passing a whole config would
+// a low rate limit, and 25 the pool size its assertion is stated against. Passing a whole config would
 // make every scenario restate twelve fields it does not care about; passing the
 // knob names exactly what the scenario is varying.
 func newService(t *testing.T, opts ...func(*config.Config)) *service {
@@ -117,7 +123,7 @@ func newService(t *testing.T, opts ...func(*config.Config)) *service {
 	server := httptest.NewServer(app.NewRouter(built))
 	t.Cleanup(server.Close)
 
-	svc := &service{url: server.URL, pool: pool}
+	svc := &service{url: server.URL, pool: pool, app: built}
 
 	// The invariant the plan puts in teardown rather than in a scenario of its
 	// own: no row of offers.resource_ids names a (catalog_id, resource_id) that
@@ -264,6 +270,46 @@ func (s *service) publishCatalogs(t *testing.T, catalogs ...any) []beckn.Catalog
 	return s.publish(t, map[string]any{"catalogs": catalogs})
 }
 
+// publishOn is publishCatalogs from a named network.
+//
+// The network the request ARRIVES on is what an omitted visibleTo resolves to
+// (C8), so it is the whole subject of scenario 26: the same payload published
+// from two networks is visible on two different ones, and neither is the
+// deployment's own.
+func (s *service) publishOn(
+	t *testing.T, networkID string, catalogs ...any,
+) []beckn.CatalogProcessingResult {
+	t.Helper()
+
+	return s.publishOnWith(t, networkID, catalogs)
+}
+
+// publishOnWith is publishOn for the half of scenario 26 that must name an
+// update mode: a directive is the only place updateMode lives, and the point of
+// the scenario is that the OTHER fields of that same directive still take A9's
+// defaults.
+func (s *service) publishOnWith(
+	t *testing.T, networkID string, catalogs []any, directives ...map[string]any,
+) []beckn.CatalogProcessingResult {
+	t.Helper()
+
+	message := map[string]any{"catalogs": catalogs}
+	if len(directives) > 0 {
+		message["publishDirectives"] = directives
+	}
+
+	answer := s.post(t, "/publish", envelope(beckn.ActionPublish, message, onNetwork(networkID)))
+	if answer.status != http.StatusOK {
+		t.Fatalf("POST /publish = %d, want 200\nbody: %s", answer.status, answer.body)
+	}
+
+	var body struct {
+		Message beckn.CatalogOnPublishAction `json:"message"`
+	}
+	answer.decode(t, &body)
+	return body.Message.Results
+}
+
 // discover sends one intent and returns the matched catalogs.
 //
 // Like publish it asserts the 200, and for the same reason: the degradations
@@ -373,6 +419,12 @@ func resourceIDs(catalogs []beckn.Catalog) []string {
 // jsonpath.Canonicalise is what reconciles the two and scenario 28 is what
 // pins that it does.
 const providerGeoPath = `$.catalogs[*].provider.availableAt[*].geo`
+
+// offerGeoPath reaches an OFFER's own provider location — the pointer scenario
+// 35 is about, and the one that makes `resource_geometries` need a resource_id
+// at all: a geometry hanging off an offer belongs to the resources that offer
+// names, not to the catalog.
+const offerGeoPath = `$.catalogs[*].offers[*].provider.availableAt[*].geo`
 
 // Two points in Bengaluru, ~4.6 km apart, and one 400 km away in Hyderabad.
 // Named rather than spelled per scenario so a fixture that means "far away"
@@ -510,14 +562,18 @@ func boxAround(centre [2]float64, halfMetres float64) map[string]any {
 	})
 }
 
-// dwithin is the radius constraint most of the spatial scenarios are phrased
-// in: everything within metres of a point, found through target.
-func dwithin(target string, centre [2]float64, metres float64, opts ...func(map[string]any)) map[string]any {
+// predicate is one spatial constraint: an operator, the pointer that selects
+// which stored geometries it applies to, and the shape it applies them against.
+//
+// Every operator but S_DWITHIN compares two shapes and needs nothing else,
+// which is why distanceMeters lives in dwithin rather than here — the schema
+// says it is ignored for the others, and a fixture that sent it anyway would be
+// asserting that this service ignores it too, which is a different scenario.
+func predicate(op, target string, geometry map[string]any, opts ...func(map[string]any)) map[string]any {
 	constraint := map[string]any{
-		"op":             beckn.OpSDWithin,
-		"targets":        target,
-		"geometry":       geoPoint(centre),
-		"distanceMeters": metres,
+		"op":       op,
+		"targets":  target,
+		"geometry": geometry,
 	}
 	for _, opt := range opts {
 		opt(constraint)
@@ -525,11 +581,32 @@ func dwithin(target string, centre [2]float64, metres float64, opts ...func(map[
 	return constraint
 }
 
+// dwithin is the radius constraint most of the spatial scenarios are phrased
+// in: everything within metres of a point, found through target.
+func dwithin(target string, centre [2]float64, metres float64, opts ...func(map[string]any)) map[string]any {
+	return predicate(beckn.OpSDWithin, target, geoPoint(centre),
+		append([]func(map[string]any){
+			func(constraint map[string]any) { constraint["distanceMeters"] = metres },
+		}, opts...)...)
+}
+
 // quantified sets how a constraint is evaluated when `targets` resolves to more
 // than one geometry. Omitting it reads as ANY, which is why the scenarios about
 // NONE and ALL always say so.
 func quantified(kind string) func(map[string]any) {
 	return func(constraint map[string]any) { constraint["quantifier"] = kind }
+}
+
+// everywhere strips the `targets` pointer down to an EMPTY list, which is how a
+// caller says "wherever the geometry is".
+//
+// Spelled as an empty array rather than by omitting the key, because the schema
+// puts `targets` in the constraint's required list. The two are not the same
+// thing anywhere else in this path either: an empty list is a caller stating
+// they do not care, while an unreadable pointer is dropped and refused
+// precisely so it cannot widen into this.
+func everywhere() func(map[string]any) {
+	return func(constraint map[string]any) { constraint["targets"] = []any{} }
 }
 
 // spatial wraps one constraint into an intent, so a scenario states the part it
@@ -649,10 +726,11 @@ func jsonLD(members map[string]any) map[string]any {
 	return document
 }
 
-// withValidity sets catalog.validity. `nil` reaches the wire as an explicit
-// null, which clears all four columns.
+// withValidity sets the `validity` of whatever it is applied to — a catalog or
+// an offer, which carry the same TimePeriod. `nil` reaches the wire as an
+// explicit null, which clears all four columns.
 func withValidity(period any) func(map[string]any) {
-	return func(catalog map[string]any) { catalog["validity"] = period }
+	return func(subject map[string]any) { subject["validity"] = period }
 }
 
 // inactive is the publisher's own off switch, and it is spelled as a helper
@@ -684,6 +762,77 @@ func anOffer(id string, resourceIDs ...string) map[string]any {
 	}
 	return offer
 }
+
+// offerWith is anOffer for the scenarios that put something else on it too.
+func offerWith(id string, opts []func(map[string]any), resourceIDs ...string) map[string]any {
+	offer := anOffer(id, resourceIDs...)
+	for _, opt := range opts {
+		opt(offer)
+	}
+	return offer
+}
+
+// offerAt gives an offer its own provider, operating at one point.
+func offerAt(point [2]float64) func(map[string]any) {
+	return func(offer map[string]any) {
+		offer["provider"] = map[string]any{
+			"id":         "p-offer",
+			"descriptor": map[string]any{"name": "the offer's provider"},
+			"availableAt": []any{
+				map[string]any{"geo": geoPoint(point)},
+			},
+		}
+	}
+}
+
+// covers names the resources an offer applies to, for the republishes that
+// CHANGE that list — which is what scenario 35's second and third legs are.
+//
+// The list is built rather than passed straight through because a nil variadic
+// slice marshals to `null`, and `resourceIds: null` is refused by the schema.
+// An EMPTY list is the thing the second leg is about, and it has to reach the
+// wire as `[]`.
+func covers(resourceIDs ...string) func(map[string]any) {
+	ids := make([]any, 0, len(resourceIDs))
+	for _, id := range resourceIDs {
+		ids = append(ids, id)
+	}
+	return func(offer map[string]any) { offer["resourceIds"] = ids }
+}
+
+// resourceGeo puts a geometry on the RESOURCE itself, at
+// resourceAttributes.<container>.<member>.
+//
+// Two groups of scenarios need one. The offer scenarios need resources in the
+// same catalog to be separable by a search, which a catalog-level provider
+// location cannot do — it is shared by every resource in the catalog by
+// design. Scenario 28 needs a geometry somewhere the plan never names, to show
+// the walker finds one wherever it is.
+func resourceGeo(container, member string, geometry map[string]any) func(map[string]any) {
+	return withAttributes(map[string]any{container: map[string]any{member: geometry}})
+}
+
+// resourceGeoPath is the targets pointer that reaches a geometry inside
+// resourceAttributes, in the DOT form a caller would send. The stored path is
+// the bracket form, and jsonpath.Canonicalise is what reconciles the two —
+// which is the second half of scenario 28.
+func resourceGeoPath(members ...string) string {
+	return "$.catalogs[*].resources[*].resourceAttributes." + strings.Join(members, ".")
+}
+
+// rfc3339 spells an instant the way the wire does.
+func rfc3339(at time.Time) string { return at.UTC().Format(time.RFC3339) }
+
+// clock spells a time of day WITH its offset, which for a UTC instant is a
+// bare Z.
+//
+// The offset form is exact; the bare form — "09:00:00" — is resolved in
+// APP_DEFAULT_TIMEZONE, so a scenario built from time.Now() and spelled bare
+// would state a bound five and a half hours from the one it meant, and the
+// daily-window scenarios would pass or fail by the hour of the run. The gate
+// itself compares against (now() AT TIME ZONE 'UTC')::time, so UTC is also the
+// side these fixtures should be reasoning on.
+func clock(at time.Time) string { return at.UTC().Format("15:04:05Z07:00") }
 
 // findResource returns the resource with this id from a discover response, and
 // fails the scenario when it is absent — a zero beckn.Resource would answer
