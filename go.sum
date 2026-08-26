@@ -119,6 +119,10 @@ github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
+github.com/pgvector/pgvector-go v0.4.1 h1:Oaj0mC0Ky8KaTweNHHpLwyFlN6a0nUFoo1vgSFTEhPI=
+github.com/pgvector/pgvector-go v0.4.1/go.mod h1:4fSXyjl1TYAIdByAql6JazKWRr2s7J0g4hcRY5cBFCk=
+github.com/pgvector/pgvector-go/pgx v0.4.1 h1:4ASHKHkHKon+x3TlKCVoH0znhFWTWRvAF4z3vnY6bKc=
+github.com/pgvector/pgvector-go/pgx v0.4.1/go.mod h1:uGpIdPvyX/FxvOljT15nW/NY166HSDCC05JIcJBAzK0=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
@@ -151,6 +155,8 @@ github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqo
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
 github.com/uber/h3-go/v4 v4.5.0 h1:7ruJoHCtYOCyihXfQRsPb4o6CfkhCBtVeZFM7+z1kww=
 github.com/uber/h3-go/v4 v4.5.0/go.mod h1:19vfSV5HQsnRZev7V0SPmTkVSZErL7/io8M/nx+++30=
+github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
+github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/storage/conformance"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
 )
 
@@ -25,4 +26,16 @@ func TestNewReturnsAnEmptyStore(t *testing.T) {
 	if !errors.Is(err, domain.ErrCatalogNotFound) {
 		t.Fatalf("a fresh store answered GetCatalog with %v, want domain.ErrCatalogNotFound", err)
 	}
+}
+
+// The write-path suite, run against this backend.
+//
+// The factory is all this file supplies: a case added for Postgres in Task 15
+// runs against memory the same day, which is the one thing keeping the two from
+// drifting on semantics neither SQL nor a map can claim as its own.
+func TestMemorySatisfiesThePublishConformanceSuite(t *testing.T) {
+	conformance.Run(t, func(*testing.T) conformance.Backends {
+		store := memory.New()
+		return conformance.Backends{Catalogs: store, Search: store}
+	}, conformance.PublishCases())
 }

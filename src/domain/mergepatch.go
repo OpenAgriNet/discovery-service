@@ -101,6 +101,20 @@ func mergeValue(target, patch any) any {
 // decide what to re-embed, and a duplicate is a resource embedded twice.
 func MergeCatalog(stored Catalog, patch CatalogPatch) (Catalog, []string) {
 	merged := stored
+
+	// Identity comes from the PATCH, not from what was stored. On a first
+	// publish `stored` is the zero Catalog, so taking these from it would store
+	// a catalog with an empty id and — through the two merge calls below —
+	// resources and offers whose CatalogID is "". The repository looks the
+	// stored catalog up BY patch.ID, so the two can never legitimately differ.
+	merged.ID = patch.ID
+
+	// NetworkID is not stored (nothing reads it back). It is carried here
+	// because EnsureVisibleTo is the next thing that runs and it is the only
+	// reader — a merge result that dropped it would default an empty audience
+	// to [""], a network nobody is on, rather than to the publisher's own.
+	merged.NetworkID = patch.NetworkID
+
 	merged.Provider = patchDocument(stored.Provider, patch.Provider)
 
 	// Unconditional, both of them (A9). By here the mapper has already resolved
@@ -113,8 +127,8 @@ func MergeCatalog(stored Catalog, patch CatalogPatch) (Catalog, []string) {
 	merged.ValidFrom, merged.ValidTo = validity.From, validity.To
 	merged.ValidTimeFrom, merged.ValidTimeTo = validity.TimeFrom, validity.TimeTo
 
-	resources, touchedByResources := mergeResources(stored.ID, stored.Resources, patch.Resources)
-	offers, touchedByOffers := mergeOffers(stored.ID, stored.Offers, patch.Offers)
+	resources, touchedByResources := mergeResources(merged.ID, stored.Resources, patch.Resources)
+	offers, touchedByOffers := mergeOffers(merged.ID, stored.Offers, patch.Offers)
 
 	merged.Resources, merged.Offers = resources, offers
 	return merged, uniqueSorted(append(touchedByResources, touchedByOffers...))

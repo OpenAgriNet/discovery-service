@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 )
@@ -53,12 +54,35 @@ func (r *Repository) UpsertCatalog(
 
 	merged, touched := domain.MergeCatalog(r.baseFor(patch, mode), patch)
 
+	// The three write-path rules below are domain functions rather than code
+	// written here, because the Postgres side has to reach the same end state
+	// and a second copy would agree with the first only until someone changed
+	// one. What is left in this method is the ORDER, which is the part that is
+	// genuinely per-backend.
+
+	// The audience fail-safe first, because the gate copied onto resources two
+	// steps down has to carry the FILLED audience, not the empty one.
+	merged.EnsureVisibleTo()
+
+	// Then the prune, before derive: an offer that is not going to be stored is
+	// not an offer derive should be computing geometry or search text from.
+	faults := domain.Faults(domain.PruneOfferReferences(&merged), string(beckn.CodeBusinessItemNotFound))
+
+	// The gate is copied onto EVERY resource, unconditionally, including the
+	// ones this payload never mentioned. That unconditional rewrite is the only
+	// reason the denormalised copy is safe to read without a join: make it
+	// conditional and a resource keeps answering discover after its catalog was
+	// withdrawn.
+	gate := merged.Gate()
+	for index := range merged.Resources {
+		gate.ApplyTo(&merged.Resources[index])
+	}
+
 	// Derive runs BEFORE the store is updated, but its faults do not abort the
 	// write: they are PARTIALS (A8) — the catalog commits and these are the
 	// things about it that could not be derived.
-	var faults []domain.Fault
 	if derive != nil {
-		faults = derive(merged, touched)
+		faults = append(faults, derive(&merged, touched)...)
 	}
 
 	r.catalogs[patch.ID] = merged

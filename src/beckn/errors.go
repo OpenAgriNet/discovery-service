@@ -84,6 +84,18 @@ const (
 	// it — see C14.
 	CodePolicyNPCapacityExceeded ErrorCode = "POL_NP_CAPACITY_EXCEEDED"
 
+	// BIZ_ — the request is well-formed and asks for something the catalog
+	// cannot support.
+	//
+	// CodeBusinessItemNotFound answers an offer whose `resourceIds` names a
+	// resource the merged catalog does not hold. `resource_ids` carries no
+	// foreign key — PostgreSQL cannot declare one into an array — so a typo
+	// would otherwise store an offer attached to nothing and report success.
+	// An item is what the spec calls a resource, which makes this the member
+	// that says exactly what happened rather than the nearest one that does not
+	// lie.
+	CodeBusinessItemNotFound ErrorCode = "BIZ_ITEM_NOT_FOUND"
+
 	// NET_ — networking and the deployment's own gaps.
 	//
 	// CodeNetworkCatalogSourceUnavailable answers a retrieval mode the backend

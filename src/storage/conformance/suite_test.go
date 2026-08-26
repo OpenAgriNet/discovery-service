@@ -69,7 +69,7 @@ func TestAGivenPublishMayExpectFaults(t *testing.T) {
 		Given: []conformance.Publish{{
 			Patch: domain.CatalogPatch{ID: "c1", NetworkID: "n1", Active: true},
 			Mode:  domain.UpdateModeMerge,
-			Derive: func(domain.Catalog, []string) []domain.Fault {
+			Derive: func(*domain.Catalog, []string) []domain.Fault {
 				return []domain.Fault{{Path: "$.geo", Code: "DOM_BAD_GEOMETRY"}}
 			},
 			WantFaultCodes: []string{"DOM_BAD_GEOMETRY"},

@@ -28,7 +28,15 @@ var ErrCatalogNotFound = errors.New("catalog not found")
 // `touched` is the id set MergeCatalog returned, passed through rather than
 // re-derived: a second computation of "which resources did the patch name" is a
 // second chance to re-embed a catalog nobody patched.
-type DeriveFunc func(merged Catalog, touched []string) []Fault
+//
+// A POINTER, and it has to be (A16). Everything derive computes it delivers by
+// WRITING onto the merged catalog — the return value carries faults and nothing
+// else. Against a value parameter that works for `merged.Resources[k].Field`,
+// which goes through the shared backing array, and silently does not work for
+// `merged.Geometries`, which is a field assignment on a copy. The result would
+// be a catalog stored with no catalog-level geometry rows, no error anywhere,
+// and every provider location unfindable.
+type DeriveFunc func(merged *Catalog, touched []string) []Fault
 
 // CatalogRepository is the write side of the store.
 //

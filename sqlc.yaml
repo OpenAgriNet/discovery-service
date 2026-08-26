@@ -1,9 +1,12 @@
+# The typed query layer, generated from the SAME migrations the database runs.
+#
+# `schema: migrations` rather than a hand-kept schema.sql is the whole value of
+# this file: a column renamed in a migration and not in a query fails
+# `make sqlc-verify` in the commit that renamed it, rather than at runtime in
+# whichever environment ran that migration first.
 version: "2"
 sql:
   - engine: postgresql
-    # The migrations are the schema. sqlc reads the same DDL PostgreSQL does,
-    # which is what makes a renamed column fail at `make build` rather than in
-    # production (D2).
     schema: migrations
     queries: src/storage/postgres/queries
     gen:
@@ -11,7 +14,24 @@ sql:
         package: gen
         out: src/storage/postgres/gen
         sql_package: pgx/v5
-        emit_interface: true
+
+        # Generated code is not hand-written code and must not be reviewed as
+        # if it were. It is regenerated, so a lint fix applied to it is a fix
+        # that disappears on the next `make sqlc`.
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        emit_interface: false
         emit_empty_slices: true
-        emit_pointers_for_null_types: true
-        emit_result_struct_pointers: false
+
+        overrides:
+          # pgvector's own Go type, because pgx cannot encode a []float32 into
+          # `vector` on its own. It is nullable — every row is NULL in Phase 1
+          # (A5) — so the pointer form is what the column actually admits.
+          - db_type: "vector"
+            go_type: "github.com/pgvector/pgvector-go.Vector"
+          - db_type: "vector"
+            nullable: true
+            go_type:
+              type: "Vector"
+              import: "github.com/pgvector/pgvector-go"
+              pointer: true
