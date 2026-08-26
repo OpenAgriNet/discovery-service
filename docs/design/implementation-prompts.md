@@ -62,63 +62,98 @@ summarize what you built — don't continue to the next task until I say go.
 
 ## Next task — ready to paste
 
-Task 7 at half scope. Paste this verbatim into a fresh session.
+Task 8. Paste this verbatim into a fresh session.
 
 ```
-Implement Task 7 — Envelope Middleware from
-docs/design/discover-and-publish.md, and only Task 7.
-
-Scope, before anything else:
-- Task 6 (Ed25519 Signature Primitives) is PARKED. Do not implement it, do not
-  read it as a prerequisite, do not build a Keyring.
-- Task 7 is HALF SCOPE. Build `middlewares.Envelope` only. Do NOT create
-  signature.go, do NOT write middlewares.Signature, and do NOT mount a
-  placeholder in its slot in the middleware chain. A middleware that is
-  mounted and does nothing is indistinguishable from a working one at every
-  call site that matters, and this one is named for a security control.
-- Signature verification ships as an empty slot plus a flag that refuses to
-  boot when set. If AUTH_ENABLE_SIGNATURE_VERIFICATION=true does not already
-  fail startup, adding that check is in scope for this task — it is what
-  stops the flag reading back as enabled when nothing is behind it. The flag
-  itself already exists from Task 2 (config.Auth.EnableSignatureVerification);
-  do not re-declare it.
+Implement Task 8 — Request Logger & Rate Limit Middleware from
+docs/design/discover-and-publish.md, and only Task 8.
 
 Rules:
-- Follow the task's own steps literally, in TDD order (failing test/check
-  first, then the minimal thing that makes it pass).
-- The Global Constraints table (near the top of the doc) applies to
-  everything you write, not just this task.
-- Code blocks marked `pseudo` in the doc are intent, not literal source —
-  write idiomatic Go against the interfaces the task names. DDL, SQL
-  predicates, and wire shapes are literal contracts — copy them as-is.
-- Run this task's own "Tests pin:" command and paste the actual output before
-  claiming the task is done.
-- One commit per task step marked *Commit*, Conventional Commits format.
-- No TODO left on main — anything you'd defer belongs back in the doc's
-  Deferred/Out of Scope section, flagged to me, not left in a comment.
-- If you hit a genuine ambiguity the doc doesn't resolve (check Spec
-  Conflicts, Amendments, and Open Items first — most things are already
-  decided there), stop and ask me rather than guessing.
-- Before you say you're done, self-review: re-read this task's own section of
-  docs/design/discover-and-publish.md side-by-side with your diff. Check every
-  file, type, function signature, and behavior it names is actually there,
-  under the name it uses, and that nothing you wrote drifted from it or from
-  the Global Constraints table. Include this as a short checklist in your
-  summary (matched / deviated, with a reason for each deviation) — not a
-  silent pass.
+- Follow the task's own steps literally, in TDD order (failing test first, run
+  it, watch it fail, then the minimal thing that makes it pass, then run it
+  again). A test you never saw fail pins nothing.
+- The Global Constraints table (near the top of the doc) applies to everything
+  you write, not just this task.
+- Code blocks marked `pseudo` in the doc are intent, not literal source — write
+  idiomatic Go against the interfaces the task names. DDL, SQL predicates and
+  wire shapes are literal contracts — copy them as-is.
+- Run `make build`, `make lint` and `make test` and paste the actual output
+  before claiming the task is done. `make lint` must be 0 issues.
+- One commit per task step marked *Commit*, Conventional Commits format:
+  `<type>: <summary in imperative mood> [#1]`. The body carries the why — what
+  you chose, what you rejected, what breaks if someone changes it back.
+- Never push. Committing on the working branch is yours; pushing is the
+  human's.
+- No TODO left on main — anything you would defer belongs back in the doc's
+  Deferred / Out of Scope section, flagged to me, not left in a comment.
+- If you hit a genuine ambiguity the doc does not resolve (check Spec
+  Conflicts, Amendments and Open Items first — most things are already decided
+  there, with the why), stop and ask me rather than guessing.
+- Before you say you are done, self-review: re-read this task's own section
+  side-by-side with your diff. Every file, type, function signature and
+  behaviour it names, present under the name it uses, and nothing drifted from
+  it or from Global Constraints. Report it as a short matched / deviated
+  checklist with a reason per deviation — not a silent pass.
 
-Two things this task must get right, because everything downstream reads them:
-- Envelope buffers the body and restores r.Body for downstream. Signature
-  verification and schema validation both re-read it. A body consumed once and
-  gone is the failure Task 9 inherits.
-- C13: the message id is lifted out of the envelope and handed to WriteNack
-  BEFORE it is validated, and echoed verbatim — including a value that is not
-  a uuid. Empty only when the body yielded nothing at all. Read C13 in the
-  Spec Conflicts table before you write this; the reasoning is not obvious
-  and the schema contradicts itself on the point.
+What already exists, so you neither rebuild it nor re-derive it:
+- `logger.New`, `NewContext`, `FromContext`, `With` and the field constructors
+  `RequestID`, `TransactionID`, `MessageID`, `Action`, `ErrorType`, `ErrorCode`
+  (Task 3). The field *names* are spelled in that package and nowhere else —
+  one key spelled two ways is two fields to whatever queries the logs.
+- `httpx.WriteNack(ctx, w, cfg config.Errors, messageID string, err error)`
+  (Task 5) — the single writer. It sets the status, `X-Beckn-Error-Type`,
+  `Retry-After` when the fault carries a back-off, and logs the code and the
+  category once. Do not assemble a rejection body anywhere else; there is a
+  test that fails if you do.
+- `apperrors.RateLimited(retryAfter time.Duration, message string)` — the
+  constructor `RateLimit` must use. It exists precisely so the back-off cannot
+  be forgotten after construction; `WriteNack` turns it into the header.
+- `middlewares.Envelope(cfg config.Errors, maxBodyBytes int64)` and
+  `EnvelopeFromContext` (Task 7). The body ceiling is already enforced there —
+  do not add a second one anywhere in this task.
+- `config.RateLimit{RPS, Burst}` (`RATE_LIMIT_RPS=20`, `RATE_LIMIT_BURST=40`)
+  and `config.Errors` (Task 2). Do not re-declare either.
 
-When the task's tests pass, self-review is done, and it's committed, stop and
-summarize what you built — don't continue to the next task until I say go.
+Four things this task must get right, because everything downstream reads them:
+
+1. X-Beckn-Chain is built here, and it is what Task 20 tests the chain order
+   with. `Trace` and `Recover` each `Header().Add` one entry — `trace` and
+   `recover` — BEFORE calling the next handler. `Add` preserves insertion
+   order, so `Values("X-Beckn-Chain")` reads back as the order the two links
+   actually ran. A single presence marker cannot do this: both stamp before
+   `Recover` writes its 500, so a presence assertion passes whichever way round
+   the two are mounted. Read the paragraph in Task 8's own section; it is the
+   reason `Trace` is a pass-through with a side effect rather than a
+   pass-through.
+
+2. RequestID mints; it never trusts an inbound X-Request-Id. Phase 1 is
+   unauthenticated, so an inbound value is one the caller chose — honouring it
+   lets a caller collide two requests' log lines or write control characters
+   into a log field. It is also first in the chain for a reason: until it
+   installs the request-scoped logger, `logger.FromContext` returns the no-op
+   logger and `WriteNack`'s log line goes nowhere.
+
+3. X-Response-Time has to be stamped inside the ResponseWriter wrapper's
+   WriteHeader. A header set after the handler has written is a header that
+   never reaches the wire, so a `RequestLogger` that sets it on the way back
+   out will pass a test that only ever exercises a handler which wrote nothing.
+   The wrapper is also what captures the status the completion line reports.
+   `error_type` is read back off `X-Beckn-Error-Type`, which `WriteNack`
+   already set — do not derive the category a second time; C1 exists to have
+   exactly one place that decides it.
+
+4. The rate limit bucket is keyed on the remote address, NOT the subscriber id
+   — and this is a deliberate departure from A4's wording that the doc records
+   in Deferred. `context.bapId` on an unverified request is a claim: keying on
+   it lets any caller shed its own limit by rotating the field, and lets any
+   caller exhaust a named third party's bucket by claiming their id. Do not
+   "fix" this back. Do not read `X-Forwarded-For` either — there is no
+   trusted-proxy list to make that safe. Evict idle buckets; a map keyed on
+   remote address that only ever grows is a leak an unauthenticated caller
+   drives.
+
+When the task's tests pass, self-review is done and it is committed, stop and
+summarize what you built — do not continue to the next task until I say go.
 ```
 
 ---
@@ -134,7 +169,7 @@ summarize what you built — don't continue to the next task until I say go.
 | 5 | Error Model & Response Writer | **Settled** — `Error`'s own description makes Level 1 codes canonical and Level 2 (`details.cause`) codes open, so the six invented codes were mapped onto members that exist (table in the task). `SPT_` is not a family; `DOM_` keeps its `error_type` row and gets no constructor. `beckn.ErrorCode` constants are pinned against the fixture's enum |
 | 6 | Ed25519 Signature Primitives | **PARKED — do not implement.** Was *deferred, but built*; now not built either. Signature verification is Phase 2 and the key registry is another team's, so the primitive would ship with no caller — and a primitive with no caller is one whose first real caller finds out what it got wrong. The task section is kept as the Phase 2 starting point. What ships instead: the empty slot in the middleware order, and a boot refusal when `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` |
 | 7 | Signature & Envelope Middleware | **`Envelope` only** — the `Signature` half is parked with Task 6, which no longer builds the `Keyring` it needs. Do not create `signature.go` and do not stub it: a mounted middleware that does nothing is indistinguishable from a working one at exactly the call sites where it matters. Scenario 7 is now the boot refusal, not the two flag-sides. `Envelope` also carries the **request body ceiling** (C14): it is the only thing that reads a body and it runs before `RateLimit`, so a bound anywhere later is a bound after the allocation |
-| 8 | Request Logger & Rate Limit Middleware | Also builds `Trace` as a **no-op pass-through** that appends `trace` to `X-Beckn-Chain`, alongside `Recover` appending `recover` — the pair exists so Task 20's order test can read the two back in the order they ran. See Task 8's own section; an earlier draft of this row said `X-Beckn-Trace-Seen: 1`, a single presence marker that cannot carry order |
+| 8 | Request Logger & Rate Limit Middleware | Also homes `RequestID` (its own file; it mints rather than trusting an inbound `X-Request-Id`, and it is first in the chain because nothing below it logs until it installs the request-scoped logger) and **departs from A4**: the bucket is keyed on the remote address, not the subscriber id, which on an unverified request is a claim anyone can make about anyone. Subscriber-id keying moved to Deferred, tied to the task that verifies the signature. Also builds `Trace` as a **no-op pass-through** that appends `trace` to `X-Beckn-Chain`, alongside `Recover` appending `recover` — the pair exists so Task 20's order test can read the two back in the order they ran. See Task 8's own section; an earlier draft of this row said `X-Beckn-Trace-Seen: 1`, a single presence marker that cannot carry order |
 | 9 | L1 Schema Validation | |
 | 10 | L2 Extended Schema Validation | |
 | 11 | Domain Model & The DB-Agnostic Boundary | `purity_test.go` lives here — the import-boundary gate every later task is checked against. Also **scaffolds** `storage/memory/repository.go` (both port interfaces, no behavior) and `storage/conformance/` (fixture types, no fixtures) — Tasks 12, 15, 16 modify these as they add behavior; this task creates them |

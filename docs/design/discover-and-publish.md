@@ -182,6 +182,7 @@ Two sit on the boundary and are called out rather than dismissed:
 |---|---|---|
 | `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md` | Contribution policy and disclosure timelines are decisions the project has not made. A placeholder `SECURITY.md` publishes a promise | `LICENSE`, `README.md` |
 | Signature verification | Phase 2; the key registry is another team's. **Parked further than originally planned:** the Ed25519 primitives are no longer built ahead of use either, because a primitive with no caller is a primitive whose first real caller finds out what it got wrong | The **slot** in the middleware order and the flag, nothing behind them. `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` therefore **refuses to boot** — a flag named for a security control, silently doing nothing, is the one failure mode worse than not having the flag: an operator reads it back as enabled and is wrong. Task 6 and the `Signature` half of Task 7 are parked with it |
+| Rate limiting per subscriber id (A4) | It is keyed on `context.bapId`, and until a signature is verified that field is a claim, not an identity. A limiter that trusts it is one any caller sheds by rotating the field — and one that any caller can turn on a named third party by claiming *their* id, spending someone else's budget for them | A token bucket keyed on the **remote address**, with the same knobs, the same `429` / `Retry-After` / `AUT_RATE_LIMITED` answer and the same eviction. The key moves to the subscriber id in the task that verifies the signature, and not before |
 | Publish-time embedding (A5) | 15–40 ms of inference on the write path for one mode of four | `noop` provider; nullable `embedding` column doubles as the backfill queue |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
 | Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
@@ -3408,18 +3409,51 @@ then — the reason it exists is recorded here.)*
 
 ### Task 8 — Request Logger & Rate Limit Middleware
 
-**Files:** `src/platform/middlewares/request_logger.go`, `recover.go`,
-`ratelimit.go`, `trace.go`
+**Files:** `src/platform/middlewares/request_id.go`, `request_logger.go`,
+`recover.go`, `ratelimit.go`, `trace.go`
 
-**Produces:** `middlewares.RequestID`, `Recover`, `RequestLogger`, `RateLimit(cfg)`,
-`Trace`
+**Produces:** `middlewares.RequestID(log *zap.Logger)`, `Recover`,
+`RequestLogger`, `RateLimit(cfg config.RateLimit, errs config.Errors)`, `Trace`
 
+- `RequestID` is first in the chain because it is what makes everything below
+  it loggable: it mints an id, derives the request-scoped logger with
+  `logger.NewContext(ctx, log.With(logger.RequestID(id)))`, and echoes the id
+  as `X-Request-Id`. Until it has run, `logger.FromContext` returns the no-op
+  logger, so `httpx.WriteNack`'s one log line goes nowhere — which is why the
+  chain starts here rather than at `Trace`. It **mints rather than trusts**: an
+  inbound `X-Request-Id` on a Phase 1 endpoint is a value an unauthenticated
+  caller chose, and honouring it lets that caller collide two requests' log
+  lines or put control characters in a log field. Propagating a gateway's id is
+  a Phase 2 decision, and it needs a trusted-proxy list before it is one.
 - `RequestLogger` starts its timer before auth, writes `X-Response-Time`, and
-  logs one completion line with status, duration and `error_type`.
+  logs one completion line with status, duration and `error_type`. The header
+  is the awkward half: a header set after the handler has written is a header
+  that never reaches the wire, so the elapsed time is stamped inside the
+  `ResponseWriter` wrapper's own `WriteHeader` — the last moment it can still
+  be added — and that wrapper is also what captures the status the line
+  reports. `error_type` is read back off `X-Beckn-Error-Type`, which
+  `httpx.WriteNack` has already set (C1); deriving it a second time here would
+  be a second place that decides a fault's category, and having exactly one is
+  the whole of C1.
 - `Recover` turns a panic into a 500 and **never leaks a stack trace** to the
   caller; the trace goes to the log.
-- `RateLimit` (A4): per-caller token bucket keyed by subscriber id, falling back
-  to remote IP. Evicts idle buckets so the map is not a leak.
+- `RateLimit` (A4): per-caller token bucket, answering `429` + `Retry-After` +
+  `AUT_RATE_LIMITED` through `apperrors.RateLimited` and `httpx.WriteNack` —
+  which is why it takes `config.Errors` beside its own knobs, like every other
+  middleware that rejects. It sits below `Envelope`, so the `messageId` it
+  echoes is the parsed one rather than C13's salvage. Evicts idle buckets so
+  the map is not a leak.
+- **The bucket is keyed on the remote address, not the subscriber id.** This is
+  the one place this task departs from A4 as written, and it departs because
+  signature verification is parked: `context.bapId` on an unverified request is
+  a string the caller chose. Keying on it would let any caller shed its own
+  limit by rotating the field, and — the worse half — exhaust a *named third
+  party's* bucket by claiming their id, which turns the protection into the
+  attack. Subscriber-id keying is in **Deferred**, tied to the task that
+  verifies the signature, because that is the point at which the id stops being
+  a claim and becomes an identity. A deployment behind a proxy must hand the
+  service the real peer address: `X-Forwarded-For` is not read, for the same
+  reason `X-Request-Id` is not.
 - `Trace` is a **no-op pass-through here**, but not side-effect-free: before
   calling the next handler it appends `trace` to a response header,
   `X-Beckn-Chain`, purely so Task 20's chain-order test has something to
@@ -3437,12 +3471,19 @@ then — the reason it exists is recorded here.)*
   exported signature does not change, so nothing built against the chain in
   Task 20 needs to change when Task 23 lands.
 
-**Tests pin:** a panic below `Recover` yields 500 with no stack in the body;
-burst+1 requests from one caller yields `429`; two different callers do not
-share a bucket; `Trace` passes the request through unmodified except for its
-`X-Beckn-Chain: trace` entry, and `Recover` adds `recover` on every request and
-not only on the ones it catches (no other behaviour to test yet — Task 23 pins
-the real span).
+**Tests pin:** `RequestID` mints an id, echoes it as `X-Request-Id`, ignores an
+inbound one, and leaves a logger below it that carries `request_id` — pinned by
+observing a `WriteNack` from below land on it, since a request id in a field
+nothing writes to is not an id anyone can search. A panic below `Recover`
+yields 500 with no stack in the body. `X-Response-Time` is present on a
+response the handler wrote itself, which is exactly the case a header stamped
+after `WriteHeader` would miss, and the completion line carries the status and,
+on a rejection, the `error_type` the header named. Burst+1 requests from one
+address yields `429` with `Retry-After` and `AUT_RATE_LIMITED`; two addresses
+do not share a bucket; a bucket idle past its horizon is evicted. `Trace`
+passes the request through unmodified except for its `X-Beckn-Chain: trace`
+entry, and `Recover` adds `recover` on every request and not only on the ones
+it catches (no other behaviour to test yet — Task 23 pins the real span).
 
 ---
 
