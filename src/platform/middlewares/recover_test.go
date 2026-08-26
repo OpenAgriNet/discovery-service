@@ -1,0 +1,101 @@
+package middlewares
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
+	"github.com/OpenAgriNet/discovery-service/src/platform/config"
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+)
+
+// The text the panicking handler carries, so a body that leaked it is a body
+// this test can name.
+const panicDetail = "dial tcp 10.0.0.7:5432: connection refused"
+
+// serveRecover runs below under Recover with log installed above it, the way
+// RequestID installs one in the assembled chain.
+func serveRecover(t *testing.T, log *zap.Logger, below http.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+
+	handler := Recover(config.Errors{})(below)
+	request := httptest.NewRequest(http.MethodPost, "/publish", nil)
+	recorded := httptest.NewRecorder()
+	handler.ServeHTTP(recorded, request.WithContext(logger.NewContext(request.Context(), log)))
+	return recorded
+}
+
+// A panic is a 500 and nothing else. A stack trace names this service's
+// internal paths and whatever the panicking value happened to be carrying — a
+// dialled host and port in the common case — and none of that is the caller's.
+func TestAPanicIsA500ThatLeaksNoStack(t *testing.T) {
+	recorded := serveRecover(t, zap.NewNop(), func(_ http.ResponseWriter, _ *http.Request) {
+		panic(panicDetail)
+	})
+
+	if recorded.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", recorded.Code)
+	}
+
+	body := recorded.Body.String()
+	for _, leak := range []string{panicDetail, "goroutine", "middlewares."} {
+		if strings.Contains(body, leak) {
+			t.Errorf("body %s carries %q", body, leak)
+		}
+	}
+	if got := nackOf(t, recorded).Message.Error.Code; got != beckn.CodeNetworkInternalError {
+		t.Errorf("code = %q, want %q", got, beckn.CodeNetworkInternalError)
+	}
+}
+
+// The trace is not discarded, it is moved: the operator needs it and the caller
+// must not have it. It rides on the error handed to WriteNack, which logs the
+// original and puts only the fixed message in the body — so there is one entry
+// for the fault and one place that decides what the caller sees.
+func TestTheStackReachesTheLog(t *testing.T) {
+	core, logged := observer.New(zapcore.DebugLevel)
+
+	serveRecover(t, zap.New(core), func(_ http.ResponseWriter, _ *http.Request) {
+		panic(panicDetail)
+	})
+
+	entries := logged.All()
+	if len(entries) != 1 {
+		t.Fatalf("a recovered panic produced %d log entries, want exactly one", len(entries))
+	}
+	if entries[0].Level != zapcore.ErrorLevel {
+		t.Errorf("logged at %s, want error", entries[0].Level)
+	}
+
+	logged0 := entries[0].ContextMap()
+	recordedError, _ := logged0["error"].(string)
+	if !strings.Contains(recordedError, panicDetail) {
+		t.Errorf("error = %q, want the panic value", recordedError)
+	}
+	if !strings.Contains(recordedError, "middlewares.") {
+		t.Errorf("error = %q, want the stack trace", recordedError)
+	}
+}
+
+// Every request, not only the ones it catches. The entry is what places Recover
+// against Trace in the chain, and a marker that appeared only on a panicking
+// route would leave the ordinary route's chain unobservable.
+func TestRecoverStampsItsChainEntryOnARequestItDoesNotCatch(t *testing.T) {
+	recorded := serveRecover(t, zap.NewNop(), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	if recorded.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", recorded.Code)
+	}
+	if got := recorded.Result().Header.Values(HeaderChain); !reflect.DeepEqual(got, []string{"recover"}) {
+		t.Errorf("%s = %v, want [recover]", HeaderChain, got)
+	}
+}
