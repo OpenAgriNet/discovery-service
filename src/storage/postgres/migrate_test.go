@@ -138,3 +138,24 @@ func TestMigrateRefusesAConnectionStringItCannotParse(t *testing.T) {
 		t.Error("Migrate accepted a connection string that is not a URL")
 	}
 }
+
+// A libpq keyword/value DSN is a form pgxpool.ParseConfig accepts as readily as
+// a URL, so the pool opens on one and nothing upstream objects. url.Parse
+// accepts it too — it simply does not mean anything, and overwriting the scheme
+// of a value that has none yields pgx5://host=localhost%20port=5432, which
+// fails much later inside the migrator with an error naming none of this.
+//
+// So the form is refused here, where the reason is still known, and the message
+// says what is wanted without echoing the string that carries the password.
+func TestMigrateRefusesAConnectionStringThatIsNotAURL(t *testing.T) {
+	err := postgres.Migrate("host=localhost port=5432 user=app password=s3cret dbname=discovery")
+	if err == nil {
+		t.Fatal("Migrate accepted a keyword/value DSN")
+	}
+	if !strings.Contains(err.Error(), "postgres://") {
+		t.Errorf("error %v does not tell the operator which form is required", err)
+	}
+	if strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "user=app") {
+		t.Errorf("error %v echoes the connection string, which carries the password", err)
+	}
+}

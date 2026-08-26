@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,6 +22,50 @@ import (
 // promptly. Two seconds is longer than a healthy ping by three orders of
 // magnitude and shorter than every default probe timeout.
 const readinessTimeout = 2 * time.Second
+
+// readinessCacheTTL is how long one ping's answer stands for every probe that
+// arrives behind it.
+//
+// /readyz carries no rate limit, deliberately — shedding a kubelet's probe is
+// how a healthy pod gets restarted by the mechanism meant to notice it was
+// healthy. That leaves the pool as the thing an anonymous caller can amplify
+// into: one acquire per GET, from the same bounded pool that serves real
+// traffic, until there is nothing left for it. Sharing the answer caps the cost
+// of a flood at one ping per window instead of one per request.
+//
+// A second is invisible to the mechanism this endpoint exists for — a kubelet
+// probes every few seconds and requires several consecutive answers before it
+// acts — and it is the whole of the staleness admitted.
+const readinessCacheTTL = time.Second
+
+// readiness is the shared answer. Its zero value is ready to use, and it must
+// not be copied, which is why App holds it by value and App is only ever passed
+// as a pointer.
+type readiness struct {
+	mu      sync.Mutex
+	checked time.Time
+	err     error
+}
+
+// check returns the current answer, asking the database for a new one only when
+// the last has expired.
+//
+// The lock is held across the ping on purpose. It means at most one probe is
+// ever inside the pool, so a flood queues on a mutex — bounded, local, and
+// costing no connection — rather than on the pool itself. now is a parameter
+// because an expiry that cannot be advanced by a test is an expiry no test can
+// observe.
+func (r *readiness) check(ctx context.Context, db Pinger, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.checked.IsZero() && now.Sub(r.checked) < readinessCacheTTL {
+		return r.err
+	}
+	r.err = db.Ping(ctx)
+	r.checked = now
+	return r.err
+}
 
 // probe is what /healthz and /readyz answer with. A body rather than a bare
 // status because an operator reading a curl by hand should not have to look up
@@ -147,10 +192,15 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 // when the ping succeeds again, without a restart. That is exactly the
 // difference between the two probes.
 func (a *App) readyz(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
+	// WithoutCancel, because the answer is shared with every probe in this
+	// window: a caller that hangs up mid-ping says nothing about the database,
+	// and letting its cancellation become the cached result would report a
+	// healthy service unready until the window closed. readinessTimeout is what
+	// bounds this instead.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), readinessTimeout)
 	defer cancel()
 
-	if err := a.DB.Ping(ctx); err != nil {
+	if err := a.ready.check(ctx, a.DB, time.Now()); err != nil {
 		logger.FromContext(r.Context()).Warn("readiness probe failed", zap.Error(err))
 		write(w, r, http.StatusServiceUnavailable, "unready")
 		return

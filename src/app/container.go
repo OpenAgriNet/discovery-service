@@ -47,6 +47,11 @@ type App struct {
 	Publish  *publish.Controller
 	Discover *discover.Controller
 
+	// ready caches the readiness answer so an unauthenticated flood of probes
+	// cannot amplify into one pool acquire each. Zero value is usable, and it
+	// holds a mutex — App is a pointer everywhere for this reason.
+	ready readiness
+
 	// pool is owned here and closed by Close. Unexported: the layers above take
 	// their dependency through the seams, and a pool reachable from the router
 	// is a pool the router will eventually be tempted to use.

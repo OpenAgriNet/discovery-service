@@ -39,4 +39,14 @@ func TestRunReportsABootFailureAfterNamingTheBuild(t *testing.T) {
 	if !strings.HasPrefix(strings.TrimSpace(buf.String()), modulePath+" ") {
 		t.Errorf("output %q does not name the build before the failure", buf.String())
 	}
+
+	// Which failure, not merely that there was one. This test's premise is that
+	// no config/common.yaml is reachable from this package's directory; if that
+	// ever stops holding, run() goes on to open a pool and then to bind a port
+	// and block, and the test hangs until the whole suite times out instead of
+	// going red. Naming the config path is what makes the premise part of what
+	// is asserted.
+	if !strings.Contains(err.Error(), "config/common.yaml") {
+		t.Errorf("run failed with %v, want the missing configuration — the test's premise no longer holds", err)
+	}
 }

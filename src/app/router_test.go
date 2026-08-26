@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -214,5 +216,90 @@ func TestTheNoopReplicatorIsSatisfiedByNothing(t *testing.T) {
 
 	if err := replicator.Replicate(t.Context(), "c1"); err != nil {
 		t.Errorf("Replicate: %v, want the no-op to succeed", err)
+	}
+}
+
+// countingPool answers every ping successfully and says how many it was asked.
+//
+// It returns ctx.Err() rather than a bare nil because that is what acquiring
+// from a real pool does on a cancelled context, and a fake that ignores its
+// context cannot show the difference between asking the database and asking the
+// caller — which is the whole of what the hang-up test is about.
+type countingPool struct{ pings atomic.Int64 }
+
+func (c *countingPool) Ping(ctx context.Context) error {
+	c.pings.Add(1)
+	return ctx.Err()
+}
+
+// /readyz is unauthenticated and carries no rate limit — deliberately, because
+// shedding a kubelet's probe is how a healthy pod gets restarted. That leaves
+// the pool as the thing an anonymous caller can amplify into: one acquire per
+// GET, against the same bounded pool that serves real traffic, until nothing is
+// left for it.
+//
+// So the answer is shared for a moment rather than asked per request. A flood
+// costs one ping, not one each.
+func TestAFloodOfReadinessProbesCostsOnePing(t *testing.T) {
+	pool := &countingPool{}
+	router := NewRouter(testApp(t, pool, zap.NewNop()))
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got := request(t, router, http.MethodGet, "/readyz", "").Code; got != http.StatusOK {
+				t.Errorf("/readyz = %d, want 200", got)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := pool.pings.Load(); got != 1 {
+		t.Errorf("pings = %d for 50 probes, want 1 — the readiness answer is not shared", got)
+	}
+}
+
+// The other half: shared for a moment, not forever. A pod whose database came
+// back has to leave the unready state without a restart, so the cached answer
+// must expire — and it must expire on the clock, which is why check takes one.
+func TestTheReadinessAnswerExpires(t *testing.T) {
+	pool := &countingPool{}
+	application := testApp(t, pool, zap.NewNop())
+
+	start := time.Now()
+	for _, at := range []time.Time{
+		start,
+		start.Add(readinessCacheTTL / 2), // inside the window: still the first answer
+		start.Add(readinessCacheTTL),     // the window has closed
+		start.Add(readinessCacheTTL * 2),
+	} {
+		if err := application.ready.check(t.Context(), application.DB, at); err != nil {
+			t.Fatalf("check at %s: %v", at.Sub(start), err)
+		}
+	}
+
+	if got := pool.pings.Load(); got != 3 {
+		t.Errorf("pings = %d, want 3 — one per elapsed %s window", got, readinessCacheTTL)
+	}
+}
+
+// A caller that hangs up mid-probe says nothing about the database, and the
+// answer is shared, so its cancellation must not become everyone else's
+// "unready" for the rest of the window.
+func TestAProbeThatHangsUpDoesNotPoisonTheSharedAnswer(t *testing.T) {
+	pool := &countingPool{}
+	application := testApp(t, pool, zap.NewNop())
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(cancelled)
+	recorder := httptest.NewRecorder()
+	NewRouter(application).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("/readyz = %d for a caller that hung up, want 200 — the database was reachable", recorder.Code)
 	}
 }

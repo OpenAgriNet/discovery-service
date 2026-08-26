@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,11 +68,24 @@ func TestABodyPastTheCeilingIsRefusedRatherThanBuffered(t *testing.T) {
 
 // The fetch is the boot's one network call, so a cancelled context has to stop
 // it — otherwise a shutdown during a slow registry waits out the whole timeout.
+//
+// The registry here answers, and the assertion is on context.Canceled rather
+// than on any error at all: a dial to a closed port fails whether or not the
+// context is honoured, so "err != nil" is a test that stays green with the ctx
+// plumbing deleted.
 func TestACancelledContextStopsTheFetch(t *testing.T) {
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := w.Write([]byte(specBody)); err != nil {
+			t.Errorf("write the spec: %v", err)
+		}
+	}))
+	t.Cleanup(registry.Close)
+
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if _, err := HTTPFetcher()(ctx, "http://127.0.0.1:1/beckn.yaml"); err == nil {
-		t.Error("fetch ran on a cancelled context")
+	_, err := HTTPFetcher()(ctx, registry.URL)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("fetch on a cancelled context returned %v, want it to carry context.Canceled", err)
 	}
 }

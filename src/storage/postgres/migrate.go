@@ -26,28 +26,18 @@ const migrationSource = "embedded"
 // cancellation that never happens. A migration is the one boot step that is
 // genuinely not interruptible partway: the half of it that already ran is
 // committed.
-//
-// The scheme is rewritten to pgx5 rather than required of the caller.
-// DATABASE_URL is one value read by the pool and by this, the pool wants
-// postgres:// and golang-migrate resolves its database driver by scheme, so
-// asking an operator to supply a scheme that works for exactly one of the two
-// readers is asking them to get it wrong.
 func Migrate(dsn string) error {
+	target, err := migrationTarget(dsn)
+	if err != nil {
+		return err
+	}
+
 	source, err := iofs.New(migrations.FS, ".")
 	if err != nil {
 		return fmt.Errorf("open the embedded migrations: %w", err)
 	}
 
-	target, err := url.Parse(dsn)
-	if err != nil {
-		// The DSN itself is deliberately absent from the message: it carries
-		// the database password, and a boot failure is the most-copied line in
-		// any incident channel.
-		return fmt.Errorf("parse the connection string: %w", err)
-	}
-	target.Scheme = "pgx5"
-
-	instance, err := migrate.NewWithSourceInstance(migrationSource, source, target.String())
+	instance, err := migrate.NewWithSourceInstance(migrationSource, source, target)
 	if err != nil {
 		return fmt.Errorf("open the migrator: %w", err)
 	}
@@ -73,4 +63,36 @@ func Migrate(dsn string) error {
 		databaseErr = fmt.Errorf("close the migration database: %w", databaseErr)
 	}
 	return errors.Join(upErr, sourceErr, databaseErr)
+}
+
+// migrationTarget translates DATABASE_URL into the URL golang-migrate wants.
+//
+// The scheme is rewritten to pgx5 rather than required of the caller.
+// DATABASE_URL is one value read by the pool and by this, the pool wants
+// postgres:// and golang-migrate resolves its database driver by scheme, so
+// asking an operator to supply a scheme that works for exactly one of the two
+// readers is asking them to get it wrong.
+func migrationTarget(dsn string) (string, error) {
+	target, err := url.Parse(dsn)
+	if err != nil {
+		// The DSN itself is deliberately absent from the message: it carries
+		// the database password, and a boot failure is the most-copied line in
+		// any incident channel.
+		return "", fmt.Errorf("parse the connection string: %w", err)
+	}
+
+	// pgxpool.ParseConfig accepts a libpq keyword/value DSN as readily as a URL,
+	// so the pool opens on one and nothing upstream objects. url.Parse accepts
+	// it too — it simply does not mean anything, and overwriting the scheme of a
+	// value that has none produces pgx5://host=localhost%20password=s3cret...,
+	// which golang-migrate then reports verbatim, password and all. That leak is
+	// what this check exists to prevent; the confusing failure is only the
+	// second reason.
+	if target.Scheme != "postgres" && target.Scheme != "postgresql" {
+		return "", errors.New("the connection string must be a postgres:// URL: golang-migrate " +
+			"resolves its database driver by scheme, and a libpq keyword/value DSN has none")
+	}
+	target.Scheme = "pgx5"
+
+	return target.String(), nil
 }
