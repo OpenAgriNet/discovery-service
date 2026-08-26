@@ -50,7 +50,7 @@ func TestDefaultsAreTheFloor(t *testing.T) {
 	assertEqual(t, "Embeddings.Provider", cfg.Embeddings.Provider, "noop")
 	assertEqual(t, "Embeddings.Dimensions", cfg.Embeddings.Dimensions, 768)
 	assertEqual(t, "Validation.EnableL1Schema", cfg.Validation.EnableL1Schema, true)
-	assertEqual(t, "Validation.EnableL2Context", cfg.Validation.EnableL2Context, true)
+	assertEqual(t, "Validation.EnableL2Context", cfg.Validation.EnableL2Context, false)
 	assertEqual(t, "Auth.EnableSignatureVerification", cfg.Auth.EnableSignatureVerification, false)
 	assertEqual(t, "OTel.Exporter", cfg.OTel.Exporter, "none")
 
@@ -479,5 +479,41 @@ func TestSignatureVerificationOffBoots(t *testing.T) {
 	}
 	if cfg.Auth.EnableSignatureVerification {
 		t.Error("auth.enableSignatureVerification is true with no environment setting it")
+	}
+}
+
+// Task 10 was skipped by decision on 2026-08-26, so nothing sits behind
+// VALIDATION_ENABLE_L2_CONTEXT: SchemaSource, the refresh loop, the L2
+// validator and the schemas/<TypeName>/attributes.yaml set are all unbuilt.
+// That makes it the twin of AUTH_ENABLE_SIGNATURE_VERIFICATION and it gets the
+// twin's treatment — an operator reading a validation layer back as enabled,
+// while every @context and @type goes unchecked, is worse off than one who can
+// see there is no layer at all.
+func TestL2ContextValidationRefusesToBoot(t *testing.T) {
+	environment := baseEnv()
+	environment["VALIDATION_ENABLE_L2_CONTEXT"] = "true"
+
+	_, err := load(repoCommonYAML, noInstance, environment)
+	if err == nil {
+		t.Fatal("load accepted VALIDATION_ENABLE_L2_CONTEXT=true with nothing behind the flag")
+	}
+	if !strings.Contains(err.Error(), "VALIDATION_ENABLE_L2_CONTEXT") {
+		t.Errorf("error %v does not name the flag an operator has to unset", err)
+	}
+}
+
+// Defaulting it off is half the obligation and refusing `true` is the other
+// half: refusing alone, over a tag that still reads `true`, would mean nothing
+// boots at all.
+func TestL2ContextValidationIsOffInTheReviewedFile(t *testing.T) {
+	cfg, err := load(repoCommonYAML, noInstance, baseEnv())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Validation.EnableL2Context {
+		t.Error("validation.enableL2Context is true with no environment setting it")
+	}
+	if !cfg.Validation.EnableL1Schema {
+		t.Error("validation.enableL1Schema is false; L1 is built and is the layer that ships")
 	}
 }

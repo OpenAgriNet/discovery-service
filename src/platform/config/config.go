@@ -177,8 +177,12 @@ type Log struct {
 
 // Validation switches the two schema layers and locates the protocol spec.
 type Validation struct {
-	EnableL1Schema  bool `env:"VALIDATION_ENABLE_L1_SCHEMA" envDefault:"true"`
-	EnableL2Context bool `env:"VALIDATION_ENABLE_L2_CONTEXT" envDefault:"true"`
+	EnableL1Schema bool `env:"VALIDATION_ENABLE_L1_SCHEMA" envDefault:"true"`
+
+	// Off, and `true` refuses the boot — see validateValidation. L2 was skipped
+	// by decision rather than blocked, so there is no code path behind this
+	// flag to switch on.
+	EnableL2Context bool `env:"VALIDATION_ENABLE_L2_CONTEXT" envDefault:"false"`
 
 	// beckn.yaml is fetched at boot rather than baked into the image, so a
 	// deployment names the published document it validates against. No default:
@@ -456,6 +460,7 @@ func validate(cfg Config) error {
 		validateRateLimit(cfg.RateLimit),
 		validateGeo(cfg.Geo),
 		validateAuth(cfg.Auth),
+		validateValidation(cfg.Validation),
 	)
 	if problems != nil {
 		return fmt.Errorf("invalid configuration: %w", problems)
@@ -475,6 +480,24 @@ func validateAuth(auth Auth) error {
 	return require(!auth.EnableSignatureVerification,
 		"auth.enableSignatureVerification is true (AUTH_ENABLE_SIGNATURE_VERIFICATION) and Phase 1 has nothing behind it: "+
 			"signature verification is deferred, so the flag would report a control that is not running")
+}
+
+// The exact twin of validateAuth, and for the exact same reason. L2 extended
+// validation was skipped by decision on 2026-08-26: SchemaSource, the refresh
+// loop, the L2 validator and the schemas/<TypeName>/attributes.yaml set are
+// unbuilt, so nothing reads this flag and nothing would if it were true. An
+// operator who reads a validation layer back as enabled, while every @context
+// and @type reaches storage unchecked, is worse off than one who can see there
+// is no layer. Deleting this check is not how L2 is turned on; building Task 10
+// is.
+//
+// The SSRF boundary is untouched by any of it — Ext.AllowNetworkFetch guards a
+// URL that arrived in a payload, and nothing fetches one because nothing
+// fetches at all.
+func validateValidation(validation Validation) error {
+	return require(!validation.EnableL2Context,
+		"validation.enableL2Context is true (VALIDATION_ENABLE_L2_CONTEXT) and Phase 1 has nothing behind it: "+
+			"L2 extended schema validation is unbuilt, so the flag would report a layer that is not running")
 }
 
 // H3 defines resolutions 0 through 15 and nothing else, so an out-of-range
