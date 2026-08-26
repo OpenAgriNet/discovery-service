@@ -2,9 +2,12 @@ package dbtest_test
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
+	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
 
@@ -181,5 +184,66 @@ func TestDistanceDoesInline(t *testing.T) {
 	if strings.Contains(plan, "geo_distance_m") {
 		t.Errorf("geo_distance_m did not inline; it is NOT STRICT precisely so that it "+
 			"can, and a call per candidate row is what that buys:\n%s", plan)
+	}
+}
+
+// The Go twin and the SQL original must agree, because both are consulted about
+// the same search: `geo_distance_m` refines a Point candidate inside the query
+// and `geo.HaversineM` is what the walk and the bounds use in Go. A
+// disagreement is not a rounding curiosity — it is a result 10.1 km from a 10 km
+// search, returned by one side and refused by the other, with no error anywhere.
+//
+// The epsilon is tight on purpose. These are the same expressions in the same
+// order over the same IEEE doubles, so anything beyond a few ULPs means the two
+// bodies have actually diverged and not merely rounded differently.
+func TestHaversineAgreesWithItsGoTwin(t *testing.T) {
+	pool := dbtest.NewPostgres(t)
+
+	cases := []struct {
+		name     string
+		from, to domain.GeoPoint
+	}{
+		{"a city block", domain.GeoPoint{Lat: 12.9716, Lon: 77.5946},
+			domain.GeoPoint{Lat: 12.9750, Lon: 77.5980}},
+		{"across a country", domain.GeoPoint{Lat: 12.9716, Lon: 77.5946},
+			domain.GeoPoint{Lat: 28.6139, Lon: 77.2090}},
+		{"across the equator", domain.GeoPoint{Lat: 12.9716, Lon: 77.5946},
+			domain.GeoPoint{Lat: -33.8688, Lon: 151.2093}},
+
+		// Both sides of the seam, where a naive delta of 359 degrees is the
+		// classic wrong answer.
+		{"over the antimeridian", domain.GeoPoint{Lat: 1.0, Lon: 179.9},
+			domain.GeoPoint{Lat: 1.0, Lon: -179.9}},
+
+		{"pole to pole", domain.GeoPoint{Lat: 90, Lon: 0}, domain.GeoPoint{Lat: -90, Lon: 0}},
+
+		// The clamp's own case: floating-point overshoot puts asin's argument
+		// past 1 for antipodal points, which is NaN in Go and an error in SQL.
+		{"antipodal", domain.GeoPoint{Lat: 12.9716, Lon: 77.5946},
+			domain.GeoPoint{Lat: -12.9716, Lon: -102.4054}},
+
+		{"the same point twice", domain.GeoPoint{Lat: 12.9716, Lon: 77.5946},
+			domain.GeoPoint{Lat: 12.9716, Lon: 77.5946}},
+		{"a southern pair", domain.GeoPoint{Lat: -34.6037, Lon: -58.3816},
+			domain.GeoPoint{Lat: -22.9068, Lon: -43.1729}},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var got float64
+			err := pool.QueryRow(context.Background(),
+				`SELECT geo_haversine_m($1::double precision, $2::double precision,
+				                        $3::double precision, $4::double precision)`,
+				testCase.from.Lat, testCase.from.Lon, testCase.to.Lat, testCase.to.Lon).Scan(&got)
+			if err != nil {
+				t.Fatalf("geo_haversine_m: %v", err)
+			}
+
+			want := geo.HaversineM(testCase.from, testCase.to)
+			if math.Abs(got-want) > 1e-6+1e-9*math.Abs(want) {
+				t.Errorf("SQL says %.9f m and Go says %.9f m — the two bodies have diverged",
+					got, want)
+			}
+		})
 	}
 }

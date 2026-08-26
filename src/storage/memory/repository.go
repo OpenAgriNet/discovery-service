@@ -7,8 +7,10 @@
 // the same person, whereas this passes the same conformance fixtures Postgres
 // does.
 //
-// A skeleton at this task, deliberately: plain maps, no spatial and no search.
-// Tasks 12, 15 and 16 give it the behaviour they give the Postgres side.
+// The write path lives in repository.go and the read path in search.go, which
+// is the same split the Postgres adapter makes between its catalog and search
+// repositories — one type here, two files, so that the two backends' halves
+// stay readable side by side.
 package memory
 
 import (
@@ -32,11 +34,24 @@ type Repository struct {
 	// concurrent republish of one catalog cannot interleave.
 	mu       sync.RWMutex
 	catalogs map[string]domain.Catalog
+
+	// resolution is the H3 resolution stored geometries are covered at on the
+	// READ path. The Postgres side covers once at publish time and keeps the
+	// cells in a column; this one has no column, so it covers on demand — and
+	// it must do so at the same resolution the query was covered at, or the two
+	// cell sets are incomparable and every spatial answer is empty.
+	resolution int
 }
 
-// New returns an empty store.
-func New() *Repository {
-	return &Repository{catalogs: make(map[string]domain.Catalog)}
+// New returns an empty store covering geometries at the given H3 resolution.
+//
+// The resolution is a parameter rather than a package constant for the same
+// reason NewCatalogRepository takes one: it is a deployment setting owned by
+// the composition root, and a second copy here is a second thing to keep equal
+// to config.Indexing — which, being on the other side of the comparison, would
+// fail by returning nothing rather than by failing to build.
+func New(resolution int) *Repository {
+	return &Repository{catalogs: make(map[string]domain.Catalog), resolution: resolution}
 }
 
 // UpsertCatalog merges the patch into what is stored and runs derive against
@@ -156,21 +171,6 @@ func cloned(catalog domain.Catalog) domain.Catalog {
 	return catalog
 }
 
-// Search answers nothing yet, and says so rather than answering badly.
-//
-// The empty Capabilities below is what makes that honest: the negotiation in
-// front of Search asks what this backend can do, is told nothing, and reports
-// every requested mode in Degraded. A backend with no retrieval that claimed
-// `lexical` would return an empty page indistinguishable from a genuine miss.
-func (r *Repository) Search(_ context.Context, _ domain.SearchQuery, _ []domain.Capability) (domain.SearchResult, error) {
-	return domain.SearchResult{}, nil
-}
-
-// Capabilities declares nothing, because this backend can do nothing yet.
-func (r *Repository) Capabilities() domain.Capabilities {
-	return domain.Capabilities{}
-}
-
 // matchesSpatial is this backend's spatial stage for one stored geometry: the
 // bounding box, then the cell algebra, then the one exact refinement.
 //
@@ -179,9 +179,11 @@ func (r *Repository) Capabilities() domain.Capabilities {
 // takes no box on purpose, which is what puts the S_DISJOINT exception HERE,
 // where the SQL's own version of the decision is visible beside it.
 //
-// geometries is the stored resource's full set, not just the one this cover
-// belongs to, because the Point-to-Point refinement asks about the resource:
-// "is anything I can be found by within the radius".
+// geometries is the set the distance refinement below looks at. Search passes
+// ONE — the geometry `stored` was covered from — because that is how the SQL
+// evaluates it: box, cells and refinement all sit inside one EXISTS over one
+// `resource_geometries` row. Handing the resource's whole set in would let a
+// nearby Polygon rescue a distant Point, which no EXISTS over rows can do.
 func matchesSpatial(stored geo.Cover, geometries []domain.Geometry, filter domain.SpatialFilter) bool {
 	// Six of the seven operators need the two shapes to MEET, so a box that
 	// misses pre-rejects them cheaply. S_DISJOINT is the seventh and it

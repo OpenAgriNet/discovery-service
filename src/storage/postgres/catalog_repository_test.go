@@ -22,7 +22,15 @@ func postgresBackends(t *testing.T) conformance.Backends {
 	t.Helper()
 
 	pool := dbtest.NewPostgres(t)
-	return conformance.Backends{Catalogs: postgres.NewCatalogRepository(pool, resolution)}
+	return conformance.Backends{
+		Catalogs: postgres.NewCatalogRepository(pool, resolution),
+
+		// No embedder, which is what a Phase 1 deployment has (A5) and what
+		// keeps this side answerable by the same fixtures the memory backend
+		// answers: a semantic mode neither backend can run cannot make them
+		// disagree.
+		Search: postgres.NewSearchRepository(pool, searchConfig(), nil),
+	}
 }
 
 // The whole point of the suite: the Postgres adapter answers the same cases the
@@ -30,4 +38,15 @@ func postgresBackends(t *testing.T) conformance.Backends {
 // on the other the same day.
 func TestPostgresSatisfiesThePublishConformanceSuite(t *testing.T) {
 	conformance.Run(t, postgresBackends, conformance.PublishCases())
+}
+
+// And the read half, from the same file the memory backend runs.
+//
+// This is where the two implementations of every rule that exists twice —
+// within_daily_window and domain.WithinDailyWindow, geo_distance_m and
+// geo.NearestGeometryM, the SQL cell algebra and geo.MatchesOp — are held to
+// the same answer. Each pair agrees with itself by construction; only a fixture
+// run through both can say they agree with each other.
+func TestPostgresSatisfiesTheDiscoverConformanceSuite(t *testing.T) {
+	conformance.Run(t, postgresBackends, conformance.DiscoverCases(resolution))
 }
