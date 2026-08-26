@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -52,6 +53,54 @@ func TestASerialisedNackValidatesAgainstTheSpec(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
 	validateAgainst(t, "NackBadRequest", recorded.Body.Bytes())
+}
+
+// The NACK body is exactly the shape the Ack family declares and nothing more.
+//
+// This has to be asserted by hand, because the schema cannot: not one of the ten
+// Ack-family schemas sets additionalProperties:false — they are open objects, so
+// a `context` bolted on beside `message`, or a stray key inside it, validates
+// clean and TestASerialisedNackValidatesAgainstTheSpec stays green. `Error` is
+// closed and `Ack` is not, which is why C7 could be left to the validator and
+// this cannot.
+//
+// The absent key worth naming is `context`. The family carries none — messageId
+// is the correlation handle, lifted out of the context deliberately, which is
+// what Ack.messageId's own description says: "The message id of the request sent
+// in the context, to which this acknowledgement is being returned." Adding one
+// would be legal and still wrong: the NACK that most needs correlating is the one
+// whose request context we just refused as unreadable, so the context we sent
+// back would be part echo and part invention — the same fault C13 refuses when it
+// declines to mint a messageId, wearing more keys.
+func TestTheNackBodyCarriesNothingBeyondTheSchema(t *testing.T) {
+	recorded := writeNack(t, config.Errors{}, apperrors.Schema(beckn.CodeSchemaInvalidJSON, "unreadable"))
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(recorded.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode nack %s: %v", recorded.Body, err)
+	}
+	assertKeys(t, "the nack body", body, "message")
+
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(body["message"], &message); err != nil {
+		t.Fatalf("decode message: %v", err)
+	}
+	assertKeys(t, "message", message, "status", "messageId", "error")
+}
+
+func assertKeys(t *testing.T, where string, object map[string]json.RawMessage, want ...string) {
+	t.Helper()
+
+	for _, key := range want {
+		if _, ok := object[key]; !ok {
+			t.Errorf("%s is missing %q", where, key)
+		}
+	}
+	for key := range object {
+		if !slices.Contains(want, key) {
+			t.Errorf("%s carries %q, which the Ack family does not declare", where, key)
+		}
+	}
 }
 
 // C1. The category is a header and a log field, never a body key, so the

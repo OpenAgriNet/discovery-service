@@ -75,8 +75,8 @@ func WriteJSON(ctx context.Context, w http.ResponseWriter, status int, body any)
 // day one of them grows a header.
 //
 // messageID is the request's `context.messageId`, which the Ack family echoes
-// as the caller's only correlation handle — no member of that family carries a
-// `context`. It goes back verbatim, including a value this service is in the
+// as the caller's only correlation handle — no member of that family declares a
+// `context`, and this service does not add one to an open schema (C13). It goes back verbatim, including a value this service is in the
 // middle of rejecting as malformed: C13 reads the family's own
 // "Echoes the messageId from the triggering request's Context" over the
 // `format: uuid` its other variants declare, because by C6 the spec never
