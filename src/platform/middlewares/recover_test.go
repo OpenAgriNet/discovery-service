@@ -74,8 +74,11 @@ func TestTheStackReachesTheLog(t *testing.T) {
 		t.Errorf("logged at %s, want error", entries[0].Level)
 	}
 
-	logged0 := entries[0].ContextMap()
-	recordedError, _ := logged0["error"].(string)
+	recordedError, ok := entries[0].ContextMap()["error"].(string)
+	if !ok {
+		t.Fatalf("error = %v, want the panic and its stack as a string",
+			entries[0].ContextMap()["error"])
+	}
 	if !strings.Contains(recordedError, panicDetail) {
 		t.Errorf("error = %q, want the panic value", recordedError)
 	}
