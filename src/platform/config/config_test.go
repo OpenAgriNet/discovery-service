@@ -440,3 +440,34 @@ func assertEqual[T comparable](t *testing.T, name string, got, want T) {
 		t.Errorf("%s = %v, want %v", name, got, want)
 	}
 }
+
+// Scenario 7. The flag has nothing behind it: Task 6's Ed25519 primitives are
+// parked and the Signature middleware is not written, so `true` must refuse the
+// boot. What made the deferral honest was never the flag but the impossibility
+// of believing it was on when it was not — an operator who reads a security
+// control back as enabled while every request goes unverified is the one
+// failure mode worse than having no flag at all.
+func TestSignatureVerificationRefusesToBoot(t *testing.T) {
+	environment := baseEnv()
+	environment["AUTH_ENABLE_SIGNATURE_VERIFICATION"] = "true"
+
+	_, err := load(repoCommonYAML, noInstance, environment)
+	if err == nil {
+		t.Fatal("load accepted AUTH_ENABLE_SIGNATURE_VERIFICATION=true with nothing behind the flag")
+	}
+	if !strings.Contains(err.Error(), "AUTH_ENABLE_SIGNATURE_VERIFICATION") {
+		t.Errorf("error %v does not name the flag an operator has to unset", err)
+	}
+}
+
+// The other side of the same flag, which is the only supported Phase 1 setting:
+// false is not merely accepted, it is the value the reviewed file ships.
+func TestSignatureVerificationOffBoots(t *testing.T) {
+	cfg, err := load(repoCommonYAML, noInstance, baseEnv())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Auth.EnableSignatureVerification {
+		t.Error("auth.enableSignatureVerification is true with no environment setting it")
+	}
+}

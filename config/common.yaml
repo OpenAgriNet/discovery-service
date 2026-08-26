@@ -41,8 +41,10 @@ validation:
   enableL2Context: true
 
 auth:
-  # Phase 2. The crypto, the middleware slot and the Keyring seam ship now; the
-  # key registry they read is another team's, and does not exist yet.
+  # Phase 2, and parked further than that: the Ed25519 primitives are not built
+  # and the Signature middleware is not written, so nothing sits behind this
+  # flag. true therefore refuses the boot rather than reporting a security
+  # control that is not running. Only the slot in the middleware order ships.
   enableSignatureVerification: false
 
 otel:

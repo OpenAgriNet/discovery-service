@@ -179,7 +179,8 @@ type Validation struct {
 	SpecCachePath string `env:"VALIDATION_SPEC_CACHE_PATH" envDefault:".cache/beckn/beckn.yaml"`
 }
 
-// Auth switches signature verification, which is built but deferred.
+// Auth switches signature verification, which is deferred with nothing behind
+// it — see validateAuth for why the only value this build accepts is false.
 type Auth struct {
 	EnableSignatureVerification bool `env:"AUTH_ENABLE_SIGNATURE_VERIFICATION" envDefault:"false"`
 }
@@ -443,11 +444,26 @@ func validate(cfg Config) error {
 		validateEmbeddings(cfg.Embeddings),
 		validateRateLimit(cfg.RateLimit),
 		validateGeo(cfg.Geo),
+		validateAuth(cfg.Auth),
 	)
 	if problems != nil {
 		return fmt.Errorf("invalid configuration: %w", problems)
 	}
 	return nil
+}
+
+// Phase 1 ships the empty slot in the middleware order and this flag, and
+// nothing between them: the Ed25519 primitives are not built and the Signature
+// middleware is not written, so there is no code path the flag can switch on.
+// A flag named for a security control that silently does nothing is worse than
+// no flag — an operator reads it back as enabled and is wrong about every
+// request the service has served since — so `true` refuses the boot instead.
+// Deleting this check is not how signature verification is turned on; building
+// what goes in the slot is.
+func validateAuth(auth Auth) error {
+	return require(!auth.EnableSignatureVerification,
+		"auth.enableSignatureVerification is true (AUTH_ENABLE_SIGNATURE_VERIFICATION) and Phase 1 has nothing behind it: "+
+			"signature verification is deferred, so the flag would report a control that is not running")
 }
 
 // H3 defines resolutions 0 through 15 and nothing else, so an out-of-range
