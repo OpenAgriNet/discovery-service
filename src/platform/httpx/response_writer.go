@@ -30,6 +30,16 @@ const HeaderRetryAfter = "Retry-After"
 
 const contentTypeJSON = "application/json"
 
+// maxEchoedMessageIDBytes bounds the message id C13 echoes back.
+//
+// 128 is well past any uuid and past any correlation key a caller could
+// plausibly be using, which is the point: what it excludes is not a long id but
+// a caller who has noticed that this field comes back and started putting
+// things in it. Over the cap the value is dropped rather than truncated — a
+// truncated id still looks like an id and correlates to nothing, which is
+// strictly worse than admitting there isn't one.
+const maxEchoedMessageIDBytes = 128
+
 // WriteJSON writes body as the JSON response at status.
 //
 // It encodes before it touches the ResponseWriter, so a body that cannot be
@@ -66,8 +76,14 @@ func WriteJSON(ctx context.Context, w http.ResponseWriter, status int, body any)
 //
 // messageID is the request's `context.messageId`, which the Ack family echoes
 // as the caller's only correlation handle — no member of that family carries a
-// `context`. An envelope too broken to yield one leaves it empty rather than
-// inventing a uuid the caller never sent.
+// `context`. It goes back verbatim, including a value this service is in the
+// middle of rejecting as malformed: C13 reads the family's own
+// "Echoes the messageId from the triggering request's Context" over the
+// `format: uuid` its other variants declare, because by C6 the spec never
+// establishes that a uuid was sent. Bounded by maxEchoedMessageIDBytes. An
+// envelope too broken to yield one leaves it empty rather than inventing a uuid
+// the caller never sent — a minted id looks like an answer and correlates to
+// nothing.
 //
 // It reports nothing. WriteNack is the last resort on the request path, so
 // there is nothing left to escalate a failure to, and a returned error would
@@ -88,6 +104,10 @@ func WriteNack(ctx context.Context, w http.ResponseWriter, cfg config.Errors, me
 	}
 
 	logNack(ctx, fault, status, err)
+
+	if len(messageID) > maxEchoedMessageIDBytes {
+		messageID = ""
+	}
 
 	body := beckn.Nack{Message: beckn.NackMessage{
 		Status:    beckn.StatusNack,

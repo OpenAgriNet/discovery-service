@@ -74,10 +74,12 @@ Every task inherits these.
 
 ## Spec Conflicts
 
-The PRD and `beckn.yaml` v2.0.0 disagree in twelve places. These resolutions are
-binding. C8, C9 and C10 are **deliberate deviations** — cases where this service
-knowingly does something other than what the spec says, each with the reason
-written down, because an undocumented deviation is indistinguishable from a bug.
+The PRD and `beckn.yaml` v2.0.0 disagree in twelve places, and the spec
+contradicts itself in a thirteenth. These resolutions are binding. C8, C9 and
+C10 are **deliberate deviations** — cases where this service knowingly does
+something other than what the spec says, each with the reason written down,
+because an undocumented deviation is indistinguishable from a bug. C13 is not a
+deviation but a choice between two things the schema says at once.
 
 | | Conflict | Resolution |
 |---|---|---|
@@ -93,6 +95,7 @@ written down, because an undocumented deviation is indistinguishable from a bug.
 | **C10** | `Intent.filters.expression` names no grammar normatively, and its only example is RFC 9535: `$[?(@.rating.value >= 4.0 && @.electronic.brand.name == 'Premium Tech')]` | **Deviation.** Only PostgreSQL SQL/JSON path is executed (`$ ? (@.x == "y")`). An RFC 9535 expression is a `400` / `SCH_INVALID_JSONPATH` — never attempted, because a filter that matches nothing is indistinguishable from an honest empty result |
 | **C11** | `OnDiscoverAction` is `additionalProperties: false` with exactly one property, `catalogs`. There is nowhere in the response **body** to say that a retrieval mode was degraded | The list moves to the **`X-Beckn-Degraded`** response header, comma-separated, absent when nothing degraded. The same move C1 makes for `error.type`, for the same reason: a key the schema forbids is not an extension, it is a response that fails validation at the first consumer strict enough to check. `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` stays available for callers who would rather have a `400` than a header they might not read |
 | **C12** | `CatalogProcessingResult.stats` gives `itemCount` as *"Number of items accepted"* but `providerCount` as *"Number of providers in the catalog"* — one request-scoped, one catalog-scoped, in adjacent fields | All three are read **request-scoped**: `itemCount` and `categoryCount` count what this request landed, and `providerCount` is 1 because a catalog has exactly one provider, so the two readings coincide and nothing is lost. A8 is why this needed deciding at all — before field-level MERGE, a payload and its catalog were the same set |
+| **C13** | Every Ack-family schema requires `message.messageId`, and the family then disagrees about what it is. Seven declare `format: uuid` — `Ack`, `AckNoCallback`, `NackBadRequest`, `NackUnauthorized`, `NackTooManyRequests`, `NackDiscretionary`, `ServerError`. Three drop the format and describe the field instead: *"Echoes the messageId from the triggering request's Context, for caller correlation"* — `NackForbidden`, `NackConflict`, `NackNotFound` | **Echo, verbatim.** The two readings are not equal and this is not a coin toss: a field defined as an echo cannot assert a format its source is not required to carry, and by **C6** the source carries no guarantee at all — `Context` declares no `required` list, so the spec never establishes that a uuid was ever sent. The three that dropped `format` are the ones that followed that through. So `WriteNack` echoes `context.messageId` exactly as received, **including a value that is not a uuid** — which is precisely the request C6 rejects, and precisely the caller with the least other means of working out which request was refused. Empty **only** when the envelope yielded no messageId at all: unparseable JSON, or the key absent. Never a minted uuid — that hands the caller a correlation id for a message they never sent, which is worse than nothing because it looks like an answer. Capped at 128 bytes, longer dropped to empty: past that it is not a correlation handle a caller can use, it is a payload they chose our error body to carry. Against the seven variants declaring `format: uuid` the echoed non-uuid is non-conformant, and that is the cost of the reading — recorded here rather than left for L1 to discover |
 
 **`networkId` is a filter, not an identity claim, and the two mappers answer
 "it's absent" differently.** On **publish**, absent → scope to
@@ -3415,9 +3418,20 @@ request:
 Action-indexing is what makes T5's version coexistence cheap later: a second
 `SpecIndex` for a second version is additive.
 
+**Envelope rules read the message id before they judge it (C13).** Whatever
+`context.messageId` holds is lifted out and handed to `WriteNack` as-is, and
+only then is it validated — because the NACK that reports a malformed message
+id is the one NACK the caller cannot correlate any other way. A rejection for
+`"messageId": "not-a-uuid"` therefore echoes `not-a-uuid`. Extraction is
+best-effort by construction: it runs against an envelope already known to be
+invalid, so it yields empty rather than failing, and empty is what a body too
+broken to parse produces.
+
 **Tests pin:** a missing `transactionId` is rejected with L1 **off**; an unknown
 action NACKs rather than 500s; a fetch failure falls back to cache; a
-multi-fault envelope produces a `cause` chain that preserves every path.
+multi-fault envelope produces a `cause` chain that preserves every path; a
+rejected non-uuid `messageId` comes back echoed in the NACK rather than blanked
+(C13), and an unparseable body echoes empty rather than a minted uuid.
 
 ---
 

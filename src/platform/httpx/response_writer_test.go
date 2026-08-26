@@ -325,13 +325,15 @@ func validationError(t *testing.T, schemaName string, body []byte) error {
 // here to assert on one body would put a dependency on the critical path a task
 // early, and the subset is short enough to read.
 //
-// What it does not check is `format`, and one body in this package depends on
-// that gap: WriteNack writes an empty `messageId` when the envelope was too
-// broken to yield one, which satisfies `required` and does not satisfy
-// `format: uuid`. So "validates against the spec" here means the structure C7
-// is about — the closed objects and the chain — and not every assertion the
-// document makes. Task 9 replaces this with kin-openapi, and that is where the
-// empty id has to be settled rather than passed.
+// What it does not check is `format`, and that gap is now load-bearing rather
+// than incidental: under C13 WriteNack echoes `messageId` verbatim, so a
+// rejected non-uuid — and the empty string, when the envelope yielded nothing —
+// goes out against seven variants that declare `format: uuid`. The decision is
+// recorded in C13, not here. So "validates against the spec" in this package
+// means the structure C7 is about, the closed objects and the chain, and not
+// every assertion the document makes. When Task 9 swaps this for kin-openapi
+// the `messageId` format has to be excluded deliberately, with C13 named, or
+// the conformance test will fail on behaviour the plan asked for.
 func validateNode(spec, node map[string]any, value any, where string) error {
 	if ref, ok := node["$ref"].(string); ok {
 		target, err := followRef(spec, ref)
@@ -433,4 +435,60 @@ func names(raw any) []string {
 		out = append(out, fmt.Sprint(name))
 	}
 	return out
+}
+
+// C13. The Ack family disagrees with itself: seven variants declare
+// `messageId` as `format: uuid`, three drop the format and describe it as
+// "Echoes the messageId from the triggering request's Context". Echo is the
+// reading that holds — by C6 the spec never establishes a uuid was sent — so a
+// message id this service is about to reject as malformed still goes back
+// exactly as it arrived. That NACK is the one its caller has no other way to
+// correlate.
+func TestWriteNackEchoesTheMessageIDItWasGiven(t *testing.T) {
+	for _, given := range []string{"not-a-uuid", "", "   ", "42"} {
+		recorded := httptest.NewRecorder()
+		WriteNack(loggerContext(zap.NewNop()), recorded, config.Errors{}, given,
+			apperrors.Schema(beckn.CodeSchemaValidationFailed, "messageId is not a uuid"))
+
+		if got := writtenMessageID(t, recorded.Body.Bytes()); got != given {
+			t.Errorf("echoed messageId = %q, want %q verbatim", got, given)
+		}
+	}
+}
+
+// The cap C13 puts on the echo. Past it the value is not a correlation handle
+// the caller can do anything with, it is a payload they chose our error body to
+// carry — so it is dropped rather than truncated. A truncated id is worse than
+// none: it still looks like an id, and it correlates to nothing.
+func TestWriteNackDropsAnOverlongMessageID(t *testing.T) {
+	atCap := strings.Repeat("a", maxEchoedMessageIDBytes)
+	overCap := atCap + "a"
+
+	recorded := httptest.NewRecorder()
+	WriteNack(loggerContext(zap.NewNop()), recorded, config.Errors{}, atCap,
+		apperrors.Schema(beckn.CodeSchemaInvalidFormat, "at the cap"))
+	if got := writtenMessageID(t, recorded.Body.Bytes()); got != atCap {
+		t.Errorf("a messageId exactly at the cap was not echoed: len %d", len(got))
+	}
+
+	recorded = httptest.NewRecorder()
+	WriteNack(loggerContext(zap.NewNop()), recorded, config.Errors{}, overCap,
+		apperrors.Schema(beckn.CodeSchemaInvalidFormat, "over the cap"))
+	if got := writtenMessageID(t, recorded.Body.Bytes()); got != "" {
+		t.Errorf("messageId = %q (len %d), want it dropped to empty", got, len(got))
+	}
+}
+
+func writtenMessageID(t *testing.T, body []byte) string {
+	t.Helper()
+
+	var nack struct {
+		Message struct {
+			MessageID string `json:"messageId"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(body, &nack); err != nil {
+		t.Fatalf("decode nack: %v", err)
+	}
+	return nack.Message.MessageID
 }
