@@ -603,3 +603,107 @@ func PlanCacheMode(t *testing.T, pool Pool) string {
 	}
 	return mode
 }
+
+// DSN returns the connection string for the package's shared, migrated
+// database — the one NewPostgres hands a pool over.
+//
+// It exists for the acceptance suite, which drives the assembled service and so
+// must let app.Build open its OWN pool rather than borrow this package's: the
+// pool's sizing, its plan_cache_mode and its pgvector type registration are
+// production wiring, and a suite handed a pool built here would be asserting
+// against a pool no deployment runs.
+//
+// It does NOT reset. A caller wanting an empty database calls NewPostgres for
+// the pool it also needs, and truncating here as well would empty the database
+// a second time, after that caller had begun arranging its fixtures.
+func DSN(t *testing.T) string {
+	t.Helper()
+	skipIfShort(t)
+
+	once.Do(func() { startErr = start() })
+	if startErr != nil {
+		t.Fatalf("start PostgreSQL: %v", startErr)
+	}
+	return adminDSN
+}
+
+// OrphanedOfferResources reports every id an offer's resource_ids array names
+// that the resources table does not have, as "catalog/offer -> resource".
+//
+// It is the one relationship PostgreSQL cannot constrain: resource_ids is an
+// array, and there is no foreign key into an array. So a reordered or skipped
+// statement in UpsertCatalog produces drift here that no INSERT will ever
+// refuse, and the only thing that catches it is asking.
+//
+// The query lives in this package rather than beside its caller because this is
+// the package the import guard grants the driver, and an assertion about a
+// column is a question for the schema harness. Reported rather than asserted,
+// so the failure names the scenario that caused it.
+func OrphanedOfferResources(t *testing.T, pool Pool) []string {
+	t.Helper()
+
+	rows, err := pool.Query(context.Background(),
+		`SELECT o.catalog_id, o.id, missing.resource_id
+		   FROM offers o
+		   CROSS JOIN LATERAL unnest(o.resource_ids) AS missing(resource_id)
+		  WHERE NOT EXISTS (
+		        SELECT 1 FROM resources r
+		         WHERE r.catalog_id = o.catalog_id AND r.id = missing.resource_id)
+		  ORDER BY 1, 2, 3`)
+	if err != nil {
+		t.Fatalf("read the orphaned offer resources: %v", err)
+	}
+	defer rows.Close()
+
+	var orphans []string
+	for rows.Next() {
+		var catalogID, offerID, resourceID string
+		if err := rows.Scan(&catalogID, &offerID, &resourceID); err != nil {
+			t.Fatalf("scan an orphaned offer resource: %v", err)
+		}
+		orphans = append(orphans, fmt.Sprintf("%s/%s -> %s", catalogID, offerID, resourceID))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the orphaned offer resources: %v", err)
+	}
+	return orphans
+}
+
+// ResourceVersions reports the xmin of every resource row in one catalog, keyed
+// by resource id.
+//
+// xmin is the transaction that last wrote the row, so two readings taken either
+// side of a publish answer a question no response can: whether the row was
+// REWRITTEN, as opposed to whether it still holds the right value. That
+// distinction is the whole of scenario 10a — a propagate with no
+// `IS DISTINCT FROM` guard leaves every value correct and every row dead,
+// costing a dead tuple and a GIN insertion per resource on the write path and
+// showing up only as a publish that got slower.
+//
+// It lives here rather than beside its caller because this is the package the
+// import guard grants the driver, and xmin is a question for the schema
+// harness. Reported as a string because it is compared for equality and never
+// for order.
+func ResourceVersions(t *testing.T, pool Pool, catalogID string) map[string]string {
+	t.Helper()
+
+	rows, err := pool.Query(context.Background(),
+		`SELECT id, xmin::text FROM resources WHERE catalog_id = $1`, catalogID)
+	if err != nil {
+		t.Fatalf("read the resource versions: %v", err)
+	}
+	defer rows.Close()
+
+	versions := map[string]string{}
+	for rows.Next() {
+		var id, version string
+		if err := rows.Scan(&id, &version); err != nil {
+			t.Fatalf("scan a resource version: %v", err)
+		}
+		versions[id] = version
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the resource versions: %v", err)
+	}
+	return versions
+}
