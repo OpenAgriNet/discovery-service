@@ -2,6 +2,7 @@ package errors
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -199,4 +200,54 @@ func enumMembers(t *testing.T) []string {
 		t.Fatalf("parse %s: %v", specFixture, err)
 	}
 	return spec.Components.Schemas.ErrorCode.Enum
+}
+
+// C7's invariant is that no fault is dropped, and the argument that is itself
+// a chain is where that is easiest to break: the plan chains at two levels —
+// the envelope validation pass, then the intent mapper's own faults — so a
+// Chain that kept only each argument's head would lose the inner ones with
+// nothing on the wire to say so.
+//
+// Chain of a single chain is the same assertion with the composition removed.
+// It is the call a caller makes without thinking, and it is the one where a
+// dropped tail is completely invisible.
+func TestChainFlattensAChainItIsGiven(t *testing.T) {
+	inner := Chain(
+		Schema(beckn.CodeSchemaValidationFailed, "a").At("$.a"),
+		Schema(beckn.CodeSchemaInvalidFormat, "b").At("$.b"),
+		Schema(beckn.CodeSchemaInvalidJSONPath, "c").At("$.c"),
+	)
+
+	composed := Chain(inner, Context(beckn.CodeContextActionMismatch, "d").At("$.d"))
+	if got := chainedPaths(composed); !reflect.DeepEqual(got, []string{"$.a", "$.b", "$.c", "$.d"}) {
+		t.Errorf("Chain(chain, fault) = %v, want every fault in order", got)
+	}
+
+	if got := chainedPaths(Chain(inner)); !reflect.DeepEqual(got, []string{"$.a", "$.b", "$.c"}) {
+		t.Errorf("Chain(chain) = %v, want the chain unchanged", got)
+	}
+}
+
+// A fault pointed at itself is a caller's mistake rather than anything Chain
+// builds, but flattening is what would turn it into a walk that never returns.
+// Terminating on the repeat keeps the faults that are real and loses only the
+// link that closes the loop.
+func TestChainTerminatesOnAFaultThatPointsAtItself(t *testing.T) {
+	loop := Schema(beckn.CodeSchemaInvalidJSON, "loop").At("$.loop")
+	loop.Cause = loop
+
+	if got := chainedPaths(Chain(loop)); !reflect.DeepEqual(got, []string{"$.loop"}) {
+		t.Errorf("Chain(self-referencing fault) = %v, want it to stop at the repeat", got)
+	}
+}
+
+// chainedPaths reads the paths off a chain in order, which is the shortest
+// thing that says both "every fault is here" and "they are in the order the
+// caller gave them".
+func chainedPaths(head *AppError) []string {
+	var paths []string
+	for fault := head; fault != nil; fault = fault.Cause {
+		paths = append(paths, fault.Path)
+	}
+	return paths
 }

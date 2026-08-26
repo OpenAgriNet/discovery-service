@@ -120,23 +120,41 @@ func (e *AppError) At(path string) *AppError {
 // otherwise leave the first chain's links hanging off a value the caller still
 // holds, and a fault pointed at itself is a serialiser that does not terminate.
 //
+// An argument that is itself a chain is flattened rather than truncated at its
+// head. C7's invariant is that no fault is dropped, and this service chains at
+// two levels — the envelope validation pass, then the intent mapper's own
+// faults — so a Chain that kept only each argument's first link would lose the
+// inner ones with nothing on the wire to say so. Copying alone is not enough
+// for that: it is what stops the caller's values being mutated, and walking is
+// what stops their tails being discarded.
+//
 // The publish path never calls this. `CatalogProcessingResult.errors` is
 // natively an array of Error, so there is nothing to pack, and a second
 // encoding of "many faults" is a second thing to keep right.
 func Chain(faults ...*AppError) *AppError {
+	// Keyed by the address of the original, so a chain that closes on itself
+	// terminates. Such a chain is a caller's mistake rather than anything this
+	// function builds, but flattening is what would turn it into a walk that
+	// never returns.
+	seen := map[*AppError]bool{}
+
 	var head, tail *AppError
 	for _, fault := range faults {
-		if fault == nil {
-			continue
+		for link := fault; link != nil; link = link.Cause {
+			if seen[link] {
+				break
+			}
+			seen[link] = true
+
+			copied := *link
+			copied.Cause = nil
+			if head == nil {
+				head, tail = &copied, &copied
+				continue
+			}
+			tail.Cause = &copied
+			tail = &copied
 		}
-		copied := *fault
-		copied.Cause = nil
-		if head == nil {
-			head, tail = &copied, &copied
-			continue
-		}
-		tail.Cause = &copied
-		tail = &copied
 	}
 	return head
 }
