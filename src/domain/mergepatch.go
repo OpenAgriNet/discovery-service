@@ -192,8 +192,15 @@ func mergeResources(catalogID string, stored []Resource, patches []ResourcePatch
 	for _, patch := range patches {
 		touched = append(touched, patch.ID)
 
-		position, stored := at[patch.ID]
-		if !stored {
+		position, held := at[patch.ID]
+		if !held {
+			// Record the insert's position before appending: a payload may name
+			// the same NEW id twice, and "resources match by id" (A8) cannot
+			// mean two rows under one id. Postgres would refuse the second on
+			// its unique index, so a merge that produced it would put the two
+			// backends into disagreement — the one thing this function exists
+			// on both sides of.
+			at[patch.ID] = len(merged)
 			merged = append(merged, Resource{
 				ID:         patch.ID,
 				CatalogID:  catalogID,
@@ -220,6 +227,7 @@ func mergeOffers(catalogID string, stored []Offer, patches []OfferPatch) ([]Offe
 
 		position, held := at[patch.ID]
 		if !held {
+			at[patch.ID] = len(merged)
 			merged = append(merged, patchedOffer(Offer{ID: patch.ID, CatalogID: catalogID}, patch))
 			continue
 		}

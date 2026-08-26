@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -251,5 +252,53 @@ func TestMergeCatalogLeavesTheStoredCatalogAlone(t *testing.T) {
 
 	if got := string(stored.Resources[0].Attributes); got != `{"grade":"A","kg":50}` {
 		t.Errorf("the stored resource was modified in place: %s", got)
+	}
+}
+
+// A publisher can send the same id twice in one `resources` array — nothing in
+// the schema forbids it, since JSON Schema cannot express uniqueness on a key.
+// The second entry must merge into the first, because A8 says resources match
+// by id, and "by id" cannot mean two rows under one id.
+func TestTwoPatchesForOneNewResourceAreOneResource(t *testing.T) {
+	patch := defaultedPatch()
+	patch.Resources = []ResourcePatch{
+		{ID: "r9", Descriptor: json.RawMessage(`{"name":"first"}`)},
+		{ID: "r9", Attributes: json.RawMessage(`{"colour":"red"}`)},
+	}
+
+	merged, _ := MergeCatalog(Catalog{ID: "c1"}, patch)
+
+	if got := len(merged.Resources); got != 1 {
+		t.Fatalf("stored %d resources under one id, want 1", got)
+	}
+	resource := merged.Resources[0]
+	if string(resource.Descriptor) != `{"name":"first"}` {
+		t.Errorf("Descriptor = %s, want the first patch's", resource.Descriptor)
+	}
+	if string(resource.Attributes) != `{"colour":"red"}` {
+		t.Errorf("Attributes = %s, want the second patch's", resource.Attributes)
+	}
+}
+
+// The same hole on the offers side, and it is worse there: two offers under one
+// id means the LATER one's resourceIds never reach `touched` as a before-state,
+// so a relocation across the pair loses a geometry row.
+func TestTwoPatchesForOneNewOfferAreOneOffer(t *testing.T) {
+	patch := defaultedPatch()
+	patch.Offers = []OfferPatch{
+		{ID: "o9", ResourceIDs: []string{"r1"}},
+		{ID: "o9", ResourceIDs: []string{"r2"}},
+	}
+
+	merged, touched := MergeCatalog(Catalog{ID: "c1"}, patch)
+
+	if got := len(merged.Offers); got != 1 {
+		t.Fatalf("stored %d offers under one id, want 1", got)
+	}
+	if got := merged.Offers[0].ResourceIDs; !reflect.DeepEqual(got, []string{"r2"}) {
+		t.Errorf("ResourceIDs = %v, want the second patch's [r2]", got)
+	}
+	if !slices.Contains(touched, "r1") || !slices.Contains(touched, "r2") {
+		t.Errorf("touched = %v, want both r1 and r2 — the pair is a relocation", touched)
 	}
 }
