@@ -54,3 +54,62 @@ func PointGeometries(points ...domain.GeoPoint) []domain.Geometry {
 	}
 	return geometries
 }
+
+// providerGeoPolygonSource is the polygon form of the same path. A polygon
+// fixture is a service AREA rather than a shopfront, and the two must be
+// distinguishable in the store or a case cannot say which one it published.
+const providerGeoPolygonSource = `$['catalogs'][*]['provider']['serviceArea'][%d]['geo']`
+
+// PolygonGeometryAt builds a square service area of the given half-width in
+// degrees, centred on a point.
+//
+// Squares rather than realistic outlines on purpose: a fixture's job here is to
+// have a known inside, a known outside and a known area, and a shape whose
+// containment a reader has to compute is a shape whose failure they cannot
+// diagnose.
+func PolygonGeometryAt(index int, center domain.GeoPoint, halfDegrees float64) domain.Geometry {
+	corners := [][2]float64{
+		{center.Lon - halfDegrees, center.Lat - halfDegrees},
+		{center.Lon + halfDegrees, center.Lat - halfDegrees},
+		{center.Lon + halfDegrees, center.Lat + halfDegrees},
+		{center.Lon - halfDegrees, center.Lat + halfDegrees},
+		{center.Lon - halfDegrees, center.Lat - halfDegrees},
+	}
+
+	ring := ""
+	for position, corner := range corners {
+		if position > 0 {
+			ring += ","
+		}
+		// Longitude first, as in PointGeometryAt and for the same reason.
+		ring += fmt.Sprintf("[%g,%g]", corner[0], corner[1])
+	}
+
+	return domain.Geometry{
+		TargetPath: providerGeoTarget,
+		SourcePath: fmt.Sprintf(providerGeoPolygonSource, index),
+		Type:       "Polygon",
+		GeoJSON:    json.RawMessage(`{"type":"Polygon","coordinates":[[` + ring + `]]}`),
+	}
+}
+
+// CenterOf reports the coordinate of a Point geometry, and false for anything
+// else.
+//
+// It exists so a fixture can say "this constraint is a Point" without every
+// backend's test re-deriving it, and because the Point-to-Point S_DWITHIN
+// refinement applies to exactly this case: a Center populated on any other
+// shape would silently narrow an operator it was never meant to touch.
+func CenterOf(geometry domain.Geometry) (domain.GeoPoint, bool) {
+	var shape struct {
+		Type        string    `json:"type"`
+		Coordinates []float64 `json:"coordinates"`
+	}
+	if err := json.Unmarshal(geometry.GeoJSON, &shape); err != nil {
+		return domain.GeoPoint{}, false
+	}
+	if shape.Type != "Point" || len(shape.Coordinates) < 2 {
+		return domain.GeoPoint{}, false
+	}
+	return domain.GeoPoint{Lat: shape.Coordinates[1], Lon: shape.Coordinates[0]}, true
+}

@@ -16,6 +16,7 @@ require (
 	github.com/oasdiff/yaml v0.1.1 // indirect
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/uber/h3-go/v4 v4.5.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )

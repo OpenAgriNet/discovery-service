@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 )
 
 // Repository is both ports over one map.
@@ -144,4 +145,73 @@ func (r *Repository) Search(_ context.Context, _ domain.SearchQuery, _ []domain.
 // Capabilities declares nothing, because this backend can do nothing yet.
 func (r *Repository) Capabilities() domain.Capabilities {
 	return domain.Capabilities{}
+}
+
+// matchesSpatial is this backend's spatial stage for one stored geometry: the
+// bounding box, then the cell algebra, then the one exact refinement.
+//
+// The Go twin of Postgres's `CASE spatial_op` predicate, written from the same
+// table in the plan's Geospatial Design rather than from it. geo.MatchesOp
+// takes no box on purpose, which is what puts the S_DISJOINT exception HERE,
+// where the SQL's own version of the decision is visible beside it.
+//
+// geometries is the stored resource's full set, not just the one this cover
+// belongs to, because the Point-to-Point refinement asks about the resource:
+// "is anything I can be found by within the radius".
+func matchesSpatial(stored geo.Cover, geometries []domain.Geometry, filter domain.SpatialFilter) bool {
+	// Six of the seven operators need the two shapes to MEET, so a box that
+	// misses pre-rejects them cheaply. S_DISJOINT is the seventh and it
+	// inverts: two shapes whose boxes miss entirely ARE disjoint, so ANDing the
+	// box in would return exactly the rows near the query — the complement of
+	// the truth, with no error to notice.
+	if filter.Op != domain.OpDisjoint && !boxesMeet(stored.Bounds, filter.Bounds) {
+		return false
+	}
+	if !cellsAdmit(stored, filter) {
+		return false
+	}
+	return refinedByDistance(geometries, filter)
+}
+
+// cellsAdmit is the cell predicate alone, kept separate so the refinement below
+// can be shown to only ever narrow what it admitted.
+func cellsAdmit(stored geo.Cover, filter domain.SpatialFilter) bool {
+	return geo.MatchesOp(filter.Op, stored.CellsFull, stored.CellsCover, filter.CellsFull, filter.CellsCover)
+}
+
+// boxesMeet reports whether two boxes overlap, treating a NIL box as "no box"
+// rather than as an empty one.
+//
+// A nil box is a cover that declined — antimeridian, over budget — and a
+// declined box cannot reject anything. Reading it as empty would make every
+// oversize geometry unfindable, which is the opposite of why the box columns
+// survived the redesign.
+func boxesMeet(stored, query *domain.BBox) bool {
+	if stored == nil || query == nil {
+		return true
+	}
+	return stored.MinLat <= query.MaxLat && stored.MaxLat >= query.MinLat &&
+		stored.MinLon <= query.MaxLon && stored.MaxLon >= query.MinLon
+}
+
+// refinedByDistance is the Point-to-Point S_DWITHIN refinement, and the ONLY
+// place an exact distance decides anything here.
+//
+// A refinement, never a widening: it can only remove a resource the cells
+// already admitted, so the superset guarantee survives it, and it applies to
+// exactly one geometry type so no other shape's answer moves.
+//
+// NearestGeometryM reporting false means "no refinement applies" — nothing in
+// the set is a Point — and NOT "no match". Returning false there would drop
+// every resource whose only geometry is a Polygon out of an S_DWITHIN, which is
+// the inversion this design corrected.
+func refinedByDistance(geometries []domain.Geometry, filter domain.SpatialFilter) bool {
+	if filter.Op != domain.OpDWithin || filter.Center == nil {
+		return true
+	}
+	metres, refinable := geo.NearestGeometryM(*filter.Center, geometries)
+	if !refinable {
+		return true
+	}
+	return metres <= filter.RadiusM
 }
