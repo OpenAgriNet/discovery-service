@@ -29,7 +29,7 @@ var ErrCatalogNotFound = errors.New("catalog not found")
 // re-derived: a second computation of "which resources did the patch name" is a
 // second chance to re-embed a catalog nobody patched.
 //
-// A POINTER, and it has to be (A16). Everything derive computes it delivers by
+// A POINTER, and it has to be (A14). Everything derive computes it delivers by
 // WRITING onto the merged catalog — the return value carries faults and nothing
 // else. Against a value parameter that works for `merged.Resources[k].Field`,
 // which goes through the shared backing array, and silently does not work for

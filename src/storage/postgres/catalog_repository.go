@@ -11,6 +11,7 @@ import (
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 )
 
@@ -323,6 +324,38 @@ func clearGeometries(ctx context.Context, queries *gen.Queries, catalogID string
 	return nil
 }
 
+// coverCache memoizes an H3 fill for the length of one publish.
+//
+// Keyed on SourcePath, which is unique per shape within a catalog — it is half
+// of the unique index the geometry rows carry. An offer's shape sits on the
+// list of every resource that offer covers, so without this the identical fill
+// would run once per owner, and the fill is the expensive half of a publish.
+type coverCache map[string]geo.Cover
+
+// cover answers for a shape, computing it at most once.
+//
+// Only successes are cached: a shape that will not cover is the rare path, and
+// caching the failure would buy nothing while making the cache hold two kinds
+// of thing.
+func (c coverCache) cover(shape domain.Geometry, resolution int) (geo.Cover, error) {
+	if hit, ok := c[shape.SourcePath]; ok {
+		return hit, nil
+	}
+
+	computed, err := geo.CoverGeometry(shape, resolution)
+	if err != nil {
+		return geo.Cover{}, err
+	}
+	// Bounds is nil only for a shape geo could not bound, which the error above
+	// already covers; the columns are NOT NULL, so there is nothing to write.
+	if computed.Bounds == nil {
+		return geo.Cover{}, errUnboundedGeometry
+	}
+
+	c[shape.SourcePath] = computed
+	return computed, nil
+}
+
 // coverGeometries turns every shape on the merged catalog into insert
 // parameters, and a shape that will not cover into a PARTIAL.
 //
@@ -336,47 +369,33 @@ func (r *CatalogRepository) coverGeometries(
 		inserts []gen.InsertGeometryParams
 		faults  []domain.Fault
 	)
+	covers := coverCache{}
 
-	for _, shape := range merged.Geometries {
-		rows, err := geometryParams(merged.ID, shape, r.resolution)
-		if err != nil {
-			faults = append(faults, geometryFault(shape, err))
-			continue
-		}
-		inserts = append(inserts, rows...)
-	}
-
-	// Resource-level shapes, for the touched resources only — the rows of the
-	// untouched ones were never cleared, so re-inserting them would collide
-	// with themselves.
-	for _, resource := range merged.Resources {
-		if !slices.Contains(touched, resource.ID) {
-			continue
-		}
-		for _, shape := range resource.Geometries {
-			rows, err := geometryParams(merged.ID, withOwner(shape, resource.ID), r.resolution)
+	add := func(ownerID string, shapes []domain.Geometry) {
+		for _, shape := range shapes {
+			cover, err := covers.cover(shape, r.resolution)
 			if err != nil {
 				faults = append(faults, geometryFault(shape, err))
 				continue
 			}
-			inserts = append(inserts, rows...)
+			inserts = append(inserts, geometryParams(merged.ID, ownerID, shape, cover))
+		}
+	}
+
+	// The catalog's own provider locations, owned by nobody.
+	add("", merged.Geometries)
+
+	// Resource-level shapes, for the touched resources only — the rows of the
+	// untouched ones were never cleared, so re-inserting them would collide
+	// with themselves. An offer geometry cannot go stale on an untouched
+	// resource, because `touched` follows offers: patching the offer that
+	// carries the shape touches every resource it covers.
+	for _, resource := range merged.Resources {
+		if slices.Contains(touched, resource.ID) {
+			add(resource.ID, resource.Geometries)
 		}
 	}
 	return inserts, faults
-}
-
-// withOwner attaches a resource-level shape to the resource it was found in.
-//
-// The walker (Task 17) sets Owners for an OFFER's geometry, which may cover
-// several resources; a shape found inside a resource carries none, and this is
-// where it gets the one it has. Only when Owners is empty: overwriting them
-// would collapse an offer geometry covering three resources onto whichever
-// resource's loop iteration reached it.
-func withOwner(shape domain.Geometry, resourceID string) domain.Geometry {
-	if len(shape.Owners) == 0 {
-		shape.Owners = []string{resourceID}
-	}
-	return shape
 }
 
 // geometryFault names the shape that could not be stored.

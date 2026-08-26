@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
@@ -472,5 +473,75 @@ func TestTwoConcurrentRepublishesBothSurvive(t *testing.T) {
 	}
 	if attributes["grade"] != "A" {
 		t.Errorf("grade is %v, want A — neither republish named it", attributes["grade"])
+	}
+}
+
+// shareShape is the walker's half of an OFFER geometry, in miniature: one
+// shape covering two resources, attached to the list of BOTH of them, each copy
+// naming both owners. That is what the plan specifies the walk produces —
+// `merged.Resources[k].Geometries <- found where k in Owners` — and a derive
+// that attached it to only one of them would test a catalog no walker builds.
+func shareShape(merged *domain.Catalog, _ []string) []domain.Fault {
+	shape := domain.Geometry{
+		TargetPath: "$.offers[*].locations[*]",
+		SourcePath: "$.offers[0].locations[0]",
+		Owners:     []string{"r1", "r2"},
+		Type:       "Point",
+		GeoJSON:    json.RawMessage(`{"type":"Point","coordinates":[77.6,12.97]}`),
+	}
+	for index := range merged.Resources {
+		if slices.Contains(shape.Owners, merged.Resources[index].ID) {
+			merged.Resources[index].Geometries = []domain.Geometry{shape}
+		}
+	}
+	return nil
+}
+
+func TestASharedGeometrySurvivesARepublishNamingOneOwner(t *testing.T) {
+	pool := dbtest.NewPostgres(t)
+	repository := postgres.NewCatalogRepository(pool, resolution)
+	ctx := context.Background()
+
+	patch := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true,
+		Resources: []domain.ResourcePatch{
+			resourcePatch("r1", `{"grade":"A"}`),
+			resourcePatch("r2", `{"grade":"B"}`),
+		},
+	}
+	if _, err := repository.UpsertCatalog(ctx, patch, domain.UpdateModeMerge, shareShape); err != nil {
+		t.Fatalf("the first publish: %v", err)
+	}
+
+	// Only r1 is named, so only r1 is touched — but the shape it carries still
+	// belongs to r2 as well.
+	republish := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true,
+		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A+"}`)},
+	}
+	if _, err := repository.UpsertCatalog(ctx, republish, domain.UpdateModeMerge, shareShape); err != nil {
+		t.Fatalf("the republish naming one owner: %v", err)
+	}
+
+	var owners []string
+	rows, err := pool.Query(ctx,
+		`SELECT resource_id FROM resource_geometries WHERE catalog_id = $1 ORDER BY resource_id`, "c1")
+	if err != nil {
+		t.Fatalf("read the geometries: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var owner string
+		if err := rows.Scan(&owner); err != nil {
+			t.Fatalf("scan a geometry: %v", err)
+		}
+		owners = append(owners, owner)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the geometries: %v", err)
+	}
+
+	if len(owners) != 2 || owners[0] != "r1" || owners[1] != "r2" {
+		t.Fatalf("the shared shape is owned by %v, want [r1 r2]", owners)
 	}
 }

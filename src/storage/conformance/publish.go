@@ -81,7 +81,7 @@ func noDerive(*domain.Catalog, []string) []domain.Fault { return nil }
 // that does not exist yet.
 //
 // It writes through the pointer, which is the entire point of the seam — see
-// A16. Owners empty means catalog-level, so these land once with a NULL
+// A15. Owners empty means catalog-level, so these land once with a NULL
 // resource id however many resources the catalog holds.
 func deriveGeometries(geometries ...domain.Geometry) domain.DeriveFunc {
 	return func(merged *domain.Catalog, _ []string) []domain.Fault {

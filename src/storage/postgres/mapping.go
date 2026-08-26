@@ -321,49 +321,31 @@ func offerParams(catalogID string, offer domain.Offer) gen.UpsertOfferParams {
 	}
 }
 
-// geometryParams covers one shape and turns it into ONE row per owner.
+// geometryParams turns one already-covered shape into the ONE row that stores
+// it for one owner.
 //
-// The cover is computed once however many owners the shape has: covering per
-// row would run the same H3 fill N times for an offer geometry over N
-// resources, which is the multiplication this design removed from the catalog
-// level and must not reintroduce at the resource level.
-//
-// A cover error is a PARTIAL, not an abort — the geometry is dropped, the rest
-// of the catalog commits — so the fault travels back beside the rows.
-func geometryParams(catalogID string, shape domain.Geometry, resolution int) ([]gen.InsertGeometryParams, error) {
-	cover, err := geo.CoverGeometry(shape, resolution)
-	if err != nil {
-		return nil, err
+// `ownerID` is the id of the resource the shape was found ON, and "" is the
+// catalog itself: a NULL resource_id, stored once for the whole catalog rather
+// than once per resource. It is deliberately NOT read back off
+// `Geometry.Owners`. The walk has already SPENT Owners deciding placement,
+// putting an offer's shape on the list of every resource that offer covers, so
+// an adapter that fanned out over Owners a second time would turn a shape
+// already sitting on N lists into N x N rows and collide with
+// uq_resource_geometries on the very first publish.
+func geometryParams(
+	catalogID, ownerID string, shape domain.Geometry, cover geo.Cover,
+) gen.InsertGeometryParams {
+	return gen.InsertGeometryParams{
+		CatalogID:  catalogID,
+		ResourceID: owner(ownerID),
+		TargetPath: shape.TargetPath,
+		SourcePath: shape.SourcePath,
+		Geojson:    document(shape.GeoJSON),
+		CellsFull:  cells(cover.CellsFull),
+		CellsCover: cells(cover.CellsCover),
+		MinLat:     cover.Bounds.MinLat,
+		MaxLat:     cover.Bounds.MaxLat,
+		MinLon:     cover.Bounds.MinLon,
+		MaxLon:     cover.Bounds.MaxLon,
 	}
-
-	// Bounds is nil only for a shape geo could not bound, which the error above
-	// already covers; the columns are NOT NULL, so there is nothing to write.
-	if cover.Bounds == nil {
-		return nil, errUnboundedGeometry
-	}
-
-	owners := shape.Owners
-	if len(owners) == 0 {
-		// A catalog-level shape: one row, NULL resource_id, stored once for the
-		// whole catalog rather than once per resource.
-		owners = []string{""}
-	}
-
-	rows := make([]gen.InsertGeometryParams, 0, len(owners))
-	for _, ownerID := range owners {
-		rows = append(rows, gen.InsertGeometryParams{
-			CatalogID:  catalogID,
-			ResourceID: owner(ownerID),
-			TargetPath: shape.TargetPath,
-			SourcePath: shape.SourcePath,
-			Geojson:    document(shape.GeoJSON),
-			CellsFull:  cells(cover.CellsFull),
-			CellsCover: cells(cover.CellsCover),
-			MinLat:     cover.Bounds.MinLat,
-			MaxLat:     cover.Bounds.MaxLat,
-			MinLon:     cover.Bounds.MinLon,
-			MaxLon:     cover.Bounds.MaxLon,
-		})
-	}
-	return rows, nil
 }
