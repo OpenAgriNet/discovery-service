@@ -160,6 +160,28 @@ func (o *Offer) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON writes the offer back exactly as it arrived.
+//
+// The counterpart to UnmarshalJSON above, and the reason the discover response
+// can claim to render `offers.offer` verbatim: the spec leaves
+// Offer.additionalProperties unset, so a publisher may send members this struct
+// never named, and re-marshalling the fields alone would drop them for
+// precisely the publishers who relied on the column keeping them.
+//
+// Raw is the bytes this value was DECODED from, so a caller that decodes an
+// offer and then edits a field would marshal the original. Nothing does — an
+// offer is stored verbatim and rendered verbatim, and there is no step between
+// that rewrites one. A value built in Go carries no Raw and marshals from its
+// fields, which is what keeps a hand-constructed Offer honest.
+func (o Offer) MarshalJSON() ([]byte, error) {
+	if len(o.Raw) > 0 {
+		return o.Raw, nil
+	}
+
+	type wire Offer
+	return json.Marshal(wire(o))
+}
+
 // Attributes reads the JSON-LD pair out of an extensibility container —
 // `resourceAttributes`, `offerAttributes` and their kin.
 //
