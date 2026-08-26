@@ -130,10 +130,22 @@ func (s *Service) negotiate(query domain.SearchQuery) ([]domain.Capability, []st
 
 // render turns stored catalogs into the response's.
 //
-// Exactly the four members the response shape names — id, provider, resources,
-// offers — and nothing this service would have to invent. `isActive` is not
-// among them: every catalog that survives the scope gate is live, so rendering
-// it would be a constant true dressed as information.
+// Four members — id, provider, resources, offers — and nothing this service
+// would have to invent. `isActive` is not among them: every catalog that
+// survives the scope gate is live, so rendering it would be a constant true
+// dressed as information.
+//
+// `descriptor` is missing, and the schema requires it. Catalog in beckn.yaml is
+// required:[id, descriptor, provider] with additionalProperties:false, so what
+// this emits does not satisfy its own response shape. Nothing here can fix
+// that: domain.Catalog has no Descriptor, no column stores one and the publish
+// mapper never read one, so the value does not exist to be rendered. The gap is
+// in the plan's Deferred table with what closing it costs — it is a schema and
+// write-path change, not a projection this function is declining to make.
+//
+// SearchResult.Total is dropped for the neighbouring reason: OnDiscoverAction
+// admits `catalogs` alone. That one is not free — the repository issues a count
+// query to produce it — and it is in the same table.
 func render(catalogs []domain.Catalog) []beckn.Catalog {
 	rendered := make([]beckn.Catalog, 0, len(catalogs))
 	for _, catalog := range catalogs {
