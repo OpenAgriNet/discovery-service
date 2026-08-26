@@ -20,20 +20,26 @@ const (
 	repoRoot = "../.."
 )
 
-// adapterOnly is what may not escape src/storage/postgres.
-//
-// The driver and the vector type are obvious. The generated package is here for
-// a subtler reason: sqlc's output is a set of Go structs that look exactly like
+// The ban is two bans, because the two have different reasons and therefore
+// different allow-lists. Collapsing them into one list was the original shape,
+// and it made the test harness's legitimate need for the driver look like a
+// reason to hand it the adapter as well.
+
+// driverOnly is the PostgreSQL vocabulary: the driver and the vector type.
+// Anything holding these is talking to PostgreSQL rather than to a store.
+var driverOnly = []string{
+	"github.com/jackc/pgx",
+	"github.com/pgvector/pgvector-go",
+}
+
+// adapterOnly is the generated package, and it is here for a subtler reason
+// than the driver: sqlc's output is a set of Go structs that look exactly like
 // domain types, and a service that starts passing them around has swapped its
 // domain model for its schema without anyone deciding to.
 var adapterOnly = []string{
-	"github.com/jackc/pgx",
-	"github.com/pgvector/pgvector-go",
 	modulePath + "/src/storage/postgres",
 }
 
-// mayImportTheAdapter is the allow-list, and it is deliberately two entries.
-//
 // The adapter package itself, obviously. And the composition root, because
 // something has to construct the concrete store — that is what a composition
 // root is for, and the alternative is a reflective registry that hides the same
@@ -41,6 +47,22 @@ var adapterOnly = []string{
 func mayImportTheAdapter(path string) bool {
 	return strings.HasPrefix(path, filepath.Join("src", "storage", "postgres")+string(filepath.Separator)) ||
 		path == filepath.Join("src", "app", "container.go")
+}
+
+// mayImportTheDriver adds the database test harness, and only the harness.
+//
+// tests/dbtest starts a real PostgreSQL, runs the migrations against it and
+// reads pg_indexes and pg_stat_user_indexes back. It cannot be written through
+// the store interface, because what it is testing is the schema underneath the
+// interface — an assertion about idx_rg_cells_full has nowhere else to live.
+//
+// It is NOT granted the adapter: a harness that constructs the real store is a
+// harness that has started testing the adapter through itself, and the
+// conformance suite in src/storage/postgres is where that belongs. So the two
+// lists stay separate rather than becoming one list with three entries.
+func mayImportTheDriver(path string) bool {
+	return mayImportTheAdapter(path) ||
+		strings.HasPrefix(path, filepath.Join("tests", "dbtest")+string(filepath.Separator))
 }
 
 // TestNothingButTheAdapterImportsPostgres walks every package in the module.
@@ -97,16 +119,25 @@ func checkFile(t *testing.T, fileSet *token.FileSet, path string) {
 		t.Errorf("locate %s: %v", path, err)
 		return
 	}
-	if mayImportTheAdapter(relative) {
-		return
+	bans := []struct {
+		paths   []string
+		allowed bool
+		who     string
+	}{
+		{driverOnly, mayImportTheDriver(relative), "src/storage/postgres/**, src/app/container.go and tests/dbtest/**"},
+		{adapterOnly, mayImportTheAdapter(relative), "src/storage/postgres/** and src/app/container.go"},
 	}
 
 	for _, imported := range file.Imports {
 		importPath := strings.Trim(imported.Path.Value, `"`)
-		for _, banned := range adapterOnly {
-			if strings.HasPrefix(importPath, banned) {
-				t.Errorf("%s imports %q — only src/storage/postgres/** and src/app/container.go may",
-					relative, importPath)
+		for _, ban := range bans {
+			if ban.allowed {
+				continue
+			}
+			for _, banned := range ban.paths {
+				if strings.HasPrefix(importPath, banned) {
+					t.Errorf("%s imports %q — only %s may", relative, importPath, ban.who)
+				}
 			}
 		}
 	}
