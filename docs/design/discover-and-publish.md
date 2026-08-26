@@ -67,6 +67,7 @@ Every task inherits these.
 | Test doubles | The memory backend is the **only** double for the repository interface. No per-file mocks, no hand-rolled stubs. Every behaviour pinned against Postgres is pinned against memory by the same `conformance/` fixtures, which is the one thing keeping the two from drifting; a mock written by the test that asserts on it proves only that both were written by the same person |
 | Naming | A config key, constant or column names **what it bounds and in what unit** — not merely that it is a bound. `MaxCandidatesPerMode`, not `CandidatesPerMode`; `MaxRadiusMeters`, with the unit in the name. Two names that differ only by which side of the system they serve must say which side: `MaxQueryCoverCells` and `MaxIndexCoverCells`, `target_path` and `source_path`. A reader who has to open the table to tell a pair apart will eventually pick the wrong one |
 | Flags | `VALIDATION_ENABLE_L1_SCHEMA=true`, `VALIDATION_ENABLE_L2_CONTEXT=true`, `AUTH_ENABLE_SIGNATURE_VERIFICATION=false` (deferred; seam ships) |
+| Limits | `SERVER_MAX_REQUEST_BODY_BYTES=10485760` (10 MiB). Enforced in `Envelope` with `http.MaxBytesReader`, because that is the only place in the service that reads a request body and it runs **before** `RateLimit` — the limiter never sees these bytes, so a ceiling set anywhere later is a ceiling set after the allocation it exists to prevent. Over it is `POL_NP_CAPACITY_EXCEEDED` at **413** (C14) |
 | Commits | Conventional commits, one per task step marked *Commit* |
 | TODOs | None on `main`. Anything deferred goes in **Deferred** or **Out of Scope** in this document, where a reader deciding scope will find it — not into a source comment only the next person to open that file will ever read. Scope drift belongs in the plan, visible, not buried at the call site |
 
@@ -74,8 +75,8 @@ Every task inherits these.
 
 ## Spec Conflicts
 
-The PRD and `beckn.yaml` v2.0.0 disagree in twelve places, and the spec
-contradicts itself in a thirteenth. These resolutions are binding. C8, C9 and
+The PRD and `beckn.yaml` v2.0.0 disagree in twelve places, the spec
+contradicts itself in a thirteenth, and it is silent in a fourteenth. These resolutions are binding. C8, C9 and
 C10 are **deliberate deviations** — cases where this service knowingly does
 something other than what the spec says, each with the reason written down,
 because an undocumented deviation is indistinguishable from a bug. C13 is not a
@@ -96,6 +97,7 @@ deviation but a choice between two things the schema says at once.
 | **C11** | `OnDiscoverAction` is `additionalProperties: false` with exactly one property, `catalogs`. There is nowhere in the response **body** to say that a retrieval mode was degraded | The list moves to the **`X-Beckn-Degraded`** response header, comma-separated, absent when nothing degraded. The same move C1 makes for `error.type`, for the same reason: a key the schema forbids is not an extension, it is a response that fails validation at the first consumer strict enough to check. `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` stays available for callers who would rather have a `400` than a header they might not read |
 | **C12** | `CatalogProcessingResult.stats` gives `itemCount` as *"Number of items accepted"* but `providerCount` as *"Number of providers in the catalog"* — one request-scoped, one catalog-scoped, in adjacent fields | All three are read **request-scoped**: `itemCount` and `categoryCount` count what this request landed, and `providerCount` is 1 because a catalog has exactly one provider, so the two readings coincide and nothing is lost. A8 is why this needed deciding at all — before field-level MERGE, a payload and its catalog were the same set |
 | **C13** | Every Ack-family schema requires `message.messageId`, and the family then disagrees about what it is. Seven declare `format: uuid` — `Ack`, `AckNoCallback`, `NackBadRequest`, `NackUnauthorized`, `NackTooManyRequests`, `NackDiscretionary`, `ServerError`. Three drop the format and describe the field instead: *"Echoes the messageId from the triggering request's Context, for caller correlation"* — `NackForbidden`, `NackConflict`, `NackNotFound` | **Echo, verbatim.** The two readings are not equal and this is not a coin toss: a field defined as an echo cannot assert a format its source is not required to carry, and by **C6** the source carries no guarantee at all — `Context` declares no `required` list, so the spec never establishes that a uuid was ever sent. The three that dropped `format` are the ones that followed that through. So `WriteNack` echoes `context.messageId` exactly as received, **including a value that is not a uuid** — which is precisely the request C6 rejects, and precisely the caller with the least other means of working out which request was refused. Empty **only** when the envelope yielded no messageId at all: unparseable JSON, or the key absent. Never a minted uuid — that hands the caller a correlation id for a message they never sent, which is worse than nothing because it looks like an answer. Capped at 128 bytes, longer dropped to empty: past that it is not a correlation handle a caller can use, it is a payload they chose our error body to carry. Against the seven variants declaring `format: uuid` the echoed non-uuid is non-conformant, and that is the cost of the reading — recorded here rather than left for L1 to discover |
+| **C14** | The `ErrorCode` enum has **no member for a payload this receiver will not accept on size**. All 76 are checked: the nearest are `AUT_RATE_LIMITED`, which is about pace and carries `Retry-After`, and `POL_NP_CAPACITY_EXCEEDED`, which `NackTooManyRequests` describes as *"a policy-governed engagement capacity limit"* at 429. There is no `SCH_` or `NET_` code for it either | **`POL_NP_CAPACITY_EXCEEDED` at HTTP 413**, and the request body is capped at `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB) in `Envelope`. The family is right and the status is not the family's: `POL_` is *a refusal this deployment's policy requires rather than one the request earned*, which is exactly what a size ceiling is — the same request succeeds unchanged against a deployment configured to accept it. 403 would send the caller to inspect their credentials for a fault that is in their payload, so `Status()` overrides it to 413 alongside the two overrides already there. **The reuse is safe only because this service runs no engagements**: the spec's other use of this code has no code path here, so within this service the code means one thing and maps to one status. A deployment that grows an engagement lifecycle must give that refusal a code of its own — the one thing it must not do is make this mapping carry two statuses, because `Status()` derives from the code precisely so that two call sites cannot disagree about what a fault is worth on the wire. The ceiling is a knob and not a constant because the largest legitimate body is a property of a deployment's catalogs, not of the protocol; zero is refused at boot, because it reads as *unlimited* and behaves as *refuse everything* |
 
 **`networkId` is a filter, not an identity claim, and the two mappers answer
 "it's absent" differently.** On **publish**, absent → scope to
@@ -302,8 +304,13 @@ below is the Phase 2 order, kept whole so the reasoning survives the parking.
 `Recover` is outermost of the handler chain so it catches everything below.
 `RequestLogger` starts the timer before auth, so rejected requests still report
 latency. `Envelope` precedes `Signature` because a NACK for a signature failure
-needs `transactionId` and `messageId`. `RateLimit` sheds load before the
-signature check it exists to protect. `Trace` sits above `Recover` so a panic
+needs the `messageId` to echo (C13), and only `Envelope` has read the body it is
+in. **Not `transactionId`** — no member of the Ack family carries one; all ten
+are exactly `{message: {status, messageId, error}}`, with no `context` key at
+all, so `messageId` is the whole of what a NACK can correlate on. `RateLimit`
+sheds load before the signature check it exists to protect, and after `Envelope`
+because `Envelope` is what bounds the body (C14): shedding first would leave the
+one unbounded allocation on the path in front of the thing that sheds. `Trace` sits above `Recover` so a panic
 lands inside a span, and above `Envelope` so the span covers body reading.
 
 ---
@@ -2906,6 +2913,7 @@ goes looking for.
 | 6a | `TheSameCatalogIdTwiceInOneRequestIsRefused` | One request carrying the same `catalog.id` twice. The first is `ACCEPTED`, the second `REJECTED` / `SCH_SCHEMA_VALIDATION_FAILED`, and the catalog that is stored is the **first** one — asserted on a field the two entries disagree about. Without the check both are `ACCEPTED` and the stored catalog is the second, so one of the two success verdicts describes a document that no longer exists; under `FULL` the second entry additionally deletes the first's resources. The pin is on the stored document rather than on the status array, because two `ACCEPTED`s is exactly what the bug looks like from outside |
 | 7 | `SignatureVerificationRefusesToBoot` | `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` fails startup, naming the flag. This replaces the original pair (`MissingSignatureIsUnauthorized` / `UnsignedRequestSucceedsWhenVerificationIsOff`), which asserted both sides of a flag that now has nothing behind either side. What made the deferral honest was never the flag itself but the impossibility of believing it was on when it wasn't — with the crypto parked, a boot refusal is the only thing that still carries that |
 | 8 | `UnsignedRequestSucceeds` | With the flag off — the only supported setting in Phase 1 — an unsigned publish is processed normally. Pins that nothing in the chain has quietly started requiring a signature |
+| 8a | `AnOversizedBodyIsRefusedWithA413` | C14, end to end: a publish body over `SERVER_MAX_REQUEST_BODY_BYTES` comes back `413` / `POL_NP_CAPACITY_EXCEEDED`, nothing is stored, and the service is still serving afterwards. Set the knob low for this scenario rather than sending 10 MiB. It sits beside scenario 9 for the same reason 9 exists — it pins that the ceiling is *mounted*, and a ceiling only `Envelope`'s own unit tests exercise is one that a re-wiring in Task 20 can drop without a single test going red |
 | 9 | `ACallerOverItsRateGetsA429` | Burst+1 requests: the last is `429` / `AUT_RATE_LIMITED` with `Retry-After`. Also pins that the limiter is *mounted* — an unmounted middleware is invisible to every other test |
 | 10 | `ChangingVisibleToWithNoResourcesInThePayloadTakesEffect` | Publish a catalog with resources, then republish the same catalog with `visibleTo` narrowed and **no resources at all**. The resources must stop being discoverable. The gate lives on `resources`, so without the unconditional `UPDATE resources` the catalog row changes and discover ignores it — a visibility change that reports success and does nothing |
 | 10a | `ChangingTheGateRewritesOnlyTheRowsItChanges` | Publish a forty-resource catalog, then republish the catalog document with no `visibleTo` change and no resources. Every resource still carries the catalog's gate — that is scenario 10's guarantee and it does not move — but `xmin` on the untouched rows is unchanged, so no row was rewritten. Then narrow `visibleTo` and republish: now every row moves. The `IS DISTINCT FROM` guard on the propagate is what separates the two, and it is worth a scenario because the failure it prevents is invisible in every response — forty dead tuples and forty `fastupdate = off` GIN insertions per publish, paid on the write path and observed as a slow one |
@@ -3349,16 +3357,28 @@ from a bad signature.
 
 **Files:** `src/platform/middlewares/envelope.go` ~~`signature.go`~~ *(parked)*
 
-**Produces:** `middlewares.Envelope`. ~~`middlewares.Signature(keyring, cfg)`~~ *(parked)*
+**Produces:** `middlewares.Envelope(cfg config.Errors, maxBodyBytes int64)`.
+~~`middlewares.Signature(keyring, cfg)`~~ *(parked)*
 
 ```pseudo
 Envelope(next):
-    body ← read and buffer          # signature and validation both re-read it
+    body ← read and buffer, ceiling SERVER_MAX_REQUEST_BODY_BYTES
+    if over the ceiling: NACK POL_NP_CAPACITY_EXCEEDED at 413   # C14
     envelope ← parse {context, message}
     if parse fails: NACK SCH_INVALID_JSON
     stash envelope + raw body in ctx; restore r.Body for downstream
     next
 ```
+
+**The ceiling is this task's, not Task 20's (C14).** `Envelope` is the only
+thing in the service that reads a request body, and it runs *before*
+`RateLimit` — so an unauthenticated caller's bytes are buffered by this
+middleware and by nothing else, and a bound placed on the server Task 20 builds
+would arrive fourteen tasks after the allocation it was meant to prevent. The
+two faults stay distinct: over the ceiling the body may be perfectly
+well-formed, and reporting `SCH_INVALID_JSON` would send the caller to inspect
+a document that is fine. The bytes read before the refusal are still handed to
+the salvage, so a message id at the front of an oversized body is still echoed.
 
 **Parked, for Phase 2:** `Signature` no-ops when
 `AUTH_ENABLE_SIGNATURE_VERIFICATION=false`, which is the Phase 1 default, and
@@ -3369,7 +3389,15 @@ replaces mounting an inert middleware as the thing making the deferral honest.
 **Tests pin:** the body is re-readable downstream after `Envelope` has consumed
 it; a malformed body NACKs `SCH_INVALID_JSON`; the message id reaches the NACK
 **echoed verbatim, before it is judged** (C13) — including a value that is not
-a uuid, and empty only when the body yielded nothing to echo.
+a uuid, and empty only when the body yielded nothing to echo; a body **truncated
+after the id still echoes it**, which is the shape the salvage exists for and
+the one a whole-value decode cannot serve; a `messageId` at any other path is
+**not** echoed; the ceiling is exact at the boundary — a body of exactly
+`maxBodyBytes` passes and one byte more is `413` / `POL_NP_CAPACITY_EXCEEDED`
+(C14) — and an oversized body is **refused without being buffered**, asserted by
+counting the bytes the request reader was actually asked for rather than by
+observing the status, because a limit enforced after buffering produces the same
+status and none of the protection.
 
 *(Parked with `Signature`: the pin that a signature-failure NACK carries the
 message id, which is the original reason `Envelope` precedes `Signature` in the
@@ -4354,6 +4382,11 @@ all off this page.
   the transaction commits, never inside it. One line today, and it is why
   Task 20 appears in A7's list: a seam nothing builds is not a seam.
 - Graceful shutdown drains in-flight requests on SIGTERM.
+- **The request body ceiling is already enforced, in `Envelope` (C14).** Do not
+  set a second one on the `http.Server` — two bounds on one quantity is two
+  values to keep equal, and the one that fires first decides what the caller is
+  told. `SERVER_MAX_REQUEST_BODY_BYTES` is read once, in `Build`, and passed to
+  `Envelope`.
 - `DATABASE_AUTO_MIGRATE` applies embedded migrations at boot.
 
 **Tests pin:** the middleware chain is in the specified order (asserted by

@@ -51,9 +51,9 @@ func TestRateLimitedIs429WithItsBackoff(t *testing.T) {
 	}
 }
 
-// The one code whose family status is wrong for it. A missing retrieval mode is
-// a NET_ fault — the deployment's gap, not the caller's — but the caller can
-// fix it by asking for a different mode, so it is a 400 rather than a 500.
+// One of the two codes whose family status is wrong for it. A missing retrieval
+// mode is a NET_ fault — the deployment's gap, not the caller's — but the caller
+// can fix it by asking for a different mode, so it is a 400 rather than a 500.
 func TestAnUnavailableRetrievalModeIsA400(t *testing.T) {
 	fault := Network(beckn.CodeNetworkCatalogSourceUnavailable, "semantic is not configured")
 
@@ -62,6 +62,21 @@ func TestAnUnavailableRetrievalModeIsA400(t *testing.T) {
 	}
 	if got := fault.Type(); got != TypeSystem {
 		t.Errorf("Type() = %q, want %q", got, TypeSystem)
+	}
+}
+
+// The other one, and the reason it is worth its own test rather than a row in
+// the family table: POL_NP_CAPACITY_EXCEEDED is the family's status everywhere
+// in the spec except here (C14). 403 would send a caller whose body was too
+// large to go and look at their credentials.
+func TestAnOversizedBodyIsA413(t *testing.T) {
+	fault := Policy(beckn.CodePolicyNPCapacityExceeded, "request body exceeds the 1024 byte limit this deployment accepts")
+
+	if got := fault.Status(); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("Status() = %d, want %d", got, http.StatusRequestEntityTooLarge)
+	}
+	if got := fault.Type(); got != TypePolicy {
+		t.Errorf("Type() = %q, want %q", got, TypePolicy)
 	}
 }
 

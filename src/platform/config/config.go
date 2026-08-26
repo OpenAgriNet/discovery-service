@@ -69,6 +69,17 @@ type Server struct {
 	// How long SIGTERM waits for in-flight requests before the listener is
 	// closed on them.
 	ShutdownTimeout time.Duration `env:"SERVER_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+
+	// The ceiling on a request body, in bytes (C14). Enforced by the Envelope
+	// middleware, which is the only thing in the service that reads a body and
+	// runs before RateLimit — so until this exists there is no bound at all on
+	// what an unauthenticated caller can make the process allocate.
+	//
+	// 10 MiB is sized for the largest thing this service accepts, a publish
+	// carrying a full catalog, with room to spare. It is a knob rather than a
+	// constant because that size is a property of a deployment's catalogs and
+	// not of the protocol.
+	MaxRequestBodyBytes int64 `env:"SERVER_MAX_REQUEST_BODY_BYTES" envDefault:"10485760"`
 }
 
 // Database holds the connection string and the pool's bounds.
@@ -488,6 +499,12 @@ func validateServer(server Server) error {
 	return errors.Join(
 		require(server.Port > 0 && server.Port < 65536, "server.port %d is not a port", server.Port),
 		require(server.ShutdownTimeout > 0, "server.shutdownTimeout %s is not positive", server.ShutdownTimeout),
+		// Zero would read as "no limit" to anyone skimming the YAML and mean
+		// "refuse everything" to http.MaxBytesReader. Neither is a value to let
+		// a deployment discover at runtime.
+		require(server.MaxRequestBodyBytes > 0,
+			"server.maxRequestBodyBytes %d is not positive (SERVER_MAX_REQUEST_BODY_BYTES): "+
+				"zero is not \"unlimited\", it refuses every request with a body", server.MaxRequestBodyBytes),
 	)
 }
 

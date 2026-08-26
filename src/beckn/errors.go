@@ -52,6 +52,20 @@ const (
 	CodeSchemaInvalidJSONPath  ErrorCode = "SCH_INVALID_JSONPATH"
 	CodeSchemaTypeNotSupported ErrorCode = "SCH_TYPE_NOT_SUPPORTED"
 
+	// POL_ — a refusal this deployment's policy requires rather than one the
+	// request earned. CodePolicyNPCapacityExceeded answers a request body over
+	// SERVER_MAX_REQUEST_BODY_BYTES.
+	//
+	// The enum names no payload-size fault, and this is the nearest member that
+	// is not a lie: the request is well-formed and would succeed against a
+	// deployment configured to accept it, which is what POL_ means. The spec
+	// pairs this code with 429 in NackTooManyRequests, for an *engagement*
+	// capacity limit; this service has no engagement lifecycle to run out of, so
+	// the code is unambiguous here and Status maps it to 413. A deployment that
+	// grows one must revisit that mapping rather than add a second meaning to
+	// it — see C14.
+	CodePolicyNPCapacityExceeded ErrorCode = "POL_NP_CAPACITY_EXCEEDED"
+
 	// NET_ — networking and the deployment's own gaps.
 	//
 	// CodeNetworkCatalogSourceUnavailable answers a retrieval mode the backend

@@ -54,6 +54,11 @@ func TestDefaultsAreTheFloor(t *testing.T) {
 	assertEqual(t, "Auth.EnableSignatureVerification", cfg.Auth.EnableSignatureVerification, false)
 	assertEqual(t, "OTel.Exporter", cfg.OTel.Exporter, "none")
 
+	// C14's ceiling. It is the only bound on what an unauthenticated caller can
+	// make this process allocate, so a drift here is a drift in the service's
+	// exposure and not merely in a number.
+	assertEqual(t, "Server.MaxRequestBodyBytes", cfg.Server.MaxRequestBodyBytes, int64(10485760))
+
 	// The three knobs the tasks that read them do not get to define. Two are
 	// security- or conformance-shaping and false is the safe end of both; the
 	// third is a resolution the whole geo index is built at.
@@ -361,6 +366,11 @@ func TestValidateRejects(t *testing.T) {
 		// it is a failure inside the first cover a publish or discover builds.
 		"an H3 resolution that does not exist": {
 			"geo:\n  resolutionCells: 16\n", "resolutionCells",
+		},
+		// Zero reads as "unlimited" and means "refuse everything" — the two
+		// worst possible readings of one value, so neither is reachable.
+		"a body ceiling of zero": {
+			"server:\n  maxRequestBodyBytes: 0\n", "maxRequestBodyBytes",
 		},
 	}
 

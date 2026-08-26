@@ -14,19 +14,35 @@ import (
 
 const validEnvelope = `{"context":{"action":"catalog/publish","messageId":"2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11"},"message":{"catalogs":[]}}`
 
+// A ceiling no test body comes near, so a test about parsing is not also a test
+// about the size limit.
+const roomy = 1 << 20
+
 // serve runs body through Envelope and reports what the response was and what
 // the handler below it saw. A nil downstream request means the middleware
 // answered the request itself.
 func serve(t *testing.T, body string) (*httptest.ResponseRecorder, *http.Request) {
 	t.Helper()
+	return serveReader(t, strings.NewReader(body), roomy)
+}
+
+// serveLimited is serve with the body ceiling as the subject rather than the
+// backdrop.
+func serveLimited(t *testing.T, body string, maxBodyBytes int64) (*httptest.ResponseRecorder, *http.Request) {
+	t.Helper()
+	return serveReader(t, strings.NewReader(body), maxBodyBytes)
+}
+
+func serveReader(t *testing.T, body io.Reader, maxBodyBytes int64) (*httptest.ResponseRecorder, *http.Request) {
+	t.Helper()
 
 	var seen *http.Request
-	handler := Envelope(config.Errors{})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := Envelope(config.Errors{}, maxBodyBytes)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = r
 	}))
 
 	recorded := httptest.NewRecorder()
-	handler.ServeHTTP(recorded, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(body)))
+	handler.ServeHTTP(recorded, httptest.NewRequest(http.MethodPost, "/publish", body))
 	return recorded, seen
 }
 
@@ -142,5 +158,131 @@ func TestABodyThatYieldsNoMessageIDEchoesEmpty(t *testing.T) {
 		if got := nackOf(t, recorded).Message.MessageID; got != "" {
 			t.Errorf("body %q echoed messageId %q, want empty", body, got)
 		}
+	}
+}
+
+// The shape C13's salvage exists for. A body cut off mid-flight — a caller that
+// hung up, a proxy that gave up — is the malformed body that actually arrives in
+// production, and the id is at the front of the envelope precisely because
+// everything downstream needs it. Reaching it must not depend on the bytes after
+// it parsing.
+func TestATruncatedBodyStillEchoesTheMessageIDItReached(t *testing.T) {
+	bodies := map[string]string{
+		"cut off inside message":   `{"context":{"messageId":"2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11","action":"catalog/publish"},"message":{"catal`,
+		"cut off just past the id": `{"context":{"action":"catalog/publish","messageId":"2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11"`,
+		"cut off after the comma":  `{"context":{"messageId":"2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11",`,
+		"a non-uuid, cut off":      `{"context":{"messageId":"2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11"},"messag`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			recorded, seen := serve(t, body)
+
+			if seen != nil {
+				t.Fatal("a truncated body reached the handler below Envelope")
+			}
+			const want = "2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11"
+			if got := nackOf(t, recorded).Message.MessageID; got != want {
+				t.Errorf("messageId = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// The salvage reads `$.context.messageId` and nothing that merely looks like it.
+// A body broken enough to need salvaging is a body whose structure is not to be
+// trusted, so a key found at some other depth is not evidence of anything — and
+// echoing it would hand the caller a correlation id they did not send under this
+// name, which C13 rules out for the same reason it rules out minting one.
+func TestOnlyTheTopLevelContextMessageIDIsEchoed(t *testing.T) {
+	bodies := map[string]string{
+		"nested inside context":                        `{"context":{"location":{"messageId":"wrong"}},"message"`,
+		"under message":                                `{"message":{"messageId":"wrong"},"context":{"action":"x"`,
+		"a context key by that name on another object": `{"other":{"context":{"messageId":"wrong"}},"context":{`,
+		"not a string":                                 `{"context":{"messageId":42},"message":{`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			recorded, _ := serve(t, body)
+
+			if got := nackOf(t, recorded).Message.MessageID; got != "" {
+				t.Errorf("echoed messageId %q, want empty", got)
+			}
+		})
+	}
+}
+
+// countingReader reports how much of itself was actually consumed.
+type countingReader struct {
+	remaining int
+	read      int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), r.remaining)
+	for i := range p[:n] {
+		p[i] = 'x'
+	}
+	r.remaining -= n
+	r.read += n
+	return n, nil
+}
+
+// The ceiling is a boundary, so it is tested as one. Envelope is the first thing
+// in the chain that reads the body — it runs before RateLimit, so the limiter
+// never sees the bytes — and the endpoint is unauthenticated in Phase 1. Without
+// a ceiling here there is none anywhere.
+func TestTheBodyCeilingIsExactlyWhereItSays(t *testing.T) {
+	size := int64(len(validEnvelope))
+
+	if _, seen := serveLimited(t, validEnvelope, size); seen == nil {
+		t.Error("a body exactly at the ceiling was refused")
+	}
+
+	recorded, seen := serveLimited(t, validEnvelope, size-1)
+	if seen != nil {
+		t.Fatal("a body over the ceiling reached the handler below Envelope")
+	}
+	if recorded.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", recorded.Code)
+	}
+	if got := nackOf(t, recorded).Message.Error.Code; got != beckn.CodePolicyNPCapacityExceeded {
+		t.Errorf("code = %q, want %q", got, beckn.CodePolicyNPCapacityExceeded)
+	}
+}
+
+// The pin that makes the ceiling worth having: the refusal must cost the
+// service the ceiling, not the body. A limit enforced after buffering is a
+// limit that has already paid for what it is refusing.
+func TestAnOversizedBodyIsNeverFullyBuffered(t *testing.T) {
+	source := &countingReader{remaining: 8 << 20}
+
+	recorded, seen := serveReader(t, source, 1024)
+	if seen != nil {
+		t.Fatal("an oversized body reached the handler below Envelope")
+	}
+	if recorded.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", recorded.Code)
+	}
+	if source.read > 64<<10 {
+		t.Errorf("read %d bytes of an 8 MiB body against a 1 KiB ceiling, want the read bounded near the ceiling", source.read)
+	}
+}
+
+// C13 still holds at the ceiling. The prefix that was read is the prefix the
+// caller sent, so an id at the front of it is as good a correlation handle as
+// any — and a caller whose request was refused unread is exactly the caller with
+// no other way to tell which one it was.
+func TestAnOversizedBodyStillEchoesAMessageIDFromItsPrefix(t *testing.T) {
+	const id = "2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11"
+	body := `{"context":{"messageId":"` + id + `"},"message":{"pad":"` + strings.Repeat("x", 4096) + `"}}`
+
+	recorded, _ := serveLimited(t, body, 512)
+	if got := nackOf(t, recorded).Message.MessageID; got != id {
+		t.Errorf("messageId = %q, want %q", got, id)
 	}
 }

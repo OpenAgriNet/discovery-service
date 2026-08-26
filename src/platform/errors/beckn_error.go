@@ -62,7 +62,7 @@ func (e *AppError) Type() string {
 // Status returns the HTTP status this fault answers with.
 //
 // Derived from the code, never stored, so the status cannot drift from the code
-// a caller reads beside it. Two codes need more than their family says:
+// a caller reads beside it. Three codes need more than their family says:
 //
 // AUT_RATE_LIMITED is a 429 rather than the family's 401 — the credentials were
 // fine, the pace was not (A4).
@@ -72,12 +72,22 @@ func (e *AppError) Type() string {
 // in the deployment and not a failure in it: nothing is broken, retrying will
 // not help, and the caller fixes it by asking for a mode that exists. A 500
 // would tell them to retry something that can only ever fail.
+//
+// POL_NP_CAPACITY_EXCEEDED is a 413 rather than the family's 403. This service
+// mints it for one thing — a body over SERVER_MAX_REQUEST_BODY_BYTES — and 403
+// would send the caller looking at their credentials for a fault that is in
+// their payload (C14). The spec's other use of the code, an engagement capacity
+// limit at 429, has no path in a service that runs no engagements; a deployment
+// that grows one must give it a code of its own rather than make this mapping
+// mean two statuses.
 func (e *AppError) Status() int {
 	switch e.Code {
 	case beckn.CodeAuthRateLimited:
 		return http.StatusTooManyRequests
 	case beckn.CodeNetworkCatalogSourceUnavailable:
 		return http.StatusBadRequest
+	case beckn.CodePolicyNPCapacityExceeded:
+		return http.StatusRequestEntityTooLarge
 	}
 
 	switch e.Type() {
