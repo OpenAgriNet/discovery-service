@@ -2,6 +2,15 @@ package beckn
 
 import "encoding/json"
 
+// Version is the one protocol version this build serves.
+//
+// The schema declares it as `const: 2.0.0` on `Context.version`, so L1 rejects
+// anything else on its own — but `Context` has no `required` list (C6), so an
+// envelope that omits the field entirely passes L1 clean. The envelope rules
+// spend this constant on that case, which is why it is here and not left as the
+// literal inside the schema.
+const Version = "2.0.0"
+
 // The action names this service answers to and speaks back.
 //
 // `POST /publish` is the only publish route (C2) — there is no /catalog/publish

@@ -30,6 +30,24 @@ const (
 	// the receiver serves another.
 	CodeContextActionMismatch ErrorCode = "CTX_ACTION_MISMATCH"
 
+	// The three the envelope rules spend (C6). `Context` declares no `required`
+	// list, so L1 cannot reject a body missing `transactionId` and these are the
+	// codes for the pass that can.
+	//
+	// Missing and invalid are separate members in the enum and are kept
+	// separate here, because they send the caller to different places: absent
+	// means their sender never set the field, malformed means it set it wrong.
+	// Collapsing them into one code would make a typo and an unimplemented
+	// field indistinguishable in the only signal a consumer branches on.
+	//
+	// CodeContextVersionUnsupported is the third rather than a second spelling
+	// of invalid: `version` is the one context field whose wrong value means
+	// this receiver cannot serve the request at all, as opposed to cannot read
+	// it.
+	CodeContextMissingField       ErrorCode = "CTX_MISSING_FIELD"
+	CodeContextInvalidField       ErrorCode = "CTX_INVALID_FIELD"
+	CodeContextVersionUnsupported ErrorCode = "CTX_VERSION_UNSUPPORTED"
+
 	// AUT_ — authentication and trust. CodeAuthRateLimited is the one code
 	// that carries a header with it (A4): 429 plus Retry-After.
 	CodeAuthSignatureMissing ErrorCode = "AUT_SIGNATURE_MISSING"
