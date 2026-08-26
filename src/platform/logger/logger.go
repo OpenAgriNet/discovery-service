@@ -6,6 +6,7 @@ package logger
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -119,3 +120,13 @@ func ErrorType(category string) zap.Field { return zap.String("error_type", cate
 // and the body the caller received can be reconciled without a timestamp
 // search.
 func ErrorCode(code string) zap.Field { return zap.String("error_code", code) }
+
+// Status names the HTTP status the response went out with.
+func Status(code int) zap.Field { return zap.Int("status", code) }
+
+// DurationMS names how long the request took, in milliseconds. The unit is in
+// the name because a bare `duration` is a number two dashboards will read as
+// two different quantities, and zap's own duration encoder writes seconds.
+func DurationMS(elapsed time.Duration) zap.Field {
+	return zap.Float64("duration_ms", float64(elapsed.Microseconds())/1000)
+}
