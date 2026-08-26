@@ -122,3 +122,52 @@ func TestAPanickedFaultIsStillA500(t *testing.T) {
 		t.Errorf("code = %q, want %q", got, beckn.CodeNetworkInternalError)
 	}
 }
+
+// A panic after the handler has already answered is the one case Recover must
+// not answer. The status line has gone and bytes are on the wire, so a second
+// WriteNack appends a NACK document to a half-written body and leaves it under
+// whatever status was already sent — a 200 carrying two documents, neither of
+// them valid. What is true at that point is that the response is incomplete,
+// and http.ErrAbortHandler is how net/http is told to drop the connection and
+// say so, without printing a stack of its own. A truncated body served as a
+// clean 200 is the worse failure: it is the one the caller cannot detect.
+func TestAPanicAfterTheResponseIsCommittedAbortsRatherThanWritingTwice(t *testing.T) {
+	const answered = `{"message":{"status":"ACK"`
+
+	core, logged := observer.New(zapcore.DebugLevel)
+	handler := RequestLogger(Recover(config.Errors{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write([]byte(answered)); err != nil {
+				t.Errorf("write body: %v", err)
+			}
+			panic(panicDetail)
+		})))
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", nil)
+	recorded := httptest.NewRecorder()
+
+	aborted := serveExpectingAbort(t, handler, recorded, request.WithContext(
+		logger.NewContext(request.Context(), zap.New(core))))
+
+	if aborted != http.ErrAbortHandler {
+		t.Errorf("panicked with %v, want http.ErrAbortHandler", aborted)
+	}
+	if got := recorded.Body.String(); got != answered {
+		t.Errorf("body = %s, want the half-written response untouched", got)
+	}
+	if entries := logged.FilterLevelExact(zapcore.ErrorLevel).All(); len(entries) != 1 {
+		t.Fatalf("the abort produced %d error lines, want exactly one", len(entries))
+	}
+}
+
+// serveExpectingAbort runs handler and returns the value it panicked with, or
+// nil where it returned normally.
+func serveExpectingAbort(t *testing.T, handler http.Handler,
+	w http.ResponseWriter, r *http.Request) (panicked any) {
+	t.Helper()
+
+	defer func() { panicked = recover() }()
+	handler.ServeHTTP(w, r)
+	return nil
+}

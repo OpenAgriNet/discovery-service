@@ -1,7 +1,7 @@
 // Package middlewares holds the chain the protocol routes are wrapped in, in
 // the fixed order the plan sets out:
 //
-//	RequestID → Trace → Recover → RequestLogger → Envelope
+//	RequestID → Trace → RequestLogger → Recover → Envelope
 //	          → RateLimit → Signature → SchemaValidator → controller
 //
 // Signature is not in this package. It is parked with the Ed25519 primitives

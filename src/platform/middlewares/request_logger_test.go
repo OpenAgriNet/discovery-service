@@ -130,3 +130,38 @@ func TestASuccessfulRequestLogsNoCategory(t *testing.T) {
 		t.Errorf("error_type = %v on a request nothing rejected, want the field absent", got)
 	}
 }
+
+// The request an operator most needs timed is the one that ended in a 500, and
+// a panic is how that 500 arrives. RequestLogger sits *above* Recover so the
+// answer Recover writes goes through this recorder and the status the line
+// reports is the status the caller got — and the line is written from a defer,
+// so a panic unwinding through here does not take it with it. Without both,
+// every panicked request is missing from the completion log entirely and any
+// count of requests by status silently under-counts exactly the failures.
+func TestAPanickingRequestIsStillTimedAndLogged(t *testing.T) {
+	core, logged := observer.New(zapcore.DebugLevel)
+	handler := RequestLogger(Recover(config.Errors{})(
+		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			panic("the route blew up")
+		})))
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", nil)
+	recorded := httptest.NewRecorder()
+	handler.ServeHTTP(recorded, request.WithContext(logger.NewContext(request.Context(), zap.New(core))))
+
+	result := recorded.Result()
+	if result.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", result.StatusCode)
+	}
+	if got := result.Header.Get(HeaderResponseTime); got == "" {
+		t.Errorf("%s is absent from the 500 a panic produced", HeaderResponseTime)
+	}
+
+	line := completionLine(t, logged)
+	if got := line.ContextMap()["status"]; got != int64(http.StatusInternalServerError) {
+		t.Errorf("status = %v, want 500 — the recorder did not see Recover's answer", got)
+	}
+	if got := line.ContextMap()["error_type"]; got != "SYSTEM" {
+		t.Errorf("error_type = %v, want SYSTEM", got)
+	}
+}

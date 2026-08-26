@@ -1,6 +1,7 @@
 package middlewares
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -42,6 +43,10 @@ type responseRecorder struct {
 	status int
 	wrote  bool
 }
+
+// committed reports whether the response has gone. Recover asks, because a
+// panic raised after this point has no second response to write.
+func (w *responseRecorder) committed() bool { return w.wrote }
 
 // WriteHeader stamps the response time and records the status, then commits.
 func (w *responseRecorder) WriteHeader(status int) {
@@ -86,24 +91,35 @@ func RequestLogger(next http.Handler) http.Handler {
 		// 200, and that is the status net/http will send.
 		recorder := &responseRecorder{ResponseWriter: w, started: time.Now(), status: http.StatusOK}
 
+		// Deferred, so a panic unwinding through here does not take the line
+		// with it. Recover sits below and answers the ordinary panic, but the
+		// committed-response case re-panics with http.ErrAbortHandler by
+		// design — and a request that ended by having its connection dropped is
+		// not one to leave unaccounted for.
+		defer recorder.complete(r.Context())
+
 		next.ServeHTTP(recorder, r)
-
-		elapsed := time.Since(recorder.started)
-		if !recorder.wrote {
-			// Nothing has committed the response, so the header still has
-			// somewhere to go. This is the case a stamp placed only here would
-			// pass on, which is why it is not the only place it happens.
-			w.Header().Set(HeaderResponseTime, responseTime(elapsed))
-		}
-
-		fields := []zap.Field{logger.Status(recorder.status), logger.DurationMS(elapsed)}
-		if category := w.Header().Get(httpx.HeaderErrorType); category != "" {
-			// Only when something was rejected. A field that is blank on every
-			// successful request is a field nothing can be filtered by.
-			fields = append(fields, logger.ErrorType(category))
-		}
-		logger.FromContext(r.Context()).Info(requestCompleted, fields...)
 	})
+}
+
+// complete stamps the response time where nothing has yet and writes the one
+// completion line.
+func (w *responseRecorder) complete(ctx context.Context) {
+	elapsed := time.Since(w.started)
+	if !w.wrote {
+		// Nothing has committed the response, so the header still has somewhere
+		// to go. This is the case a stamp placed only here would pass on, which
+		// is why it is not the only place it happens.
+		w.Header().Set(HeaderResponseTime, responseTime(elapsed))
+	}
+
+	fields := []zap.Field{logger.Status(w.status), logger.DurationMS(elapsed)}
+	if category := w.Header().Get(httpx.HeaderErrorType); category != "" {
+		// Only when something was rejected. A field that is blank on every
+		// successful request is a field nothing can be filtered by.
+		fields = append(fields, logger.ErrorType(category))
+	}
+	logger.FromContext(ctx).Info(requestCompleted, fields...)
 }
 
 // responseTime renders the elapsed time for the header: milliseconds to
