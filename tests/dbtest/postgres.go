@@ -707,3 +707,46 @@ func ResourceVersions(t *testing.T, pool Pool, catalogID string) map[string]stri
 	}
 	return versions
 }
+
+// ResourceGeometries reports every geometry row of one catalog as
+// "<resource>|<source_path>", with a catalog-level row — the NULL resource_id
+// that every resource in the catalog shares — reported as "*".
+//
+// Two scenarios need to see the table rather than the response, and they need
+// opposite things from it. Scenario 15 counts: three provider locations and
+// forty resources must store THREE rows, not a hundred and twenty, and no
+// response can distinguish the two because both answer the same search the same
+// way. Scenario 35 looks for a row that should not be there: when an offer's
+// resourceIds move from one resource to another, the row left behind is a row
+// too MANY, and a search that returns it looks exactly like a search that
+// worked.
+//
+// source_path rather than target_path, because the concrete form is the one
+// that differs per row; the wildcard target is shared by every row a single
+// walk produced.
+func ResourceGeometries(t *testing.T, pool Pool, catalogID string) []string {
+	t.Helper()
+
+	rows, err := pool.Query(context.Background(),
+		`SELECT COALESCE(resource_id, '*'), source_path
+		   FROM resource_geometries
+		  WHERE catalog_id = $1
+		  ORDER BY 1, 2`, catalogID)
+	if err != nil {
+		t.Fatalf("read the resource geometries: %v", err)
+	}
+	defer rows.Close()
+
+	found := make([]string, 0)
+	for rows.Next() {
+		var resourceID, path string
+		if err := rows.Scan(&resourceID, &path); err != nil {
+			t.Fatalf("scan a resource geometry: %v", err)
+		}
+		found = append(found, resourceID+"|"+path)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the resource geometries: %v", err)
+	}
+	return found
+}

@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -406,10 +407,22 @@ func aCatalog(id string, opts ...func(map[string]any)) map[string]any {
 // availableAt puts the catalog's provider at one or more points, which is where
 // the geometry walker finds them.
 func availableAt(points ...[2]float64) func(map[string]any) {
+	geometries := make([]map[string]any, 0, len(points))
+	for _, p := range points {
+		geometries = append(geometries, geoPoint(p))
+	}
+	return availableAtGeometry(geometries...)
+}
+
+// availableAtGeometry is availableAt for the scenarios whose subject is the
+// geometry TYPE rather than the place — a polygon service area, a point
+// shopfront — and it is what availableAt is written over so that both reach
+// storage by the same path.
+func availableAtGeometry(geometries ...map[string]any) func(map[string]any) {
 	return func(catalog map[string]any) {
-		locations := make([]any, 0, len(points))
-		for _, p := range points {
-			locations = append(locations, map[string]any{"geo": geoPoint(p)})
+		locations := make([]any, 0, len(geometries))
+		for _, geometry := range geometries {
+			locations = append(locations, map[string]any{"geo": geometry})
 		}
 		nested(catalog, "provider")["availableAt"] = locations
 	}
@@ -462,15 +475,61 @@ func geoPoint(p [2]float64) map[string]any {
 	return map[string]any{"type": beckn.GeometryPoint, "coordinates": []float64{p[0], p[1]}}
 }
 
+// geoPolygon closes a ring for you: a GeoJSON polygon's first and last
+// positions must be the same one, and a fixture that forgot would be refused by
+// the walker rather than by the assertion it was written for.
+func geoPolygon(ring [][2]float64) map[string]any {
+	closed := make([][2]float64, 0, len(ring)+1)
+	closed = append(closed, ring...)
+	if ring[0] != ring[len(ring)-1] {
+		closed = append(closed, ring[0])
+	}
+
+	positions := make([]any, 0, len(closed))
+	for _, p := range closed {
+		positions = append(positions, []float64{p[0], p[1]})
+	}
+	return map[string]any{"type": beckn.GeometryPolygon, "coordinates": []any{positions}}
+}
+
+// boxAround is a square polygon of side 2*halfMetres centred on a point.
+//
+// The degree conversion is deliberately crude — it treats a degree of longitude
+// as constant across the box — because at the few kilometres these fixtures use
+// the error is metres, and no scenario here is phrased closer to a boundary
+// than scenario 14, which uses points and not boxes.
+func boxAround(centre [2]float64, halfMetres float64) map[string]any {
+	const metresPerDegreeLatitude = 111132.0
+	lat := halfMetres / metresPerDegreeLatitude
+	lon := halfMetres / (metresPerDegreeLatitude * math.Cos(centre[1]*math.Pi/180))
+
+	west, east := centre[0]-lon, centre[0]+lon
+	south, north := centre[1]-lat, centre[1]+lat
+	return geoPolygon([][2]float64{
+		{west, south}, {east, south}, {east, north}, {west, north},
+	})
+}
+
 // dwithin is the radius constraint most of the spatial scenarios are phrased
 // in: everything within metres of a point, found through target.
-func dwithin(target string, centre [2]float64, metres float64) map[string]any {
-	return map[string]any{
+func dwithin(target string, centre [2]float64, metres float64, opts ...func(map[string]any)) map[string]any {
+	constraint := map[string]any{
 		"op":             beckn.OpSDWithin,
 		"targets":        target,
 		"geometry":       geoPoint(centre),
 		"distanceMeters": metres,
 	}
+	for _, opt := range opts {
+		opt(constraint)
+	}
+	return constraint
+}
+
+// quantified sets how a constraint is evaluated when `targets` resolves to more
+// than one geometry. Omitting it reads as ANY, which is why the scenarios about
+// NONE and ALL always say so.
+func quantified(kind string) func(map[string]any) {
+	return func(constraint map[string]any) { constraint["quantifier"] = kind }
 }
 
 // spatial wraps one constraint into an intent, so a scenario states the part it
