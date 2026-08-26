@@ -3196,6 +3196,11 @@ two fields to whatever queries the logs.
 
 - zap production JSON. Request-scoped logger carried in `context.Context`,
   pre-populated with `request_id`, `transaction_id`, `message_id`, `action`.
+  **This task builds the field constructors; two later tasks fill them** —
+  `request_id` in `RequestID` (Task 8), the other three in `Envelope` (Task 7),
+  which is the first point at which they are known. Naming both here because a
+  constructor with no caller is a promise the plan makes and no task keeps, and
+  the four fields are the whole reason a log line is searchable.
   `NewContext` installs it; `With` derives a context whose logger carries more
   fields, so a middleware adds to what the one above it set rather than
   replacing it, and a sibling request cannot inherit them.
@@ -3379,6 +3384,8 @@ Envelope(next):
     envelope ← parse {context, message}
     if parse fails: NACK SCH_INVALID_JSON
     stash envelope + raw body in ctx; restore r.Body for downstream
+    add transaction_id, message_id, action to the request-scoped logger
+    record the same three for RequestLogger's completion line
     next
 ```
 
@@ -3392,13 +3399,44 @@ well-formed, and reporting `SCH_INVALID_JSON` would send the caller to inspect
 a document that is fine. The bytes read before the refusal are still handed to
 the salvage, so a message id at the front of an oversized body is still echoed.
 
+**`Envelope` is where three of Task 3's four log fields get on** —
+`transaction_id`, `message_id` and `action`, added with `logger.With` because
+this is the first point in the chain at which they are known. Without them a
+`request_id` correlates this service's own lines to each other and to nothing
+else; the transaction is what joins them to the caller's logs and to the other
+hops, which is the join an operator starts a debugging session from. A
+correlator the envelope did not carry is **left off, not logged empty** —
+`transactionId` is optional, and a field that is blank on every request omitting
+it is a field nothing can filter by.
+
+**The same three travel back *up* to `RequestLogger`.** That is the one piece of
+request state that cannot ride a derived context: `RequestLogger` sits above
+`Envelope`, so it has already run by the time the transaction is known, and it
+writes the one line per request that carries the status and the latency. Left
+alone, a transaction id would reach every line about a request except the one
+that says how it ended, and "how long did transaction X take" would be
+unanswerable from the logs. `RequestLogger` therefore allocates a per-request
+`correlation` (`src/platform/middlewares/correlation.go`), puts a pointer to it
+in the context, and reads it back after the handler returns; `Envelope` fills it
+in passing. **Unsynchronised on purpose**: the write is in `Envelope`, the read
+is after everything below `Envelope` has returned, both on net/http's goroutine
+for that request. The type and its context key are unexported, so no handler can
+reach it and no spawned goroutine can race it. A middleware mounted with no
+`RequestLogger` above it finds nothing and records nothing — `record` tolerates
+a nil receiver rather than making every caller ask first.
+
 **Parked, for Phase 2:** `Signature` no-ops when
 `AUTH_ENABLE_SIGNATURE_VERIFICATION=false`, which is the Phase 1 default, and
 is mounted regardless. Neither happens today — the flag's only behaviour in
 Phase 1 is that `true` refuses to boot (scenario 7), which is the check that
 replaces mounting an inert middleware as the thing making the deferral honest.
 
-**Tests pin:** the body is re-readable downstream after `Envelope` has consumed
+**Tests pin:** a handler below `Envelope` logs `transaction_id`, `message_id`
+and `action` off the parsed envelope, and an absent `transactionId` leaves the
+field **absent** rather than empty; mounted under `RequestLogger`, the
+completion line carries the same three, and a body that never parsed still
+produces a completion line — with no correlators on it, since there were none to
+learn. The body is re-readable downstream after `Envelope` has consumed
 it; a malformed body NACKs `SCH_INVALID_JSON`; the message id reaches the NACK
 **echoed verbatim, before it is judged** (C13) — including a value that is not
 a uuid, and empty only when the body yielded nothing to echo; a body **truncated
@@ -3506,7 +3544,8 @@ the handler has written leaves the half-written body untouched and re-panics
 with `http.ErrAbortHandler`, logging the fault exactly once. `X-Response-Time` is present on a
 response the handler wrote itself, which is exactly the case a header stamped
 after `WriteHeader` would miss, and the completion line carries the status and,
-on a rejection, the `error_type` the header named. Burst+1 requests from one
+on a rejection, the `error_type` the header named — plus, when `Envelope` is
+mounted below, the three correlators it recorded (Task 7). Burst+1 requests from one
 address yields `429` with `Retry-After` and `AUT_RATE_LIMITED`; two addresses
 do not share a bucket; a bucket idle past its horizon is evicted. `Trace`
 passes the request through unmodified except for its `X-Beckn-Chain: trace`
