@@ -179,7 +179,7 @@ Two sit on the boundary and are called out rather than dismissed:
 | Deferred | Why not now | What ships instead |
 |---|---|---|
 | `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md` | Contribution policy and disclosure timelines are decisions the project has not made. A placeholder `SECURITY.md` publishes a promise | `LICENSE`, `README.md` |
-| Signature verification | Phase 2; the key registry is another team's | Crypto + middleware slot + `Keyring` seam, flag off |
+| Signature verification | Phase 2; the key registry is another team's. **Parked further than originally planned:** the Ed25519 primitives are no longer built ahead of use either, because a primitive with no caller is a primitive whose first real caller finds out what it got wrong | The **slot** in the middleware order and the flag, nothing behind them. `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` therefore **refuses to boot** — a flag named for a security control, silently doing nothing, is the one failure mode worse than not having the flag: an operator reads it back as enabled and is wrong. Task 6 and the `Signature` half of Task 7 are parked with it |
 | Publish-time embedding (A5) | 15–40 ms of inference on the write path for one mode of four | `noop` provider; nullable `embedding` column doubles as the backfill queue |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
 | Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
@@ -293,6 +293,11 @@ thing in the file: a general structural walk, bounded, over the whole catalog.
 RequestID → Trace → Recover → RequestLogger → Envelope
           → RateLimit → Signature → SchemaValidator → controller
 ```
+
+**`Signature` is not mounted in Phase 1** — it is parked with Task 6 and does
+not exist. The slot is where it goes when Phase 2 builds it; every other link
+closes up around the gap, and Task 20 wires the chain without it. The order
+below is the Phase 2 order, kept whole so the reasoning survives the parking.
 
 `Recover` is outermost of the handler chain so it catches everything below.
 `RequestLogger` starts the timer before auth, so rejected requests still report
@@ -2899,8 +2904,8 @@ goes looking for.
 | 5 | `MasterCatalogAndInheritanceAreRefused` | A1: both a MASTER catalog and a child carrying `extends` come back `REJECTED` / `SCH_TYPE_NOT_SUPPORTED`, neither stored. Not "inheritance works" — "inheritance is refused, visibly" |
 | 6 | `ARejectedMasterDoesNotBlockTheRegularCatalogsBesideIt` | One request, two catalogs, two verdicts in one results array. The per-catalog transaction boundary, end to end |
 | 6a | `TheSameCatalogIdTwiceInOneRequestIsRefused` | One request carrying the same `catalog.id` twice. The first is `ACCEPTED`, the second `REJECTED` / `SCH_SCHEMA_VALIDATION_FAILED`, and the catalog that is stored is the **first** one — asserted on a field the two entries disagree about. Without the check both are `ACCEPTED` and the stored catalog is the second, so one of the two success verdicts describes a document that no longer exists; under `FULL` the second entry additionally deletes the first's resources. The pin is on the stored document rather than on the status array, because two `ACCEPTED`s is exactly what the bug looks like from outside |
-| 7 | `MissingSignatureIsUnauthorized` | With verification on, an unsigned publish is `401` / `AUT_SIGNATURE_MISSING` |
-| 8 | `UnsignedRequestSucceedsWhenVerificationIsOff` | The same request succeeds with the flag off. With #7 this is what makes shipping the deferral honest: the flag is the only thing between here and enforcement |
+| 7 | `SignatureVerificationRefusesToBoot` | `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` fails startup, naming the flag. This replaces the original pair (`MissingSignatureIsUnauthorized` / `UnsignedRequestSucceedsWhenVerificationIsOff`), which asserted both sides of a flag that now has nothing behind either side. What made the deferral honest was never the flag itself but the impossibility of believing it was on when it wasn't — with the crypto parked, a boot refusal is the only thing that still carries that |
+| 8 | `UnsignedRequestSucceeds` | With the flag off — the only supported setting in Phase 1 — an unsigned publish is processed normally. Pins that nothing in the chain has quietly started requiring a signature |
 | 9 | `ACallerOverItsRateGetsA429` | Burst+1 requests: the last is `429` / `AUT_RATE_LIMITED` with `Retry-After`. Also pins that the limiter is *mounted* — an unmounted middleware is invisible to every other test |
 | 10 | `ChangingVisibleToWithNoResourcesInThePayloadTakesEffect` | Publish a catalog with resources, then republish the same catalog with `visibleTo` narrowed and **no resources at all**. The resources must stop being discoverable. The gate lives on `resources`, so without the unconditional `UPDATE resources` the catalog row changes and discover ignores it — a visibility change that reports success and does nothing |
 | 10a | `ChangingTheGateRewritesOnlyTheRowsItChanges` | Publish a forty-resource catalog, then republish the catalog document with no `visibleTo` change and no resources. Every resource still carries the catalog's gate — that is scenario 10's guarantee and it does not move — but `xmin` on the untouched rows is unchanged, so no row was rewritten. Then narrow `visibleTo` and republish: now every row moves. The `IS DISTINCT FROM` guard on the propagate is what separates the two, and it is worth a scenario because the failure it prevents is invisible in every response — forty dead tuples and forty `fastupdate = off` GIN insertions per publish, paid on the write path and observed as a slow one |
@@ -3304,7 +3309,17 @@ re-injects `type` and `false` omits it.
 
 ---
 
-### Task 6 — Ed25519 Signature Primitives  *(deferred, but built)*
+### Task 6 — Ed25519 Signature Primitives  *(PARKED — do not implement)*
+
+> **Parked.** Originally *deferred, but built*: ship the primitive now, wire it in
+> Phase 2. That is no longer the plan — nothing below is implemented today, and
+> the task is kept only so Phase 2 restarts from a written design rather than
+> from scratch. Building it early buys a primitive with no caller, and a
+> primitive with no caller is one whose first real caller discovers what it got
+> wrong. See the **Deferred** table for what ships instead, including the boot
+> refusal that keeps the flag from lying.
+>
+> **The next task to implement is Task 7, `Envelope` half only.**
 
 **Files:** `src/platform/crypto/signature/signature.go`, `verifier.go`,
 `src/platform/registry/keyring.go`
@@ -3325,11 +3340,16 @@ from a bad signature.
 
 ---
 
-### Task 7 — Signature & Envelope Middleware
+### Task 7 — Signature & Envelope Middleware  *(`Envelope` only)*
 
-**Files:** `src/platform/middlewares/envelope.go`, `signature.go`
+> **Scope today: `Envelope`.** The `Signature` half is parked with Task 6 — it
+> needs the `Keyring` that task no longer builds. Do not create `signature.go`,
+> and do not stub it: an empty middleware mounted in the chain is
+> indistinguishable from a working one at every call site that matters.
 
-**Produces:** `middlewares.Envelope`, `middlewares.Signature(keyring, cfg)`
+**Files:** `src/platform/middlewares/envelope.go` ~~`signature.go`~~ *(parked)*
+
+**Produces:** `middlewares.Envelope`. ~~`middlewares.Signature(keyring, cfg)`~~ *(parked)*
 
 ```pseudo
 Envelope(next):
@@ -3340,13 +3360,21 @@ Envelope(next):
     next
 ```
 
-`Signature` no-ops when `AUTH_ENABLE_SIGNATURE_VERIFICATION=false`, which is the
-Phase 1 default. It must still be **mounted** — scenarios 7 and 8 assert both
-sides of the flag.
+**Parked, for Phase 2:** `Signature` no-ops when
+`AUTH_ENABLE_SIGNATURE_VERIFICATION=false`, which is the Phase 1 default, and
+is mounted regardless. Neither happens today — the flag's only behaviour in
+Phase 1 is that `true` refuses to boot (scenario 7), which is the check that
+replaces mounting an inert middleware as the thing making the deferral honest.
 
-**Tests pin:** the body is re-readable downstream; a NACK for a signature
-failure carries `transactionId` and `messageId` (which is why `Envelope`
-precedes `Signature`).
+**Tests pin:** the body is re-readable downstream after `Envelope` has consumed
+it; a malformed body NACKs `SCH_INVALID_JSON`; the message id reaches the NACK
+**echoed verbatim, before it is judged** (C13) — including a value that is not
+a uuid, and empty only when the body yielded nothing to echo.
+
+*(Parked with `Signature`: the pin that a signature-failure NACK carries the
+message id, which is the original reason `Envelope` precedes `Signature` in the
+chain. That ordering constraint stands for Phase 2 and should not be relitigated
+then — the reason it exists is recorded here.)*
 
 ---
 
@@ -4311,7 +4339,12 @@ all off this page.
 **Produces:** `app.Build(cfg) → *App`, `app.NewRouter(*App)`, `app.Run`
 
 - Explicit constructor wiring, no reflection (D3).
-- Middleware order exactly as fixed in [File Structure](#file-structure).
+- Middleware order exactly as fixed in [File Structure](#file-structure),
+  **minus `Signature`**, which is parked with Task 6 and does not exist. Do not
+  mount a placeholder in its slot — the chain-order test observes side effects,
+  so a link with no side effect is a link the test cannot place, and a link that
+  stamps a marker while doing nothing is worse: it makes an absent security
+  control observable as a present one.
 - Routes: `POST /publish`, `POST /discover`, `GET /healthz` (liveness, no
   dependencies), `GET /readyz` (pings the pool). **No `/catalog/publish`** (C2);
   a test asserts it 404s, so the alias cannot reappear by accident.
