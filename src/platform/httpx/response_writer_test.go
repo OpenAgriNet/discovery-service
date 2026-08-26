@@ -324,6 +324,14 @@ func validationError(t *testing.T, schemaName string, body []byte) error {
 // this service's plan is kin-openapi and it arrives with Task 9 — adding it
 // here to assert on one body would put a dependency on the critical path a task
 // early, and the subset is short enough to read.
+//
+// What it does not check is `format`, and one body in this package depends on
+// that gap: WriteNack writes an empty `messageId` when the envelope was too
+// broken to yield one, which satisfies `required` and does not satisfy
+// `format: uuid`. So "validates against the spec" here means the structure C7
+// is about — the closed objects and the chain — and not every assertion the
+// document makes. Task 9 replaces this with kin-openapi, and that is where the
+// empty id has to be settled rather than passed.
 func validateNode(spec, node map[string]any, value any, where string) error {
 	if ref, ok := node["$ref"].(string); ok {
 		target, err := followRef(spec, ref)
