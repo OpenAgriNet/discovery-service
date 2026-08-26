@@ -13,10 +13,13 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/httpx"
 )
 
-// One request a second, two in the bucket. Small enough that the third request
-// is refused with no dependence on how fast the test host runs, and slow enough
-// that nothing refills underneath the assertions.
-var tight = config.RateLimit{RPS: 1, Burst: 2}
+// tight is one request a second with two in the bucket: small enough that the
+// third request is refused with no dependence on how fast the test host runs,
+// and slow enough that nothing refills underneath the assertions.
+//
+// A function rather than a package var, because the No globals constraint holds
+// in tests too.
+func tight() config.RateLimit { return config.RateLimit{RPS: 1, Burst: 2} }
 
 // limited mounts RateLimit over a handler that answers 200, and reports what
 // each request in turn came back as.
@@ -53,17 +56,17 @@ func from(t *testing.T, remoteAddr string, count int) []*http.Request {
 // amendment names. Retry-After is not optional — a 429 with no interval leaves
 // the caller to guess, and every caller guesses the same short one.
 func TestBurstPlusOneIsRefusedWithTheBackoff(t *testing.T) {
-	responses := limited(t, tight, from(t, "203.0.113.7:41000", tight.Burst+1))
+	responses := limited(t, tight(), from(t, "203.0.113.7:41000", tight().Burst+1))
 
-	for i, recorded := range responses[:tight.Burst] {
+	for i, recorded := range responses[:tight().Burst] {
 		if recorded.Code != http.StatusOK {
 			t.Errorf("request %d = %d, want 200 inside the burst", i+1, recorded.Code)
 		}
 	}
 
-	refused := responses[tight.Burst]
+	refused := responses[tight().Burst]
 	if refused.Code != http.StatusTooManyRequests {
-		t.Fatalf("request %d = %d, want 429", tight.Burst+1, refused.Code)
+		t.Fatalf("request %d = %d, want 429", tight().Burst+1, refused.Code)
 	}
 	if got := refused.Header().Get(httpx.HeaderRetryAfter); got == "" {
 		t.Errorf("%s is absent from the 429", httpx.HeaderRetryAfter)
@@ -76,12 +79,12 @@ func TestBurstPlusOneIsRefusedWithTheBackoff(t *testing.T) {
 // One caller exhausting their allowance must not refuse anybody else, which is
 // the whole difference between a rate limit and an outage.
 func TestTwoAddressesDoNotShareABucket(t *testing.T) {
-	requests := from(t, "203.0.113.7:41000", tight.Burst+1)
+	requests := from(t, "203.0.113.7:41000", tight().Burst+1)
 	requests = append(requests, from(t, "198.51.100.4:41000", 1)...)
 
-	responses := limited(t, tight, requests)
+	responses := limited(t, tight(), requests)
 
-	if got := responses[tight.Burst].Code; got != http.StatusTooManyRequests {
+	if got := responses[tight().Burst].Code; got != http.StatusTooManyRequests {
 		t.Fatalf("the first caller's burst+1 = %d, want 429", got)
 	}
 	if got := responses[len(responses)-1].Code; got != http.StatusOK {
@@ -93,10 +96,10 @@ func TestTwoAddressesDoNotShareABucket(t *testing.T) {
 // new ephemeral port, so keying on the pair would hand each request its own
 // full bucket and the limiter would refuse nothing, ever.
 func TestOnePeerIsOneBucketAcrossPorts(t *testing.T) {
-	requests := from(t, "203.0.113.7:41000", tight.Burst)
+	requests := from(t, "203.0.113.7:41000", tight().Burst)
 	requests = append(requests, from(t, "203.0.113.7:52001", 1)...)
 
-	responses := limited(t, tight, requests)
+	responses := limited(t, tight(), requests)
 
 	if got := responses[len(responses)-1].Code; got != http.StatusTooManyRequests {
 		t.Errorf("a second port from one peer = %d, want 429 — the port is part of the key", got)
@@ -107,14 +110,14 @@ func TestOnePeerIsOneBucketAcrossPorts(t *testing.T) {
 // no trusted-proxy list that would make it safe. Reading it would let any caller
 // mint an unlimited supply of buckets by varying a header they control.
 func TestTheForwardedForHeaderCannotMintBuckets(t *testing.T) {
-	requests := from(t, "203.0.113.7:41000", tight.Burst+1)
+	requests := from(t, "203.0.113.7:41000", tight().Burst+1)
 	for i, request := range requests {
 		request.Header.Set("X-Forwarded-For", "10.0.0."+string(rune('1'+i)))
 	}
 
-	responses := limited(t, tight, requests)
+	responses := limited(t, tight(), requests)
 
-	if got := responses[tight.Burst].Code; got != http.StatusTooManyRequests {
+	if got := responses[tight().Burst].Code; got != http.StatusTooManyRequests {
 		t.Errorf("burst+1 behind a varying X-Forwarded-For = %d, want 429", got)
 	}
 }
@@ -122,13 +125,13 @@ func TestTheForwardedForHeaderCannotMintBuckets(t *testing.T) {
 // RateLimit sits below Envelope, so the id it echoes is the parsed one rather
 // than C13's salvage out of a body that would not parse.
 func TestTheRefusalEchoesTheParsedMessageID(t *testing.T) {
-	handler := Envelope(config.Errors{}, roomy)(RateLimit(tight, config.Errors{})(
+	handler := Envelope(config.Errors{}, roomy)(RateLimit(tight(), config.Errors{})(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})))
 
 	var refused *httptest.ResponseRecorder
-	for range tight.Burst + 1 {
+	for range tight().Burst + 1 {
 		request := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(validEnvelope))
 		request.RemoteAddr = "203.0.113.7:41000"
 		refused = httptest.NewRecorder()
@@ -150,7 +153,7 @@ func TestTheRefusalEchoesTheParsedMessageID(t *testing.T) {
 // bucket that was never created, so dropping it loses nothing.
 func TestABucketIdlePastItsHorizonIsEvicted(t *testing.T) {
 	at := time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC)
-	limiter := newLimiter(tight, func() time.Time { return at })
+	limiter := newLimiter(tight(), func() time.Time { return at })
 
 	limiter.allow("203.0.113.7")
 	at = at.Add(limiter.horizon + time.Second)
@@ -169,7 +172,7 @@ func TestABucketIdlePastItsHorizonIsEvicted(t *testing.T) {
 // whatever interval it ran on.
 func TestABucketTouchedInsideItsHorizonSurvivesTheSweep(t *testing.T) {
 	at := time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC)
-	limiter := newLimiter(tight, func() time.Time { return at })
+	limiter := newLimiter(tight(), func() time.Time { return at })
 
 	limiter.allow("203.0.113.7")
 	at = at.Add(limiter.horizon * 3 / 4)
@@ -189,9 +192,9 @@ func TestABucketTouchedInsideItsHorizonSurvivesTheSweep(t *testing.T) {
 // not a limit, and it is what an eviction horizon set too short would produce.
 func TestSpentAllowanceIsNotHandedBack(t *testing.T) {
 	at := time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC)
-	limiter := newLimiter(tight, func() time.Time { return at })
+	limiter := newLimiter(tight(), func() time.Time { return at })
 
-	for range tight.Burst {
+	for range tight().Burst {
 		limiter.allow("203.0.113.7")
 	}
 	at = at.Add(time.Millisecond)
