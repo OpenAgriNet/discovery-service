@@ -8,8 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 )
 
 const validEnvelope = `{"context":{"action":"catalog/publish","messageId":"2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11"},"message":{"catalogs":[]}}`
@@ -284,5 +289,65 @@ func TestAnOversizedBodyStillEchoesAMessageIDFromItsPrefix(t *testing.T) {
 	recorded, _ := serveLimited(t, body, 512)
 	if got := nackOf(t, recorded).Message.MessageID; got != id {
 		t.Errorf("messageId = %q, want %q", got, id)
+	}
+}
+
+// correlated runs one body through Envelope with an observed logger installed
+// above, the way RequestID installs one in the assembled chain, and reports what
+// a handler below logged.
+func correlated(t *testing.T, body string) map[string]any {
+	t.Helper()
+
+	core, logged := observer.New(zapcore.DebugLevel)
+	handler := Envelope(config.Errors{}, roomy)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		logger.FromContext(r.Context()).Info("below")
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(),
+		request.WithContext(logger.NewContext(request.Context(), zap.New(core))))
+
+	lines := logged.FilterMessage("below").All()
+	if len(lines) != 1 {
+		t.Fatalf("the handler logged %d lines, want exactly one", len(lines))
+	}
+	return lines[0].ContextMap()
+}
+
+// Task 3 pre-populates the request-scoped logger with four fields, and three of
+// them are not knowable until the envelope is parsed — which is why Envelope,
+// the one place that parses it, is where they are added. Without them a
+// request_id correlates this service's own lines to each other and to nothing
+// else: the transaction is what joins them to the BAP's logs and to the other
+// hops, and it is the join an operator actually starts a debugging session
+// from.
+func TestTheParsedEnvelopeCorrelatesEverythingBelowIt(t *testing.T) {
+	const correlating = `{"context":{"action":"catalog/publish","transactionId":"a3f0",` +
+		`"messageId":"2f6b"},"message":{"catalogs":[]}}`
+
+	fields := correlated(t, correlating)
+	for key, want := range map[string]string{
+		"transaction_id": "a3f0",
+		"message_id":     "2f6b",
+		"action":         "catalog/publish",
+	} {
+		if got := fields[key]; got != want {
+			t.Errorf("%s = %v, want %q", key, got, want)
+		}
+	}
+}
+
+// A field that is blank on every request carrying an optional key is a field
+// nothing can be filtered by — the same reason RequestLogger omits error_type on
+// a success. transactionId is optional in the schema, so an absent one is
+// absent, not empty.
+func TestAnAbsentCorrelatorIsOmittedRatherThanLoggedEmpty(t *testing.T) {
+	fields := correlated(t, validEnvelope)
+
+	if got, present := fields["transaction_id"]; present {
+		t.Errorf("transaction_id = %v on an envelope that sent none, want the field absent", got)
+	}
+	if got := fields["message_id"]; got != "2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11" {
+		t.Errorf("message_id = %v, want the id the envelope carried", got)
 	}
 }

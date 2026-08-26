@@ -42,6 +42,9 @@ type responseRecorder struct {
 
 	status int
 	wrote  bool
+
+	// Filled in by Envelope, below. See correlation.
+	correlators *correlation
 }
 
 // committed reports whether the response has gone. Recover asks, because a
@@ -91,14 +94,20 @@ func RequestLogger(next http.Handler) http.Handler {
 		// 200, and that is the status net/http will send.
 		recorder := &responseRecorder{ResponseWriter: w, started: time.Now(), status: http.StatusOK}
 
+		// The one thing that has to travel back up the chain: Envelope, below,
+		// is what learns which transaction this request belongs to. See
+		// correlation.
+		ctx, correlators := newCorrelation(r.Context())
+		recorder.correlators = correlators
+
 		// Deferred, so a panic unwinding through here does not take the line
 		// with it. Recover sits below and answers the ordinary panic, but the
 		// committed-response case re-panics with http.ErrAbortHandler by
 		// design — and a request that ended by having its connection dropped is
 		// not one to leave unaccounted for.
-		defer recorder.complete(r.Context())
+		defer recorder.complete(ctx)
 
-		next.ServeHTTP(recorder, r)
+		next.ServeHTTP(recorder, r.WithContext(ctx))
 	})
 }
 
@@ -113,7 +122,14 @@ func (w *responseRecorder) complete(ctx context.Context) {
 		w.Header().Set(HeaderResponseTime, responseTime(elapsed))
 	}
 
-	fields := []zap.Field{logger.Status(w.status), logger.DurationMS(elapsed)}
+	// The correlators first, so a line reads as what the request was before what
+	// it cost. Copied rather than appended to: the slice belongs to the
+	// correlation, and appending into another owner's spare capacity is a bug
+	// that only shows up at the one length where the capacity happens to be
+	// spare.
+	recorded := w.correlators.recorded()
+	fields := make([]zap.Field, 0, len(recorded)+3)
+	fields = append(append(fields, recorded...), logger.Status(w.status), logger.DurationMS(elapsed))
 	if category := w.Header().Get(httpx.HeaderErrorType); category != "" {
 		// Only when something was rejected. A field that is blank on every
 		// successful request is a field nothing can be filtered by.

@@ -21,10 +21,13 @@ import (
 	"io"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
 	"github.com/OpenAgriNet/discovery-service/src/platform/httpx"
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 )
 
 // RawEnvelope is the shape Envelope parses off the wire: the context every
@@ -78,7 +81,8 @@ func Envelope(cfg config.Errors, maxBodyBytes int64) func(http.Handler) http.Han
 			}
 
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			next.ServeHTTP(w, r.WithContext(stash(r.Context(), body, envelope)))
+			ctx := correlate(stash(r.Context(), body, envelope), envelope.Context)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -235,6 +239,44 @@ func scalar(stack []jsonFrame, token json.Token) (string, bool) {
 		return "", true // Present, but not a string: there is nothing to echo.
 	}
 	return id, true
+}
+
+// correlate adds the three correlators the envelope carries to the
+// request-scoped logger, so that everything logged below this point — the
+// handler, the store, a fault written by httpx.WriteNack — joins up without
+// anything having to thread them through its own signature.
+//
+// This is where they are added because this is the one place that parses the
+// envelope, and until it has there is nothing to add: request_id is minted at
+// the top of the chain and correlates this service's lines to each other, but
+// the transaction is what joins them to the caller's logs and to the other hops
+// in the chain, which is the join an operator starts from.
+//
+// A correlator the envelope did not carry is left off rather than logged empty.
+// transactionId is optional in the schema, and a field that is blank on every
+// request that omits it is a field nothing can be filtered by — the same rule
+// RequestLogger follows for error_type on a success.
+func correlate(ctx context.Context, envelope beckn.Context) context.Context {
+	fields := make([]zap.Field, 0, 3)
+	for _, correlator := range []struct {
+		value string
+		field func(string) zap.Field
+	}{
+		{envelope.TransactionID, logger.TransactionID},
+		{envelope.MessageID, logger.MessageID},
+		{envelope.Action, logger.Action},
+	} {
+		if correlator.value != "" {
+			fields = append(fields, correlator.field(correlator.value))
+		}
+	}
+
+	// Down to everything below, and back up to RequestLogger's completion line,
+	// which is written by a middleware that ran before this one could know any
+	// of it. See correlation.
+	correlationFrom(ctx).record(fields...)
+
+	return logger.With(ctx, fields...)
 }
 
 func stash(ctx context.Context, body []byte, envelope RawEnvelope) context.Context {

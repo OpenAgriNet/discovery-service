@@ -3,6 +3,7 @@ package middlewares
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -163,5 +164,60 @@ func TestAPanickingRequestIsStillTimedAndLogged(t *testing.T) {
 	}
 	if got := line.ContextMap()["error_type"]; got != "SYSTEM" {
 		t.Errorf("error_type = %v, want SYSTEM", got)
+	}
+}
+
+// The completion line is the one line per request that carries the status and
+// the latency, so it is the line an operator answers "what happened to
+// transaction X" from — and it is written by the middleware that sits *above*
+// the one that learns X. Context enrichment only ever flows down, so without a
+// channel back up, transaction_id reaches every line about a request except the
+// one that says how it ended.
+func TestTheCompletionLineCarriesTheCorrelatorsEnvelopeParsed(t *testing.T) {
+	const correlating = `{"context":{"action":"catalog/publish","transactionId":"a3f0",` +
+		`"messageId":"2f6b"},"message":{"catalogs":[]}}`
+
+	core, logged := observer.New(zapcore.DebugLevel)
+	handler := RequestLogger(Envelope(config.Errors{}, roomy)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})))
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(correlating))
+	handler.ServeHTTP(httptest.NewRecorder(),
+		request.WithContext(logger.NewContext(request.Context(), zap.New(core))))
+
+	fields := completionLine(t, logged).ContextMap()
+	for key, want := range map[string]string{
+		"transaction_id": "a3f0",
+		"message_id":     "2f6b",
+		"action":         "catalog/publish",
+	} {
+		if got := fields[key]; got != want {
+			t.Errorf("%s = %v, want %q", key, got, want)
+		}
+	}
+}
+
+// A request Envelope refused never had correlators to record, and the
+// completion line still has to be written — it is the only record that the
+// request happened at all.
+func TestTheCompletionLineSurvivesABodyThatNeverParsed(t *testing.T) {
+	core, logged := observer.New(zapcore.DebugLevel)
+	handler := RequestLogger(Envelope(config.Errors{}, roomy)(
+		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			t.Error("the handler ran below a body Envelope should have refused")
+		})))
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader("not json"))
+	recorded := httptest.NewRecorder()
+	handler.ServeHTTP(recorded, request.WithContext(logger.NewContext(request.Context(), zap.New(core))))
+
+	fields := completionLine(t, logged).ContextMap()
+	if got := fields["status"]; got != int64(http.StatusBadRequest) {
+		t.Errorf("status = %v, want 400", got)
+	}
+	if got, present := fields["transaction_id"]; present {
+		t.Errorf("transaction_id = %v on a body that never parsed, want the field absent", got)
 	}
 }
