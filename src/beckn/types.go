@@ -96,7 +96,12 @@ type Catalog struct {
 	Resources []Resource `json:"resources,omitempty"`
 	Offers    []Offer    `json:"offers,omitempty"`
 
-	Validity *TimePeriod `json:"validity,omitempty"`
+	// Raw rather than *TimePeriod because RFC 7396 (A8) gives `null` a meaning
+	// a pointer cannot carry: absent means "leave the stored window alone",
+	// while an explicit null means "clear it". A *TimePeriod collapses both to
+	// nil, so a publisher trying to clear a validity would be answered with
+	// silence and a window that never went away.
+	Validity json.RawMessage `json:"validity,omitempty"`
 }
 
 // Resource is a referenceable unit of value in a catalog. The spec gives it
@@ -122,8 +127,37 @@ type Offer struct {
 	AddOns         json.RawMessage `json:"addOns,omitempty"`
 	Considerations json.RawMessage `json:"considerations,omitempty"`
 
-	Validity        *TimePeriod     `json:"validity,omitempty"`
+	// Raw for the same reason Catalog.Validity is (A8): `null` clears the
+	// stored window and absence leaves it.
+	Validity        json.RawMessage `json:"validity,omitempty"`
 	OfferAttributes json.RawMessage `json:"offerAttributes,omitempty"`
+
+	// Raw is the offer exactly as it arrived, and it is what reaches the
+	// offers.offer column.
+	//
+	// The spec leaves Offer.additionalProperties unset, so a publisher may send
+	// members this struct never named. Re-marshalling the struct would drop
+	// them, and the column's whole claim — "the offer document, verbatim" —
+	// would be false for precisely the publishers who needed it to be true.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes an offer and keeps the bytes it decoded.
+//
+// The alias breaks the recursion; without it this method calls itself. The
+// captured bytes are the caller's slice, which encoding/json does not retain
+// after the call, so they are copied.
+func (o *Offer) UnmarshalJSON(data []byte) error {
+	type wire Offer
+
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*o = Offer(decoded)
+	o.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // Attributes reads the JSON-LD pair out of an extensibility container —

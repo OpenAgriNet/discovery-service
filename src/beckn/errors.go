@@ -84,6 +84,18 @@ const (
 	// it — see C14.
 	CodePolicyNPCapacityExceeded ErrorCode = "POL_NP_CAPACITY_EXCEEDED"
 
+	// CodePolicyGenericError answers a per-catalog ceiling this deployment
+	// imposes and the enum has no name for — today, a catalog carrying more than
+	// MaxGeometriesPerCatalog geometries.
+	//
+	// It is deliberately NOT CodePolicyNPCapacityExceeded. C14 pins that member
+	// to a request body over SERVER_MAX_REQUEST_BODY_BYTES and to Status 413; a
+	// geometry ceiling is not a byte ceiling, and giving one code two meanings
+	// is how a client comes to retry the wrong thing. This one appears only as a
+	// partial fault inside a 200 response, so the excess geometries are named
+	// rather than silently dropped and the rest of the catalog still publishes.
+	CodePolicyGenericError ErrorCode = "POL_GENERIC_ERROR"
+
 	// BIZ_ — the request is well-formed and asks for something the catalog
 	// cannot support.
 	//

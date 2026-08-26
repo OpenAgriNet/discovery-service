@@ -684,6 +684,19 @@ func h3Loop(ring []domain.GeoPoint) h3.GeoLoop {
 	return loop
 }
 
+// Validate reports whether raw is a geometry this package can index, wrapping
+// ErrGeometry when it is not.
+//
+// The publish walker calls it so there is exactly ONE geometry parser in the
+// service. A walker with its own notion of "readable" would accept shapes
+// CoverGeometry later rejects, and the catalog would publish a geometry that
+// covers no cell and therefore matches no query — a row that exists, reports
+// success, and can never be found.
+func Validate(raw json.RawMessage) error {
+	_, err := decodeShape(raw)
+	return err
+}
+
 // decodeShape reads a GeoJSON geometry into the primitives a fill can use.
 func decodeShape(raw json.RawMessage) (shape, error) {
 	return decodeAt(raw, maxCollectionDepth)
