@@ -82,8 +82,30 @@ func (r *recordingRepo) UpsertCatalog(
 func newService(t *testing.T, repo domain.CatalogRepository, replicator domain.CatalogReplicator) *publish.Service {
 	t.Helper()
 
-	return publish.NewService(repo, replicator, embeddings.NewNoop(0), network, kolkata(t))
+	return newServiceWith(t, repo, replicator, embeddings.NewNoop(0))
 }
+
+func newServiceWith(
+	t *testing.T, repo domain.CatalogRepository, replicator domain.CatalogReplicator, embedder embeddings.Embedder,
+) *publish.Service {
+	t.Helper()
+
+	return publish.NewService(repo, replicator, embedder, network, kolkata(t))
+}
+
+// brokenEmbedder is the provider that is configured, reachable in config, and
+// not reachable in fact. It returns whatever it was built to return.
+type brokenEmbedder struct {
+	vector     []float32
+	err        error
+	dimensions int
+}
+
+func (b brokenEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return b.vector, b.err
+}
+
+func (b brokenEmbedder) Dimensions() int { return b.dimensions }
 
 // publishBody runs one publish request expressed as the JSON a caller sends, so
 // a test states the wire shape rather than a struct literal that has already
@@ -509,5 +531,88 @@ func TestARepublishDoesNotDoubleTheGeometries(t *testing.T) {
 			t.Fatalf("round %d: resource geometries = %+v, want exactly one",
 				round, stored.Resources[0].Geometries)
 		}
+	}
+}
+
+// An embedder that cannot be reached costs the vector, not the catalog.
+//
+// Fatal instead, a model outage would take every publisher's catalog offline
+// over a feature Phase 1 defers entirely — and the publisher would be asked to
+// re-send a document that has nothing wrong with it.
+func TestAnUnreachableEmbedderLandsTheCatalogAsPartial(t *testing.T) {
+	repo := newRepo()
+	broken := brokenEmbedder{err: errors.New("the model host is down"), dimensions: 8}
+
+	results := publishBody(t, newServiceWith(t, repo, &recordingReplicator{}, broken),
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","descriptor":{"name":"Wheat"}}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusPartial {
+		t.Fatalf("results = %+v, want one PARTIAL", results)
+	}
+	if path := results[0].Errors[0].Details.Path; path != "$.message.catalogs[0].resources[0]" {
+		t.Errorf("details.path = %q, want the resource that has no vector", path)
+	}
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("the catalog was not stored: %v", err)
+	}
+	if stored.Resources[0].Embedding != nil {
+		t.Error("an embedding was stored by a provider that returned an error")
+	}
+	// The A5 hash is still recorded: it describes the derived TEXT, which is
+	// true whether or not a vector came back. The Phase 2 backfill selects on a
+	// NULL embedding, so this row is picked up regardless.
+	if len(stored.Resources[0].EmbeddingSourceHash) == 0 {
+		t.Error("EmbeddingSourceHash is empty after a failed embed")
+	}
+}
+
+// A vector of the wrong width is refused rather than stored.
+//
+// pgvector fixes the column width at migration time, so a mismatched vector is
+// an insert error at best and a silently unsearchable row at worst. Checking it
+// here turns both into one named PARTIAL against the resource.
+func TestAVectorOfTheWrongWidthIsRefused(t *testing.T) {
+	repo := newRepo()
+	wrong := brokenEmbedder{vector: []float32{1, 2, 3}, dimensions: 8}
+
+	results := publishBody(t, newServiceWith(t, repo, &recordingReplicator{}, wrong),
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","descriptor":{"name":"Wheat"}}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusPartial {
+		t.Fatalf("results = %+v, want one PARTIAL", results)
+	}
+	if !strings.Contains(results[0].Errors[0].Message, "3") {
+		t.Errorf("message = %q, want it to name the width it got", results[0].Errors[0].Message)
+	}
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("the catalog was not stored: %v", err)
+	}
+	if stored.Resources[0].Embedding != nil {
+		t.Error("a mismatched vector was stored anyway")
+	}
+}
+
+// The width the provider declares IS the width that is accepted.
+//
+// Without this the test above passes against a service that refuses every
+// vector — which is the same wire behaviour and the opposite bug.
+func TestAVectorOfTheRightWidthIsStored(t *testing.T) {
+	repo := newRepo()
+	good := brokenEmbedder{vector: []float32{1, 2, 3}, dimensions: 3}
+
+	results := publishBody(t, newServiceWith(t, repo, &recordingReplicator{}, good),
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","descriptor":{"name":"Wheat"}}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusAccepted {
+		t.Fatalf("results = %+v, want one ACCEPTED", results)
+	}
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("the catalog was not stored: %v", err)
+	}
+	if len(stored.Resources[0].Embedding) != 3 {
+		t.Errorf("Embedding = %v, want the provider's own vector", stored.Resources[0].Embedding)
 	}
 }

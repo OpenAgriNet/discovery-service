@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -113,7 +112,7 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 
 	patch, fatal, partial := MapCatalog(req.catalog, req.directive, req.network, s.zone)
 	if len(fatal) > 0 {
-		return rejected(req.catalog.ID, becknErrors(fatal, req.catalogIndex)...)
+		return rejected(req.catalog.ID, catalogRelative(fatal, req.catalogIndex)...)
 	}
 
 	mode := domain.UpdateMode(req.directive.UpdateMode)
@@ -128,7 +127,12 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 			Details: &beckn.ErrorDetails{Path: catalogPath(req.catalogIndex)},
 		})
 	}
-	partial = append(partial, derived...)
+	// The two families stay apart all the way to the wire, because they are
+	// rooted differently and only the caller knows which is which.
+	faults := append(
+		catalogRelative(partial, req.catalogIndex),
+		requestRelative(derived)...,
+	)
 
 	// A7. AFTER the write returns, never inside the closure: a fan-out that ran
 	// before commit would announce a catalog that then rolled back, and no
@@ -142,13 +146,13 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 	}
 
 	status := beckn.StatusAccepted
-	if len(partial) > 0 {
+	if len(faults) > 0 {
 		status = beckn.StatusPartial
 	}
 	return beckn.CatalogProcessingResult{
 		CatalogID: req.catalog.ID,
 		Status:    status,
-		Errors:    becknErrors(partial, req.catalogIndex),
+		Errors:    faults,
 		Stats:     statsFor(patch),
 	}
 }
@@ -378,45 +382,56 @@ func rejected(catalogID string, faults ...beckn.Error) beckn.CatalogProcessingRe
 	}
 }
 
-// becknErrors turns domain faults into wire errors, rebasing each path onto the
-// request body.
-func becknErrors(faults []domain.Fault, catalogIndex int) []beckn.Error {
+// catalogRelative renders faults the MAPPER produced. It walks one catalog, so
+// its paths are relative to that catalog: `$['resources'][0]['id']`.
+func catalogRelative(faults []domain.Fault, catalogIndex int) []beckn.Error {
+	return rebase(faults, func(dotted string) string {
+		return catalogPath(catalogIndex) + dotted[len("$"):]
+	}, catalogIndex)
+}
+
+// requestRelative renders faults the GEOMETRY WALK produced. It walks the
+// catalogs array, so its paths already name the catalog: `$['catalogs'][2]…`.
+//
+// It takes no index precisely because it needs none — which is the whole reason
+// this is a second function rather than a `strings.HasPrefix` inside one. A
+// sniff would hold only while no catalog field is ever called `catalogs`, and
+// that is an invariant nothing states and nothing checks.
+func requestRelative(faults []domain.Fault) []beckn.Error {
+	return rebase(faults, func(dotted string) string {
+		return messageRoot + dotted[len("$"):]
+	}, -1)
+}
+
+// rebase renders each fault's path onto the request body in the dot form C7's
+// example uses, and copies the rest of the fault across.
+//
+// Neither producer is wrong about its own root; only here is it known that both
+// sit under `message`, and a publisher needs a path they can run against the
+// body they actually sent.
+func rebase(faults []domain.Fault, onto func(dotted string) string, catalogIndex int) []beckn.Error {
 	if len(faults) == 0 {
 		return nil
 	}
 
 	out := make([]beckn.Error, 0, len(faults))
 	for _, fault := range faults {
+		path := ""
+		if dotted := jsonpath.Dot(fault.Path); dotted != "" {
+			path = onto(dotted)
+		} else if catalogIndex >= 0 {
+			// Unreadable, so there is nothing honest to say about where inside
+			// the catalog it was. Naming the catalog is still true and useful.
+			path = catalogPath(catalogIndex)
+		}
+
 		out = append(out, beckn.Error{
 			Code:    beckn.ErrorCode(fault.Code),
 			Message: fault.Message,
-			Details: &beckn.ErrorDetails{Path: requestPath(fault.Path, catalogIndex)},
+			Details: &beckn.ErrorDetails{Path: path},
 		})
 	}
 	return out
-}
-
-// requestPath rebases a fault's path onto the request body and renders it in the
-// dot form C7's example uses.
-//
-// The two producers root their paths differently and neither is wrong on its
-// own: the mapper walks one catalog and says `$['resources'][0]['id']`, the
-// geometry walker walks the catalogs array and says `$['catalogs'][2]…`. Only
-// here is it known that both sit under `message`, and a publisher needs a path
-// they can run against the body they sent.
-func requestPath(faultPath string, catalogIndex int) string {
-	dotted := jsonpath.Dot(faultPath)
-	if dotted == "" {
-		// Unreadable, so there is nothing honest to say about where it was.
-		// Naming the catalog is still true and still useful.
-		return catalogPath(catalogIndex)
-	}
-
-	if strings.HasPrefix(dotted, "$.catalogs[") {
-		// The walker already named the catalog; only `message` is missing.
-		return messageRoot + dotted[len("$"):]
-	}
-	return catalogPath(catalogIndex) + dotted[len("$"):]
 }
 
 // messageRoot is where every path in a publish fault is rooted. The action lives
