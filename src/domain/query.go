@@ -182,6 +182,21 @@ const (
 	CapabilityJSONPath Capability = "jsonpath"
 )
 
+// Ranked reports whether this capability produces an ordered list of its own,
+// as opposed to narrowing the rows every list is drawn from.
+//
+// Spatial and jsonpath are filters: they are carried by the predicate each
+// ranked mode already applies, so a backend satisfies them by running the
+// search at all. The distinction decides two things neither backend can be
+// trusted to remember on its own — that a filter is never reported in
+// X-Beckn-Degraded when it WAS applied, and that an intent naming only filters
+// is still a query rather than a request for nothing. It lives here, in the
+// package both backends import, because a copy in each is a copy that drifts,
+// and the drift shows up as an empty page with nothing to explain it.
+func (c Capability) Ranked() bool {
+	return c != CapabilitySpatial && c != CapabilityJSONPath
+}
+
 // Capabilities is the set a backend declares.
 //
 // A set rather than a struct of bools: a backend that gains a capability should

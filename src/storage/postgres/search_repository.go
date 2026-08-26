@@ -31,6 +31,17 @@ type SearchRepository struct {
 	hydrator   domain.Hydrator
 	search     config.Search
 
+	// candidates answers a query that names a filter but no ranked mode — a
+	// geo-only or filter-only intent — with the rows the shared predicate
+	// admits, in the stable (catalog_id, id) order the memory backend sorts by.
+	//
+	// It is the LEXICAL retriever, and that is not a shortcut: LexicalCandidates
+	// reads a NULL query_text as "every row the shared predicates admit" and its
+	// ORDER BY then falls through to the stable key, which is exactly this list.
+	// A fourth query would be a second copy of a WHERE clause that is already
+	// repeated three times, and the copy that drifts is the one nothing ranks.
+	candidates domain.Retriever
+
 	// semantic records whether this deployment has a query-side embedder at
 	// all. Kept as its own field rather than derived from the retriever map, so
 	// that Capabilities answers the same question the map was built from.
@@ -56,14 +67,16 @@ var _ domain.SearchRepository = (*SearchRepository)(nil)
 func NewSearchRepository(
 	pool *pgxpool.Pool, search config.Search, embedder embeddings.Embedder,
 ) *SearchRepository {
+	lexical := NewLexicalRetriever(pool, search.MaxCandidatesPerMode)
 	repository := &SearchRepository{
 		retrievers: map[domain.Capability]domain.Retriever{
-			domain.CapabilityLexical: NewLexicalRetriever(pool, search.MaxCandidatesPerMode),
+			domain.CapabilityLexical: lexical,
 			domain.CapabilityFuzzy:   NewFuzzyRetriever(pool, search.MaxCandidatesPerMode),
 		},
-		hydrator: NewHydrator(pool, embedder),
-		search:   search,
-		semantic: embedder != nil,
+		hydrator:   NewHydrator(pool, embedder),
+		search:     search,
+		semantic:   embedder != nil,
+		candidates: lexical,
 	}
 	if embedder != nil {
 		repository.retrievers[domain.CapabilitySemantic] =
@@ -104,14 +117,8 @@ type outcome struct {
 func (s *SearchRepository) Search(
 	ctx context.Context, query domain.SearchQuery, modes []domain.Capability,
 ) (domain.SearchResult, error) {
-	// The cap is also the reachable pagination depth. Checked BEFORE anything
-	// runs: a request that cannot be answered should not spend three queries
-	// discovering it, and the boundary is named so the caller can tell this
-	// from the end of the results.
-	if query.Offset+query.Limit > s.search.MaxCandidatesPerMode {
-		return domain.SearchResult{}, fmt.Errorf(
-			"%w: offset %d plus limit %d passes the %d ids a mode retrieves",
-			ErrRetrievalDepth, query.Offset, query.Limit, s.search.MaxCandidatesPerMode)
+	if err := s.withinRetrievalDepth(query); err != nil {
+		return domain.SearchResult{}, err
 	}
 
 	// One deadline for the whole fan-out (A2/A3), not one per mode: three modes
@@ -126,11 +133,20 @@ func (s *SearchRepository) Search(
 	// answerable by the same conformance fixture.
 	scope := domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()}
 
-	outcomes := s.retrieve(ctx, query, modes, scope)
+	ranked, filtering, degraded := s.negotiate(modes)
 
-	ranked, degraded, anyCap := fold(outcomes)
+	lists, failed, anyCap := fold(s.retrieve(ctx, query, ranked, scope))
+	degraded = append(degraded, failed...)
 
-	fused := RRF(ranked...)
+	if len(lists) == 0 && filtering {
+		ids, capped, err := s.filterOnly(ctx, query, scope)
+		if err != nil {
+			return domain.SearchResult{}, err
+		}
+		lists, anyCap = append(lists, ids), anyCap || capped
+	}
+
+	fused := RRF(lists...)
 	page := pageOf(fused, query.Offset, query.Limit)
 
 	total, err := s.total(ctx, query, scope, fused, page, len(degraded) > 0, anyCap)
@@ -143,6 +159,41 @@ func (s *SearchRepository) Search(
 		return domain.SearchResult{}, err
 	}
 	return domain.SearchResult{Catalogs: catalogs, Total: total, Degraded: degraded}, nil
+}
+
+// withinRetrievalDepth refuses a page that lies past what any mode retrieves.
+//
+// The cap is also the reachable pagination depth, and it is checked BEFORE
+// anything runs: a request that cannot be answered should not spend three
+// queries discovering it, and the boundary is named so the caller can tell this
+// from the end of the results.
+func (s *SearchRepository) withinRetrievalDepth(query domain.SearchQuery) error {
+	if query.Offset+query.Limit > s.search.MaxCandidatesPerMode {
+		return fmt.Errorf(
+			"%w: offset %d plus limit %d passes the %d ids a mode retrieves",
+			ErrRetrievalDepth, query.Offset, query.Limit, s.search.MaxCandidatesPerMode)
+	}
+	return nil
+}
+
+// filterOnly is the retrieval for an intent that named a filter and no ranked
+// mode this deployment runs — a geo-only intent, or one whose every ranked mode
+// was declined. The predicate IS the query, so the candidate order stands in
+// for a relevance nobody supplied. Without it the fusion is empty and "what is
+// near me" answers nothing while reporting success.
+//
+// The error is returned rather than degraded, unlike a mode failure. A failed
+// mode leaves siblings that still answered; this leaves nothing, and an empty
+// page is indistinguishable at the caller from a query that matched nothing.
+// Only one of those is an answer.
+func (s *SearchRepository) filterOnly(
+	ctx context.Context, query domain.SearchQuery, scope domain.Scope,
+) (ids []string, capped bool, err error) {
+	ids, err = s.candidates.Retrieve(ctx, query, scope)
+	if err != nil {
+		return nil, false, fmt.Errorf("run the candidate retrieval: %w", err)
+	}
+	return ids, len(ids) == s.search.MaxCandidatesPerMode, nil
 }
 
 // fold splits the per-mode outcomes into the lists to fuse, the modes to report
@@ -163,7 +214,45 @@ func fold(outcomes []outcome) (ranked [][]string, degraded []string, anyCapped b
 	return ranked, degraded, anyCapped
 }
 
-// retrieve fans the enabled modes out and waits for all of them.
+// negotiate splits the requested modes into the ranked ones this backend will
+// run and the ones it has to report as missing, and says whether a filter was
+// asked for at all.
+//
+// A filter mode (domain.Capability.Ranked) is neither ranked nor missing: it is
+// part of the WHERE clause every retriever and the counter already share, so
+// asking for it is satisfied by running the search — reporting it degraded
+// would tell a caller their geometry was ignored when it was applied, and
+// looking for a retriever under its name finds none, because there is no query
+// that is only a filter.
+//
+// Mirrors memory.Repository.negotiate deliberately, and the conformance case
+// aSpatialOnlyIntentIsAnsweredRatherThanDegraded is what holds the two to one
+// answer.
+func (s *SearchRepository) negotiate(
+	modes []domain.Capability,
+) (ranked []domain.Capability, filtering bool, degraded []string) {
+	declared := s.Capabilities()
+	for _, mode := range modes {
+		switch {
+		case !mode.Ranked():
+			filtering = true
+			if !declared.Has(mode) {
+				degraded = append(degraded, string(mode))
+			}
+		case !declared.Has(mode):
+			// Asked for and not available. The negotiation in front of Search
+			// is supposed to have removed it, so reaching here means the two
+			// disagreed — reported rather than ignored, because an ignored mode
+			// is one the caller believes ran.
+			degraded = append(degraded, string(mode))
+		default:
+			ranked = append(ranked, mode)
+		}
+	}
+	return ranked, filtering, degraded
+}
+
+// retrieve fans the ranked modes out and waits for all of them.
 //
 // A barrier and not a race: the fusion needs every list, and a mode that is
 // still running when its siblings finish has not failed. The shared deadline is
@@ -171,32 +260,22 @@ func fold(outcomes []outcome) (ranked [][]string, degraded []string, anyCapped b
 func (s *SearchRepository) retrieve(
 	ctx context.Context, query domain.SearchQuery, modes []domain.Capability, scope domain.Scope,
 ) []outcome {
-	outcomes := make([]outcome, 0, len(modes))
-	for _, mode := range modes {
-		if _, enabled := s.retrievers[mode]; !enabled {
-			// Asked for and not available. The negotiation in front of Search
-			// is supposed to have removed it, so reaching here means the two
-			// disagreed — reported rather than ignored, because an ignored mode
-			// is one the caller believes ran.
-			outcomes = append(outcomes, outcome{mode: mode, err: fmt.Errorf(
-				"the %s mode is not available on this backend", mode)})
-			continue
-		}
-		outcomes = append(outcomes, outcome{mode: mode})
+	// Sized before any goroutine starts, and every mode in it has a retriever:
+	// negotiate has already moved the ones this backend cannot run into the
+	// degraded list, so there is no arm here for a mode with nothing behind it.
+	outcomes := make([]outcome, len(modes))
+	for index, mode := range modes {
+		outcomes[index].mode = mode
 	}
 
 	var waiting sync.WaitGroup
 	for index := range outcomes {
-		if outcomes[index].err != nil {
-			continue
-		}
 		waiting.Add(1)
 		go func(slot *outcome) {
 			defer waiting.Done()
-			// Each goroutine writes only its OWN element of a slice sized
-			// before any of them started, so there is no shared write and no
-			// mutex. A channel here would buy nothing: the barrier below
-			// already waits for all of them.
+			// Each goroutine writes only its OWN element, so there is no
+			// shared write and no mutex. A channel here would buy nothing: the
+			// barrier below already waits for all of them.
 			slot.ids, slot.err = s.retrievers[slot.mode].Retrieve(ctx, query, scope)
 			slot.capped = len(slot.ids) == s.search.MaxCandidatesPerMode
 		}(&outcomes[index])

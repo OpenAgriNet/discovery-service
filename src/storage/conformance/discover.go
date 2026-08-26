@@ -52,6 +52,7 @@ func DiscoverCases(resolution int) []Case {
 		pageTwoDoesNotOverlapPageOne(),
 		aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch(),
 		askingForNoRetrievalModeAtAllReturnsNothing(),
+		aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution),
 	}
 }
 
@@ -720,6 +721,50 @@ func askingForNoRetrievalModeAtAllReturnsNothing() Case {
 		}},
 		Then: func(t *testing.T, backends Backends) {
 			assertPage(t, searched(t, backends, domain.SearchQuery{}, nil), nil, 0)
+		},
+	}
+}
+
+// A spatial constraint is a filter, not a ranked mode, and an intent carrying
+// only one is still a query.
+//
+// This is the case the suite was missing, and its absence is what let the two
+// backends diverge unnoticed: every geo case above asks with `lexical`, because
+// that is the mode list a TEXT query produces, while the discover service asks
+// a geo-only intent with `spatial` and nothing else. Postgres then found no
+// retriever under that key and reported the mode missing; the memory backend
+// found no ranked mode left and emptied the page. Both answered nothing, and
+// both told the caller the geometry had been ignored — while it was the only
+// thing that had been applied.
+//
+// The fixture and the radius are aRadiusSelectsTheNearShopAndNotTheFarOne's, on
+// purpose: the two mode lists are then held to ONE answer rather than to two
+// separately plausible ones.
+func aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution int) Case {
+	near := catalogPatch("c-near", searchable("r-near", "near", "", "", ""))
+	far := catalogPatch("c-far", searchable("r-far", "far", "", "", ""))
+
+	return Case{
+		Name: "a spatial-only intent is answered rather than reported degraded",
+		Given: []Publish{{
+			Patch: near, Mode: domain.UpdateModeMerge,
+			Derive: deriveInOrder(deriveSearchable,
+				deriveGeometries(PointGeometryAt(0, bengaluru))),
+		}, {
+			Patch: far, Mode: domain.UpdateModeMerge,
+			Derive: deriveInOrder(deriveSearchable,
+				deriveGeometries(PointGeometryAt(0, chennai))),
+		}},
+		Then: func(t *testing.T, backends Backends) {
+			result := searched(t, backends,
+				domain.SearchQuery{Spatial: within(bengaluru, 5000, resolution)},
+				[]domain.Capability{domain.CapabilitySpatial})
+
+			assertPage(t, result, []string{"r-near"}, 1)
+			if len(result.Degraded) > 0 {
+				t.Errorf("Degraded is %v, want none: the geometry was applied, not dropped",
+					result.Degraded)
+			}
 		},
 	}
 }

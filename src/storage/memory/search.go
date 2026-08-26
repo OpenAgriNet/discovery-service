@@ -45,7 +45,7 @@ func (r *Repository) Search(
 
 	scope := domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()}
 
-	ranked, degraded := r.negotiate(modes)
+	ranked, filtering, degraded := r.negotiate(modes)
 	matched := r.candidates(query, scope)
 
 	// Every ranked mode this backend has returns the same list — there is one —
@@ -53,11 +53,16 @@ func (r *Repository) Search(
 	// over a single input, which would only look like it was doing something.
 	page := matched
 
-	// No mode ran and none was reported missing: nothing was asked for. The
-	// Postgres side answers that with an empty fusion and a total of zero, and
-	// this must agree — a backend that returned the whole corpus for a request
-	// naming no retrieval mode would be answering a query nobody made.
-	if len(ranked) == 0 {
+	// Nothing was asked for: no ranked mode ran and no filter was named either.
+	// The Postgres side answers that with an empty fusion and a total of zero,
+	// and this must agree — a backend that returned the whole corpus for a
+	// request naming nothing would be answering a query nobody made.
+	//
+	// `filtering` is what keeps a geo-only intent out of this branch. A spatial
+	// constraint names no ranked mode and is still a query: the predicate IS
+	// the query, candidates has already applied it, and emptying the page here
+	// would answer "what is near me" with nothing at all.
+	if len(ranked) == 0 && !filtering {
 		page = nil
 		if len(degraded) == 0 {
 			matched = nil
@@ -78,24 +83,36 @@ func (r *Repository) Search(
 }
 
 // negotiate splits the requested modes into the ranked ones this backend will
-// run and the ones it has to report as missing.
+// run and the ones it has to report as missing, and says whether a filter was
+// asked for at all.
 //
-// Spatial is neither. It is a filter every retrieval carries rather than a
-// ranked mode, so asking for it is satisfied by the search itself — reporting
-// it degraded would tell a caller their geometry was ignored when it was
-// applied.
-func (r *Repository) negotiate(modes []domain.Capability) (ranked []domain.Capability, degraded []string) {
+// A filter mode (domain.Capability.Ranked) is neither ranked nor missing: it is
+// carried by the predicate every retrieval already applies, so asking for it is
+// satisfied by the search itself — reporting it degraded would tell a caller
+// their geometry was ignored when it was applied.
+//
+// `filtering` is reported for what was REQUESTED rather than for what this
+// backend can do, which is what makes jsonpath behave: a backend that declines
+// jsonpath still ran the rest of the query, so the caller gets the page it
+// narrowed by everything else, plus the degradation.
+func (r *Repository) negotiate(
+	modes []domain.Capability,
+) (ranked []domain.Capability, filtering bool, degraded []string) {
 	declared := r.Capabilities()
 	for _, mode := range modes {
 		switch {
-		case mode == domain.CapabilitySpatial:
+		case !mode.Ranked():
+			filtering = true
+			if !declared.Has(mode) {
+				degraded = append(degraded, string(mode))
+			}
 		case !declared.Has(mode):
 			degraded = append(degraded, string(mode))
 		default:
 			ranked = append(ranked, mode)
 		}
 	}
-	return ranked, degraded
+	return ranked, filtering, degraded
 }
 
 // candidates is every stored resource the query admits, in the stable order
