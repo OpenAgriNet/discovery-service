@@ -542,6 +542,14 @@ func appendPath(into []uint64, path []domain.GeoPoint, stepM float64, resolution
 	for index := 1; index < len(path); index++ {
 		from, to := path[index-1], path[index]
 		samples := int(math.Ceil(manhattanLengthM(from, to)/stepM)) + 1
+		// A segment of zero length — a publisher's duplicated vertex, which RFC
+		// 7946 permits — needs one sample, and the ratio below would be 0/0.
+		// NaN reaches H3, every cell of the path is dropped, and a line that
+		// covers one cell perfectly well is faulted as covering none.
+		if samples < 2 {
+			into = appendCell(into, from, resolution)
+			continue
+		}
 		for sample := range samples {
 			ratio := float64(sample) / float64(samples-1)
 			into = appendCell(into, domain.GeoPoint{

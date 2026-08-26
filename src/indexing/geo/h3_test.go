@@ -489,3 +489,39 @@ func TestOnlySDWithinExpandsTheBox(t *testing.T) {
 		t.Errorf("S_INTERSECTS widened a Point's box to %+v; distanceMeters is ignored there", plain)
 	}
 }
+
+// A segment of zero length is not a reason to refuse a geometry. RFC 7946 wants
+// two positions in a LineString and does not require them to differ, so a
+// publisher's duplicated vertex is valid input — and the sample count for such
+// a segment is 1, which makes the interpolation ratio 0/0. NaN reaches H3,
+// every cell is dropped, and a line that covers one cell perfectly well is
+// faulted as covering none.
+func TestALineWithARepeatedVertexStillCoversItsCell(t *testing.T) {
+	at := domain.GeoPoint{Lat: 12.9716, Lon: 77.5946}
+	degenerate := shaped("LineString",
+		`{"type":"LineString","coordinates":[[77.5946,12.9716],[77.5946,12.9716]]}`)
+
+	cover, err := geo.CoverGeometry(degenerate, res)
+	if err != nil {
+		t.Fatalf("CoverGeometry refused a LineString with a repeated vertex: %v", err)
+	}
+	if want := cellAt(t, at); !slices.Contains(cover.CellsCover, want) {
+		t.Errorf("cover %v does not hold the cell the line sits in (%d)", cover.CellsCover, want)
+	}
+}
+
+// The same zero-length segment in the MIDDLE of a real line must not cost the
+// rest of it: the segments either side still have to be walked.
+func TestARepeatedVertexDoesNotTruncateTheRestOfTheLine(t *testing.T) {
+	line := shaped("LineString",
+		`{"type":"LineString","coordinates":[[77.5946,12.9716],[77.5946,12.9716],[77.6400,12.9900]]}`)
+
+	cover, err := geo.CoverGeometry(line, res)
+	if err != nil {
+		t.Fatalf("CoverGeometry: %v", err)
+	}
+	if !slices.Contains(cover.CellsCover, cellAt(t, domain.GeoPoint{Lat: 12.9716, Lon: 77.5946})) ||
+		!slices.Contains(cover.CellsCover, cellAt(t, domain.GeoPoint{Lat: 12.99, Lon: 77.64})) {
+		t.Errorf("cover %v lost an endpoint; the degenerate segment truncated the walk", cover.CellsCover)
+	}
+}
