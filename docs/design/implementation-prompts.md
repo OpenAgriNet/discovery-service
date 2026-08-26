@@ -174,7 +174,7 @@ summarize what you built — do not continue to the next task until I say go.
 | 10 | L2 Extended Schema Validation | |
 | 11 | Domain Model & The DB-Agnostic Boundary | `purity_test.go` lives here — the import-boundary gate every later task is checked against. Also **scaffolds** `storage/memory/repository.go` (both port interfaces, no behavior) and `storage/conformance/` (fixture types, no fixtures) — Tasks 12, 15, 16 modify these as they add behavior; this task creates them |
 | 12 | H3 Geospatial Indexing | Modifies `storage/memory/repository.go` — adds the spatial-matching behavior (`MatchesOp`, bounding-box stage) the memory backend needs |
-| 13 | Text Derivation & Embeddings | Ships with `EMBEDDING_PROVIDER=noop` — don't turn semantic search on |
+| 13 | Text Derivation & Embeddings | Ships with `EMBEDDING_PROVIDER=noop` — don't turn semantic search on. Four open questions from this task sit in **Open questions** (Q1–Q4); Q1, the versioning mechanism, is the one that changes a contract elsewhere. Builds no selector and no `embedding_source_hash` — the hash is the publish path's (plan line ~1484) |
 | 14 | PostgreSQL Schema, Indexes & Test Harness | Needs Postgres/pgvector reachable (`docker-compose` from Task 1) |
 | 15 | PostgreSQL Catalog Repository (Write) | Modifies `storage/memory/repository.go` — adds the write-side behavior (`UpsertCatalog`, `DeleteCatalog`, `GetCatalog`) |
 | 16 | PostgreSQL Search Repository (Read) | Modifies `storage/memory/repository.go` — adds `Search`; this is where the memory/Postgres conformance suite actually starts asserting parity |
@@ -185,6 +185,21 @@ summarize what you built — do not continue to the next task until I say go.
 | 21 | End-to-End Acceptance Suite | The 35 scenarios in the doc's Scenarios section get pinned here, over real HTTP against a real Postgres — this is the integration/e2e layer, not unit tests. Covers publish and discover each in their own `_test.go` file, plus offers, validity, performance, defaults, geopath and spatial-operator groups. Runs against **Postgres only** — memory-backend parity is `storage/conformance`'s job (Tasks 11/12/15/16), not this suite's |
 | 22 | Structured Attribute Filtering | *Phase 1, per the doc's Open Items table* — do not skip unless you've deliberately decided to push it to Phase 2. Validation + rebase live in `src/platform/jsonpath/subset.go` (backend-agnostic, beside `Canonicalise`); `storage/postgres/jsonpath.go` only casts/executes the already-accepted expression |
 | 23 | OpenTelemetry Tracing & Metrics | Replaces Task 8's no-op `Trace` body with real `otelhttp` instrumentation and drops its `trace` entry from `X-Beckn-Chain` — the chain itself doesn't move |
+
+---
+
+## Open questions
+
+Raised while implementing, not blocking. Each names the task it came from and
+what was shipped in the meantime, so a decision here is a change to a known
+line rather than an archaeology exercise.
+
+| # | From | Question | What ships today |
+|---|---|---|---|
+| Q1 | 13 | **How is `deriveSearchText` versioned?** The task says it must be "deterministic and **versioned**" but names no mechanism. Two options, and they are not equivalent: (a) a package constant whose bump is a documented reindex step — visible, but nothing reads it, and an unread constant is a comment with a type; (b) fold the version into the hash input, so a bump invalidates every `embedding_source_hash` and the A5 branch re-embeds the corpus by itself — self-enforcing, but the publish pseudocode (line ~1484) says literally `hash ← blake2b256(resource.SearchText)`, so (b) is an edit to that contract, not an implementation detail | Neither. The function is deterministic and its godoc says a change to it lands with a reindex. No version token exists, so today a change to the derivation is caught by review and nothing else |
+| Q2 | 13 | **Which JSON value types count as "attribute values"?** Strings only, or also numbers and booleans? A quantity of `50` and a grade of `"A"` are both facts a buyer might search on, but `50` and `true` in a tsvector are terms nobody queries and dilute the ones they do. If numbers should be searchable it is probably as `key=value` pairs, which contradicts stripping keys | Strings only. Numbers, booleans and nulls contribute nothing |
+| Q3 | 13 | **Should URI-valued fields be indexed?** `descriptor.thumbnailImage` is `format: uri` in the schema, and `docs[]`/`mediaFile[]` are links. They are strings, so they are indexed as prose today, contributing tokens like `https` and `com` to every resource that has one — terms with no discriminating power, in the index that ranks by exactly that | Indexed as ordinary strings. No URI detection |
+| Q4 | 13 | **Where does `EMBEDDING_PROVIDER` become an `Embedder`?** Task 13 names the four providers but no selector, and no composition root exists yet. Until Task 20 wires one, the config field and `make test`'s `EMBEDDING_PROVIDER=hashing` pin select nothing — the pin is inert. `fixture` is the awkward member: its vectors come from a file the config does not name, so a selector has to decide where a fixture table is loaded from | No selector. Each provider has its own constructor and the container task builds the switch |
 
 ---
 
