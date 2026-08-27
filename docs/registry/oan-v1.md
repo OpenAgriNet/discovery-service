@@ -9,9 +9,11 @@ Scoped to the v1 provider set. The imported BV pages
 shapes; this page carries what v1 needs. Where they disagree, they are describing BV and
 this is describing us.
 
-**Assumptions this page is written against.** Sunbird RC at its **latest** version,
-**without Elasticsearch**; network-specs pinned to `3e593b3`. All three are v1 decisions,
-not observations of a running system — nothing is deployed yet.
+**What this page is written against.** **Sunbird RC `RELEASE_VERSION=v2.0.0`**, run
+**without Elasticsearch**; network-specs pinned to `3e593b3`. These are v1 decisions, not
+observations of a running system — nothing is deployed yet, so anything below that depends
+on RC behaviour rather than on RC's schema contract is marked as needing a first-boot
+check.
 
 | v1 category | `@type` | Providers | Bindings |
 |---|---|---|---|
@@ -564,10 +566,12 @@ bindingKey = "mausamgram|openagrinet:WeatherObservation|select"
 
 The `@type` is the **same string the advertisement carried** — one type spans both calls.
 
-**v1 runs RC without Elasticsearch, so the adapter must not depend on `/search`.** In a
-standard Sunbird RC deployment the search API is ES-backed; drop ES and it is not a
-surface to build a request path on. That sounds like a constraint and is not one, because
-of scale:
+**v1 runs RC v2.0.0 without Elasticsearch, so the request path does not use `/search`.**
+In a standard RC deployment the search API is ES-backed. Whether v2.0.0 also offers a
+database-backed search provider, and what filter grammar it accepts, is a config question
+to settle against the release on first boot — RC's own docs warn that `_osConfig` support
+and the search grammar differ across versions, which is why the version is pinned here at
+all. **The design below does not depend on that answer**, because of scale:
 
 ```
 13 records total — 5 Provider, 3 Capability, 5 ProviderCapability.  A few KB.
@@ -578,9 +582,11 @@ of scale:
 per-request cost is zero reads, not one or two. Records change on the order of weeks, so
 refresh is a redeploy or a TTL, never a protocol.
 
-This is the right shape even with ES: an exact-match key lookup on 13 rows has nothing to
-gain from a search engine. It only becomes a question at a scale v1 is nowhere near, and
-the boot load is what has to change then, not the resolution logic.
+This is the right shape even with ES, and whichever way the search question lands: an
+exact-match key lookup on 13 rows has nothing to gain from a search engine. It only becomes
+a question at a scale v1 is nowhere near, and the boot load is what changes then, not the
+resolution logic. The one thing the boot load does need is *some* read that returns all
+rows of an entity — that is the call to verify against v2.0.0 first.
 
 One consequence worth stating: with no ES, `indexFields` buys nothing at runtime — the
 runtime never queries. It stays declared because it documents which fields are meant to be
