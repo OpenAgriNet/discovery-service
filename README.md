@@ -34,6 +34,26 @@ make test      # unit and integration suites
 
 `make` on its own lists every target.
 
+To try the service rather than change it, run the whole stack in Docker:
+
+```sh
+make run       # PostgreSQL + the service on :8080, migrations applied on boot
+make logs      # follow the service's output
+make down      # stop everything and discard the volumes
+curl localhost:8080/readyz
+```
+
+`make up` deliberately stays dependencies-only. The integration suites reach
+PostgreSQL through testcontainers and never through Compose, and development
+runs the binary from the host — so the service container lives behind the `app`
+Compose profile, which `make run` selects.
+
+That stack applies its own migrations (they are compiled into the binary) and
+reads the Beckn specification from `tests/testdata/beckn-v2.0.0.yaml`, mounted
+at the cache path. The boot logs one warning about the registry fetch it did
+not do, which is why it works with no network; set `VALIDATION_SPEC_URL` to
+exercise the fetch path instead.
+
 ## Layout
 
 ```

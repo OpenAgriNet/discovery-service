@@ -81,9 +81,19 @@ docker:
 up:
 	docker compose up -d --wait
 
+## run: build the image and start PostgreSQL plus the service on :8080
+##      migrations are embedded and applied on boot; --wait would need a
+##      healthcheck the distroless runtime has no shell to run
+run:
+	docker compose --profile app up -d --build
+
+## logs: follow the service's output
+logs:
+	docker compose --profile app logs -f discovery-service
+
 ## down: stop the local stack and discard its volumes
 down:
-	docker compose down -v
+	docker compose --profile app down -v
 
 ## tools: build the pinned toolchain into bin/
 tools: $(GOLANGCI_LINT) $(GOVULNCHECK) $(SQLC) $(MIGRATE)
@@ -111,5 +121,5 @@ $(MIGRATE): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
 	$(GO) -C tools build -tags postgres -o ../$@ github.com/golang-migrate/migrate/v4/cmd/migrate
 
-.PHONY: help build test test-short cover lint fmt sqlc sqlc-verify migrate \
+.PHONY: help build test test-short cover lint fmt sqlc sqlc-verify migrate run logs \
 	migrate-down security docker up down tools clean

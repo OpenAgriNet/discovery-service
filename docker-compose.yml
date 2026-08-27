@@ -1,6 +1,15 @@
-# Local dependencies for development and for the integration suites. The
-# service itself is not defined here: it is run from the host against this
-# stack, and in CI it is exercised through testcontainers.
+# Two stacks in one file, separated by a profile.
+#
+#   docker compose up -d --wait          PostgreSQL alone — the development
+#                                        default, and what `make up` runs
+#   docker compose --profile app up -d   PostgreSQL plus the service
+#
+# The default stays dependencies-only on purpose. The integration suites reach
+# PostgreSQL through testcontainers and never through this file, and day-to-day
+# development runs the binary from the host against it — so a service container
+# in the default set would rebuild on every `make up` and serve a binary one
+# edit behind the one being worked on. Under `--profile app` it is the opposite
+# case: someone who wants to TRY the service, not change it.
 
 services:
   postgres:
@@ -20,6 +29,60 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  discovery-service:
+    profiles: ["app"]
+    build:
+      context: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Credentials, not secrets: this pair exists only in this file and in the
+      # Makefile's default DSN, and the database it opens holds whatever the
+      # person running it published five minutes ago. A deployment overrides
+      # DATABASE_URL from the environment, which is why the environment layer
+      # sits on top of both YAML files (TRD §8) — and why this string appears
+      # in neither of them.
+      DATABASE_URL: postgres://discovery:discovery@postgres:5432/discovery?sslmode=disable
+
+      # The migrations are compiled INTO the binary, so this needs no sidecar
+      # and no mounted directory: the service applies them on boot and treats
+      # "already at the latest version" as success. Left false in deployment,
+      # where migrating is a step someone decides to take.
+      DATABASE_AUTO_MIGRATE: "true"
+
+      # Required — the boot refuses without it. It fills an empty
+      # publishDirectives.visibleTo, so every catalog published without one is
+      # visible to this network and no other.
+      APP_NETWORK_ID: local-network
+
+      LOG_LEVEL: debug
+
+    volumes:
+      # The Beckn specification, which the service loads BEFORE it serves and
+      # refuses to start without — the check is unconditional, so turning L1
+      # validation off does not remove the requirement.
+      #
+      # Ordinarily it is fetched from VALIDATION_SPEC_URL and cached here. This
+      # mount supplies the cache directly instead, which is what makes the
+      # local stack work with no registry reachable and no network at all. The
+      # boot logs one warning about the fetch it could not do; that warning is
+      # accurate and is not a failure.
+      #
+      # To exercise the fetch path instead, set VALIDATION_SPEC_URL above and
+      # drop this line. A configured URL is trusted precisely because an
+      # operator configured it — a URL arriving in a request body is not, which
+      # is the whole meaning of EXT_ALLOW_NETWORK_FETCH=false.
+      - ./tests/testdata/beckn-v2.0.0.yaml:/app/.cache/beckn/beckn.yaml:ro
+
+    # No healthcheck, and not an omission: the runtime stage is
+    # distroless/static, which has no shell and no curl for one to run. The
+    # probes are HTTP and are for you rather than for Compose —
+    # GET /healthz answers that the process is up, GET /readyz that it can
+    # reach PostgreSQL.
 
 volumes:
   postgres-data:
