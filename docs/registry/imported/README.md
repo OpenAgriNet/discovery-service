@@ -26,7 +26,7 @@
 > all relative to siblings. `diff -r` against the source tree still applies, now
 > against this directory.
 >
-> Four corrections were made afterwards, on 2026-08-27, each verified against
+> Five corrections were made afterwards, on 2026-08-27, each verified against
 > `beckn.yaml`, a live PostgreSQL, or `background/PROVIDERS.md`. **They have not
 > been sent upstream.** Reconcile before treating either copy as current:
 >
@@ -35,7 +35,8 @@
 > | [`usecases/mausamgram.md`](usecases/mausamgram.md) | The `discover` filter expression was RFC 9535 and used `anyof`; rewritten in SQL/JSON path and verified against Postgres. A table now states the dialect difference, because nothing validates it. |
 > | [`02-registry-schema.md`](02-registry-schema.md) | `baseUrl` allowed plaintext HTTP while `Auth` required credentials, so one could be sent in clear and no control would object. Two `if`/`then` clauses now require TLS whenever the record carries one. |
 > | [`usecases/README.md`](usecases/README.md) | The `agmarknet` binding named the non-production endpoint and said `POST`; both variants are `GET`, and the record now names the location variant production actually calls. |
-> | [`02-registry-schema.md`](02-registry-schema.md) | Noted that OAN v1 drops the required `ProviderCapability.action` column as redundant with the key's third segment. A note only — BV's field table and every record below it are unchanged. |
+> | [`02-registry-schema.md`](02-registry-schema.md) | Noted that OAN v1 drops `ProviderCapability.action` entirely — the column as unread, and the key's third segment as having nothing to discriminate in v1. A note only — BV's field table and every record below it are unchanged. |
+| [`02-registry-schema.md`](02-registry-schema.md) | Noted that OAN v1 keeps only the object form of `enricher`, dropping the `oneOf`, so the one free-form object in these schemas has a single shape to audit. A note only. |
 >
 > Everything else is as it was written — including `reference/open-issues.md`,
 > which its own page warns goes stale fastest, so check it against the source

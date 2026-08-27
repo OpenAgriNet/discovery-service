@@ -354,7 +354,9 @@ on `baseTypes[]`, where a broad request can still fan out to it.
 
   "responseMapping": "mappings/mausamgram/select.response.jsonata",
                                            // REQ  ^mappings/(?!.*\.\.)[a-z0-9][a-z0-9._/-]*\.jsonata$
-  "enricher": "pointFromIntent",           // opt  ^[a-z][a-zA-Z0-9]*$   or { name, config, secrets }
+  "enricher": { "name": "pointFromIntent" },
+                                           // opt  always the object form. name ^[a-z][a-zA-Z0-9]*$;
+                                           //      config and secrets optional, secrets values env:// only
   "timeoutMs": 30000,                      // opt  1000–120000, default 15000
   "retryMax": 3                            // opt  0–5, default 0
 } }
@@ -404,6 +406,21 @@ without first deciding which action it is serving.
 is between restoring the segment or modelling the actions inside a single row. Either way
 it is cheap, because `bindingKey` is derived and nothing holds a reference to it —
 restoring the segment is a re-seed of five rows, not a migration.
+
+**`enricher` is always the object form.** BV's schema allows either a bare name or
+`{name, config, secrets}`, and its own guidance says to prefer the object — which four of
+its five records then don't. OAN v1 drops the `oneOf` and keeps only the object.
+
+One shape means one code path: the adapter reads `.name` without first asking what type it
+is holding. But the reason that decides it is `config`. It is **the only free-form object
+in all three schemas** — the one remaining place a literal DSN could be pasted where an
+`env://` pointer belongs, which the imported conformance page already names as the last
+credential-shaped hole in this design. A field that has to be audited should have one
+shape to recognise, not two.
+
+The cost is a two-character wrapper on the four bindings that configure nothing:
+`{"name": "pointFromIntent"}`. `secrets` keeps the `env://` pointer rule the rest of the
+schema uses — the pointer is resolved by the adapter at call time, never stored.
 
 **Mappings live in files, not in the row.** The Mausamgram response transform is 76 lines
 of JSONata; stored in the row it is one string with every newline escaped, unreviewable in

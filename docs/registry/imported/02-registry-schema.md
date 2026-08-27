@@ -254,7 +254,7 @@ to it.
 | `path` | string | `^/` — appended to `Provider.baseUrl` | single |
 | `requestMapping` | string | same `mappings/` pattern | single |
 | `steps` | array | 2 – 6 → `Step` | multi |
-| `enricher` | string \| object | `oneOf`: `^[a-z][a-zA-Z0-9]*$`, or `{ name, config, secrets }` | |
+| `enricher` | string \| object | `oneOf`: `^[a-z][a-zA-Z0-9]*$`, or `{ name, config, secrets }`. **Object-only in OAN v1** — see below | |
 | `timeoutMs` | integer | 1000 – 120000, default 15000 | |
 | `retryMax` | integer | 0 – 5, default 0 | |
 | `sessionGate` | object | `{ scope }` | |
@@ -305,12 +305,21 @@ shape or the other, never half of each:
 The fourth clause is the load-bearing one — it is what pushes `sessionGrant` down onto the
 step that earns it, and the reason is worked through below.
 
-> **OAN v1 does not store `action`.** It is not in `indexFields`, so it answered no query;
-> the adapter builds the key from the request and looks it up exactly, never reading the
-> column back; and its enum was already enforced by the key pattern's own alternation. The
-> key keeps its third segment — that is the discriminator between `…|init` and `…|status`
-> — but the column is gone. See [OpenAgriNet registry — v1](../README.md). BV's own records
-> below are unchanged and still carry it.
+> **OAN v1 drops `action` entirely — the column *and* the key segment.** The column
+> answered no query: it is not in `indexFields`, and the adapter builds the key from the
+> request and looks it up exactly, never reading the column back. The segment went too,
+> because in v1 there is nothing for it to discriminate — every binding is a single-call
+> `select`, so `providerId|capabilityCode` is already unique, and the key becomes exactly
+> those two fields. What forces the segment back is a `(provider, capability)` pair needing
+> different upstream calls per action, which is what `pm-kisan` would bring.
+> See [OpenAgriNet registry](../README.md). BV's own records below are unchanged and still
+> carry both.
+
+> **OAN v1 keeps only the object form of `enricher`.** The `oneOf` costs a type-switch
+> before `.name` can be read, and `config` is the only free-form object in these three
+> schemas — the last place a literal DSN can sit where an `env://` pointer belongs, as
+> [`reference/conformance.md`](reference/conformance.md) notes. One shape to audit beats
+> two. BV's records below are unchanged.
 
 **Two integrity rules no JSON Schema can express.** `bindingKey` must agree with its own
 `providerId`, `capabilityCode` and `action`, and both ids must resolve to live records.

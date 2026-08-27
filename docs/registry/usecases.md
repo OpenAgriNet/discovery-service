@@ -147,7 +147,8 @@ against RC v2.0.0 on first boot.
 
 ### ⑤ Enrich, map, authenticate, call
 
-**Enrich** — the binding names a plugin, the registry does not implement it:
+**Enrich** — `enricher.name` names a plugin; the registry names and bounds it, and does
+not implement it:
 
 ```
 pointFromIntent:  resourceAttributes.location.coordinates → _local = {lat: 19.9975, lon: 73.7898}

@@ -120,7 +120,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
   "path": "/get-daily",
-  "enricher": "pointFromIntent",
+  "enricher": { "name": "pointFromIntent" },
   "requestMapping":  "mappings/mausamgram/select.request.jsonata",
   "responseMapping": "mappings/mausamgram/select.response.jsonata",
   "timeoutMs": 30000,
@@ -153,7 +153,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "capabilityCode": "openagrinet:MandiPrice",
   "method": "GET",
   "path": "/v1/fetch-agmarknet-vistaar-location",
-  "enricher": "marketAndCommodityCodes",
+  "enricher": { "name": "marketAndCommodityCodes" },
   "requestMapping":  "mappings/agmarknet/select.request.jsonata",
   "responseMapping": "mappings/agmarknet/select.response.jsonata",
   "timeoutMs": 20000,
@@ -169,7 +169,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST",
   "path": "/v1/graphql",
-  "enricher": "knowledgeQueryParams",
+  "enricher": { "name": "knowledgeQueryParams" },
   "requestMapping":  "mappings/hasura-content/select.request.jsonata",
   "responseMapping": "mappings/hasura-content/select.response.jsonata",
   "timeoutMs": 15000,
@@ -185,7 +185,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST",
   "path": "/indexes/oan-index/search",
-  "enricher": "knowledgeQueryParams",
+  "enricher": { "name": "knowledgeQueryParams" },
   "requestMapping":  "mappings/oan-vector/select.request.jsonata",
   "responseMapping": "mappings/oan-vector/select.response.jsonata",
   "timeoutMs": 15000,
@@ -198,7 +198,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 - `agmarknet`'s `select.request.jsonata` must emit `lat`, `long`, `commodity_id` and a
   single `date`. The location endpoint above takes those; the older four-code endpoint the
   mapping was written for is not what production calls.
-- Both `KnowledgeResource` bindings share `enricher: knowledgeQueryParams`. Their request
+- Both `KnowledgeResource` bindings share `enricher.name: knowledgeQueryParams`. Their request
   mappings do not — one shapes a Hasura GraphQL `variables` block, the other a vector
   search body.
 
