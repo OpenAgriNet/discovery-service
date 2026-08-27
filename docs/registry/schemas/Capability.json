@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Capability",
+  "type": "object",
+  "required": ["Capability"],
+  "properties": { "Capability": { "$ref": "#/definitions/Capability" } },
+
+  "definitions": {
+
+    "Capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityCode", "name", "schemaUrl", "status"],
+      "properties": {
+        "capabilityCode": { "$ref": "#/definitions/CapabilityCode" },
+        "name":           { "type": "string", "minLength": 1 },
+        "schemaUrl":      { "type": "string",
+                            "pattern": "^https://(?!.*/refs/heads/)(?!.*/(main|master|develop)/).+/attributes\\.yaml$" },
+        "status":         { "$ref": "#/definitions/Status" },
+        "baseTypes":      { "type": "array", "uniqueItems": true,
+                            "items": { "$ref": "#/definitions/TypeCode" } }
+      }
+    },
+
+    "CapabilityCode": { "type": "string",
+                        "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$",
+                        "not": { "pattern": "^openagrinet:Agriculture(Capability|Resource)$" } },
+    "TypeCode": { "type": "string", "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$" },
+    "Status": { "type": "string", "enum": ["active", "inactive"] }
+  },
+
+  "_osConfig": {
+    "uniqueIndexFields": ["capabilityCode"],
+    "indexFields":       ["status"],
+    "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
+  }
+}

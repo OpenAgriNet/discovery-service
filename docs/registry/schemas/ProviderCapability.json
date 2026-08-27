@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProviderCapability",
+  "type": "object",
+  "required": ["ProviderCapability"],
+  "properties": { "ProviderCapability": { "$ref": "#/definitions/ProviderCapability" } },
+
+  "definitions": {
+
+    "ProviderCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bindingKey", "providerId", "capabilityCode", "status", "responseMapping"],
+      "properties": {
+        "bindingKey": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}\\|openagrinet:[A-Z][A-Za-z0-9]*$",
+          "not": { "pattern": "\\|openagrinet:Agriculture(Capability|Resource)$" }
+        },
+        "providerId":     { "$ref": "#/definitions/ProviderId" },
+        "capabilityCode": { "$ref": "#/definitions/CapabilityCode" },
+        "status":         { "$ref": "#/definitions/Status" },
+
+        "method":          { "type": "string", "enum": ["GET", "POST"] },
+        "path":            { "$ref": "#/definitions/Path" },
+        "requestMapping":  { "$ref": "#/definitions/MappingPath" },
+        "steps":           { "type": "array", "minItems": 2, "maxItems": 6,
+                             "items": { "$ref": "#/definitions/Step" } },
+
+        "responseMapping": { "$ref": "#/definitions/MappingPath" },
+        "enricher":        { "$ref": "#/definitions/Enricher" },
+        "timeoutMs":       { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 15000 },
+        "retryMax":        { "type": "integer", "minimum": 0, "maximum": 5, "default": 0 },
+        "sessionGate":     { "$ref": "#/definitions/SessionGate" },
+        "sessionGrant":    { "$ref": "#/definitions/SessionGrant" }
+      },
+
+      "oneOf": [
+        { "title": "single call",
+          "required": ["method", "path", "requestMapping"],
+          "not": { "required": ["steps"] } },
+        { "title": "multi-step call",
+          "required": ["steps"],
+          "allOf": [ { "not": { "required": ["method"] } },
+                     { "not": { "required": ["path"] } },
+                     { "not": { "required": ["requestMapping"] } },
+                     { "not": { "required": ["sessionGrant"] } } ] }
+      ]
+    },
+
+    "Step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "path", "requestMapping"],
+      "properties": {
+        "id":             { "type": "string", "pattern": "^[a-z][a-zA-Z0-9]*$" },
+        "method":         { "type": "string", "enum": ["GET", "POST"] },
+        "path":           { "$ref": "#/definitions/Path" },
+        "requestMapping": { "$ref": "#/definitions/MappingPath" },
+        "timeoutMs":      { "type": "integer", "minimum": 1000, "maximum": 120000 },
+        "retryMax":       { "type": "integer", "minimum": 0, "maximum": 5 },
+        "sessionGrant":   { "$ref": "#/definitions/SessionGrant" }
+      }
+    },
+
+    "Enricher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name":    { "type": "string", "pattern": "^[a-z][a-zA-Z0-9]*$" },
+        "config":  { "type": "object" },
+        "secrets": { "type": "object", "minProperties": 1,
+                     "additionalProperties": { "$ref": "#/definitions/Secret" } }
+      }
+    },
+
+    "SessionGate": {
+      "type": "object", "additionalProperties": false, "required": ["scope"],
+      "properties": { "scope": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9]*$" } }
+    },
+
+    "SessionGrant": {
+      "type": "object", "additionalProperties": false, "required": ["scope", "ttlSeconds"],
+      "properties": {
+        "scope":      { "type": "string", "pattern": "^[a-z][a-zA-Z0-9]*$" },
+        "ttlSeconds": { "type": "integer", "minimum": 60, "maximum": 3600 }
+      }
+    },
+
+    "MappingPath": { "type": "string",
+                     "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.jsonata$" },
+
+    "ProviderId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
+    "CapabilityCode": { "type": "string",
+                        "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$",
+                        "not": { "pattern": "^openagrinet:Agriculture(Capability|Resource)$" } },
+    "Status": { "type": "string", "enum": ["active", "inactive"] },
+    "Path": { "type": "string", "pattern": "^/[A-Za-z0-9._~%/-]*$" },
+    "Secret": { "type": "string", "pattern": "^(env://[A-Z][A-Z0-9_]*|inline:.+)$" }
+  },
+
+  "_osConfig": {
+    "uniqueIndexFields": ["bindingKey"],
+    "indexFields":       ["providerId", "capabilityCode", "status"],
+    "privateFields":     ["$.enricher.secrets"],
+    "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
+  }
+}

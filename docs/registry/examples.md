@@ -1,11 +1,10 @@
 # Registry records — what we store
 
-The thirteen records that seed the v1 registry, in Sunbird RC write form. The schema
-they satisfy is in [registry.md §3](registry.md#3-registry-schema); the endpoints that
-write them are in [§4](registry.md#4-registry-apis).
+The thirteen records that seed the v1 registry — 3 `Capability`, 5 `Provider`,
+5 `ProviderCapability` — in Sunbird RC write form.
 
-Thirteen records: 3 `Capability`, 5 `Provider`, 5 `ProviderCapability`. Shown in RC write
-form.
+Schema: [registry.md §3](registry.md#3-the-schemas) ·
+[`schemas/`](schemas/). Write endpoints: [§5](registry.md#5-apis).
 
 > `schemaUrl` points at [`OpenAgriNet/network-specs`](https://github.com/OpenAgriNet/network-specs),
 > pinned to a **full commit sha** — `3e593b3` here. The schema's two negative lookaheads
@@ -50,6 +49,34 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 (`Scheme` vs `Crop`), not by the registry. See [use case execution](usecases.md).
 
 ### Providers
+
+**No v1 provider carries a `signing` block, and none carries an `inline:` secret.** All
+five upstreams are plain HTTP APIs that sign nothing, and every credential below is an
+`env://` pointer resolved in the adapter's own environment. Both are in the schema
+([§3.1](registry.md#31-provider)) for providers that need them.
+
+A record that did need them — shown once, seeded nowhere:
+
+```json
+{ "Provider": {
+  "providerId": "example-signed",
+  "name": "A provider that signs, and whose key we cannot hold in the environment",
+  "baseUrl": "https://api.example.gov.in",
+  "status": "active",
+  "auth": { "scheme": "apiKeyHeader",
+            "paramName": "x-api-key",
+            "secrets": { "apiKey": "inline:a7f3c9d2e1b84f60a1c5" } },
+  "signing": { "keyId": "example-signed|key-1|ed25519",
+               "publicKey": "MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=",
+               "algorithm": "ed25519",
+               "validFrom": "2026-08-01T00:00:00Z",
+               "validUntil": "2027-08-01T00:00:00Z" }
+} }
+```
+
+The `inline:` prefix is not decoration: a bare pasted key fails the pattern and is rejected
+at write time, so storing a credential has to be deliberate — and because the prefix is
+literal, *which providers hold a real key* is one query over the table.
 
 ```json
 { "Provider": {
@@ -195,6 +222,11 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ### Before seeding
 
+- **Reads are authenticated.** Seeding needs the Operator token; the adapter needs a
+  read-only one. `/search` is not open — see
+  [registry.md §4](registry.md#5-apis).
+- Seed in order: `Capability`, then `Provider`, then `ProviderCapability`. The binding's
+  two integrity rules require the other two to exist and be `active`.
 - `agmarknet`'s `select.request.jsonata` must emit `lat`, `long`, `commodity_id` and a
   single `date`. The location endpoint above takes those; the older four-code endpoint the
   mapping was written for is not what production calls.

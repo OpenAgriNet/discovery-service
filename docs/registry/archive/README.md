@@ -1,3 +1,11 @@
+> ## Archive — not part of the review set
+>
+> Nothing under `archive/` is the OpenAgriNet registry design. It is another team's
+> document set, kept for provenance and interop reconciliation, and it **disagrees with
+> the live design in several places by construction**. If you are reviewing the registry,
+> read [`registry.md`](../registry.md), [`examples.md`](../examples.md) and
+> [`usecases.md`](../usecases.md) — those three are self-contained — and stop there.
+
 # BV Beckn Adapter — design docs
 
 > **Imported reference. Not binding on this service.**
@@ -21,7 +29,7 @@
 > were brought along so the set has no dead links.
 >
 > **The whole set was later relocated** from `docs/registry/` into
-> `docs/registry/imported/`, so our own v1 page could sit beside it without mixing
+> `docs/registry/archive/`, so our own v1 page could sit beside it without mixing
 > into it. No file's content changed and no link inside this set changed — they are
 > all relative to siblings. `diff -r` against the source tree still applies, now
 > against this directory.
