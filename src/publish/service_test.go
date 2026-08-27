@@ -110,14 +110,56 @@ func (b brokenEmbedder) Dimensions() int { return b.dimensions }
 // publishBody runs one publish request expressed as the JSON a caller sends, so
 // a test states the wire shape rather than a struct literal that has already
 // made half the decisions under test.
+//
+// The envelope carries no `version`, which is what the mapper resolves to this
+// build's own — the state every case but one here is about.
 func publishBody(t *testing.T, service *publish.Service, message string) []beckn.CatalogProcessingResult {
+	t.Helper()
+
+	return publishBodyAsVersion(t, service, "", message)
+}
+
+// publishBodyAsVersion is publishBody with `context.version` spelled out. It
+// exists so the envelope is constructed in ONE place: a second literal
+// `beckn.Context{...}` in a test would be a second thing to keep agreed with
+// the service's own reading of it.
+func publishBodyAsVersion(
+	t *testing.T, service *publish.Service, version, message string,
+) []beckn.CatalogProcessingResult {
 	t.Helper()
 
 	var action beckn.CatalogPublishAction
 	if err := json.Unmarshal([]byte(message), &action); err != nil {
 		t.Fatalf("decoding the fixture: %v", err)
 	}
-	return service.Publish(t.Context(), beckn.Context{Action: beckn.ActionPublish}, action)
+	return service.Publish(
+		t.Context(), beckn.Context{Action: beckn.ActionPublish, Version: version}, action)
+}
+
+// The envelope's version reaches the patch, and this is the ONLY case that can
+// say so.
+//
+// The mapper's own tests prove it resolves what it is given, and the storage
+// conformance suite proves a patch round-trips — but the line between them,
+// `version: envelope.Version` in Publish, is invisible to both. Every other
+// test here sends no version, so the mapper falls back to `beckn.Version` and a
+// service that passed the empty string, or `beckn.Version`, or nothing at all
+// would produce identical results. C6 hides it further by refusing any version
+// but this build's, so no end-to-end request can tell either. Asserted against
+// 2.1.0 for that reason: it is a value neither the fallback nor the column's
+// DEFAULT can produce.
+func TestTheEnvelopesVersionReachesTheStoredPatch(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	publishBodyAsVersion(t, service, "2.1.0", `{"catalogs":[{"id":"c1"}]}`)
+
+	if len(repo.patches) != 1 {
+		t.Fatalf("the repository saw %d patches, want 1", len(repo.patches))
+	}
+	if got := repo.patches[0].ProtocolVersion; got != "2.1.0" {
+		t.Errorf("ProtocolVersion = %q, want %q — the envelope's version, not the build's", got, "2.1.0")
+	}
 }
 
 func resultFor(t *testing.T, results []beckn.CatalogProcessingResult, catalogID string) beckn.CatalogProcessingResult {

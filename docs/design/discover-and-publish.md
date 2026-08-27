@@ -144,7 +144,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A19** | **`SearchResult.Total` and the count query are REMOVED, not deferred.** The Deferred table recorded that `OnDiscoverAction` is `additionalProperties: false` with `catalogs` as its only property, so a computed count has nowhere on the wire to go — and then computed it on every request anyway. Measured against the same 100k-resource corpus as A18: retrieval with its scope gate, text predicate, jsonpath filter and a selective spatial join answers in **1.5 ms** under `LIMIT 200`; the matching counter, which cannot take a `LIMIT` without making `Total` wrong in the one state a caller has no way to detect, costs **150.6 ms**. That is 100x the query it accompanies, paid every time, for a number `discover.Service.Discover` discards. `SearchRepository.Search` stops calling `total()`, `SearchResult.Total` goes along with the `storage/conformance` assertion over it, and `CountCandidates` leaves `discover.sql`. Should a header ever carry it — the way `X-Beckn-Degraded` carries the other thing the body cannot (C11) — it returns **capped**: `SELECT count(*) FROM (SELECT 1 FROM ... LIMIT 10001) t`, exact below the cap and "10000+" above, which is what makes it affordable at all | 11, 16, 19 |
 | **A20** | **The router is `net/http.ServeMux`, not chi v5.** D1 chose chi and the service shipped without it — chi is not in `go.mod` and never was, so for all of Phase 1 this document named a dependency the binary does not have. Kept as shipped rather than corrected toward the document: D1's four stated requirements — `net/http` types throughout, native `context.Context` propagation, `httptest`, `otelhttp` with no adapter — are all properties of `net/http` itself, which is why chi could only ever have satisfied them by being a thin layer over the thing that already did. What chi added on top was method and parameter routing, and `ServeMux` gained method patterns in Go 1.22; this module is on Go 1.25. The features that remain distinctive to chi — nested routers, URL parameters, middleware groups — are unused: four routes, all fixed paths, and a middleware chain composed by hand in `chain(a)` so its order reads as a list. One behaviour differs and is correct: `ServeMux` answers a matching path with a non-matching method as **405 with `Allow`**, where a wildcard mount would have said 404. That is not the C2 case — `/catalog/publish` is a PATH that must read as absent, and it still 404s. Recorded in ADR-0016, which supersedes ADR-0001 | 20 |
 | **A21** | **The schema ships as ONE migration at version 1, and the six that this document numbered 001-006 are now sections of it.** They were never a history: `git log -- migrations/` shows all six created in a single commit and then edited in place twice, so their numbering recorded the order they were typed in rather than any sequence a database had lived through. Six versions no database ever visited one at a time are six things to keep consistent and one story to read. Identity was proven rather than assumed — two throwaway `pgvector/pgvector:0.8.0-pg16` instances, one given the six originals and one the squash, agree on `pg_dump --schema-only` (identical md5), on a 285-row catalog introspection covering every column type, constraint definition, index `indexdef` + `reloptions` + **per-column opclass**, and every function's signature, volatility, strictness and `md5(prosrc)`, and on an `up -> down -all -> up` round trip that leaves no residue beyond golang-migrate's own bookkeeping table. Even the auto-generated `resource_geometries_check` / `check1` names match, which is what says CHECK declaration order survived. **This is defensible only pre-release, and the window closes at the first deployment.** golang-migrate compares version NUMBERS and never file contents, so a database this project did not create cannot be reconciled with an edited version 1 — it is not silently stranded, which was the fear, but loudly so: the binary refuses to boot with `no migration found for version 6`. A developer holding a volume from the six must `make down` (the `-v` is the point) and `make up`, once. **The first schema change after the first deployment is therefore `000002_*`, and every one after it is additive.** Section order inside the file is load-bearing, not editorial: `vector` and `pg_trgm` before the indexes that name their opclasses, `catalogs` before everything referencing it, `resources` before `resource_geometries`' composite foreign key, and `geo_haversine_m` before `geo_distance_m`, whose body calls it and is parsed at CREATE time | all |
-| **A22** | **`context.version` is stored on `catalogs.protocol_version`, resolved by the mapper and moved by every republish.** It describes the DOCUMENT, not the build: `beckn.Version` says what this binary serves today, and the two agree only until a second version is served — on that day "which version was this catalog written under" has no other answer, and a version derived at read time would answer for the reader instead of the writer. **Today the column is provably constant, and that is worth saying out loud rather than discovering later.** C6's envelope rules make `version` REQUIRED and pin it to `beckn.Version`, so an absent one is `CTX_MISSING_FIELD` and any other value is `CTX_VERSION_UNSUPPORTED` — both refused before the mapper runs. Every row this service can currently write therefore holds `2.0.0`. The column is built now anyway because the alternative is a backfill with no source: once a second version is accepted, rows written before the ALTER would have to be assigned a version nobody recorded, and the only honest value for them would be a guess. Three decisions carry it. **The mapper resolves the default, not the column.** `DEFAULT '2.0.0'` fires only on INSERT, so a republish that dropped `version` would silently keep whatever the first publish declared and the catalog would report a version no request in its history sent; `publish.MapCatalog` takes the envelope's version as a parameter and substitutes `beckn.Version` for an empty one, because the mapper is the last layer that can still tell an absent version from a declared one. That branch is unreachable through HTTP while C6 holds and is exercised by unit tests directly — it is the seam the gate will relax onto, not dead code, and the DEFAULT stays as a fail-safe for a hand-written INSERT. **`MergeCatalog` applies it unconditionally**, alongside `isActive` and `visibleTo` under A9 — there is no "absent" left by then, so keeping the stored value would make a republish claim a version its own envelope never declared. **`CHECK (protocol_version <> '')` is the pin**, and it is what makes a writer that forgot the field fail loudly rather than store a catalog claiming no version at all; it is also why every fixture that reaches a backend directly must set it, which is a cost paid once and the reason it is worth paying. Like `visible_to`, `active` and the four validity columns, this one is write-side state: discover's hydration reads `id` and `document` alone, so nothing serves it back today | 1, 3 |
+| **A22** | **`context.version` is stored on `catalogs.protocol_version`, resolved by the mapper and moved by every republish.** It describes the DOCUMENT, not the build: `beckn.Version` says what this binary serves today, and the two agree only until a second version is served — on that day "which version was this catalog written under" has no other answer, and a version derived at read time would answer for the reader instead of the writer. **Today the column is provably constant, and that is worth saying out loud rather than discovering later.** C6's envelope rules make `version` REQUIRED and pin it to `beckn.Version`, so an absent one is `CTX_MISSING_FIELD` and any other value is `CTX_VERSION_UNSUPPORTED` — both refused before the mapper runs. Every row this service can currently write therefore holds `2.0.0`. The column is built now anyway because the alternative is a backfill with no source: once a second version is accepted, rows written before the ALTER would have to be assigned a version nobody recorded, and the only honest value for them would be a guess. Three decisions carry it. **The mapper resolves the default, not the column.** `DEFAULT '2.0.0'` fires only on INSERT, so a republish that dropped `version` would silently keep whatever the first publish declared and the catalog would report a version no request in its history sent; `publish.MapCatalog` takes the envelope's version as a parameter and substitutes `beckn.Version` for an empty one, because the mapper is the last layer that can still tell an absent version from a declared one. That branch is unreachable through HTTP while C6 holds and is exercised by unit tests directly — it is the seam the gate will relax onto, not dead code, and the DEFAULT stays as a fail-safe for a hand-written INSERT. **`MergeCatalog` applies it unconditionally**, alongside `isActive` and `visibleTo` under A9 — there is no "absent" left by then, so keeping the stored value would make a republish claim a version its own envelope never declared. **`CHECK (protocol_version <> '')` is the pin**, and it is what makes a writer that forgot the field fail loudly rather than store a catalog claiming no version at all; it is also why every fixture that reaches a backend directly must set it, which is a cost paid once and the reason it is worth paying. Like `visible_to`, `active` and the four validity columns, this one is write-side state: discover's hydration reads `id` and `document` alone, so nothing serves it back today | 11, 14, 15, 17, 18 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -1676,7 +1676,8 @@ typo apart and only one of them is recoverable.
 **Declared defaults are resolved first, and they do not care which mode this
 is (A9).** Before anything is merged, every field the spec gives a default is
 filled — the directive fields (`catalogType`, `updateMode`, `visibleTo`) in
-`publishOne`, `isActive` and an offer's `resourceIds` in the mapper. The
+`publishOne`, `isActive`, `context.version` and an offer's `resourceIds` in the
+mapper. The
 publisher contract is then one sentence — *a default means the default,
 always* — rather than a sentence that has to name the update mode to be true.
 
@@ -1687,6 +1688,7 @@ always* — rather than a sentence that has to name the update mode to be true.
 | `publishDirective.visibleTo` | `[network]` | `[network]` — **not** the stored list |
 | `catalog.isActive` | `true` | `true` — **not** the stored flag |
 | `offer.resourceIds` | `[]` (catalog-wide) | `[]` |
+| `context.version` | `beckn.Version` | this build's version — **not** the stored one (A22) |
 | everything else | — | the stored value (RFC 7396) |
 
 **The consequence, stated rather than discovered.** A publisher who withdrew a
@@ -1698,6 +1700,12 @@ whether a catalog is visible at all are the two a publisher must keep sending.
 It is stated in the publisher-facing docs, and scenario 26 asserts it, because
 the alternative — defaults that mean different things in different modes — is a
 rule nobody remembers correctly at 3 a.m.
+
+`context.version` is in the table for completeness and is unreachable today:
+C6 makes it required and pins it to `beckn.Version`, so an absent one is
+refused before the mapper runs. The row says what happens the day that gate
+widens, and it is there rather than in the catch-all because the catch-all is
+wrong for it — the version is defaulted, not carried forward (A22).
 
 **The rule stands; the silence does not.** When a MERGE republish resolves
 `isActive` or `visibleTo` from its default and the resolved value *differs from
@@ -3789,8 +3797,8 @@ with a bad attribute is rejected with a pointer into `resourceAttributes`.
 Catalog{ID, NetworkID string, Document json.RawMessage,
         ValidFrom, ValidTo time.Time,
         ValidTimeFrom, ValidTimeTo *TimeOfDay,     # nil = no daily window
-        VisibleTo []string, Active bool, Resources, Offers,
-        Geometries []Geometry}
+        VisibleTo []string, Active bool, ProtocolVersion string,
+        Resources, Offers, Geometries []Geometry}
     # Document is the Catalog verbatim with `resources` and `offers` stripped
     # (A17), and every other field is derived from it. `Catalog.Provider()` is
     # an ACCESSOR over it, not a field — the publish derivations that used to
@@ -3800,6 +3808,10 @@ Catalog{ID, NetworkID string, Document json.RawMessage,
     # not to any one resource, and are stored once with a NULL resource_id.
     # NetworkID is the publisher's network, used only to default an empty
     # VisibleTo. It is not stored — nothing reads it back.
+    # ProtocolVersion is `context.version` as the publisher declared it (A22).
+    # Stored, unlike NetworkID, because it describes the document rather than
+    # the request — and derived at read time it would report the READER's
+    # version instead of the writer's.
 
 Resource{ID, CatalogID, Name string, Document json.RawMessage,
          SchemaContext, SchemaType string, Geometries []Geometry,
@@ -3827,6 +3839,9 @@ CatalogPatch{ID, NetworkID string,
              Validity  *TimePeriodPatch,    # nil = absent
              Active    bool,                # NOT a pointer — defaulted (A9)
              VisibleTo []string,            # NOT nilable — defaulted (A9)
+             ProtocolVersion string,        # NOT nilable — the mapper resolved
+                                            # an absent one to beckn.Version
+                                            # before this point (A22)
              Resources []ResourcePatch, Offers []OfferPatch}
     # What MapCatalog returns (A8). The fields with no declared default carry
     # ABSENT as a distinct state, which is the entire reason this type exists
