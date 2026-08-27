@@ -1,19 +1,26 @@
 # OpenAgriNet registry — v1
 
-Three things: the **schema**, the **records to store**, and the **execution** from
-experience layer to provider.
+**The registry stores three things: providers, capabilities, and the mapping between
+them.** That mapping is the call plan — given a provider and a capability, how do you
+actually reach them.
 
-Scoped to the v1 provider set. The imported BV pages
-([overview](imported/01-overview.md) · [schema](imported/02-registry-schema.md) ·
-[use cases](imported/usecases/README.md)) carry the full reasoning, eleven bindings and four call
-shapes; this page carries what v1 needs. Where they disagree, they are describing BV and
-this is describing us.
+It holds nothing else. Not catalogs, not resources, not search indexes, not participant
+identity. A question it cannot answer is a question for something else: *who serves
+weather?* is answered by the discovery service from its indexed catalog, and only once
+that names a provider is the registry read at all.
 
-**What this page is written against.** **Sunbird RC `RELEASE_VERSION=v2.0.0`**, run
-**without Elasticsearch**; network-specs pinned to `3e593b3`. These are v1 decisions, not
-observations of a running system — nothing is deployed yet, so anything below that depends
-on RC behaviour rather than on RC's schema contract is marked as needing a first-boot
-check.
+| Read this for | Section |
+|---|---|
+| How a farmer's question becomes a provider call | [1. Architecture](#1-architecture) |
+| Where the adapter sits, and who calls the registry | [2. Deployment topologies](#2-deployment-topologies) |
+| The three entities, and the thirteen records to seed | [3. Schema and records](#3-schema-and-records) |
+| The endpoints the adapter calls | [4. Registry APIs](#4-registry-apis) |
+| One question traced end to end, with payloads | [5. Use case execution](#5-use-case-execution) |
+
+**What this page is written against.** Sunbird RC `RELEASE_VERSION=v2.0.0`, run **without
+Elasticsearch**; network-specs pinned to `3e593b3`. Nothing is deployed yet, so anything
+below that depends on RC *behaviour* rather than on its schema contract is marked as
+needing a first-boot check.
 
 | v1 category | `@type` | Providers | Bindings |
 |---|---|---|---|
@@ -26,9 +33,149 @@ Five bindings, five providers, three capabilities. **Every one is a single upstr
 `steps[]`, `sessionGate` and `sessionGrant` exist in the schema and no v1 binding uses
 them — they are for PM-Kisan and PMFBY, which are not in v1.
 
+
 ---
 
-## 1. Schema
+## 1. Architecture
+
+Two calls. **The first finds who. The second gets the data.**
+
+**Hop ① — `discover`.** The experience layer asks the discovery service what exists. It
+answers from its own indexed catalog store: no provider is contacted, no credential is
+touched, **and the registry is not read.** It is a directory lookup, and what comes back
+is an *advertisement* — `mausamgram` serves `WeatherObservation` — not a forecast.
+
+**Hop ② — `select`.** Now the request names that provider and that capability. **This is
+the only hop the registry serves.** The adapter builds a key from those two values, reads
+the call plan, enriches, maps, authenticates, calls the upstream, and maps the answer
+back into Beckn.
+
+**Hop ② is `select`, CN → adapter → provider**, and that is the only hop the registry
+serves.
+
+```
+  FARMER        EXPERIENCE LAYER        ONIX ADAPTER        REGISTRY      DISCOVERY SVC    PROVIDER
+    │                  │                     │                 │               │             │
+    │ "will it rain?"  │                     │                 │               │             │
+    ├─────────────────▶│                     │                 │               │             │
+    │            ① resolve meaning           │                 │               │             │
+    │                  │                     │                 │               │             │
+    │                  │ ② discover ─────────┼─────────────────┼──────────────▶│             │
+    │                  │◀────────────────────┼─────────────────┼───────────────┤             │
+    │                  │   on_discover: catalogs, ~20 ms       │               │             │
+    │                  │   provider.id + @type + OnDemand      │               │             │
+    │                  │   an ADVERTISEMENT — no value in it   │               │             │
+    │                  │                     │                 │               │             │
+    │                  │ ③ select            │                 │               │             │
+    │                  ├────────────────────▶│                 │               │             │
+    │                  │                     │ ④ resolve ─────▶│               │             │
+    │                  │                     │◀────────────────┤               │             │
+    │                  │                     │  call plan+auth │               │             │
+    │                  │                     │ ⑤ enrich, map, authenticate, call │           │
+    │                  │                     ├─────────────────┼───────────────┼────────────▶│
+    │                  │                     │◀────────────────┼───────────────┼─────────────┤
+    │                  │                     │ ⑥ map response → Beckn v2       │             │
+    │                  │◀────────────────────┤                 │               │             │
+    │◀─────────────────┤  on_select: 5 WeatherObservation resources, Direct    │             │
+```
+
+**`informationMode` is what says "keep going".** The advertisement carries `OnDemand`, the
+result carries `Direct`. **Same pack, same `@type`, same `@context`** — the mode is the
+only thing that differs, and it is why a second call exists at all. There is no separate
+capability schema; that model was proposed and dropped.
+
+It is `required` on every pack, via the shared `AgricultureResource` field set, and each
+pack conditions its other required fields on it. So the mode is not a hint — it selects
+which half of the contract applies:
+
+| pack | `OnDemand` requires | `Direct` requires |
+|---|---|---|
+| `WeatherObservation` | `supportedObservationTypes`, `supportedParameters`, `geographicGranularities`; **no** `parameters` | `observationType`, `source`, `location`, `generatedAt`, `parameters` |
+| `MandiPrice` | `supportedCommodities`, `supportedPriceFields`; **no** `prices` | `source`, `commodity`, `market`, `arrivalDate`, `prices`, `generatedAt` |
+| `KnowledgeResource` | `topics`, `languages`, `supportedKnowledgeTypes`; **no** `content` | `topics`, `languages`, `knowledgeType`, `version`, `lifecycleStatus`, `content`, `provenance` |
+
+An advertisement that carried real values would fail its own pack, and a result that
+carried only capabilities would too. That is the point: the two cannot be confused.
+
+
+---
+
+## 2. Deployment topologies
+
+The work at hop ② is **identical in both**. What changes is how many network boundaries
+sit in front of it, and therefore who calls the registry.
+
+### A — one adapter, at the centre
+
+```
+   ADOPTER                          NETWORK LAYER                    PROVIDER
+ ┌───────────────┐              ┌──────────────────┐             ┌────────────┐
+ │ experience    │  /discover   │                  │  discovery  │            │
+ │ layer         ├─────────────▶│   ONIX adapter   │◀───────────▶│    (not    │
+ │ (chatbot,     │              │                  │   service   │   called)  │
+ │  call centre) │  /select     │   ┌──────────┐   │             │            │
+ │               ├─────────────▶│   │ registry │   ├────────────▶│    IMD     │
+ │               │◀─────────────┤   └──────────┘   │◀────────────┤            │
+ └───────────────┘  on_select   └──────────────────┘             └────────────┘
+```
+
+One ONIX instance is both the consumer's outbound point and the provider node. **The
+adapter calls the registry**, and the experience layer never sees it.
+
+Fewest moving parts: one process to operate, one registry read, and signature
+verification that resolves to the same party on both sides — so it proves nothing and
+costs nothing. Fine while the adopter is the only participant. It stops being fine the
+moment a second consumer wants these capabilities, because there is no real trust
+boundary to enforce anything at.
+
+### B — an adapter at each layer
+
+```
+   ADOPTER                    NETWORK LAYER              PROVIDER LAYER
+ ┌────────────────┐         ┌───────────────┐         ┌────────────────────┐
+ │ experience     │         │               │         │  PROVIDER ONIX     │
+ │ layer          │ /select │ CONSUMER ONIX │         │  validate · route  │
+ │                ├────────▶│  route · sign ├────────▶│  ┌──────────┐      │
+ │                │◀────────┤               │◀────────┤  │ registry │      ├──▶ IMD
+ └────────────────┘         └───────────────┘         │  └──────────┘      │◀──
+                                                      │  map · respond     │
+                                                      └────────────────────┘
+```
+
+Same two hops, one more boundary. Three things change, and only the third is about the
+registry:
+
+1. **Signature verification becomes real.** The consumer and provider sides are different
+   parties, so verifying the caller is now worth doing.
+2. **Half the adapter config is dormant.** The async callback route never fires under
+   synchronous transport. Expected, not a misconfiguration.
+3. **The registry stays on the provider side, and only there.** This is the rule that
+   matters.
+
+> **The consumer side must never learn that `mausamgram` means
+> `https://mausamgram.imd.gov.in/nwpapi`.** Resolving a call plan means holding the
+> upstream credentials that go with it. A consumer-side adapter that resolves capabilities
+> needs `env://MAUSAMGRAM_X_API_KEY` to be resolvable in *its* environment — and at that
+> point the credential has left the provider's control, which is the one thing the
+> `env://` pointer design exists to prevent.
+
+### Which to run
+
+| | A — adapter at the centre | B — adapter at each layer |
+|---|---|---|
+| Registry is read by | the single adapter | the **provider-side** adapter only |
+| Experience layer knows | provider ids only | provider ids only |
+| Upstream credentials live | in the one adapter | in the provider-side adapter |
+| Signature check | resolves to self; proves nothing | a real trust boundary |
+| Network hops before the upstream call | 1 | 2 |
+
+**v1 runs A**, and the page below traces A. B is what a second consumer forces, and
+nothing in the schema or the records changes when it happens — only where the adapter is
+deployed and which side holds the secrets. That is the point of keeping the call plan in
+a registry rather than in a service's config: the move is a deployment change, not a
+rewrite.
+
+## 3. Schema and records
 
 Sunbird RC generates storage and REST from JSON Schema. Three entities, joined by a
 denormalised key:
@@ -178,9 +325,7 @@ lowercase only — a path differing from disk by case resolves on macOS and 404s
 registry/mappings/<provider>/<action>.<request|response>.jsonata
 ```
 
----
-
-## 2. Records to store
+### Records to seed
 
 Thirteen records: 3 `Capability`, 5 `Provider`, 5 `ProviderCapability`. Shown in RC write
 form.
@@ -191,7 +336,7 @@ form.
 > week is not the one you validate against today and nothing tells you it moved. Bumping
 > the sha is a reviewed change to these three records.
 
-### Capabilities
+#### Capabilities
 
 ```json
 { "Capability": {
@@ -225,9 +370,9 @@ form.
 
 One `Capability` serves both Advisory categories. Schemes and Crop & Pest are the same
 outcome type; they are told apart on the published resource by `subjectCategories`
-(`Scheme` vs `Crop`), not by the registry. See §3.
+(`Scheme` vs `Crop`), not by the registry. See [§5](#5-use-case-execution).
 
-### Providers
+#### Providers
 
 ```json
 { "Provider": {
@@ -289,7 +434,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 > nothing is leaked by it. Moving it behind TLS with a real hostname is onboarding work,
 > not a schema change, and should happen before v1 carries real traffic.
 
-### Bindings
+#### Bindings
 
 ```json
 { "ProviderCapability": {
@@ -371,7 +516,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 } }
 ```
 
-### Before seeding
+#### Before seeding
 
 - `agmarknet`'s `select.request.jsonata` must emit `lat`, `long`, `commodity_id` and a
   single `date`. The location endpoint above takes those; the older four-code endpoint the
@@ -379,60 +524,82 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 - Both `KnowledgeResource` bindings share `enricher: knowledgeQueryParams`. Their request
   mappings do not — one shapes a Hasura GraphQL `variables` block, the other a vector
   search body.
-- Fill `<network-specs-raw>` on all three capabilities.
 
 ---
 
-## 3. Execution
+## 4. Registry APIs
 
-Two hops. **Hop ① is `discover`, CN → DS.** The discovery service answers from its own
-indexed catalog store — no provider is contacted and the registry is not read.
-**Hop ② is `select`, CN → adapter → provider**, and that is the only hop the registry
-serves.
+Sunbird RC generates the REST surface from the JSON Schemas in §3 — one set of routes per
+entity, named after it. Nothing here is hand-written.
+
+### The reads the adapter needs
+
+Exactly two, both single-field and both exact-match:
 
 ```
-  FARMER        EXPERIENCE LAYER        ONIX ADAPTER        REGISTRY      DISCOVERY SVC    PROVIDER
-    │                  │                     │                 │               │             │
-    │ "will it rain?"  │                     │                 │               │             │
-    ├─────────────────▶│                     │                 │               │             │
-    │            ① resolve meaning           │                 │               │             │
-    │                  │                     │                 │               │             │
-    │                  │ ② discover ─────────┼─────────────────┼──────────────▶│             │
-    │                  │◀────────────────────┼─────────────────┼───────────────┤             │
-    │                  │   on_discover: catalogs, ~20 ms       │               │             │
-    │                  │   provider.id + @type + OnDemand      │               │             │
-    │                  │   an ADVERTISEMENT — no value in it   │               │             │
-    │                  │                     │                 │               │             │
-    │                  │ ③ select            │                 │               │             │
-    │                  ├────────────────────▶│                 │               │             │
-    │                  │                     │ ④ resolve ─────▶│               │             │
-    │                  │                     │◀────────────────┤               │             │
-    │                  │                     │  call plan+auth │               │             │
-    │                  │                     │ ⑤ enrich, map, authenticate, call │           │
-    │                  │                     ├─────────────────┼───────────────┼────────────▶│
-    │                  │                     │◀────────────────┼───────────────┼─────────────┤
-    │                  │                     │ ⑥ map response → Beckn v2       │             │
-    │                  │◀────────────────────┤                 │               │             │
-    │◀─────────────────┤  on_select: 5 WeatherObservation resources, Direct    │             │
+POST /api/v1/ProviderCapability/search
+{ "filters": { "bindingKey": { "eq": "mausamgram|openagrinet:WeatherObservation|select" },
+               "status":     { "eq": "active" } } }
+
+POST /api/v1/Provider/search
+{ "filters": { "providerId": { "eq": "mausamgram" },
+               "status":     { "eq": "active" } } }
 ```
 
-**`informationMode` is what says "keep going".** The advertisement carries `OnDemand`, the
-result carries `Direct`. **Same pack, same `@type`, same `@context`** — the mode is the
-only thing that differs, and it is why a second call exists at all. There is no separate
-capability schema; that model was proposed and dropped.
+The first returns the call plan, the second the base URL and auth block. **No join, and no
+second capability read** — `Capability` is vocabulary, not something the call path needs.
 
-It is `required` on every pack, via the shared `AgricultureResource` field set, and each
-pack conditions its other required fields on it. So the mode is not a hint — it selects
-which half of the contract applies:
+> The `|select` in the key is not a leftover. `bindingKey` is
+> `<providerId>|<capabilityCode>|<action>`, and the action segment is what keeps
+> `pm-kisan|…|init` and `pm-kisan|…|status` apart. What v1 removed is the redundant
+> `action` *column*, not the key segment — see §3.
 
-| pack | `OnDemand` requires | `Direct` requires |
-|---|---|---|
-| `WeatherObservation` | `supportedObservationTypes`, `supportedParameters`, `geographicGranularities`; **no** `parameters` | `observationType`, `source`, `location`, `generatedAt`, `parameters` |
-| `MandiPrice` | `supportedCommodities`, `supportedPriceFields`; **no** `prices` | `source`, `commodity`, `market`, `arrivalDate`, `prices`, `generatedAt` |
-| `KnowledgeResource` | `topics`, `languages`, `supportedKnowledgeTypes`; **no** `content` | `topics`, `languages`, `knowledgeType`, `version`, `lifecycleStatus`, `content`, `provenance` |
+### Two things to confirm on first boot
 
-An advertisement that carried real values would fail its own pack, and a result that
-carried only capabilities would too. That is the point: the two cannot be confused.
+**Whether `/search` works at all without Elasticsearch.** In a standard RC deployment the
+search API is ES-backed, and v1 runs without ES. Whether v2.0.0 also ships a
+database-backed search provider, and what filter grammar it accepts, is a config question
+to settle against the release — RC's own notes warn that `_osConfig` support and the
+search grammar differ between versions, which is why the version is pinned at all. **Nothing
+in this page's design depends on the answer**, for the reason below.
+
+**Which read returns every row of an entity.** The boot load needs one, and its exact route
+is the thing to check first in the generated surface.
+
+### The runtime does not read the registry per request
+
+```
+13 records total — 5 Provider, 3 Capability, 5 ProviderCapability.  A few KB.
+```
+
+**Load all three entities at boot and resolve in memory.** Index `ProviderCapability` by
+`bindingKey` and `Provider` by `providerId`; resolution is then two map lookups and the
+per-request registry cost is **zero reads**, not one or two. Records change on the order of
+weeks, so refresh is a redeploy or a TTL, never a protocol.
+
+This is the right shape even with ES available: an exact-match lookup over 13 rows has
+nothing to gain from a search engine. It becomes a question at a scale v1 is nowhere near,
+and what changes then is the boot load, not the resolution logic.
+
+One consequence worth stating plainly: **with no ES, `indexFields` buys nothing at
+runtime**, because the runtime never queries. It stays declared because it documents which
+fields are meant to be queryable, and because operational reads — *which bindings does this
+provider have?* — still go through whatever read path the build offers.
+
+### Writes — onboarding only
+
+```
+POST /api/v1/{Entity}              create
+PUT  /api/v1/{Entity}/{osid}       update
+```
+
+**The adapter never writes.** These belong to the onboarding path, where the two integrity
+rules that no JSON Schema can express are also enforced: `bindingKey`'s first two segments
+must agree with `providerId` and `capabilityCode`, and both must resolve to live records.
+
+---
+
+## 5. Use case execution
 
 ### ① Resolve meaning
 
@@ -552,9 +719,9 @@ of the advertisement. Hold a request against the pack and it fails on `informati
 and on whichever half of the contract you did not echo, which says nothing about the
 request.
 
-### ④ Resolve — key lookup, no join, no search
+### ④ Resolve — build the key, read the plan
 
-Everything needed is on the request body:
+Everything needed is already on the request body:
 
 ```
 offer.provider.id            → "mausamgram"
@@ -564,34 +731,12 @@ action                       → "select"
 bindingKey = "mausamgram|openagrinet:WeatherObservation|select"
 ```
 
-The `@type` is the **same string the advertisement carried** — one type spans both calls.
+The `@type` is the **same string the advertisement carried** — one type spans both calls,
+which is what makes the key derivable rather than looked up.
 
-**v1 runs RC v2.0.0 without Elasticsearch, so the request path does not use `/search`.**
-In a standard RC deployment the search API is ES-backed. Whether v2.0.0 also offers a
-database-backed search provider, and what filter grammar it accepts, is a config question
-to settle against the release on first boot — RC's own docs warn that `_osConfig` support
-and the search grammar differ across versions, which is why the version is pinned here at
-all. **The design below does not depend on that answer**, because of scale:
-
-```
-13 records total — 5 Provider, 3 Capability, 5 ProviderCapability.  A few KB.
-```
-
-**Load all three entities at boot and resolve in memory.** Index `ProviderCapability` by
-`bindingKey` and `Provider` by `providerId`; resolution is then two map lookups and the
-per-request cost is zero reads, not one or two. Records change on the order of weeks, so
-refresh is a redeploy or a TTL, never a protocol.
-
-This is the right shape even with ES, and whichever way the search question lands: an
-exact-match key lookup on 13 rows has nothing to gain from a search engine. It only becomes
-a question at a scale v1 is nowhere near, and the boot load is what changes then, not the
-resolution logic. The one thing the boot load does need is *some* read that returns all
-rows of an entity — that is the call to verify against v2.0.0 first.
-
-One consequence worth stating: with no ES, `indexFields` buys nothing at runtime — the
-runtime never queries. It stays declared because it documents which fields are meant to be
-queryable, and because operational reads (*which bindings does this provider have?*) still
-go through whatever read path the RC build offers.
+The adapter resolves this from its in-memory index rather than calling the registry per
+request — see [§4](#4-registry-apis) for the reads, the boot load, and what to confirm
+against RC v2.0.0 on first boot.
 
 ### ⑤ Enrich, map, authenticate, call
 
@@ -656,6 +801,7 @@ closing the object, so a private qualifier passes and means nothing to any other
 participant. There is no conformant way to say *tomorrow's high is 30.6 and low is 22.1*,
 and every Indian weather upstream reports `tmin`/`tmax`. Real gap, tracked as issue 3 of
 [Open issues](imported/reference/open-issues.md), and it lands on Weather — a v1 category.
+
 
 ---
 
