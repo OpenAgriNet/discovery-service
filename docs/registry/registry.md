@@ -87,7 +87,7 @@ same name — so a mismatch is a diff, not a judgement call.
 | `Status` | `active` \| `inactive` | all three |
 | `ProviderId` | `^[a-z0-9][a-z0-9._:-]{2,63}$` — one char, then 2–63 more, so **min length 3** | `Provider`, `ProviderCapability` |
 | `CapabilityCode` | `^openagrinet:[A-Z][A-Za-z0-9]*$`, and not `AgricultureResource`/`AgricultureCapability` | `Capability`, `ProviderCapability` |
-| `Secret` | `^(env://[A-Z][A-Z0-9_]*\|inline:.+)$` | `Provider.auth`, `Enricher` |
+| `Secret` | `^(env://[A-Z][A-Z0-9_]{0,63}\|inline:[!-~][ -~]{0,998})$` — two legal forms and nothing else | `Provider.auth`, `Enricher` |
 
 Four more are local to one file and are **not** shared: `ParamName` (`Provider`), `TypeCode`
 (`Capability`), `Path` and `MappingPath` (`ProviderCapability`).
