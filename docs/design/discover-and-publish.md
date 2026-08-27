@@ -138,7 +138,9 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A14** | **`DeriveFunc` takes the merged catalog by POINTER: `func(merged *Catalog, touched []string) []Fault`.** A8 makes derive the post-merge seam that WRITES `searchText`, `embedding`, `embeddingSourceHash`, `schemaContext`, `schemaType` and the geometry finds onto the merged catalog before the repository stores it. Taking the catalog by value gave it a copy: everything it computed was discarded, and the columns it exists to fill would have gone to the store empty while every test that only checked the returned faults passed. The `[]Fault` return stays, because a fault is a PARTIAL that travels to the response and is not a field of the catalog | 13, 14, 15, 17 |
 | **A15** | **`Owners` is spent by the geometry WALK, and the repository never reads it back.** The walk already fans a shape out — `merged.Resources[k].Geometries <- found where k in Owners` — so an offer geometry covering three resources arrives on all three lists, each copy still naming all three. A repository that then wrote one row per owner per copy would turn N lists into N x N rows and violate `uq_resource_geometries (catalog_id, COALESCE(resource_id, ''), source_path)` on the FIRST publish of any offer geometry, not on some later republish. The rule is therefore positional: a shape is stored for the resource whose list it is on, and for the catalog when it is on the catalog's. The fill is still computed once per shape — memoised on `SourcePath`, which is unique per shape and is half of that same index — because the copies are identical shapes and H3 is the expensive half. This also settles staleness: an offer's shape cannot rot on an untouched resource, because `touched` follows offers, so patching the offer touches every resource it covers | 15, 17 |
 | **A16** | **The pool floor is `(modes + 1) x in-flight`, and scenario 25's 20 ms budget is measured rather than enforced.** Task 1 sizes the pool as `modes x in-flight` — 32 for scenario 25's sixteen discovers — which counts only the retrieval fan-out. A discover then issues a count and four hydration queries, each taking a connection while its fifteen siblings are still inside their two-connection fan-out, so the peak is one higher per request. Measured on the corpus: 32 connections leave 137-195 acquires waiting, 48 leave none, 96 leave none no faster. `MinConns` must equal `MaxConns` for the assertion to mean anything, because `EmptyAcquireCount` counts acquires that waited for a connection to be CONSTRUCTED as well as ones that waited for a release, so a pool growing lazily from 4 charges its own warm-up to the scenario. **The latency half does not survive contact with the hardware:** one discover over ten thousand resources answers in 19-22 ms, inside the budget, but sixteen concurrent ones measure p50 160 ms / p95 260 ms against a database that saturates at 91-98 requests a second on a four-CPU container — Little's law, and the measurement agrees within 5%. 20 ms at that concurrency needs ~800 requests a second, about nine times this capacity, and it is a hardware statement rather than a query one. Task 21 therefore logs p50, p95 and throughput on every run and enforces the two machine-independent halves instead: `EmptyAcquireCount` must not move, and twenty times the corpus must cost under three times the request — which is the `count(*)` joining `catalogs` the scenario names, since that one tracks matches rather than the page | 1, 21 |
-| **A17** | **Each published object is stored verbatim in exactly one row's `document`, and every other column on that row is DERIVED from it at publish time.** The schema shredded a catalog into columns chosen for indexing — `provider`, `descriptor`, `attributes` — and those columns then became the only thing stored, so a discover response could not return a catalog's `descriptor`, `bppId`, `bppUri` or `validity` at all, and a JSONPath filter had no document to run against above `resourceAttributes`. **`catalogs.document` holds the Catalog with `resources` and `offers` STRIPPED** — those own their own rows, and keeping them in both places would give one MERGE two places to apply and no constraint keeping the two agreed. `resources.document` holds the whole Resource; `offers.offer` is RENAMED `offers.document`, which is what it already held and what `OfferPatch.Document` already called it. `catalogs.provider`, `resources.descriptor` and `resources.attributes` are dropped in the same migration, so this is close to storage-neutral rather than a second copy of anything. `visible_to` stays authoritative because it arrives on the DIRECTIVE and is not in the document; `active`, the validity quartet, `name`, `schema_context`, `schema_type`, `search_tsv`, `embedding` and every `resource_geometries` row become derived — the row is now an INDEX over the document. The GIN filter index moves from `attributes` to `document` and one is added on `catalogs.document`, which is what lets Task 22 rebase by PREFIX alone: `$.catalogs[*]`, `$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` each name exactly one column, with no per-predicate column routing and no mixed-predicate refusal case. **Migrations 000002, 000003 and 000006 are edited in place rather than superseded**: `catalogs.descriptor` was never stored, so no backfill can reconstruct a document satisfying the schema's own `required: [id, descriptor, provider]`, and every catalog would need a republish regardless — a migration that cannot produce a valid row is worse than one that is honest about needing the data again. **This closes the `Catalog.descriptor` deferral** that Task 19's self-review opened: `descriptor` is in the schema's own `required: [id, descriptor, provider]`, it is now stored because the whole catalog is, and `render` emits it, so a discover response satisfies its own response schema for the first time | 11, 14, 15, 16, 17, 18, 19, 21b, 22 |
+| **A17** | **Each published object is stored verbatim in exactly one row's `document`, and every other column on that row is DERIVED from it at publish time.** The schema shredded a catalog into columns chosen for indexing — `provider`, `descriptor`, `attributes` — and those columns then became the only thing stored, so a discover response could not return a catalog's `descriptor`, `bppId`, `bppUri` or `validity` at all, and a JSONPath filter had no document to run against above `resourceAttributes`. **`catalogs.document` holds the Catalog with `resources` and `offers` STRIPPED** — those own their own rows, and keeping them in both places would give one MERGE two places to apply and no constraint keeping the two agreed. `resources.document` holds the whole Resource; `offers.offer` is RENAMED `offers.document`, which is what it already held and what `OfferPatch.Document` already called it. `catalogs.provider`, `resources.descriptor` and `resources.attributes` are dropped in the same migration, so this is close to storage-neutral rather than a second copy of anything. `visible_to` stays authoritative because it arrives on the DIRECTIVE and is not in the document; `active`, the validity quartet, `name`, `schema_context`, `schema_type`, `search_tsv`, `embedding` and every `resource_geometries` row become derived — the row is now an INDEX over the document. The GIN filter index moves from `attributes` to `document` and one is added on `catalogs.document`, which is what lets Task 22 rebase by PREFIX alone: `$.catalogs[*]`, `$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` each name exactly one column, with no per-predicate column routing and no mixed-predicate refusal case. **Migrations 000002, 000003 and 000006 are edited in place rather than superseded**: `catalogs.descriptor` was never stored, so no backfill can reconstruct a document satisfying the schema's own `required: [id, descriptor, provider]`, and every catalog would need a republish regardless — a migration that cannot produce a valid row is worse than one that is honest about needing the data again. **This closes the `Catalog.descriptor` deferral** that Task 19's self-review opened: `descriptor` is in the schema's own `required: [id, descriptor, provider]`, it is now stored because the whole catalog is, and `render` emits it, so a discover response satisfies its own response schema for the first time. **The prefix-routing clause above is SUPERSEDED by A18** — three columns cannot answer a row-level OR across levels, and the filter now runs against one `filter_doc` composite. Everything else in A17 stands: verbatim storage, the stripped children, and the derived-column rule are what make `filter_doc` reconstructible at all | 11, 14, 15, 16, 17, 18, 19, 21b, 22 |
+| **A18** | **The attribute filter runs against ONE composite `filter_doc` column on `resources`, and never against three `document` columns.** PostgreSQL evaluates a jsonpath against a single `jsonb` value; there is no `@?` that spans tables. So a predicate touching more than one level — `@.isActive == true && exists(@.offers[*] ? (@.channel == "retail"))`, or any `||` across levels — cannot be written at all unless catalog, resource and offers sit inside one value. A17's prefix-routing answers the single-level case and **cannot** answer this one: `catalog.x == 1 \|\| offer.y == 2` is a ROW-level disjunction, and no set of per-table results reassembles it. Splitting the expression to try would mean owning a jsonpath parser — precisely the surface "never interpolate" exists to avoid; the Java `JsonPathConverter` took that road and now regex-rewrites user input. **`resources` therefore gains `filter_doc JSONB NOT NULL DEFAULT '{}'` with `GIN (filter_doc jsonb_path_ops)`, and `idx_resources_document`, `idx_catalogs_document` and `idx_offers_document` are ALL THREE DROPPED** — `filter_doc` contains what each indexed, so a second GIN over the same bytes is write cost with no reader. **`filter_doc` is a TRIMMED composite, not the full catalog:** `{"catalogs":[{<catalog scalars>, "provider": <minus availableAt>, "resources":[<THIS resource, alone>], "offers":[<offers naming it, plus catalog-wide ones>]}]}`. The single-element `resources` array is a correctness requirement rather than thrift — measured, a `filter_doc` carrying sibling resources answers `$.catalogs[*].resources[*] ? (@.grade == "A")` with a grade-**B** resource's row, because its NEIGHBOUR passed; trimming to one is what makes `@.resources[*]` mean "this resource" by construction. `availableAt` is stripped because geometry is answered by `resource_geometries` and polygons are the bulky half of a block already copied onto every resource. **Measured on PG16 over 100k rows: all 20 expression shapes tried are GIN-captured** — `&&` and `\|\|` across all three levels, every 3-way ordering, `(a&&b)\|\|c`, `(a\|\|b)&&c`, `exists()`, and quoted colon-bearing field names — so "any order" is met unconditionally rather than by case analysis. Equality is what `jsonb_path_ops` extracts; inequality, `like_regex` and `starts with` stay correct but scan. **The cost is write amplification:** the catalog block and its offers are copied onto every resource row of that catalog, so a catalog-level edit rewrites all of them — inside the row lock `UpsertCatalog` already holds (A8) | 11, 14, 15, 16, 17, 21b, 22 |
+| **A19** | **`SearchResult.Total` and the count query are REMOVED, not deferred.** The Deferred table recorded that `OnDiscoverAction` is `additionalProperties: false` with `catalogs` as its only property, so a computed count has nowhere on the wire to go — and then computed it on every request anyway. Measured against the same 100k-resource corpus as A18: retrieval with its scope gate, text predicate, jsonpath filter and a selective spatial join answers in **1.5 ms** under `LIMIT 200`; the matching counter, which cannot take a `LIMIT` without making `Total` wrong in the one state a caller has no way to detect, costs **150.6 ms**. That is 100x the query it accompanies, paid every time, for a number `discover.Service.Discover` discards. `SearchRepository.Search` stops calling `total()`, `SearchResult.Total` goes along with the `storage/conformance` assertion over it, and `CountCandidates` leaves `discover.sql`. Should a header ever carry it — the way `X-Beckn-Degraded` carries the other thing the body cannot (C11) — it returns **capped**: `SELECT count(*) FROM (SELECT 1 FROM ... LIMIT 10001) t`, exact below the cap and "10000+" above, which is what makes it affordable at all | 11, 16, 19 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -197,7 +199,7 @@ Two sit on the boundary and are called out rather than dismissed:
 | **L2 extended schema validation (Task 10)** | Skipped by decision on 2026-08-26, not by a technical blocker. The whole task — `SchemaSource`, the refresh loop, `L2`, and the `schemas/<TypeName>/attributes.yaml` set — is unbuilt. **C4 therefore has no enforcer:** nothing requires `@context` and `@type` to be present scalar strings, so Task 22 filters on a field whose shape was never checked, and two publishers disagreeing about it surfaces as a discover query that matches one of them. The SSRF boundary is unaffected: nothing fetches a URL from a payload because nothing fetches at all | Nothing. **`VALIDATION_ENABLE_L2_CONTEXT` and `config/common.yaml`'s `enableL2Context` still default to `true`, and now name a control that does not exist.** Task 20 must either default them off or refuse to boot when they are true, on the same reasoning that made `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` a boot refusal: a flag an operator reads back as enabled, silently doing nothing, is worse than no flag |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
 | Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
-| **`SearchResult.Total` reaches nobody** | `OnDiscoverAction` is `additionalProperties: false` with `catalogs` as its only property (C11's own reasoning), so a carefully-computed count has nowhere on the wire to go. It is not free: `SearchRepository.Search` calls `total()` on every request, and the four skip guards do **not** fire on a full page — the common outcome, since `discover_tsquery` ORs its terms — so an ordinary request pays for an uncapped `count(*)` over the whole match set and the service discards the result. Either give it a header, the way `X-Beckn-Degraded` carries the other thing the body cannot, or stop computing it | `Total` is computed, asserted by `storage/conformance`, and dropped by `discover.Service.Discover`. No production reader exists |
+| ~~`SearchResult.Total` reaches nobody~~ | **Closed by A19 — removed, not deferred.** It was computed on every request and discarded by `discover.Service.Discover`. Measured over 100k resources: retrieval under `LIMIT 200` costs 1.5 ms, the matching uncapped counter 150.6 ms — 100x the query it accompanies. Deleted outright rather than left here, because a deferral reads as "we will use this later" and nothing in Phase 1 can | Nothing. If a header ever carries it, it comes back **capped** — `SELECT count(*) FROM (SELECT 1 FROM ... LIMIT 10001) t`, exact below the cap and "10000+" above — which is what makes it affordable |
 | `S_TOUCHES` and `S_CROSSES` | **Not deferred — refused.** A cell decomposition has no measure-zero boundary, so no resolution answers them. Listing them as "later" would be a promise nothing in this design can keep | `400` + `SCH_TYPE_NOT_SUPPORTED`, naming the operator |
 
 ---
@@ -511,11 +513,14 @@ actually asked for, which is the only thing that can adjudicate a "why is my
 catalog invisible" report against a `resources` copy that a bug could have
 written wrong. A copy is not a source of truth unless the original survives.
 
-**One index on this table, and no `catalog_type`, `provider_id` or
-`network_id` column.** The index is `idx_catalogs_document` — a
-`jsonb_path_ops` GIN over `document`, which is what a catalog-level filter
-(`$.catalogs[*] ? (...)`, Task 22) resolves through. The three columns were
-each written and read by nothing:
+**No index on this table beyond its primary key, and no `catalog_type`,
+`provider_id` or `network_id` column.** `idx_catalogs_document` is **dropped by
+A18**: a catalog-level filter no longer resolves through `catalogs.document`
+but through the `filter_doc` composite on `resources`, which carries the
+catalog's members copied down onto every resource of it. That leaves `catalogs`
+read only during hydration, by primary key, after the page is already decided —
+so `catalogs_pkey` is the whole inventory. The three columns were each written
+and read by nothing:
 
 - `provider_id` was `document->'provider'->>'id'` copied out, and the only
   index on it served no query in this plan — `CatalogRepository` has no
@@ -564,6 +569,34 @@ CREATE TABLE resources (
     -- both had no single column to run against, while a member the protocol
     -- adds later had nowhere at all to go.
     document    JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    -- The COMPOSITE the attribute filter runs against (A18) — this resource,
+    -- its catalog, and the offers that apply to it, in ONE jsonb value:
+    --
+    --   {"catalogs": [{ <catalog scalars>, "descriptor": {...},
+    --                   "provider":  {...},        -- availableAt STRIPPED
+    --                   "resources": [ <THIS resource, and only it> ],
+    --                   "offers":    [ <offers naming it + catalog-wide> ] }]}
+    --
+    -- Derived at publish from the three documents. Never publisher-supplied,
+    -- and rebuildable from them at any time.
+    --
+    -- ONE value because PostgreSQL evaluates a jsonpath against ONE jsonb: no
+    -- `@?` spans tables. `$.catalogs[*] ? (@.isActive == true && exists(
+    -- @.offers[*] ? (@.channel == "retail")))` is unwritable without it, and an
+    -- OR across levels is a ROW-level disjunction that no set of per-table
+    -- results can reassemble.
+    --
+    -- `resources` holds exactly ONE element, and that is correctness rather
+    -- than thrift: with siblings present, `$.catalogs[*].resources[*] ?
+    -- (@.grade == "A")` matches a grade-B resource's row because its NEIGHBOUR
+    -- passed — measured, not reasoned. The single element is also what makes
+    -- `@.resources[*]` mean "this resource" by construction.
+    --
+    -- `provider.availableAt` is stripped: geometry is answered by
+    -- resource_geometries, and polygons are the bulky half of a block that is
+    -- already copied onto every resource of the catalog.
+    filter_doc  JSONB NOT NULL DEFAULT '{}'::jsonb,
 
     -- resourceAttributes.@context and .@type, both scalar `string` and both
     -- REQUIRED by the Attributes schema (C4). Two plain columns, because the
@@ -666,10 +699,23 @@ CREATE INDEX idx_resources_schema ON resources (schema_context, schema_type)
 -- index on the same leading column is a duplicate that only the write path
 -- pays for.
 
--- jsonb_path_ops, not the default jsonb_ops: a third the size and faster for
--- the path-exists queries this service issues (Task 22). It cannot serve
--- key-existence (?) queries, which nothing here needs.
-CREATE INDEX idx_resources_document ON resources USING GIN (document jsonb_path_ops);
+-- The one filter index, over the composite (A18). jsonb_path_ops, not the
+-- default jsonb_ops: a third the size and faster for the path-exists queries
+-- this service issues (Task 22). It cannot serve key-existence (?) queries,
+-- which nothing here needs.
+--
+-- Measured on PG16 over 100k rows: all 20 expression shapes tried are captured
+-- by this index — AND and OR across catalog, resource and offer, every 3-way
+-- ordering, (a&&b)||c, (a||b)&&c, exists(), and quoted colon-bearing field
+-- names. Equality is what jsonb_path_ops extracts; inequality, like_regex and
+-- `starts with` remain correct but scan, which is the operator class and not a
+-- choice this plan made.
+--
+-- There is NO idx_resources_document, NO idx_catalogs_document and NO
+-- idx_offers_document. filter_doc contains what all three indexed, so any of
+-- them would be write cost with no reader.
+CREATE INDEX idx_resources_filter_doc ON resources
+    USING GIN (filter_doc jsonb_path_ops);
 
 -- HNSW, not IVFFlat: no training pass, so it works from the first row. Not
 -- partial: a partial HNSW would have to be rebuilt when `active` flips.
@@ -713,6 +759,29 @@ resource. Keying every geometry to a resource meant a catalog of 40 resources
 with 3 provider locations stored **120 rows for 3 distinct shapes** — and, worse,
 ran 120 H3 polygon fills at publish time instead of 3. NULL means "this geometry
 belongs to the whole catalog, and therefore to every resource in it".
+
+**What the nullable column costs, measured, and why it is kept anyway.** The
+read path pays a disjunction for it — `(g.resource_id IS NULL OR g.resource_id
+= r.id)` — and that disjunction is what stops the planner driving from the cell
+GIN index: it must allow that ANY resource could match a catalog-level row, so
+it scans `resources` first and filters afterwards. Measured on PG16 over 300k
+geometry rows, against the alternative where `resource_id` is NOT NULL and
+catalog shapes are copied down onto each resource:
+
+| | nullable (this design) | NOT NULL, copied down |
+|---|---|---|
+| selective "near me" | **70 ms** | **1.1 ms** |
+| broad area | ~465 ms | ~1010 ms |
+| geometry storage | 18 MB | 70 MB |
+| plan | `Hash Semi Join` over `Parallel Seq Scan` | `Bitmap Index Scan` -> `Nested Loop` -> PK |
+
+Both return identical rows; this is only how PostgreSQL reaches them. **Not
+taken today, by decision on 2026-08-27.** The duplication argument above still
+stands, broad-area queries get ~2x slower, and copy-down hands publish a real
+obligation: recopy a catalog's shapes onto every resource added to it, and
+rewrite all of them whenever `provider.availableAt` changes. The number is
+recorded here so that whoever weighs it next starts from the measurement rather
+than from the argument.
 
 ```sql
 CREATE TABLE resource_geometries (
@@ -1086,8 +1155,13 @@ CREATE TABLE offers (
 -- overlap (&&), which is a GIN scan.
 CREATE INDEX idx_offers_resource_ids ON offers USING GIN (resource_ids);
 
--- For attribute filters rooted at the offer path (Task 22).
-CREATE INDEX idx_offers_document ON offers USING GIN (document jsonb_path_ops);
+-- NO GIN over `document`. An attribute filter rooted at the offer path
+-- (`$.catalogs[*].offers[*] ? (...)`) does NOT resolve here: since A18 it runs
+-- against `resources.filter_doc`, which carries the offers applying to each
+-- resource copied down beside it. That is what lets one expression mix an offer
+-- predicate with a catalog or resource predicate — including under OR, which no
+-- per-table result set can reassemble. This table is hydration-only: read by
+-- `resource_ids` overlap after the page is decided, never scanned by a filter.
 ```
 
 **`resource_ids` is an array with no foreign key, because PostgreSQL cannot
@@ -2032,9 +2106,11 @@ POST /discover
         "quantifier": "ANY",          // ANY | ALL | NONE; omitted → ANY
         "srid": "EPSG:4326"           // omitted → WGS84
       }],
-      // Rooted at the response document; rebased onto the stored column
-      // before it runs. PostgreSQL SQL/JSON path only — RFC 9535 is a 400
-      // (C10). See "Attribute filters" below.
+      // Rooted at the response document, and run VERBATIM: `filter_doc` is
+      // rooted at $.catalogs too, so nothing is rebased (A18). What IS checked
+      // is the root and the FORM — the `?` is mandatory, because @? with a
+      // bare comparison matches every row and says nothing. PostgreSQL
+      // SQL/JSON path only; RFC 9535 is a 400 (C10). See "Attribute filters".
       "filters": {
         "type": "jsonpath",
         "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.packagedGoodsDeclaration.manufacturerOrPacker.name == \"Hindustan Unilever Limited\")"
@@ -2509,17 +2585,31 @@ one.
 
 Three things have to happen before the expression can run:
 
-**1. Rebase the root.** The caller's path is rooted at the whole response
-document; the column is rooted at one stored object. Since A17 that rebase is a
-**prefix strip and nothing else**: `$.catalogs[*].resources[*]` names
-`resources.document`, so
-`$.catalogs[*].resources[*] ? (@.resourceAttributes.A.B == "x")` becomes
-`$ ? (@.resourceAttributes.A.B == "x")` with the predicate untouched.
-`$.catalogs[*].offers[*]` strips to `offers.document` the same way, and
-`$.catalogs[*]` to `catalogs.document`. Three prefixes, three columns, each
-storing its object verbatim — which is what removes the per-predicate column
-routing the shredded schema needed, and with it the case where one filter named
-two columns and could be served by neither.
+**1. Check the root and the form — there is no rebase (A18).**
+`resources.filter_doc` is itself rooted at `$.catalogs`, so a conformant
+expression is passed to `@filter::jsonpath` **unchanged**. `$.catalogs[*]`,
+`$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` are three ways into
+one value rather than three destinations, which is what lets a single predicate
+mix levels — and, decisively, lets it mix them under OR. A17's prefix strip is
+superseded because `catalog.x == 1 || offer.y == 2` is a ROW-level disjunction:
+it has no decomposition into per-table results, and a splitter that attempted
+one would be a jsonpath parser, which this plan does not own.
+
+What replaces the rebase is **validation**, and it is the load-bearing step.
+Measured on PG16, three shapes fail silently rather than erroring:
+
+| Shape | Result today |
+|---|---|
+| predicate form — no `?`, e.g. `$.catalogs[*].resources[*].grade == "A"` | matches **every** row |
+| wrong root — anything not beginning `$.catalogs` | matches **no** row |
+| two roots — `$.catalogs[*] ? (...) && $.other == 1` | matches **every** row |
+
+The first is the dangerous one: `@?` asks only whether the expression yielded
+an item, and a bare comparison always yields one — `false` included. A caller
+who omits a single `?` receives the entire corpus and is told nothing. So the
+expression must begin `$.catalogs`, and the first navigation off the root must
+reach a `?` filter before any comparison operator. That is bracket matching
+over tokens, not a parse.
 
 **2. Use the operator, not the function.** This is the difference between a
 millisecond and a sequential scan:
@@ -2557,10 +2647,13 @@ than serving an unbounded scan on request.
 not a query that runs. The four-argument `jsonb_path_exists(target, path, vars,
 silent => true)` form is used only where a structural mismatch must not raise.
 
-**All of this ships in Phase 1 (Task 22).** Validating the expression, rebasing
-it, and refusing the constructs that cannot be served are the whole of the work;
-no migration is involved, because all three columns and all three GIN indexes
-already land in Task 14 as A17 amended it.
+**All of this ships in Phase 1 (Task 22).** Validating the expression — its
+root, its form, and the constructs that cannot be served — is the whole of the
+work. **One migration is involved (A18):** `resources.filter_doc` and its
+`jsonb_path_ops` GIN index, which replace the three `document` indexes rather
+than joining them. That migration is the price of a predicate that crosses
+catalog, resource and offer in one expression; three separate columns can answer
+neither an OR across levels nor a same-row AND between them.
 
 `Degraded` does not go away with it. It stops describing *this phase* and starts
 describing *this backend*: a store whose `Capabilities` omit `jsonpath` — the
@@ -3896,13 +3989,16 @@ SchemaFilter{Context string, Type string}
     # Type == "" means "any type under this context". Empty Schemas means no
     # schema predicate at all — NOT a predicate that matches nothing.
 
-AttributeFilter{Root string, Expression string}       # Task 22
-    # Root names the column the expression is rebased onto — one of the three
-    # `document` columns, chosen by the PREFIX the caller's path carried
-    # (A17): `$.catalogs[*]`, `$.catalogs[*].resources[*]` or
-    # `$.catalogs[*].offers[*]`. Expression is PostgreSQL SQL/JSON path
-    # (C10), ALREADY validated and ALREADY rebased — the store is handed an
-    # expression it may cast and run, never one it must interpret.
+AttributeFilter{Expression string}                    # Task 22
+    # NO `Root` field (A18). There is one filter column — the `filter_doc`
+    # composite on `resources` — so there is nothing to route to and nothing
+    # to rebase: `filter_doc` is already rooted at `$.catalogs` and a
+    # conformant expression runs verbatim. A `Root` here would be a field
+    # with one possible value, and the routing it implied is the thing that
+    # cannot answer an OR across levels.
+    # Expression is PostgreSQL SQL/JSON path (C10), ALREADY validated for
+    # ROOT and FORM — the store is handed an expression it may cast and run,
+    # never one it must interpret or repair.
     # A store that cannot run it must narrow NOTHING and say so in `Degraded`,
     # because a wrongly narrowed page is indistinguishable from a correctly
     # narrowed one at the caller.
@@ -4145,11 +4241,13 @@ stable across runs.
 **Tests pin:** an **index inventory test** asserting the exact set of indexes on
 each table by name — an index silently dropped in a migration is the kind of
 regression that shows up as a latency page, not a test failure. It asserts the
-absence list too: `catalogs` carries **nothing beyond `catalogs_pkey` and
-`idx_catalogs_document`** — the first is the index PostgreSQL builds for the
-primary key, which is not optional and is not a choice this plan made; the
-second is what a catalog-level filter resolves through (A17, Task 22) — and
-`resource_geometries` has **no bounding box index**, for the reason spelled out
+absence list too: `catalogs` carries **nothing beyond `catalogs_pkey`** — the
+index PostgreSQL builds for the primary key, which is not optional and is not a
+choice this plan made. `idx_catalogs_document` is gone with A18, and so is
+`idx_resources_document`: one `idx_resources_filter_doc` answers every
+attribute filter, and a second GIN over bytes `filter_doc` already holds would
+be write cost with no reader. `resource_geometries` has **no bounding box
+index**, for the reason spelled out
 in Migration 004. It no longer asserts the
 absence of a path index: `idx_rg_catalog_target_path` exists, and it exists
 because the walker made `target_path` a column of many distinct values rather
@@ -4614,14 +4712,24 @@ one row's `document`. `catalogs.document` is the Catalog with `resources` and
 `offers` stripped; `resources.document` is the whole Resource;
 `offers.document` is the whole Offer. Nothing else stores a copy of any of it.
 
-**DDL.** `catalogs` gains `document JSONB NOT NULL` and
-`CREATE INDEX idx_catalogs_document ON catalogs USING GIN (document jsonb_path_ops)`,
-and DROPS `provider`. `resources` gains `document JSONB NOT NULL`, DROPS
-`descriptor` and `attributes`, and `idx_resources_attributes` becomes
-`idx_resources_document ON resources USING GIN (document jsonb_path_ops)`.
-`offers.offer` is renamed `document` and `idx_offers_offer` becomes
-`idx_offers_document`. `visible_to` survives on both tables because it arrives
-on the directive, not in the document. Every other column stays and is derived.
+**DDL.** `catalogs` gains `document JSONB NOT NULL` and DROPS `provider`.
+`resources` gains `document JSONB NOT NULL` and DROPS `descriptor` and
+`attributes`. `offers.offer` is renamed `document`. `visible_to` survives on
+both tables because it arrives on the directive, not in the document. Every
+other column stays and is derived.
+
+**The three GIN filter indexes this task shipped are gone again (A18).**
+`idx_catalogs_document`, `idx_resources_document` and `idx_offers_document`
+were each a `jsonb_path_ops` GIN over one `document` column, and the point of
+them was to let Task 22 route a filter by prefix. That routing cannot answer a
+predicate spanning levels — `catalog.x == 1 || offer.y == 2` is a row-level
+disjunction with no per-table decomposition — so A18 replaces all three with a
+single `idx_resources_filter_doc` over the composite. The `document` columns
+themselves are untouched and remain the source of truth; only the indexes over
+them went, because `filter_doc` is derived from those same bytes and a second
+GIN over them has no reader. Recorded here rather than rewritten away: this
+task shipped what it says it shipped, and the next reader should be able to see
+why it did not survive.
 
 **Domain.** `Catalog.Provider` becomes `Catalog.Document`;
 `Resource.Descriptor` and `Resource.Attributes` become one
@@ -4697,13 +4805,16 @@ being indexed, which is the whole reason the accessors exist; and the
 `src/storage/postgres/jsonpath.go`
 
 `src/platform/jsonpath/subset.go` validates the caller's expression against the
-accepted grammar and **rebases** it from the response-document root onto the
-stored column — backend-agnostic, beside `Canonicalise`, because the accepted
-grammar must not move if the backend does ([Data Model](#data-model), Grammar
-leak). `src/discover/filter_parser.go` calls it to turn the wire expression
-into a `SearchQuery` filter value; `src/storage/postgres/jsonpath.go` only
-casts and evaluates the already-validated, already-rebased expression with
-`@filter::jsonpath` and the `@?` operator. The mechanics, and which predicates
+accepted grammar and against its **root and form** (A18) — backend-agnostic,
+beside `Canonicalise`, because the accepted grammar must not move if the
+backend does ([Data Model](#data-model), Grammar leak). It does **not** rebase:
+`filter_doc` is already rooted at `$.catalogs`, so a conformant expression is
+passed through untouched, and the step that used to strip a prefix is now the
+step that refuses the three silently-wrong shapes below.
+`src/discover/filter_parser.go` calls it to turn the wire expression into a
+`SearchQuery` filter value; `src/storage/postgres/jsonpath.go` only casts and
+evaluates the already-validated expression with `@filter::jsonpath` and the
+`@?` operator. The mechanics, and which predicates
 the GIN index can actually serve, are in
 [Attribute filters](#attribute-filters--what-postgresql-can-and-cannot-do).
 
@@ -4713,36 +4824,65 @@ the GIN index can actually serve, are in
 expression is cast with `@filter::jsonpath` — PostgreSQL's own parser, not a
 hand-written one — and **never** interpolated into SQL text.
 
-All three paths are supported — `$.catalogs[*]` onto `catalogs.document`,
-`$.catalogs[*].resources[*]` onto `resources.document`, and
-`$.catalogs[*].offers[*]` onto `offers.document` — each with its
-`jsonb_path_ops` GIN index. **After A17 the rebase is prefix-stripping and
-nothing else:** the prefix names the column and the remainder is the predicate,
-so there is no per-predicate column routing, and a predicate mixing
-`@.descriptor.name` with `@.resourceAttributes.grade` is ordinary rather than
-unanswerable. All three columns and all three indexes ship in Task 21b, so this
-needs **no migration** — which is what makes it Phase 1 work at all: the
-expensive half landed one task earlier, and this one is a parser, a rebase and
-a `WHERE` clause.
+**One path, one column, one index (A18).** The expression evaluates against
+`resources.filter_doc`, which holds this resource, its catalog and the offers
+that apply to it inside a single `jsonb` value. `$.catalogs[*]`,
+`$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` are therefore not
+three destinations but three ways into one — and a predicate crossing them,
+`@.isActive == true && exists(@.offers[*] ? (@.channel == "retail"))`, is
+ordinary rather than unanswerable. **The rebase is identity, not
+prefix-stripping:** `filter_doc` is already rooted at `$.catalogs`, so a
+conformant expression reaches `@filter::jsonpath` unchanged.
 
-A catalog-level filter does not become a join. It resolves as
-`SELECT id FROM catalogs WHERE document @? $1` feeding `catalog_id = ANY(...)`
-into retrieval — one extra, highly selective query — which keeps the property
-Task 16 bought by copying the scope gate down onto `resources`: nothing on the
-retrieval path probes `catalogs` once per match.
+What supersedes A17's prefix rule is that per-column routing cannot answer a
+row-level OR at all. `catalog.x == 1 || offer.y == 2` has no decomposition into
+per-table results, and writing a splitter means owning a jsonpath parser —
+which is the exact surface "never interpolate, never decompose" exists to
+avoid. `filter_doc` and its GIN index ship in the A18 migration, so this task
+is a validator and a `WHERE` clause.
+
+A catalog-level filter does not become a join, and no longer becomes a second
+query either: `$.catalogs[*] ? (@.descriptor.code == "HUL-BLR")` runs against
+`filter_doc` on the same scan as everything else, because the catalog's members
+are copied down onto each resource row.
+
+**Form validation is the load-bearing half of this task, and it is new work.**
+Measured on PG16: `@?` takes a PATH expression — filter form, `$.catalogs[*] ?
+(...)` — and given a PREDICATE expression instead, which is the same intent
+written without the `?`, it matches EVERY row with no error, because a
+comparison always yields an item and `false` is an item. A caller who drops one
+`?` gets the whole corpus back and is told nothing. Three silent-failure shapes
+must be refused at the edge:
+
+| Shape | What it does today |
+|---|---|
+| predicate form — no `?`, e.g. `$.catalogs[*].resources[*].grade == "A"` | matches **every** row |
+| wrong root — anything not beginning `$.catalogs` | matches **no** row |
+| two roots — `$.catalogs[*] ? (...) && $.other == 1` | matches **every** row |
+
+`@@` is never used. It is the operator that pairs with predicate form, and
+admitting both would make the trap above indistinguishable from an intentional
+query. **Subscript is orthogonal and is not the fix:** `[*]` does not rescue
+predicate form, and `[0]` does not break filter form — both measured. Refusal
+is therefore by structure: the expression must begin `$.catalogs`, and the
+first navigation off the root must reach a `?` filter before any comparison
+operator. That is a bracket-matching check over tokens, **not** a jsonpath
+parse — a full parser is the thing this plan refuses to own, and the cast to
+`::jsonpath` stays PostgreSQL's job.
 
 A backend that cannot execute the subset still declares `jsonpath` missing and
 degrades — or fails under `SEARCH_FAIL_ON_UNAVAILABLE_MODE`. What never happens
 is silent ignoring.
 
 **Tests pin:** an RFC 9535 expression is `400` / `SCH_INVALID_JSONPATH` rather
-than an empty page; rebasing (`$.catalogs[*].resources[*] ? (@.resourceAttributes.A
-== "x")` → `$ ? (@.resourceAttributes.A == "x")` against `resources.document`)
-and the offer-path equivalent; an `EXPLAIN`
-proving the equality form uses the GIN index and the inequality form is
-knowingly a scan; and the expressions it **refuses** — a half-correct rebase
-is worse than none, so refusing must be a tested path. A malformed
-expression is a `400` from the cast, never an interpolated query.
+than an empty page; **each of the three silent-failure shapes above is a `400`
+rather than a wrong page**, which is the regression this task exists to prevent
+and the one no caller can detect for themselves; a cross-level predicate
+combining `@.isActive` with `exists(@.offers[*] ? (...))` returns the resource
+whose OWN catalog and OWN offers pass and never the one whose sibling does; an
+`EXPLAIN` proving the equality form uses `idx_resources_filter_doc` and the
+inequality form is knowingly a scan; and a malformed expression is a `400` from
+the cast, never an interpolated query.
 
 ---
 
@@ -4798,6 +4938,6 @@ from an accident:
 | JSONPath grammar | Which grammar the spec mandates | **PostgreSQL SQL/JSON path only.** The spec names none normatively and its one example is RFC 9535, so this is a recorded deviation — C10 |
 | Offer-level geometry | Which resource a geometry under `offers[*].provider.availableAt[*].geo` belongs to | **The offer's `resourceIds`**, one `resource_geometries` row per id, falling back to catalog-level when that array is absent or empty — the same meaning `offers.resource_ids` already carries. `Geometry.ResourceID *string` became `Owners []string` and `touched` had to start following offers; no migration, the column was always there |
 | Unavailable retrieval mode | Whether a mode the backend cannot run should degrade or refuse | **Degrade by default; refuse on request.** `SEARCH_FAIL_ON_UNAVAILABLE_MODE` defaults to `false`: the modes that work run, results come back, and the missing one is named in `X-Beckn-Degraded` (C11). Setting it `true` makes the same request a `400` / `NET_CATALOG_SOURCE_UNAVAILABLE`. The default points at degrade for one reason: Phase 1 ships `EMBEDDING_PROVIDER=noop`, so `semantic` is missing on every fresh deployment, and defaulting to refuse would make every `textSearch` a `400` until an Ollama deployment exists — a default that breaks the common case is a default nobody keeps. Silently ignoring the mode remains the option that is never taken |
-| Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), rebased onto `catalogs.document`, `resources.document` or `offers.document` by prefix alone (A17), run through the `@?` operator. All three columns and all three `jsonb_path_ops` indexes were already landing in Task 14, so promoting it costs a parser and a rebase and no migration. Scenario 18 changed from asserting the degradation to asserting the filter |
+| Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), run through `@?` against the single `resources.filter_doc` composite (A18), with no rebase because the column is already rooted at `$.catalogs`. It costs one migration (the column and its GIN index) rather than none, which is the price of answering a predicate that crosses catalog, resource and offer — including under OR, which three separate `document` columns cannot answer at all. Scenario 18 changed from asserting the degradation to asserting the filter |
 | Semantic search (A5) | When embeddings are turned on | **Not in Phase 1 — confirmed.** `EMBEDDING_PROVIDER=noop` ships; the column, the HNSW index and the `Embedder` seam ship with it, and `embedding IS NULL` is the backfill queue for whenever an Ollama deployment exists. Deferred deliberately, not undecided |
 | `networkId` default (discover) | Whether an omitted `networkId` scopes to `APP_NETWORK_ID` or searches every network | **Searches every network.** `visibleTo` is how a publisher restricts a catalog to specific networks; it is not an access boundary a network-less discover caller is presumed locked out of by default. A caller wanting isolation supplies `networkId`. Publish's own default — `APP_NETWORK_ID`, to fill an empty `visibleTo` — is unchanged (C8); the two fields answer different questions and no longer share a fallback |
