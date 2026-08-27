@@ -9,10 +9,14 @@ Scoped to the v1 provider set. The imported BV pages
 shapes; this page carries what v1 needs. Where they disagree, they are describing BV and
 this is describing us.
 
+**Assumptions this page is written against.** Sunbird RC at its **latest** version,
+**without Elasticsearch**; network-specs pinned to `3e593b3`. All three are v1 decisions,
+not observations of a running system — nothing is deployed yet.
+
 | v1 category | `@type` | Providers | Bindings |
 |---|---|---|---|
 | Weather | `openagrinet:WeatherObservation` | `mausamgram`, `imd-city-weather` | 2 |
-| Mandi prices | `openagrinet:MandiPriceObservation` | `agmarknet` | 1 |
+| Mandi prices | `openagrinet:MandiPrice` | `agmarknet` | 1 |
 | Advisory — Schemes | `openagrinet:KnowledgeResource` | `hasura-content` | 1 |
 | Advisory — Crop & Pest | `openagrinet:KnowledgeResource` | `oan-vector` | 1 |
 
@@ -179,15 +183,11 @@ registry/mappings/<provider>/<action>.<request|response>.jsonata
 Thirteen records: 3 `Capability`, 5 `Provider`, 5 `ProviderCapability`. Shown in RC write
 form.
 
-> The three `schemaUrl` values below carry a **placeholder host**,
-> `https://REPLACE-ME.invalid/`, because the network-specs raw host and repo path were
-> not in the material this page was written from. Everything after it is right: the
-> commit segment `c56ee68` is what pins the contract, and the schema's two negative
-> lookaheads reject a branch ref, so `main` cannot be substituted for it.
->
-> `.invalid` is reserved by RFC 2606 and never resolves — a record seeded as printed
-> fails at first fetch rather than silently validating against the wrong pack. Fill the
-> host in from the pack index before seeding.
+> `schemaUrl` points at [`OpenAgriNet/network-specs`](https://github.com/OpenAgriNet/network-specs),
+> pinned to a **full commit sha** — `3e593b3` here. The schema's two negative lookaheads
+> reject a branch ref on purpose: pinned to `main`, the contract you validated against last
+> week is not the one you validate against today and nothing tells you it moved. Bumping
+> the sha is a reviewed change to these three records.
 
 ### Capabilities
 
@@ -196,17 +196,17 @@ form.
   "capabilityCode": "openagrinet:WeatherObservation",
   "name": "Weather Observation and Forecast",
   "baseTypes": ["openagrinet:AgricultureResource"],
-  "schemaUrl": "https://REPLACE-ME.invalid/network-specs/c56ee68/schema/WeatherObservation/v0.1/attributes.yaml",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/3e593b3627acae6f416382e6d4bd58f641f309e8/schema/WeatherObservation/v0.1/attributes.yaml",
   "status": "active"
 } }
 ```
 
 ```json
 { "Capability": {
-  "capabilityCode": "openagrinet:MandiPriceObservation",
-  "name": "Mandi Price Observation",
+  "capabilityCode": "openagrinet:MandiPrice",
+  "name": "Mandi Price",
   "baseTypes": ["openagrinet:AgricultureResource"],
-  "schemaUrl": "https://REPLACE-ME.invalid/network-specs/c56ee68/schema/MandiPriceObservation/v0.1/attributes.yaml",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/3e593b3627acae6f416382e6d4bd58f641f309e8/schema/MandiPrice/v0.1/attributes.yaml",
   "status": "active"
 } }
 ```
@@ -216,7 +216,7 @@ form.
   "capabilityCode": "openagrinet:KnowledgeResource",
   "name": "Knowledge Resource",
   "baseTypes": ["openagrinet:AgricultureResource"],
-  "schemaUrl": "https://REPLACE-ME.invalid/network-specs/c56ee68/schema/KnowledgeResource/v0.1/attributes.yaml",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/3e593b3627acae6f416382e6d4bd58f641f309e8/schema/KnowledgeResource/v0.1/attributes.yaml",
   "status": "active"
 } }
 ```
@@ -324,9 +324,9 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ```json
 { "ProviderCapability": {
-  "bindingKey": "agmarknet|openagrinet:MandiPriceObservation|select",
+  "bindingKey": "agmarknet|openagrinet:MandiPrice|select",
   "providerId": "agmarknet",
-  "capabilityCode": "openagrinet:MandiPriceObservation",
+  "capabilityCode": "openagrinet:MandiPrice",
   "method": "GET",
   "path": "/v1/fetch-agmarknet-vistaar-location",
   "enricher": "marketAndCommodityCodes",
@@ -415,8 +415,22 @@ serves.
 ```
 
 **`informationMode` is what says "keep going".** The advertisement carries `OnDemand`, the
-result carries `Direct`. Same `@type` in both — the mode is the only thing that differs,
-and it is why a second call exists at all.
+result carries `Direct`. **Same pack, same `@type`, same `@context`** — the mode is the
+only thing that differs, and it is why a second call exists at all. There is no separate
+capability schema; that model was proposed and dropped.
+
+It is `required` on every pack, via the shared `AgricultureResource` field set, and each
+pack conditions its other required fields on it. So the mode is not a hint — it selects
+which half of the contract applies:
+
+| pack | `OnDemand` requires | `Direct` requires |
+|---|---|---|
+| `WeatherObservation` | `supportedObservationTypes`, `supportedParameters`, `geographicGranularities`; **no** `parameters` | `observationType`, `source`, `location`, `generatedAt`, `parameters` |
+| `MandiPrice` | `supportedCommodities`, `supportedPriceFields`; **no** `prices` | `source`, `commodity`, `market`, `arrivalDate`, `prices`, `generatedAt` |
+| `KnowledgeResource` | `topics`, `languages`, `supportedKnowledgeTypes`; **no** `content` | `topics`, `languages`, `knowledgeType`, `version`, `lifecycleStatus`, `content`, `provenance` |
+
+An advertisement that carried real values would fail its own pack, and a result that
+carried only capabilities would too. That is the point: the two cannot be confused.
 
 ### ① Resolve meaning
 
@@ -465,9 +479,17 @@ nothing — and nothing is indistinguishable from an honest empty result.
 | Category | expression |
 |---|---|
 | Weather | `$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:WeatherObservation")` |
-| Mandi | `$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:MandiPriceObservation")` |
+| Mandi | `$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:MandiPrice")` |
 | Schemes | `$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource" && @.resourceAttributes.subjectCategories[*] == "Scheme")` |
 | Crop & Pest | `$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource" && @.resourceAttributes.subjectCategories[*] == "Crop")` |
+
+**None of the four constrain `informationMode`, deliberately.** Both modes are publishable
+— an `OnDemand` advertisement and a `Direct` resource published straight to discovery are
+both honest answers to *who can tell me about rain*. Filtering to `OnDemand` would hide
+data already in the catalog; filtering to `Direct` would hide every provider that answers
+on invocation. Add the constraint only when the caller genuinely wants one or the other,
+and note that the experience layer must branch on it either way, because `OnDemand` means
+a second call and `Direct` means it already has the answer.
 
 `subjectCategories` is a **required** enum on the shared `AgricultureResource` field set —
 `Crop` `Livestock` `Weather` `Market` `Scheme` `Knowledge`. It is the only thing that
@@ -494,7 +516,7 @@ every retrieval mode — the caller just cannot ask for one.
       "id": "res:mausamgram:point-forecast",
       "quantity": 1,
       "resourceAttributes": {
-        "@context": "https://schemas.openagrinet.global/schema/AgricultureCapability/v0.1/context.jsonld",
+        "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
         "@type": "openagrinet:WeatherObservation",
         "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
         "validity": { "startsAt": "2026-08-26", "endsAt": "2026-08-30" }
@@ -513,12 +535,22 @@ every retrieval mode — the caller just cannot ask for one.
 `status: DRAFT`, no price. Nothing is being committed — for an open-data provider the
 quote is zero-cost and the payload *is* the data.
 
-Note the `@context`: it is `AgricultureCapability`, not `WeatherObservation`. The request
-restates the resource **as advertised**, and the advertisement is a capability, not an
-observation. The result in step ⑥ switches to the `WeatherObservation` context, because
-that is when the object becomes one. `@type` is unchanged across all three.
+`@context` and `@type` are the **same across all three envelopes** — advertisement, request
+and result all name the `WeatherObservation` pack. Only `informationMode` moves, and only
+between the advertisement and the result. If you find a trace where the *context* changes
+between hops, it predates the pack index and is describing the capability-schema model
+that was dropped.
 
-### ④ Resolve — two single-field reads, no join
+**The request's `resourceAttributes` is not a pack instance, and is not validated as one.**
+`INDEX.md` declares each pack's placement as *Provider catalog, Discovery result, or
+Provider response*; a `select` request is none of those. Beckn types the field as
+`Attributes` — an open container requiring only `@context` and `@type` — so what travels
+here is the resource's identity plus the parameters of the invocation, not a restatement
+of the advertisement. Hold a request against the pack and it fails on `informationMode`
+and on whichever half of the contract you did not echo, which says nothing about the
+request.
+
+### ④ Resolve — key lookup, no join, no search
 
 Everything needed is on the request body:
 
@@ -530,20 +562,30 @@ action                       → "select"
 bindingKey = "mausamgram|openagrinet:WeatherObservation|select"
 ```
 
-```
-POST /api/v1/ProviderCapability/search
-{ "filters": { "bindingKey": { "eq": "mausamgram|openagrinet:WeatherObservation|select" },
-               "status": { "eq": "active" } } }
-
-POST /api/v1/Provider/search
-{ "filters": { "providerId": { "eq": "mausamgram" }, "status": { "eq": "active" } } }
-```
-
 The `@type` is the **same string the advertisement carried** — one type spans both calls.
 
-Preload `Provider` at boot: five rows, about 1 KB. Cache `ProviderCapability` on
-`bindingKey` too. Both change on the order of weeks, so invalidation is a redeploy or a
-TTL, not a protocol. A warm request costs zero registry reads.
+**v1 runs RC without Elasticsearch, so the adapter must not depend on `/search`.** In a
+standard Sunbird RC deployment the search API is ES-backed; drop ES and it is not a
+surface to build a request path on. That sounds like a constraint and is not one, because
+of scale:
+
+```
+13 records total — 5 Provider, 3 Capability, 5 ProviderCapability.  A few KB.
+```
+
+**Load all three entities at boot and resolve in memory.** Index `ProviderCapability` by
+`bindingKey` and `Provider` by `providerId`; resolution is then two map lookups and the
+per-request cost is zero reads, not one or two. Records change on the order of weeks, so
+refresh is a redeploy or a TTL, never a protocol.
+
+This is the right shape even with ES: an exact-match key lookup on 13 rows has nothing to
+gain from a search engine. It only becomes a question at a scale v1 is nowhere near, and
+the boot load is what has to change then, not the resolution logic.
+
+One consequence worth stating: with no ES, `indexFields` buys nothing at runtime — the
+runtime never queries. It stays declared because it documents which fields are meant to be
+queryable, and because operational reads (*which bindings does this provider have?*) still
+go through whatever read path the RC build offers.
 
 ### ⑤ Enrich, map, authenticate, call
 
@@ -586,6 +628,7 @@ resolved point reaches the output. Five forecast days become five typed Beckn re
     "informationMode": "Direct",
     "observationType": "Forecast",
     "subjectCategories": ["Weather"],
+    "source": { "sourceId": "mausamgram", "sourceName": "IMD Mausamgram NWP" },
     "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
     "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-26T23:59:59Z" },
     "generatedAt": "2026-08-26T06:12:04.201Z",
@@ -601,11 +644,12 @@ resolved point reaches the output. Five forecast days become five typed Beckn re
 `@type` is a **single string**. Beckn core declares it `type: string`; the two-element
 array form some examples show fails validation.
 
-`aggregation` is not a governed field. The `parameter` enum has no min/max qualifier, so
-there is no conformant way to say "tomorrow's high is 30.6 and low is 22.1" — every Indian
-weather upstream reports `tmin`/`tmax`. This is a real gap in the network schema, tracked
-as issue 3 of [Open issues](reference/open-issues.md), and it affects Weather, a v1 🟢
-category.
+`aggregation` is **not a governed field** — it is not in the pack. It validates only
+because the `parameters` item declares `required: [parameter, value, unit]` without
+closing the object, so a private qualifier passes and means nothing to any other
+participant. There is no conformant way to say *tomorrow's high is 30.6 and low is 22.1*,
+and every Indian weather upstream reports `tmin`/`tmax`. Real gap, tracked as issue 3 of
+[Open issues](reference/open-issues.md), and it lands on Weather — a v1 category.
 
 ---
 
@@ -613,9 +657,8 @@ category.
 
 | | |
 |---|---|
-| An `OnDemand` advert fails its own pack | The outcome packs require `observationType`, `source`, `location`, `generatedAt` — all Direct-only. Needs an `if`/`then` on `informationMode` upstream. Until then the advert validates against `AgricultureCapability`, so the mode selects the contract. |
-| No min/max qualifier on `parameter` | Daily high/low is inexpressible. Affects Weather. |
-| `informationMode` is not in `docs/design/` | Zero mentions in our plan and zero in `src/`. The DS has no notion of advertisement-vs-result today. |
-| `schemaUrl` host is a placeholder | Three `Capability` records carry `https://REPLACE-ME.invalid/`. They satisfy the schema pattern but resolve to nothing. Needs a decision on where the network-specs packs are served from — the pattern already forbids a branch ref, so whatever host is chosen must serve commit-pinned paths. |
+| No min/max qualifier on `parameter` | The `parameters` item is `{parameter, value, unit}` with an eight-value enum and no aggregation field, so *tomorrow's high is 30.6 and low is 22.1* is inexpressible — and every Indian weather upstream reports `tmin`/`tmax`. The item is open, so mappings emit a private `aggregation` and it validates while meaning nothing to anyone else. Affects Weather, a v1 category. |
+| `informationMode` is not in `docs/design/` | Zero mentions in our plan and zero in `src/`, yet it is `required` on every published resource and decides which half of each pack applies. Whether the DS stores it, indexes it, and lets a caller filter on it is an open decision — and the one item here that changes our code. |
+| Nothing re-pins the `schemaUrl` sha | The three `Capability` records point at `3e593b3`. When network-specs moves, nothing here notices; the pin is correct and manual. A check that the sha resolves and that the pack still declares the expected `@type` belongs in the seeding path. |
 | `oan-vector` on plain HTTP | Legal (`scheme: none`) but should move behind TLS before real traffic. |
 | No JSON Schema files behind this page | Everything above is prose. Sunbird RC boots from JSON Schema, not from a table, so `Provider`, `Capability` and `ProviderCapability` have to be authored before anything can be seeded. Nothing is being migrated — v1 stands the registry up from scratch — so these are ours to write, not BV's to send. |
