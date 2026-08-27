@@ -54,6 +54,13 @@ func MapCatalog(
 	offers, offerFaults := mapOffers(catalog.Offers, zone)
 	fatal = append(fatal, offerFaults...)
 
+	// A9, both of them, resolved HERE and in both update modes — so no absence
+	// reaches the merge and the merge needs no branch for one.
+	active := catalog.IsActive == nil || *catalog.IsActive
+
+	document, documentFault := catalogDocument(catalog, active)
+	fatal = append(fatal, documentFault...)
+
 	if len(fatal) > 0 {
 		// Stores NOTHING. A catalog with a fatal fault is refused whole rather
 		// than partially applied: a half-applied MERGE is not a state any later
@@ -65,17 +72,59 @@ func MapCatalog(
 	return domain.CatalogPatch{
 		ID:        catalogID(catalog, directive),
 		NetworkID: network,
-		Provider:  catalog.Provider,
+		Document:  document,
 		Validity:  validity,
 
-		// A9, both of them, resolved HERE and in both update modes — so no
-		// absence reaches the merge and the merge needs no branch for one.
-		Active:    catalog.IsActive == nil || *catalog.IsActive,
+		Active:    active,
 		VisibleTo: visibleTo(directive, network),
 
 		Resources: resources,
 		Offers:    offers,
 	}, nil, nil
+}
+
+// catalogDocument is what gets stored: the catalog verbatim, minus the two
+// child arrays that own their own rows (A17), with `isActive` resolved.
+//
+// Resolving `isActive` into the document is the one place A9 and RFC 7396
+// disagree and something has to settle it. A9 says an omitted `isActive` RESETS
+// the catalog to live; 7396 says a member a patch does not mention is KEPT. Now
+// that the member lives inside the document rather than beside it, leaving it
+// to the merge would give scenario 26 the 7396 answer. Writing the resolved
+// value in before the merge runs means the merge sees a patch that always
+// mentions it, and the two rules stop competing.
+//
+// It also keeps the document and the `active` column agreeing by construction:
+// both are this same bool, so no reader has to decide which one is true.
+func catalogDocument(catalog beckn.Catalog, active bool) (json.RawMessage, []domain.Fault) {
+	members, err := catalog.WithoutChildren()
+	if err != nil {
+		return nil, []domain.Fault{{
+			Path:    "$",
+			Code:    string(beckn.CodeSchemaInvalidFormat),
+			Message: fmt.Sprintf("the catalog is not a JSON object: %v", err),
+		}}
+	}
+
+	resolved, err := json.Marshal(active)
+	if err != nil {
+		return nil, []domain.Fault{{
+			Path:    "$['isActive']",
+			Code:    string(beckn.CodeSchemaInvalidFormat),
+			Message: fmt.Sprintf("isActive is not encodable: %v", err),
+		}}
+	}
+	members["isActive"] = resolved
+
+	document, err := json.Marshal(members)
+	if err != nil {
+		return nil, []domain.Fault{{
+			Path:    "$",
+			Code:    string(beckn.CodeSchemaInvalidFormat),
+			Message: fmt.Sprintf("the catalog is not re-encodable: %v", err),
+		}}
+	}
+	return document, nil
 }
 
 // catalogID prefers the directive's id: it is what publishOne keyed the catalog
@@ -101,8 +150,8 @@ func visibleTo(directive beckn.PublishDirective, network string) []string {
 	return directive.VisibleTo
 }
 
-// mapResources carries each resource's three fields across, preserving absence
-// on two of them and refusing a resource that has no id.
+// mapResources carries each resource's document across verbatim and refuses a
+// resource that has no id.
 //
 // Resources merge by id, so an empty id is not a key the merge can place: it
 // would insert a row keyed on "" that the next publish silently patches instead
@@ -125,13 +174,31 @@ func mapResources(resources []beckn.Resource) ([]domain.ResourcePatch, []domain.
 			continue
 		}
 		out = append(out, domain.ResourcePatch{
-			ID:         resource.ID,
-			Descriptor: resource.Descriptor,
-			Attributes: resource.ResourceAttributes,
+			ID:       resource.ID,
+			Document: resourceDocument(resource),
 		})
 	}
 
 	return out, faults
+}
+
+// resourceDocument is the resource as it arrived, or as its fields describe it
+// when it was built in Go rather than decoded.
+//
+// The fallback goes through MarshalJSON rather than returning nil, because a
+// nil document would merge as "absent" and a hand-built resource would then
+// store nothing at all — which is how the conformance suite and every unit test
+// that constructs a beckn.Resource would silently stop asserting anything.
+func resourceDocument(resource beckn.Resource) json.RawMessage {
+	if len(resource.Raw) > 0 {
+		return resource.Raw
+	}
+
+	document, err := json.Marshal(resource)
+	if err != nil {
+		return nil
+	}
+	return document
 }
 
 // mapOffers carries the VERBATIM offer document across and resolves the one

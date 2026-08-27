@@ -59,7 +59,7 @@ func deriveSearchable(merged *domain.Catalog, _ []string) []domain.Fault {
 			Type    string `json:"@type"`
 			Text    string `json:"text"`
 		}
-		if err := json.Unmarshal(resource.Attributes, &fields); err != nil {
+		if err := json.Unmarshal(resource.ResourceAttributes(), &fields); err != nil {
 			return []domain.Fault{{Code: "FIXTURE", Message: err.Error()}}
 		}
 		resource.Name = fields.Name
@@ -117,13 +117,16 @@ type readFixture struct {
 // searchable builds a resource patch whose attributes carry everything
 // deriveSearchable reads.
 func searchable(id, name, text, context, resourceType string) domain.ResourcePatch {
-	attributes, err := json.Marshal(map[string]string{
-		"name": name, "text": text, "@context": context, "@type": resourceType,
+	document, err := json.Marshal(map[string]any{
+		"id": id,
+		"resourceAttributes": map[string]string{
+			"name": name, "text": text, "@context": context, "@type": resourceType,
+		},
 	})
 	if err != nil {
 		panic("fixture attributes will not marshal: " + err.Error())
 	}
-	return domain.ResourcePatch{ID: id, Attributes: attributes}
+	return domain.ResourcePatch{ID: id, Document: document}
 }
 
 // publish writes the fixtures and returns a read repository over the same pool.

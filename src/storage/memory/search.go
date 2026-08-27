@@ -344,7 +344,7 @@ func (r *Repository) hydrate(page []domain.Resource, scope domain.Scope) []domai
 			assembled = append(assembled, domain.Catalog{
 				ID:            stored.ID,
 				NetworkID:     stored.NetworkID,
-				Provider:      stored.Provider,
+				Document:      stored.Document,
 				VisibleTo:     slices.Clone(stored.VisibleTo),
 				Active:        stored.Active,
 				ValidFrom:     stored.ValidFrom,

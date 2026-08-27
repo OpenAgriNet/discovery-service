@@ -64,14 +64,14 @@ func ExtractGeometries(catalogIndex int, merged domain.Catalog) ([]domain.Geomet
 	// and not a JSON document. The depths are the ones a uniform walk over
 	// $['catalogs'][i] would have reached, so the bound means the same thing
 	// here as it does in the plan's pseudocode.
-	walk.node(merged.Provider, extend(root, segment{name: "provider"}), 1, nil)
+	walk.node(merged.Provider(), extend(root, segment{name: "provider"}), 1, nil)
 
 	for j, resource := range merged.Resources {
 		at := extend(extend(root, segment{name: "resources"}), segment{index: j})
 		owners := []string{resource.ID}
 
-		walk.node(resource.Descriptor, extend(at, segment{name: "descriptor"}), 3, owners)
-		walk.node(resource.Attributes, extend(at, segment{name: "resourceAttributes"}), 3, owners)
+		walk.node(resource.Descriptor(), extend(at, segment{name: "descriptor"}), 3, owners)
+		walk.node(resource.ResourceAttributes(), extend(at, segment{name: "resourceAttributes"}), 3, owners)
 	}
 
 	for k, offer := range merged.Offers {

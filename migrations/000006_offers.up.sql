@@ -7,19 +7,23 @@ CREATE TABLE offers (
     -- not a default to be pruned into. See the FULL-republish rule below.
     resource_ids TEXT[]      NOT NULL DEFAULT '{}',
 
-    -- The offer document, verbatim, exactly as `provider` is on catalogs and
-    -- `geojson` is on geometries. It is what an attribute filter rooted at the
-    -- offer path is evaluated against, and the only form that survives a spec
-    -- adding a field this schema never named.
+    -- The offer document, verbatim. This table got the rule right first and
+    -- A17 is that rule applied to the other two: `catalogs.document` and
+    -- `resources.document` are now the same thing for the same reasons.
     --
     -- There are no `descriptor` and `price` columns beside it. They would be
-    -- `offer->'descriptor'` and `offer->'price'` copied out — the same bytes a
-    -- second time, on a column already read in full by the one query that
-    -- touches this table, indexed by nothing and filtered on by nothing. Unlike
-    -- `resources.name`, which exists to carry a trigram index, they would pay
-    -- for themselves nowhere and would drift the moment a republish updated
-    -- `offer` and missed a projection.
-    offer        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    -- `document->'descriptor'` and `document->'price'` copied out — the same
+    -- bytes a second time, on a column already read in full by the one query
+    -- that touches this table, indexed by nothing and filtered on by nothing.
+    -- Unlike `resources.name`, which exists to carry a trigram index, they
+    -- would pay for themselves nowhere and would drift the moment a republish
+    -- updated the document and missed a projection. That is precisely what
+    -- `catalogs.descriptor` and `resources.attributes` did.
+    --
+    -- Named `document` rather than `offer` because every table now spells it
+    -- the same way, `OfferPatch.Document` in the domain already did, and
+    -- `offer.offer` reads as a mistake at every call site.
+    document     JSONB       NOT NULL DEFAULT '{}'::jsonb,
 
     -- An expired offer must not be returned. The catalog's own validity does
     -- not cover this: a live catalog routinely carries last month's offer.
@@ -44,4 +48,4 @@ CREATE TABLE offers (
 CREATE INDEX idx_offers_resource_ids ON offers USING GIN (resource_ids);
 
 -- For attribute filters rooted at the offer path (Task 22).
-CREATE INDEX idx_offers_offer ON offers USING GIN (offer jsonb_path_ops);
+CREATE INDEX idx_offers_document ON offers USING GIN (document jsonb_path_ops);

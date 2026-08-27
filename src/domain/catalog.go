@@ -16,9 +16,15 @@ type Catalog struct {
 	// VisibleTo (C8). It is not stored, because nothing reads it back.
 	NetworkID string
 
-	// Provider is kept verbatim: it maps to a JSONB column, and a projection
-	// this service invented would be one the publisher cannot get back out.
-	Provider json.RawMessage
+	// Document is the Catalog as the publisher sent it, with `resources` and
+	// `offers` STRIPPED — those live on Resources and Offers below and are
+	// spliced back in when the response is rendered (A17).
+	//
+	// Every other field on this struct is derived from it. Keeping the document
+	// rather than a projection is what lets a discover response return the
+	// `descriptor`, `bppId` and `bppUri` the protocol requires and this service
+	// invented no column for.
+	Document json.RawMessage
 
 	ValidFrom time.Time
 	ValidTo   time.Time
@@ -47,8 +53,10 @@ type Resource struct {
 	CatalogID string
 	Name      string
 
-	Descriptor json.RawMessage
-	Attributes json.RawMessage
+	// Document is the Resource verbatim — `{id, descriptor,
+	// resourceAttributes}` — and the two members are read back through the
+	// accessors below rather than stored beside it.
+	Document json.RawMessage
 
 	// Read out of the merged Attributes by `derive`, never carried on a patch —
 	// a patch holding them would be a second place they could disagree with the
@@ -101,6 +109,47 @@ type Offer struct {
 	ValidTimeTo   *TimeOfDay
 }
 
+// Provider is the catalog's provider block, read out of the document.
+//
+// An accessor rather than a field because a field would be a second copy of
+// bytes the document already holds, and the two would disagree the first time a
+// merge updated one of them. Callers that need it — the geometry walk, and
+// nothing else — pay one shallow decode.
+func (c Catalog) Provider() json.RawMessage { return member(c.Document, "provider") }
+
+// Descriptor and ResourceAttributes are the two members of a Resource document.
+//
+// They were columns until A17. As accessors they keep every derivation that
+// reads them — the search text, the JSON-LD schema pair, the geometry walk —
+// spelled exactly as it was, while there is only one stored copy to keep true.
+func (r Resource) Descriptor() json.RawMessage { return member(r.Document, "descriptor") }
+
+// ResourceAttributes is the JSON-LD attribute document, or nil when the
+// resource carries none — which the schema permits, since only `id` is
+// required.
+func (r Resource) ResourceAttributes() json.RawMessage {
+	return member(r.Document, "resourceAttributes")
+}
+
+// member reads one top-level member of a JSON object, or nil.
+//
+// Shallow by construction: decoding into map[string]json.RawMessage parses the
+// object's own keys and leaves every value as bytes, so reading `descriptor`
+// off a resource does not walk its whole attribute tree. A document that is not
+// an object has no members, which is the same answer as a member that is
+// absent — neither is reachable from a validated publish, and both mean "there
+// is nothing here to read".
+func member(document json.RawMessage, name string) json.RawMessage {
+	if len(document) == 0 {
+		return nil
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(document, &members); err != nil {
+		return nil
+	}
+	return members[name]
+}
+
 // Geometry is one geographic shape found somewhere in a published document.
 type Geometry struct {
 	// TargetPath is the wildcard form, byte-identical to a spatial constraint's
@@ -147,6 +196,13 @@ type Nullable[T any] struct {
 	Null  bool
 }
 
+// ResourceAttributes reads the attribute document off a patch, for the two
+// derivations that run before the merge — the JSON-LD pair and the C5 category
+// count — and need to see what THIS request sent rather than what is stored.
+func (p ResourcePatch) ResourceAttributes() json.RawMessage {
+	return member(p.Document, "resourceAttributes")
+}
+
 // CatalogPatch is what MapCatalog returns (A8): a catalog-shaped change in
 // which absence is a distinct state from the zero value.
 //
@@ -164,8 +220,15 @@ type CatalogPatch struct {
 	ID        string
 	NetworkID string
 
-	// nil = absent, `null` = delete.
-	Provider json.RawMessage
+	// Document is the catalog document the publisher sent, minus `resources`
+	// and `offers`, which the mapper has already lifted onto the two slices
+	// below. nil = absent, `null` = delete.
+	//
+	// It carries a RESOLVED `isActive`: A9 makes an omitted one reset to the
+	// default, and RFC 7396 would otherwise keep whatever was stored — the one
+	// place the merge rule and the default rule disagree, so the mapper settles
+	// it before the merge can see it.
+	Document json.RawMessage
 
 	// nil = absent.
 	Validity *TimePeriodPatch
@@ -181,8 +244,8 @@ type CatalogPatch struct {
 // is three fields and not eight.
 //
 // The wire Resource is exactly {id, descriptor, resourceAttributes} (C5) and
-// only `id` is required, so every field but the id preserves absence and none
-// has a declared default. ID is the merge KEY rather than a patchable field:
+// only `id` is required, so the document preserves absence and has no declared
+// default. ID is the merge KEY rather than a patchable field:
 // resources merge by id, so a patch naming no stored resource is an insert and
 // one naming a stored resource is a patch against it. There is no delete —
 // under MERGE `null` deletes a key, never a row.
@@ -190,8 +253,10 @@ type ResourcePatch struct {
 	ID string
 
 	// nil = absent, `null` = delete.
-	Descriptor json.RawMessage
-	Attributes json.RawMessage
+	// Document is the Resource verbatim — `{id, descriptor,
+	// resourceAttributes}` — and the two members are read back through the
+	// accessors below rather than stored beside it.
+	Document json.RawMessage
 }
 
 // OfferPatch is the same split as CatalogPatch and for the same reason.

@@ -153,7 +153,7 @@ func (b *InsertGeometryBatchResults) Close() error {
 
 const upsertOffer = `-- name: UpsertOffer :batchexec
 INSERT INTO offers (
-    catalog_id, id, resource_ids, offer,
+    catalog_id, id, resource_ids, document,
     valid_from, valid_to, valid_time_from, valid_time_to, updated_at
 ) VALUES (
     $1, $2, $3, $4,
@@ -161,7 +161,7 @@ INSERT INTO offers (
 )
 ON CONFLICT (catalog_id, id) DO UPDATE SET
     resource_ids    = EXCLUDED.resource_ids,
-    offer           = EXCLUDED.offer,
+    document        = EXCLUDED.document,
     valid_from      = EXCLUDED.valid_from,
     valid_to        = EXCLUDED.valid_to,
     valid_time_from = EXCLUDED.valid_time_from,
@@ -179,7 +179,7 @@ type UpsertOfferParams struct {
 	CatalogID     string
 	ID            string
 	ResourceIds   []string
-	Offer         []byte
+	Document      []byte
 	ValidFrom     pgtype.Timestamptz
 	ValidTo       pgtype.Timestamptz
 	ValidTimeFrom pgtype.Time
@@ -198,7 +198,7 @@ func (q *Queries) UpsertOffer(ctx context.Context, arg []UpsertOfferParams) *Ups
 			a.CatalogID,
 			a.ID,
 			a.ResourceIds,
-			a.Offer,
+			a.Document,
 			a.ValidFrom,
 			a.ValidTo,
 			a.ValidTimeFrom,
@@ -236,13 +236,13 @@ const upsertResource = `-- name: UpsertResource :batchexec
 INSERT INTO resources (
     catalog_id, id, visible_to, active,
     valid_from, valid_to, valid_time_from, valid_time_to,
-    name, descriptor, attributes, schema_context, schema_type,
+    name, document, schema_context, schema_type,
     search_tsv, embedding, embedding_source_hash, updated_at
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7, $8,
-    $9, $10, $11, $12, $13,
-    to_tsvector('simple', $14::TEXT), $15, $16, now()
+    $9, $10, $11, $12,
+    to_tsvector('simple', $13::TEXT), $14, $15, now()
 )
 ON CONFLICT (catalog_id, id) DO UPDATE SET
     visible_to            = EXCLUDED.visible_to,
@@ -252,8 +252,7 @@ ON CONFLICT (catalog_id, id) DO UPDATE SET
     valid_time_from       = EXCLUDED.valid_time_from,
     valid_time_to         = EXCLUDED.valid_time_to,
     name                  = EXCLUDED.name,
-    descriptor            = EXCLUDED.descriptor,
-    attributes            = EXCLUDED.attributes,
+    document              = EXCLUDED.document,
     schema_context        = EXCLUDED.schema_context,
     schema_type           = EXCLUDED.schema_type,
     search_tsv            = EXCLUDED.search_tsv,
@@ -278,8 +277,7 @@ type UpsertResourceParams struct {
 	ValidTimeFrom       pgtype.Time
 	ValidTimeTo         pgtype.Time
 	Name                string
-	Descriptor          []byte
-	Attributes          []byte
+	Document            []byte
 	SchemaContext       string
 	SchemaType          string
 	SearchText          string
@@ -317,8 +315,7 @@ func (q *Queries) UpsertResource(ctx context.Context, arg []UpsertResourceParams
 			a.ValidTimeFrom,
 			a.ValidTimeTo,
 			a.Name,
-			a.Descriptor,
-			a.Attributes,
+			a.Document,
 			a.SchemaContext,
 			a.SchemaType,
 			a.SearchText,

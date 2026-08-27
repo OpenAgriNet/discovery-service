@@ -374,7 +374,7 @@ SELECT r.catalog_id, r.id
 -- name: HydrateResources :many
 SELECT r.catalog_id, r.id, r.visible_to, r.active,
        r.valid_from, r.valid_to, r.valid_time_from, r.valid_time_to,
-       r.name, r.descriptor, r.attributes, r.schema_context, r.schema_type,
+       r.name, r.document, r.schema_context, r.schema_type,
        r.embedding, r.embedding_source_hash
   FROM resources r
   JOIN (SELECT c.v AS catalog_id, i.v AS resource_id
@@ -389,7 +389,12 @@ SELECT r.catalog_id, r.id, r.visible_to, r.active,
    AND within_daily_window(r.valid_time_from, r.valid_time_to,
                            (now() AT TIME ZONE 'UTC')::time);
 
--- HydrateProviders loads the provider document once per catalog on the page.
+-- HydrateCatalogs loads the catalog document once per catalog on the page.
+--
+-- Named for the catalog rather than the provider since A17: it returns the
+-- whole stored Catalog, which is what makes a discover response carry the
+-- `descriptor`, `bppId`, `bppUri` and `validity` a publisher sent. While it
+-- returned only `provider`, those four had nowhere to come from.
 --
 -- The ONE query in the read path that touches `catalogs`, and it runs after the
 -- page is decided — roughly twenty rows by primary key. That is the whole
@@ -401,8 +406,8 @@ SELECT r.catalog_id, r.id, r.visible_to, r.active,
 -- them; re-testing here would reject a catalog for a state its own resources
 -- were just admitted under, which can only be a bug.
 --
--- name: HydrateProviders :many
-SELECT c.id, c.provider, c.visible_to, c.active,
+-- name: HydrateCatalogs :many
+SELECT c.id, c.document, c.visible_to, c.active,
        c.valid_from, c.valid_to, c.valid_time_from, c.valid_time_to
   FROM catalogs c
  WHERE c.id = ANY(@catalog_ids::text[]);
@@ -444,7 +449,7 @@ SELECT g.catalog_id, g.resource_id, g.target_path, g.source_path, g.geojson
 -- carries last month's offer, so the catalog's own gate does not cover it.
 --
 -- name: HydrateOffers :many
-SELECT o.catalog_id, o.id, o.resource_ids, o.offer,
+SELECT o.catalog_id, o.id, o.resource_ids, o.document,
        o.valid_from, o.valid_to, o.valid_time_from, o.valid_time_to
   FROM offers o
  WHERE o.catalog_id = ANY(@catalog_ids::text[])

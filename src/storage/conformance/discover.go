@@ -68,22 +68,25 @@ var lexical = []domain.Capability{domain.CapabilityLexical}
 // a fixture spells what a resource IS in one place and deriveSearchable puts it
 // where the query reads it.
 //
-// Through Attributes rather than onto the ResourcePatch directly because
+// Inside the document rather than onto the ResourcePatch directly because
 // ResourcePatch has no such fields, deliberately: search text and the schema
 // pair are `derive` output (A8), and a patch carrying them would be a second
 // place they could disagree with the document they describe.
 func searchable(id, name, text, schemaContext, schemaType string) domain.ResourcePatch {
-	document, err := json.Marshal(map[string]string{
-		"name": name, "text": text, "@context": schemaContext, "@type": schemaType,
+	document, err := json.Marshal(map[string]any{
+		"id": id,
+		"resourceAttributes": map[string]string{
+			"name": name, "text": text, "@context": schemaContext, "@type": schemaType,
+		},
 	})
 	if err != nil {
 		panic("fixture resource " + id + " will not marshal: " + err.Error())
 	}
-	return domain.ResourcePatch{ID: id, Attributes: document}
+	return domain.ResourcePatch{ID: id, Document: document}
 }
 
 // deriveSearchable is the stand-in for Task 17's derivation: it reads what
-// `searchable` wrote back out of the MERGED attributes and onto the resource.
+// `searchable` wrote back out of the MERGED document and onto the resource.
 //
 // Off the merged document and not off the patch, which is the whole reason this
 // runs as a derive rather than in the fixture: a MERGE publish that changes only
@@ -97,7 +100,7 @@ func deriveSearchable(merged *domain.Catalog, _ []string) []domain.Fault {
 			Context string `json:"@context"`
 			Type    string `json:"@type"`
 		}
-		if err := json.Unmarshal(merged.Resources[index].Attributes, &document); err != nil {
+		if err := json.Unmarshal(merged.Resources[index].ResourceAttributes(), &document); err != nil {
 			continue
 		}
 		merged.Resources[index].Name = document.Name

@@ -23,7 +23,7 @@
 -- name: LockAndLoadCatalog :one
 INSERT INTO catalogs (id) VALUES ($1)
 ON CONFLICT (id) DO UPDATE SET updated_at = now()
-RETURNING id, provider, visible_to, active,
+RETURNING id, document, visible_to, active,
           valid_from, valid_to, valid_time_from, valid_time_to;
 
 -- ListStoredResources loads what the patch will merge against.
@@ -35,14 +35,14 @@ RETURNING id, provider, visible_to, active,
 -- name: ListStoredResources :many
 SELECT id, catalog_id, visible_to, active,
        valid_from, valid_to, valid_time_from, valid_time_to,
-       name, descriptor, attributes, schema_context, schema_type,
+       name, document, schema_context, schema_type,
        embedding, embedding_source_hash
   FROM resources
  WHERE catalog_id = $1
  ORDER BY id;
 
 -- name: ListStoredOffers :many
-SELECT id, catalog_id, resource_ids, offer,
+SELECT id, catalog_id, resource_ids, document,
        valid_from, valid_to, valid_time_from, valid_time_to
   FROM offers
  WHERE catalog_id = $1
@@ -76,7 +76,7 @@ SELECT catalog_id, resource_id, target_path, source_path, geojson
 --
 -- name: UpdateCatalogRow :exec
 UPDATE catalogs
-   SET provider        = $2,
+   SET document        = $2,
        visible_to      = $3,
        active          = $4,
        valid_from      = $5,
@@ -176,12 +176,12 @@ DELETE FROM offers
 INSERT INTO resources (
     catalog_id, id, visible_to, active,
     valid_from, valid_to, valid_time_from, valid_time_to,
-    name, descriptor, attributes, schema_context, schema_type,
+    name, document, schema_context, schema_type,
     search_tsv, embedding, embedding_source_hash, updated_at
 ) VALUES (
     @catalog_id, @id, @visible_to, @active,
     @valid_from, @valid_to, @valid_time_from, @valid_time_to,
-    @name, @descriptor, @attributes, @schema_context, @schema_type,
+    @name, @document, @schema_context, @schema_type,
     to_tsvector('simple', @search_text::TEXT), @embedding, @embedding_source_hash, now()
 )
 ON CONFLICT (catalog_id, id) DO UPDATE SET
@@ -192,8 +192,7 @@ ON CONFLICT (catalog_id, id) DO UPDATE SET
     valid_time_from       = EXCLUDED.valid_time_from,
     valid_time_to         = EXCLUDED.valid_time_to,
     name                  = EXCLUDED.name,
-    descriptor            = EXCLUDED.descriptor,
-    attributes            = EXCLUDED.attributes,
+    document              = EXCLUDED.document,
     schema_context        = EXCLUDED.schema_context,
     schema_type           = EXCLUDED.schema_type,
     search_tsv            = EXCLUDED.search_tsv,
@@ -276,7 +275,7 @@ INSERT INTO resource_geometries (
 --
 -- name: UpsertOffer :batchexec
 INSERT INTO offers (
-    catalog_id, id, resource_ids, offer,
+    catalog_id, id, resource_ids, document,
     valid_from, valid_to, valid_time_from, valid_time_to, updated_at
 ) VALUES (
     $1, $2, $3, $4,
@@ -284,7 +283,7 @@ INSERT INTO offers (
 )
 ON CONFLICT (catalog_id, id) DO UPDATE SET
     resource_ids    = EXCLUDED.resource_ids,
-    offer           = EXCLUDED.offer,
+    document        = EXCLUDED.document,
     valid_from      = EXCLUDED.valid_from,
     valid_to        = EXCLUDED.valid_to,
     valid_time_from = EXCLUDED.valid_time_from,
@@ -298,7 +297,7 @@ ON CONFLICT (catalog_id, id) DO UPDATE SET
 -- it was asked about and turn "not found" into "found, and now it exists".
 --
 -- name: GetCatalogRow :one
-SELECT id, provider, visible_to, active,
+SELECT id, document, visible_to, active,
        valid_from, valid_to, valid_time_from, valid_time_to
   FROM catalogs
  WHERE id = $1;

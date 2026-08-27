@@ -50,17 +50,15 @@ func mustNotContain(t *testing.T, derived string, words ...string) {
 // `@type` filter COLUMNS, matched exactly, and a term that is both a filter and
 // a free-text token can be matched two ways that disagree.
 func TestDerivationKeepsValuesAndStripsKeys(t *testing.T) {
-	resource := domain.Resource{
-		Name:       "Sona Masuri Rice",
-		Descriptor: json.RawMessage(`{"name":"Sona Masuri","shortDesc":"Premium paddy","longDesc":"Grown in Raichur"}`),
-		Attributes: json.RawMessage(`{
+	resource := resourceWith("Sona Masuri Rice",
+		`{"name":"Sona Masuri","shortDesc":"Premium paddy","longDesc":"Grown in Raichur"}`,
+		`{
 			"@context":"https://beckn.org/Agri",
 			"@type":"AgriProduce",
 			"grade":"A",
 			"moisture":"low",
 			"origin":{"district":"Raichur","state":"Karnataka"}
-		}`),
-	}
+		}`)
 
 	derived := deriveSearchText(resource)
 
@@ -76,14 +74,8 @@ func TestDerivationKeepsValuesAndStripsKeys(t *testing.T) {
 // decision: two byte-different spellings of the same document must hash the
 // same, or a republish that changed nothing re-embeds the whole catalog.
 func TestDerivationDoesNotDependOnKeyOrder(t *testing.T) {
-	one := domain.Resource{
-		Name:       "Rice",
-		Attributes: json.RawMessage(`{"grade":"A","moisture":"low","origin":"Raichur"}`),
-	}
-	other := domain.Resource{
-		Name:       "Rice",
-		Attributes: json.RawMessage(`{"origin":"Raichur","grade":"A","moisture":"low"}`),
-	}
+	one := resourceWith("Rice", "", `{"grade":"A","moisture":"low","origin":"Raichur"}`)
+	other := resourceWith("Rice", "", `{"origin":"Raichur","grade":"A","moisture":"low"}`)
 
 	if deriveSearchText(one) != deriveSearchText(other) {
 		t.Errorf("the same document in two key orders derived differently:\n %q\n %q",
@@ -96,10 +88,7 @@ func TestDerivationDoesNotDependOnKeyOrder(t *testing.T) {
 // randomises range order per run, so a derivation that walked a map without
 // sorting would pass every single-call test and churn hashes in production.
 func TestDerivationIsStableAcrossCalls(t *testing.T) {
-	resource := domain.Resource{
-		Name:       "Rice",
-		Attributes: json.RawMessage(`{"a":"one","b":"two","c":"three","d":"four","e":"five"}`),
-	}
+	resource := resourceWith("Rice", "", `{"a":"one","b":"two","c":"three","d":"four","e":"five"}`)
 
 	first := deriveSearchText(resource)
 	for range 32 {
@@ -114,11 +103,8 @@ func TestDerivationIsStableAcrossCalls(t *testing.T) {
 // stopped at the first object would index the top level of a document and
 // silently miss everything a deep one actually says.
 func TestDerivationWalksNestedObjectsAndArrays(t *testing.T) {
-	resource := domain.Resource{
-		Name: "Rice",
-		Attributes: json.RawMessage(
-			`{"certifications":[{"body":"FSSAI"},{"body":"Organic"}],"packing":{"inner":{"material":"jute"}}}`),
-	}
+	resource := resourceWith("Rice", "",
+		`{"certifications":[{"body":"FSSAI"},{"body":"Organic"}],"packing":{"inner":{"material":"jute"}}}`)
 
 	mustContain(t, deriveSearchText(resource), "FSSAI", "Organic", "jute")
 	mustNotContain(t, deriveSearchText(resource), "certifications", "body", "packing", "inner", "material")
@@ -133,16 +119,64 @@ func TestDerivationOfABareResourceIsItsName(t *testing.T) {
 	}
 }
 
+// The resource `id` is in reach for the first time, and must stay out.
+//
+// Before A17 the derivation read a `descriptor` column and an `attributes`
+// column, so the id was not merely excluded — it was in a third place the
+// function never opened. It is now a member of the same document, one
+// `appendValues(words, resource.Document)` away from being indexed, and an id
+// is the one string on a resource guaranteed to discriminate nothing: it
+// matches exactly one row, which every lookup already has a primary key for.
+// Worse, ids are commonly slugs — `wheat-atta-5kg` — so indexing them would
+// make a corpus of them collide with the words publishers actually search for.
+//
+// This is what `Resource.Descriptor()` and `Resource.ResourceAttributes()` are
+// FOR. Deleting them in favour of the whole document is a two-character change
+// that compiles, and this is the test that says no.
+func TestDerivationDoesNotReachTheResourceID(t *testing.T) {
+	resource := resourceWith("Rice", `{"name":"Sona Masuri"}`, `{"grade":"A"}`)
+
+	mustContain(t, deriveSearchText(resource), "Rice", "Sona", "Masuri", "A")
+	mustNotContain(t, deriveSearchText(resource), "r1", "id")
+}
+
 // Unreadable JSON is not a reason to lose the name. Nothing upstream guarantees
 // these bytes parse — L1 validates the request, not the merge result — and a
 // derivation that gave up would leave the resource with an EMPTY tsvector,
 // undiscoverable by any lexical query, rather than merely under-indexed.
-func TestDerivationOfUnreadableAttributesKeepsWhatItCanRead(t *testing.T) {
+//
+// Since A17 the descriptor and the attributes are two members of ONE document,
+// so bytes that will not parse cost both rather than one. That is the honest
+// cost of storing the resource whole, and it is bounded: Name is a column,
+// derived and written before any of this, so the resource stays findable by the
+// thing publishers actually search for.
+func TestDerivationOfAnUnreadableDocumentKeepsWhatItCanRead(t *testing.T) {
 	resource := domain.Resource{
-		Name:       "Rice",
-		Descriptor: json.RawMessage(`{"shortDesc":"Premium paddy"}`),
-		Attributes: json.RawMessage(`{"grade":`),
+		Name:     "Rice",
+		Document: json.RawMessage(`{"descriptor":{"shortDesc":"Premium paddy"`),
 	}
 
-	mustContain(t, deriveSearchText(resource), "Rice", "Premium", "paddy")
+	mustContain(t, deriveSearchText(resource), "Rice")
+	mustNotContain(t, deriveSearchText(resource), "Premium", "paddy")
+}
+
+// resourceWith builds the stored shape: one document holding the descriptor and
+// the attributes, with the derived Name beside it.
+//
+// Either member may be empty, which is the ordinary case — only `id` is
+// required on a wire Resource.
+func resourceWith(name, descriptor, attributes string) domain.Resource {
+	members := map[string]json.RawMessage{"id": json.RawMessage(`"r1"`)}
+	if descriptor != "" {
+		members["descriptor"] = json.RawMessage(descriptor)
+	}
+	if attributes != "" {
+		members["resourceAttributes"] = json.RawMessage(attributes)
+	}
+
+	document, err := json.Marshal(members)
+	if err != nil {
+		panic("fixture resource will not marshal: " + err.Error())
+	}
+	return domain.Resource{Name: name, Document: document}
 }

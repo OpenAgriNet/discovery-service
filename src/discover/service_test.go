@@ -277,21 +277,23 @@ func TestTheBackendsOwnDegradationIsCarriedToo(t *testing.T) {
 	}
 }
 
-// The offer reaches the caller as the publisher wrote it.
+// The catalog, its resources and its offers all reach the caller as the
+// publisher wrote them.
 //
-// `offers.offer` is stored verbatim for exactly this, so a member this
-// service's own struct never named must survive the round trip — a projection
-// the storage layer does not keep is one the response must not invent, and one
-// it does keep is one the response must not drop.
-func TestARenderedCatalogCarriesItsOffersVerbatim(t *testing.T) {
+// All three documents are stored verbatim for exactly this (A17), so a member
+// this service's own structs never named must survive the round trip — a
+// projection the storage layer does not keep is one the response must not
+// invent, and one it does keep is one the response must not drop.
+func TestARenderedCatalogCarriesItsDocumentsVerbatim(t *testing.T) {
 	repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Catalogs: []domain.Catalog{{
-		ID:       "c1",
-		Provider: json.RawMessage(`{"id":"p1"}`),
+		ID: "c1",
+		Document: json.RawMessage(
+			`{"id":"c1","bppId":"b1","provider":{"id":"p1"},"vendorNote":"kept whole"}`),
 		Resources: []domain.Resource{{
-			ID:         "r1",
-			CatalogID:  "c1",
-			Descriptor: json.RawMessage(`{"name":"Wheat"}`),
-			Attributes: json.RawMessage(`{"@context":"https://beckn.org/Agri","@type":"SeedLot"}`),
+			ID:        "r1",
+			CatalogID: "c1",
+			Document: json.RawMessage(`{"id":"r1","descriptor":{"name":"Wheat"},` +
+				`"resourceAttributes":{"@context":"https://beckn.org/Agri","@type":"SeedLot"}}`),
 		}},
 		Offers: []domain.Offer{{
 			ID:        "o1",
@@ -318,12 +320,26 @@ func TestARenderedCatalogCarriesItsOffersVerbatim(t *testing.T) {
 		t.Errorf("resources = %+v, want the attributes stored on them", catalog.Resources)
 	}
 
-	encoded, err := json.Marshal(catalog.Offers[0])
-	if err != nil {
-		t.Fatalf("marshalling the rendered offer: %v", err)
-	}
-	if !strings.Contains(string(encoded), "vendorNote") {
-		t.Errorf("offer = %s, want the member this service never named to survive", encoded)
+	// Marshalled rather than read off the struct, because the fields are
+	// exactly what a projection would have kept. The bytes are the claim.
+	for _, unit := range []struct {
+		name  string
+		value any
+		want  []string
+	}{
+		{"the catalog", catalog, []string{"bppId", "kept whole"}},
+		{"the resource", catalog.Resources[0], []string{"Wheat", "SeedLot"}},
+		{"the offer", catalog.Offers[0], []string{"vendorNote", "ten per cent off"}},
+	} {
+		encoded, err := json.Marshal(unit.value)
+		if err != nil {
+			t.Fatalf("marshalling %s: %v", unit.name, err)
+		}
+		for _, want := range unit.want {
+			if !strings.Contains(string(encoded), want) {
+				t.Errorf("%s = %s, want %q to survive", unit.name, encoded, want)
+			}
+		}
 	}
 }
 

@@ -239,8 +239,8 @@ func TestTheSameCatalogIDTwiceInOneRequestIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nothing stored: %v", err)
 	}
-	if !strings.Contains(string(stored.Provider), "first") {
-		t.Errorf("stored provider = %s, want the FIRST entry's — the one that was ACCEPTED", stored.Provider)
+	if !strings.Contains(string(stored.Provider()), "first") {
+		t.Errorf("stored provider = %s, want the FIRST entry's — the one that was ACCEPTED", stored.Provider())
 	}
 }
 

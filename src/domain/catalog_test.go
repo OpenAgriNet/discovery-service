@@ -20,7 +20,7 @@ func january(day int) time.Time {
 func storedCatalog() Catalog {
 	return Catalog{
 		ID:            "c1",
-		Provider:      json.RawMessage(`{"name":"Anand Seeds","phone":"111"}`),
+		Document:      json.RawMessage(`{"id":"c1","provider":{"name":"Anand Seeds","phone":"111"}}`),
 		Active:        true,
 		VisibleTo:     []string{"mahavistar", "oan"},
 		ValidFrom:     january(1),
@@ -28,8 +28,10 @@ func storedCatalog() Catalog {
 		ValidTimeFrom: &TimeOfDay{Hour: 9},
 		ValidTimeTo:   &TimeOfDay{Hour: 17},
 		Resources: []Resource{
-			{ID: "r1", Descriptor: json.RawMessage(`{"name":"Wheat"}`), Attributes: json.RawMessage(`{"grade":"A","kg":50}`)},
-			{ID: "r2", Descriptor: json.RawMessage(`{"name":"Rice"}`), Attributes: json.RawMessage(`{"grade":"B"}`)},
+			{ID: "r1", Document: json.RawMessage(
+				`{"id":"r1","descriptor":{"name":"Wheat"},"resourceAttributes":{"grade":"A","kg":50}}`)},
+			{ID: "r2", Document: json.RawMessage(
+				`{"id":"r2","descriptor":{"name":"Rice"},"resourceAttributes":{"grade":"B"}}`)},
 		},
 		Offers: []Offer{
 			{ID: "o1", ResourceIDs: []string{"r1"}, Document: json.RawMessage(`{"price":10,"unit":"kg"}`)},
@@ -42,6 +44,17 @@ func storedCatalog() Catalog {
 // accidentally assert the zero value means "absent".
 func defaultedPatch() CatalogPatch {
 	return CatalogPatch{ID: "c1", Active: true, VisibleTo: []string{"mahavistar", "oan"}}
+}
+
+// attributePatch is a resource patch that touches `resourceAttributes` and
+// nothing else — the shape most of these cases send.
+//
+// It carries the id inside the document as well as beside it, because that is
+// what the publish mapper produces: the wire Resource has `id` as a required
+// member, and a fixture that omitted it would be merging a document no
+// publisher could send.
+func attributePatch(id, attributes string) json.RawMessage {
+	return json.RawMessage(`{"id":"` + id + `","resourceAttributes":` + attributes + `}`)
 }
 
 func resourceByID(t *testing.T, catalog Catalog, id string) Resource {
@@ -61,11 +74,11 @@ func resourceByID(t *testing.T, catalog Catalog, id string) Resource {
 // exactly one id.
 func TestAPatchNamingOneResourceLeavesTheOtherIdentical(t *testing.T) {
 	patch := defaultedPatch()
-	patch.Resources = []ResourcePatch{{ID: "r1", Attributes: json.RawMessage(`{"kg":100}`)}}
+	patch.Resources = []ResourcePatch{{ID: "r1", Document: attributePatch("r1", `{"kg":100}`)}}
 
 	merged, touched := MergeCatalog(storedCatalog(), patch)
 
-	if got := string(resourceByID(t, merged, "r2").Attributes); got != `{"grade":"B"}` {
+	if got := string(resourceByID(t, merged, "r2").ResourceAttributes()); got != `{"grade":"B"}` {
 		t.Errorf("r2 attributes = %s, want them untouched", got)
 	}
 	if !slices.Equal(touched, []string{"r1"}) {
@@ -77,12 +90,13 @@ func TestAPatchNamingOneResourceLeavesTheOtherIdentical(t *testing.T) {
 // sibling the patch did not mention survives.
 func TestAResourcePatchMergesItsAttributesRatherThanReplacingThem(t *testing.T) {
 	patch := defaultedPatch()
-	patch.Resources = []ResourcePatch{{ID: "r1", Attributes: json.RawMessage(`{"kg":100}`)}}
+	patch.Resources = []ResourcePatch{{ID: "r1", Document: attributePatch("r1", `{"kg":100}`)}}
 
 	merged, _ := MergeCatalog(storedCatalog(), patch)
 
-	if !sameJSON(t, resourceByID(t, merged, "r1").Attributes, json.RawMessage(`{"grade":"A","kg":100}`)) {
-		t.Errorf("r1 attributes = %s, want grade kept and kg replaced", resourceByID(t, merged, "r1").Attributes)
+	if !sameJSON(t, resourceByID(t, merged, "r1").ResourceAttributes(), json.RawMessage(`{"grade":"A","kg":100}`)) {
+		t.Errorf("r1 attributes = %s, want grade kept and kg replaced",
+			resourceByID(t, merged, "r1").ResourceAttributes())
 	}
 }
 
@@ -91,14 +105,15 @@ func TestAResourcePatchMergesItsAttributesRatherThanReplacingThem(t *testing.T) 
 // MERGE.
 func TestAResourceIDNothingStoresIsAnInsert(t *testing.T) {
 	patch := defaultedPatch()
-	patch.Resources = []ResourcePatch{{ID: "r3", Descriptor: json.RawMessage(`{"name":"Millet"}`)}}
+	patch.Resources = []ResourcePatch{{ID: "r3", Document: json.RawMessage(
+		`{"id":"r3","descriptor":{"name":"Millet"}}`)}}
 
 	merged, touched := MergeCatalog(storedCatalog(), patch)
 
 	if len(merged.Resources) != 3 {
 		t.Fatalf("the merged catalog holds %d resources, want 3", len(merged.Resources))
 	}
-	if !sameJSON(t, resourceByID(t, merged, "r3").Descriptor, json.RawMessage(`{"name":"Millet"}`)) {
+	if !sameJSON(t, resourceByID(t, merged, "r3").Descriptor(), json.RawMessage(`{"name":"Millet"}`)) {
 		t.Error("the inserted resource did not carry the patch's descriptor")
 	}
 	if !slices.Contains(touched, "r3") {
@@ -109,19 +124,19 @@ func TestAResourceIDNothingStoresIsAnInsert(t *testing.T) {
 func TestAnAbsentProviderKeepsTheStoredOne(t *testing.T) {
 	merged, _ := MergeCatalog(storedCatalog(), defaultedPatch())
 
-	if !sameJSON(t, merged.Provider, json.RawMessage(`{"name":"Anand Seeds","phone":"111"}`)) {
-		t.Errorf("provider = %s, want the stored one", merged.Provider)
+	if !sameJSON(t, merged.Provider(), json.RawMessage(`{"name":"Anand Seeds","phone":"111"}`)) {
+		t.Errorf("provider = %s, want the stored one", merged.Provider())
 	}
 }
 
 func TestAProviderPatchMergesIntoTheStoredDocument(t *testing.T) {
 	patch := defaultedPatch()
-	patch.Provider = json.RawMessage(`{"phone":"222"}`)
+	patch.Document = json.RawMessage(`{"provider":{"phone":"222"}}`)
 
 	merged, _ := MergeCatalog(storedCatalog(), patch)
 
-	if !sameJSON(t, merged.Provider, json.RawMessage(`{"name":"Anand Seeds","phone":"222"}`)) {
-		t.Errorf("provider = %s, want the name kept and the phone replaced", merged.Provider)
+	if !sameJSON(t, merged.Provider(), json.RawMessage(`{"name":"Anand Seeds","phone":"222"}`)) {
+		t.Errorf("provider = %s, want the name kept and the phone replaced", merged.Provider())
 	}
 }
 
@@ -221,7 +236,7 @@ func TestAnOfferPatchTouchesItsResourcesWithNoResourceNamed(t *testing.T) {
 // duplicate is a resource embedded twice.
 func TestTouchedNamesEachResourceOnce(t *testing.T) {
 	patch := defaultedPatch()
-	patch.Resources = []ResourcePatch{{ID: "r1", Attributes: json.RawMessage(`{"kg":1}`)}}
+	patch.Resources = []ResourcePatch{{ID: "r1", Document: attributePatch("r1", `{"kg":1}`)}}
 	patch.Offers = []OfferPatch{{ID: "o1", ResourceIDs: []string{"r1"}}}
 
 	_, touched := MergeCatalog(storedCatalog(), patch)
@@ -246,11 +261,11 @@ func TestAPatchNamingNoCollectionTouchesNoResource(t *testing.T) {
 func TestMergeCatalogLeavesTheStoredCatalogAlone(t *testing.T) {
 	stored := storedCatalog()
 	patch := defaultedPatch()
-	patch.Resources = []ResourcePatch{{ID: "r1", Attributes: json.RawMessage(`{"kg":100}`)}}
+	patch.Resources = []ResourcePatch{{ID: "r1", Document: attributePatch("r1", `{"kg":100}`)}}
 
 	MergeCatalog(stored, patch)
 
-	if got := string(stored.Resources[0].Attributes); got != `{"grade":"A","kg":50}` {
+	if got := string(stored.Resources[0].ResourceAttributes()); got != `{"grade":"A","kg":50}` {
 		t.Errorf("the stored resource was modified in place: %s", got)
 	}
 }
@@ -262,8 +277,8 @@ func TestMergeCatalogLeavesTheStoredCatalogAlone(t *testing.T) {
 func TestTwoPatchesForOneNewResourceAreOneResource(t *testing.T) {
 	patch := defaultedPatch()
 	patch.Resources = []ResourcePatch{
-		{ID: "r9", Descriptor: json.RawMessage(`{"name":"first"}`)},
-		{ID: "r9", Attributes: json.RawMessage(`{"colour":"red"}`)},
+		{ID: "r9", Document: json.RawMessage(`{"id":"r9","descriptor":{"name":"first"}}`)},
+		{ID: "r9", Document: attributePatch("r9", `{"colour":"red"}`)},
 	}
 
 	merged, _ := MergeCatalog(Catalog{ID: "c1"}, patch)
@@ -272,11 +287,11 @@ func TestTwoPatchesForOneNewResourceAreOneResource(t *testing.T) {
 		t.Fatalf("stored %d resources under one id, want 1", got)
 	}
 	resource := merged.Resources[0]
-	if string(resource.Descriptor) != `{"name":"first"}` {
-		t.Errorf("Descriptor = %s, want the first patch's", resource.Descriptor)
+	if !sameJSON(t, resource.Descriptor(), json.RawMessage(`{"name":"first"}`)) {
+		t.Errorf("descriptor = %s, want the first patch's", resource.Descriptor())
 	}
-	if string(resource.Attributes) != `{"colour":"red"}` {
-		t.Errorf("Attributes = %s, want the second patch's", resource.Attributes)
+	if !sameJSON(t, resource.ResourceAttributes(), json.RawMessage(`{"colour":"red"}`)) {
+		t.Errorf("resourceAttributes = %s, want the second patch's", resource.ResourceAttributes())
 	}
 }
 

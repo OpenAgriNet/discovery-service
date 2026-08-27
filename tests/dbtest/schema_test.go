@@ -50,14 +50,14 @@ func TestTheIndexInventoryIsExactlyWhatTheMigrationsBuild(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
 
 	want := map[string][]string{
-		// Nothing beyond the primary key's own btree, which PostgreSQL builds
-		// whether or not this plan wanted it. Catalogs are reached by id, or by
-		// a join from a resource that was already found; there is no query that
-		// scans them.
-		"catalogs": {"catalogs_pkey"},
+		// The primary key's own btree, which PostgreSQL builds whether or not
+		// this plan wanted it, and the document index Task 22's catalog-level
+		// filter resolves through. Catalogs are otherwise reached by id, or by
+		// a join from a resource that was already found.
+		"catalogs": {"catalogs_pkey", "idx_catalogs_document"},
 
 		"resources": {
-			"idx_resources_attributes",
+			"idx_resources_document",
 			"idx_resources_embedding",
 			"idx_resources_name_trgm",
 			"idx_resources_schema",
@@ -75,7 +75,7 @@ func TestTheIndexInventoryIsExactlyWhatTheMigrationsBuild(t *testing.T) {
 		},
 
 		"offers": {
-			"idx_offers_offer",
+			"idx_offers_document",
 			"idx_offers_resource_ids",
 			"offers_pkey",
 		},

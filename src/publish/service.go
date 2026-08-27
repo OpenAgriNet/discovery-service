@@ -289,8 +289,8 @@ func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 func (s *Service) deriveResource(
 	ctx context.Context, resource *domain.Resource, catalogIndex, resourceIndex int,
 ) []domain.Fault {
-	resource.Name = descriptorName(resource.Descriptor)
-	resource.SchemaContext, resource.SchemaType = schemaOf(resource.Attributes)
+	resource.Name = descriptorName(resource.Descriptor())
+	resource.SchemaContext, resource.SchemaType = schemaOf(resource.ResourceAttributes())
 	resource.SearchText = deriveSearchText(*resource)
 
 	hash := blake2b.Sum256([]byte(resource.SearchText))
@@ -361,7 +361,7 @@ func statsFor(patch domain.CatalogPatch) *beckn.CatalogStats {
 	// Distinct @type, because the spec has no category field anywhere (C5).
 	categories := make(map[string]bool, len(patch.Resources))
 	for _, resource := range patch.Resources {
-		if _, schemaType := schemaOf(resource.Attributes); schemaType != "" {
+		if _, schemaType := schemaOf(resource.ResourceAttributes()); schemaType != "" {
 			categories[schemaType] = true
 		}
 	}

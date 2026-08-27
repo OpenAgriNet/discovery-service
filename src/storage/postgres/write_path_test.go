@@ -30,7 +30,10 @@ import (
 // package boundary would make one file's convenience the other file's
 // constraint.
 func resourcePatch(id, attributes string) domain.ResourcePatch {
-	return domain.ResourcePatch{ID: id, Attributes: json.RawMessage(attributes)}
+	return domain.ResourcePatch{
+		ID:       id,
+		Document: json.RawMessage(`{"id":"` + id + `","resourceAttributes":` + attributes + `}`),
+	}
 }
 
 // stampHash is a derive that gives every resource the SAME new hash on every
@@ -464,8 +467,9 @@ func TestTwoConcurrentRepublishesBothSurvive(t *testing.T) {
 	}
 
 	var attributes map[string]any
-	if err := json.Unmarshal(stored.Resources[0].Attributes, &attributes); err != nil {
-		t.Fatalf("the stored attributes are not an object: %v (%s)", err, stored.Resources[0].Attributes)
+	if err := json.Unmarshal(stored.Resources[0].ResourceAttributes(), &attributes); err != nil {
+		t.Fatalf("the stored attributes are not an object: %v (%s)",
+			err, stored.Resources[0].ResourceAttributes())
 	}
 	if attributes["moisture"] != "12%" || attributes["origin"] != "Kolar" {
 		t.Errorf("the resource holds %v, want both moisture and origin — one republish "+

@@ -111,9 +111,9 @@ func (h *Hydrator) Hydrate(
 	catalogIDs, resourceIDs = domain.SplitResourceKeys(admitted)
 	onPage := slices.Compact(slices.Sorted(slices.Values(catalogIDs)))
 
-	providers, err := h.queries.HydrateProviders(ctx, onPage)
+	catalogs, err := h.queries.HydrateCatalogs(ctx, onPage)
 	if err != nil {
-		return nil, fmt.Errorf("hydrate the page's providers: %w", err)
+		return nil, fmt.Errorf("hydrate the page's catalogs: %w", err)
 	}
 
 	geometries, err := h.queries.HydrateGeometries(ctx, gen.HydrateGeometriesParams{
@@ -132,7 +132,7 @@ func (h *Hydrator) Hydrate(
 		return nil, fmt.Errorf("hydrate the page's offers: %w", err)
 	}
 
-	return assemble(ids, resources, providers, geometries, offers), nil
+	return assemble(ids, resources, catalogs, geometries, offers), nil
 }
 
 // Count is the size of the set the fusion drew from.
@@ -199,7 +199,7 @@ func (h *Hydrator) Count(
 func assemble(
 	page []string,
 	resources []gen.HydrateResourcesRow,
-	providers []gen.HydrateProvidersRow,
+	catalogs []gen.HydrateCatalogsRow,
 	geometries []gen.HydrateGeometriesRow,
 	offers []gen.HydrateOffersRow,
 ) []domain.Catalog {
@@ -210,8 +210,8 @@ func assemble(
 
 	catalogLevel, ownedGeometries := hydratedGeometries(geometries)
 
-	assembled := make([]domain.Catalog, 0, len(providers))
-	position := make(map[string]int, len(providers))
+	assembled := make([]domain.Catalog, 0, len(catalogs))
+	position := make(map[string]int, len(catalogs))
 
 	for _, key := range page {
 		resource, found := byResource[key]
@@ -235,26 +235,28 @@ func assemble(
 		assembled[index].Resources = append(assembled[index].Resources, resource)
 	}
 
-	attachProviders(assembled, position, providers)
+	attachCatalogs(assembled, position, catalogs)
 	attachOffers(assembled, position, offers)
 	return assembled
 }
 
-// attachProviders folds the catalog rows onto the catalogs the page produced.
+// attachCatalogs folds the catalog rows onto the catalogs the page produced.
 //
-// Keyed on `position` rather than appended, because a provider row for a
-// catalog no resource on this page belongs to is one the caller must not see:
-// the page decides which catalogs exist in the response, and this only fills
-// them in.
-func attachProviders(
-	assembled []domain.Catalog, position map[string]int, providers []gen.HydrateProvidersRow,
+// Keyed on `position` rather than appended, because a catalog row no resource
+// on this page belongs to is one the caller must not see: the page decides
+// which catalogs exist in the response, and this only fills them in.
+//
+// Named for the catalog rather than the provider since A17 — the row now
+// carries the whole stored document, of which the provider is one member.
+func attachCatalogs(
+	assembled []domain.Catalog, position map[string]int, catalogs []gen.HydrateCatalogsRow,
 ) {
-	for _, row := range providers {
+	for _, row := range catalogs {
 		index, onPage := position[row.ID]
 		if !onPage {
 			continue
 		}
-		assembled[index].Provider = json.RawMessage(row.Provider)
+		assembled[index].Document = json.RawMessage(row.Document)
 		assembled[index].VisibleTo = row.VisibleTo
 		assembled[index].Active = row.Active
 		assembled[index].ValidFrom = instant(row.ValidFrom)
@@ -283,8 +285,7 @@ func hydratedResource(row gen.HydrateResourcesRow) domain.Resource {
 		ID:                  row.ID,
 		CatalogID:           row.CatalogID,
 		Name:                row.Name,
-		Descriptor:          json.RawMessage(row.Descriptor),
-		Attributes:          json.RawMessage(row.Attributes),
+		Document:            json.RawMessage(row.Document),
 		SchemaContext:       row.SchemaContext,
 		SchemaType:          row.SchemaType,
 		Embedding:           floats(row.Embedding),
@@ -303,7 +304,7 @@ func hydratedOffer(row gen.HydrateOffersRow) domain.Offer {
 		ID:            row.ID,
 		CatalogID:     row.CatalogID,
 		ResourceIDs:   row.ResourceIds,
-		Document:      json.RawMessage(row.Offer),
+		Document:      json.RawMessage(row.Document),
 		ValidFrom:     instant(row.ValidFrom),
 		ValidTo:       instant(row.ValidTo),
 		ValidTimeFrom: timeOfDay(row.ValidTimeFrom),

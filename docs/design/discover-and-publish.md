@@ -76,7 +76,9 @@ Every task inherits these.
 ## Spec Conflicts
 
 The PRD and `beckn.yaml` v2.0.0 disagree in twelve places, the spec
-contradicts itself in a thirteenth, and it is silent in a fourteenth. These resolutions are binding. C8, C9 and
+contradicts itself in a thirteenth, it is silent in a fourteenth, and in a
+fifteenth it declares a field that no value can satisfy. These resolutions are
+binding. C8, C9 and
 C10 are **deliberate deviations** — cases where this service knowingly does
 something other than what the spec says, each with the reason written down,
 because an undocumented deviation is indistinguishable from a bug. C13 is not a
@@ -98,6 +100,7 @@ deviation but a choice between two things the schema says at once.
 | **C12** | `CatalogProcessingResult.stats` gives `itemCount` as *"Number of items accepted"* but `providerCount` as *"Number of providers in the catalog"* — one request-scoped, one catalog-scoped, in adjacent fields | All three are read **request-scoped**: `itemCount` and `categoryCount` count what this request landed, and `providerCount` is 1 because a catalog has exactly one provider, so the two readings coincide and nothing is lost. A8 is why this needed deciding at all — before field-level MERGE, a payload and its catalog were the same set |
 | **C13** | Every Ack-family schema requires `message.messageId`, and the family then disagrees about what it is. Seven declare `format: uuid` — `Ack`, `AckNoCallback`, `NackBadRequest`, `NackUnauthorized`, `NackTooManyRequests`, `NackDiscretionary`, `ServerError`. Three drop the format and describe the field instead: *"Echoes the messageId from the triggering request's Context, for caller correlation"* — `NackForbidden`, `NackConflict`, `NackNotFound` | **Echo, verbatim.** The two readings are not equal and this is not a coin toss: a field defined as an echo cannot assert a format its source is not required to carry, and by **C6** the source carries no guarantee at all — `Context` declares no `required` list, so the spec never establishes that a uuid was ever sent. The three that dropped `format` are the ones that followed that through. So `WriteNack` echoes `context.messageId` exactly as received, **including a value that is not a uuid** — which is precisely the request C6 rejects, and precisely the caller with the least other means of working out which request was refused. Empty **only** when the envelope yielded no messageId at all: unparseable JSON, or the key absent. Never a minted uuid — that hands the caller a correlation id for a message they never sent, which is worse than nothing because it looks like an answer. Capped at 128 bytes, longer dropped to empty: past that it is not a correlation handle a caller can use, it is a payload they chose our error body to carry. Against the seven variants declaring `format: uuid` the echoed non-uuid is non-conformant, and that is the cost of the reading — recorded here rather than left for L1 to discover **And the NACK carries no `context`.** The ten schemas are *open* — not one sets `additionalProperties: false`, unlike `Error`, which is closed and is what forced C7's chain — so a `context` beside `message` would validate. It is left out anyway: `Ack.messageId`'s own description is *"The message id of the request sent in the context, to which this acknowledgement is being returned"*, which is the spec lifting the correlation handle out of the context deliberately so a response need not carry one. Adding it back would be legal and still wrong — the NACK that most needs correlating is the one whose request context we have just refused as unreadable, so what we sent back would be part echo and part invention, which is the fault this row already refuses when it declines to mint a messageId. `transactionId` therefore has nowhere to go and is not smuggled into a header either; a header no scenario sets is not shipped. Because the schemas are open, **L1 cannot police this** — a stray key validates clean. `TestTheNackBodyCarriesNothingBeyondTheSchema` asserts the top-level and `message` key sets by hand, and it is the only thing standing between this decision and a silent drift. |
 | **C14** | The `ErrorCode` enum has **no member for a payload this receiver will not accept on size**. All 76 are checked: the nearest are `AUT_RATE_LIMITED`, which is about pace and carries `Retry-After`, and `POL_NP_CAPACITY_EXCEEDED`, which `NackTooManyRequests` describes as *"a policy-governed engagement capacity limit"* at 429. There is no `SCH_` or `NET_` code for it either | **`POL_NP_CAPACITY_EXCEEDED` at HTTP 413**, and the request body is capped at `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB) in `Envelope`. The family is right and the status is not the family's: `POL_` is *a refusal this deployment's policy requires rather than one the request earned*, which is exactly what a size ceiling is — the same request succeeds unchanged against a deployment configured to accept it. 403 would send the caller to inspect their credentials for a fault that is in their payload, so `Status()` overrides it to 413 alongside the two overrides already there. **The reuse is safe only because this service runs no engagements**: the spec's other use of this code has no code path here, so within this service the code means one thing and maps to one status. A deployment that grows an engagement lifecycle must give that refusal a code of its own — the one thing it must not do is make this mapping carry two statuses, because `Status()` derives from the code precisely so that two call sites cannot disagree about what a fault is worth on the wire. The ceiling is a knob and not a constant because the largest legitimate body is a property of a deployment's catalogs, not of the protocol; zero is refused at boot, because it reads as *unlimited* and behaves as *refuse everything* |
+| **C15** | `AddOn` is a bare `oneOf: [Resource, Offer]`, and NEITHER branch sets `additionalProperties: false`. `Resource` requires only `id`; `Offer` requires only `id`. **Every possible AddOn value therefore matches both branches, and `oneOf` requires exactly one** | **No resolution is available at this layer, and none is invented.** `Offer.addOns` is refused by L1 with `400 SCH_SCHEMA_VALIDATION_FAILED` at `$…offers[N].addOns[M]` — measured in Task 21b, not inferred. The alternatives were each worse: relaxing `oneOf` to `anyOf` in the vendored spec makes this service accept payloads the network rejects, and excluding `addOns` from L1 makes one field silently unvalidated. A schema that admits no value is a defect to report upstream, and the honest behaviour meanwhile is the 400 that names the path. Nothing else in the pipeline treats `addOns` specially: were the schema fixed tomorrow, A17 already stores it, because it stores the offer whole |
 
 **`networkId` is a filter, not an identity claim, and the two mappers answer
 "it's absent" differently.** On **publish**, absent → scope to
@@ -135,7 +138,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A14** | **`DeriveFunc` takes the merged catalog by POINTER: `func(merged *Catalog, touched []string) []Fault`.** A8 makes derive the post-merge seam that WRITES `searchText`, `embedding`, `embeddingSourceHash`, `schemaContext`, `schemaType` and the geometry finds onto the merged catalog before the repository stores it. Taking the catalog by value gave it a copy: everything it computed was discarded, and the columns it exists to fill would have gone to the store empty while every test that only checked the returned faults passed. The `[]Fault` return stays, because a fault is a PARTIAL that travels to the response and is not a field of the catalog | 13, 14, 15, 17 |
 | **A15** | **`Owners` is spent by the geometry WALK, and the repository never reads it back.** The walk already fans a shape out — `merged.Resources[k].Geometries <- found where k in Owners` — so an offer geometry covering three resources arrives on all three lists, each copy still naming all three. A repository that then wrote one row per owner per copy would turn N lists into N x N rows and violate `uq_resource_geometries (catalog_id, COALESCE(resource_id, ''), source_path)` on the FIRST publish of any offer geometry, not on some later republish. The rule is therefore positional: a shape is stored for the resource whose list it is on, and for the catalog when it is on the catalog's. The fill is still computed once per shape — memoised on `SourcePath`, which is unique per shape and is half of that same index — because the copies are identical shapes and H3 is the expensive half. This also settles staleness: an offer's shape cannot rot on an untouched resource, because `touched` follows offers, so patching the offer touches every resource it covers | 15, 17 |
 | **A16** | **The pool floor is `(modes + 1) x in-flight`, and scenario 25's 20 ms budget is measured rather than enforced.** Task 1 sizes the pool as `modes x in-flight` — 32 for scenario 25's sixteen discovers — which counts only the retrieval fan-out. A discover then issues a count and four hydration queries, each taking a connection while its fifteen siblings are still inside their two-connection fan-out, so the peak is one higher per request. Measured on the corpus: 32 connections leave 137-195 acquires waiting, 48 leave none, 96 leave none no faster. `MinConns` must equal `MaxConns` for the assertion to mean anything, because `EmptyAcquireCount` counts acquires that waited for a connection to be CONSTRUCTED as well as ones that waited for a release, so a pool growing lazily from 4 charges its own warm-up to the scenario. **The latency half does not survive contact with the hardware:** one discover over ten thousand resources answers in 19-22 ms, inside the budget, but sixteen concurrent ones measure p50 160 ms / p95 260 ms against a database that saturates at 91-98 requests a second on a four-CPU container — Little's law, and the measurement agrees within 5%. 20 ms at that concurrency needs ~800 requests a second, about nine times this capacity, and it is a hardware statement rather than a query one. Task 21 therefore logs p50, p95 and throughput on every run and enforces the two machine-independent halves instead: `EmptyAcquireCount` must not move, and twenty times the corpus must cost under three times the request — which is the `count(*)` joining `catalogs` the scenario names, since that one tracks matches rather than the page | 1, 21 |
-| **A17** | **Each published object is stored verbatim in exactly one row's `document`, and every other column on that row is DERIVED from it at publish time.** The schema shredded a catalog into columns chosen for indexing — `provider`, `descriptor`, `attributes` — and those columns then became the only thing stored, so a discover response could not return a catalog's `descriptor`, `bppId`, `bppUri` or `validity` at all, and a JSONPath filter had no document to run against above `resourceAttributes`. **`catalogs.document` holds the Catalog with `resources` and `offers` STRIPPED** — those own their own rows, and keeping them in both places would give one MERGE two places to apply and no constraint keeping the two agreed. `resources.document` holds the whole Resource; `offers.offer` is RENAMED `offers.document`, which is what it already held and what `OfferPatch.Document` already called it. `catalogs.provider`, `resources.descriptor` and `resources.attributes` are dropped in the same migration, so this is close to storage-neutral rather than a second copy of anything. `visible_to` stays authoritative because it arrives on the DIRECTIVE and is not in the document; `active`, the validity quartet, `name`, `schema_context`, `schema_type`, `search_tsv`, `embedding` and every `resource_geometries` row become derived — the row is now an INDEX over the document. The GIN filter index moves from `attributes` to `document` and one is added on `catalogs.document`, which is what lets Task 22 rebase by PREFIX alone: `$.catalogs[*]`, `$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` each name exactly one column, with no per-predicate column routing and no mixed-predicate refusal case. **Migrations 000002, 000003 and 000006 are edited in place rather than superseded**: `catalogs.descriptor` was never stored, so no backfill can reconstruct a document satisfying the schema's own `required: [id, descriptor, provider]`, and every catalog would need a republish regardless — a migration that cannot produce a valid row is worse than one that is honest about needing the data again | 11, 14, 15, 16, 17, 18, 19, 21b, 22 |
+| **A17** | **Each published object is stored verbatim in exactly one row's `document`, and every other column on that row is DERIVED from it at publish time.** The schema shredded a catalog into columns chosen for indexing — `provider`, `descriptor`, `attributes` — and those columns then became the only thing stored, so a discover response could not return a catalog's `descriptor`, `bppId`, `bppUri` or `validity` at all, and a JSONPath filter had no document to run against above `resourceAttributes`. **`catalogs.document` holds the Catalog with `resources` and `offers` STRIPPED** — those own their own rows, and keeping them in both places would give one MERGE two places to apply and no constraint keeping the two agreed. `resources.document` holds the whole Resource; `offers.offer` is RENAMED `offers.document`, which is what it already held and what `OfferPatch.Document` already called it. `catalogs.provider`, `resources.descriptor` and `resources.attributes` are dropped in the same migration, so this is close to storage-neutral rather than a second copy of anything. `visible_to` stays authoritative because it arrives on the DIRECTIVE and is not in the document; `active`, the validity quartet, `name`, `schema_context`, `schema_type`, `search_tsv`, `embedding` and every `resource_geometries` row become derived — the row is now an INDEX over the document. The GIN filter index moves from `attributes` to `document` and one is added on `catalogs.document`, which is what lets Task 22 rebase by PREFIX alone: `$.catalogs[*]`, `$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` each name exactly one column, with no per-predicate column routing and no mixed-predicate refusal case. **Migrations 000002, 000003 and 000006 are edited in place rather than superseded**: `catalogs.descriptor` was never stored, so no backfill can reconstruct a document satisfying the schema's own `required: [id, descriptor, provider]`, and every catalog would need a republish regardless — a migration that cannot produce a valid row is worse than one that is honest about needing the data again. **This closes the `Catalog.descriptor` deferral** that Task 19's self-review opened: `descriptor` is in the schema's own `required: [id, descriptor, provider]`, it is now stored because the whole catalog is, and `render` emits it, so a discover response satisfies its own response schema for the first time | 11, 14, 15, 16, 17, 18, 19, 21b, 22 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -194,7 +197,6 @@ Two sit on the boundary and are called out rather than dismissed:
 | **L2 extended schema validation (Task 10)** | Skipped by decision on 2026-08-26, not by a technical blocker. The whole task — `SchemaSource`, the refresh loop, `L2`, and the `schemas/<TypeName>/attributes.yaml` set — is unbuilt. **C4 therefore has no enforcer:** nothing requires `@context` and `@type` to be present scalar strings, so Task 22 filters on a field whose shape was never checked, and two publishers disagreeing about it surfaces as a discover query that matches one of them. The SSRF boundary is unaffected: nothing fetches a URL from a payload because nothing fetches at all | Nothing. **`VALIDATION_ENABLE_L2_CONTEXT` and `config/common.yaml`'s `enableL2Context` still default to `true`, and now name a control that does not exist.** Task 20 must either default them off or refuse to boot when they are true, on the same reasoning that made `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` a boot refusal: a flag an operator reads back as enabled, silently doing nothing, is worse than no flag |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
 | Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
-| **`Catalog.descriptor` on the discover response** | Found in Task 19's self-review, root cause older. `Catalog` in `beckn.yaml` is `required: [id, descriptor, provider]` with `additionalProperties: false`, but `domain.Catalog` has no `Descriptor` field, no `catalogs` column stores one, and the publish mapper never reads one — so `render` in `src/discover/service.go` cannot emit it and **every discover response fails its own response schema on a required field.** Closing it is a migration, a `domain.Catalog` field, a publish-mapper branch and a `render` line — four tasks' worth, in none of which it is the deliverable. It is invisible today only because nothing validates a response; Task 21 is where it starts failing | The response omits `descriptor`. `render` says so at the call site instead of claiming the four members it emits are the shape's whole story |
 | **`SearchResult.Total` reaches nobody** | `OnDiscoverAction` is `additionalProperties: false` with `catalogs` as its only property (C11's own reasoning), so a carefully-computed count has nowhere on the wire to go. It is not free: `SearchRepository.Search` calls `total()` on every request, and the four skip guards do **not** fire on a full page — the common outcome, since `discover_tsquery` ORs its terms — so an ordinary request pays for an uncapped `count(*)` over the whole match set and the service discards the result. Either give it a header, the way `X-Beckn-Degraded` carries the other thing the body cannot, or stop computing it | `Total` is computed, asserted by `storage/conformance`, and dropped by `discover.Service.Discover`. No production reader exists |
 | `S_TOUCHES` and `S_CROSSES` | **Not deferred — refused.** A cell decomposition has no measure-zero boundary, so no resolution answers them. Listing them as "later" would be a promise nothing in this design can keep | `400` + `SCH_TYPE_NOT_SUPPORTED`, naming the operator |
 
@@ -392,8 +394,8 @@ normalising below it buys nothing and costs a join on every read.
 
 | Table | Grain | Why |
 |---|---|---|
-| `catalogs` | one per published catalog | The publish/merge unit and the transaction boundary. Holds the provider document — stored **once**, not per resource |
-| `resources` | one per resource per catalog | **The only table discover scans.** Search vector, embedding, schema pair, attributes *and the scope gate* all on the row — nothing it holds is a copy of something else on the same row except `name`, which exists to carry a trigram index |
+| `catalogs` | one per published catalog | The publish/merge unit and the transaction boundary. Holds the catalog document — everything the publisher sent except `resources` and `offers` (A17), stored **once**, not per resource |
+| `resources` | one per resource per catalog | **The only table discover scans.** Search vector, embedding, schema pair, the resource document *and the scope gate* all on the row — every column but `document` is derived from it at publish and exists to be indexed |
 | `resource_geometries` | one per geometry, per catalog **or** per resource | Keyed by the JSONPath it was found at, because the path is what a spatial constraint names |
 | `offers` | one per offer per catalog | A row, not a JSONB array, because discover returns the offers attached to the resources it matched — which is an overlap query against `resource_ids` |
 
@@ -405,8 +407,9 @@ that computes `Total` — and that count runs over *every* match, not just the
 page. Five thousand text hits meant five thousand probes into a second table.
 
 So the gate columns are **copied onto `resources`** and the join disappears.
-`provider` is *not* copied: it is 1–3 KB, and duplicating it across forty
-resource rows is forty times the write on every republish for no read benefit.
+The catalog's `document` is *not* copied: it is 1–3 KB, and duplicating it
+across forty resource rows is forty times the write on every republish for no
+read benefit.
 
 That copy is only safe because of one rule, stated here and enforced in
 `UpsertCatalog`: **every publish rewrites the gate on every resource of the
@@ -435,9 +438,10 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 ### Migration 002 — `catalogs`
 
-Deliberately small. Discover never reads this table; it holds the provider
-document, the publish bookkeeping, and the write-side source of truth for the
-gate that `resources` carries a copy of.
+Deliberately small. Discover touches this table exactly once per request, at
+hydration and by primary key; it holds the catalog document, the publish
+bookkeeping, and the write-side source of truth for the gate that `resources`
+carries a copy of.
 
 ```sql
 CREATE TABLE catalogs (
@@ -450,12 +454,19 @@ CREATE TABLE catalogs (
     -- depends on it is how it stops being true somewhere else.
     id           TEXT PRIMARY KEY CHECK (id <> ''),
 
-    -- Verbatim, and stored exactly once per catalog. A providers table would
-    -- add a join to every read to save nothing: no query reaches a provider
-    -- except through its catalog.
+    -- The Catalog as the publisher sent it, with `resources` and `offers`
+    -- STRIPPED — those own their own rows (A17). Everything else on this table
+    -- is derived from it and exists to be indexed; this column is the only
+    -- thing stored, so a member the protocol adds tomorrow survives without a
+    -- migration and comes back out of a discover unchanged.
+    --
+    -- Stripped rather than kept whole because a resource would otherwise exist
+    -- in two places with nothing keeping them agreed, and one MERGE would have
+    -- two documents to apply itself to.
+    --
     -- DEFAULT so the lock-and-load INSERT that opens every publish can name
     -- `id` alone. See `updateMode` — MERGE and FULL.
-    provider     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    document     JSONB       NOT NULL DEFAULT '{}'::jsonb,
 
     -- publishDirective.visibleTo: the network ids this catalog is discoverable
     -- from. An array because that is what the directive carries — a publisher
@@ -490,7 +501,7 @@ CREATE TABLE catalogs (
 ```
 
 **The gate columns above are written and never read, and that is on purpose.**
-Discover issues exactly one query against this table — `select id, provider
+Discover issues exactly one query against this table — `select id, document
 from catalogs where id = any(...)` at hydration — so `visible_to`, `active` and
 the four validity columns are write-side state only. They stay for two reasons
 the dropped columns below did not have: this table has **one row per catalog**,
@@ -500,11 +511,15 @@ actually asked for, which is the only thing that can adjudicate a "why is my
 catalog invisible" report against a `resources` copy that a bug could have
 written wrong. A copy is not a source of truth unless the original survives.
 
-**No index on this table, and no `catalog_type`, `provider_id` or `network_id`
-column.** Each was written and read by nothing:
+**One index on this table, and no `catalog_type`, `provider_id` or
+`network_id` column.** The index is `idx_catalogs_document` — a
+`jsonb_path_ops` GIN over `document`, which is what a catalog-level filter
+(`$.catalogs[*] ? (...)`, Task 22) resolves through. The three columns were
+each written and read by nothing:
 
-- `provider_id` was `provider->>'id'` copied out, and the only index on it
-  served no query in this plan — `CatalogRepository` has no list-by-provider.
+- `provider_id` was `document->'provider'->>'id'` copied out, and the only
+  index on it served no query in this plan — `CatalogRepository` has no
+  list-by-provider.
 - `network_id` was pure audit. The writer uses the request's network at publish
   time to fill an empty `visible_to`; that happens in Go, before the insert.
   If the audit trail matters it belongs in the log line, not on every row.
@@ -536,14 +551,19 @@ CREATE TABLE resources (
     -- which is exactly why the unconditional rewrite below is safe.
     -- ----------------------------------------------------------------------
 
-    -- A duplicate of descriptor->>'name', and knowingly so: fuzzy search needs
-    -- GIN (name gin_trgm_ops), and a trigram index over a JSONB extraction is
-    -- worse to build, to read and to explain. A duplicate paid for by an index.
+    -- A duplicate of document->'descriptor'->>'name', and knowingly so: fuzzy
+    -- search needs GIN (name gin_trgm_ops), and a trigram index over a JSONB
+    -- extraction is worse to build, to read and to explain. A duplicate paid
+    -- for by an index.
     name        TEXT  NOT NULL DEFAULT '',
-    descriptor  JSONB NOT NULL DEFAULT '{}'::jsonb,
 
-    -- JSON-LD domain attributes, already validated by L2.
-    attributes  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- The Resource as the publisher sent it — `{id, descriptor,
+    -- resourceAttributes}` — verbatim and entire (A17). There is no
+    -- `descriptor` column and no `attributes` column: they were two halves of
+    -- this one document, and splitting them meant a filter predicate naming
+    -- both had no single column to run against, while a member the protocol
+    -- adds later had nowhere at all to go.
+    document    JSONB NOT NULL DEFAULT '{}'::jsonb,
 
     -- resourceAttributes.@context and .@type, both scalar `string` and both
     -- REQUIRED by the Attributes schema (C4). Two plain columns, because the
@@ -560,13 +580,12 @@ CREATE TABLE resources (
     -- and passed in as a parameter, so the Go function stays the one source of
     -- truth for what is searchable. Only the tsvector is kept.
     --
-    -- There is no `search_text` column. It would be the concatenation
-    -- of `name`, `descriptor` and every value in `attributes` — the largest
-    -- text on the widest, hottest table, holding a second copy of bytes already
-    -- in three columns of the same row. Its only reader was the Phase 2
-    -- embedding backfill, which already loads those three columns and can call
-    -- `deriveSearchText` on them for far less than the cost of storing the
-    -- answer on every row for ever.
+    -- There is no `search_text` column. It would be the concatenation of every
+    -- value in `document` — the largest text on the widest, hottest table,
+    -- holding a second copy of bytes already in the same row. Its only reader
+    -- was the Phase 2 embedding backfill, which already loads `document` and
+    -- can call `deriveSearchText` on it for far less than the cost of storing
+    -- the answer on every row for ever.
     search_tsv  TSVECTOR NOT NULL DEFAULT ''::tsvector,
 
     -- Nullable: a publish must succeed when the embedding service is down, and
@@ -650,7 +669,7 @@ CREATE INDEX idx_resources_schema ON resources (schema_context, schema_type)
 -- jsonb_path_ops, not the default jsonb_ops: a third the size and faster for
 -- the path-exists queries this service issues (Task 22). It cannot serve
 -- key-existence (?) queries, which nothing here needs.
-CREATE INDEX idx_resources_attributes ON resources USING GIN (attributes jsonb_path_ops);
+CREATE INDEX idx_resources_document ON resources USING GIN (document jsonb_path_ops);
 
 -- HNSW, not IVFFlat: no training pass, so it works from the first row. Not
 -- partial: a partial HNSW would have to be rebuilt when `active` flips.
@@ -1027,19 +1046,23 @@ CREATE TABLE offers (
     -- not a default to be pruned into. See the FULL-republish rule below.
     resource_ids TEXT[]      NOT NULL DEFAULT '{}',
 
-    -- The offer document, verbatim, exactly as `provider` is on catalogs and
-    -- `geojson` is on geometries. It is what an attribute filter rooted at the
-    -- offer path is evaluated against, and the only form that survives a spec
-    -- adding a field this schema never named.
+    -- The offer document, verbatim. This table got the rule right first and
+    -- A17 is that rule applied to the other two: `catalogs.document` and
+    -- `resources.document` are now the same thing for the same reasons.
     --
     -- There are no `descriptor` and `price` columns beside it. They would be
-    -- `offer->'descriptor'` and `offer->'price'` copied out — the same bytes a
-    -- second time, on a column already read in full by the one query that
-    -- touches this table, indexed by nothing and filtered on by nothing. Unlike
-    -- `resources.name`, which exists to carry a trigram index, they would pay
-    -- for themselves nowhere and would drift the moment a republish updated
-    -- `offer` and missed a projection.
-    offer        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    -- `document->'descriptor'` and `document->'price'` copied out — the same
+    -- bytes a second time, on a column already read in full by the one query
+    -- that touches this table, indexed by nothing and filtered on by nothing.
+    -- Unlike `resources.name`, which exists to carry a trigram index, they
+    -- would pay for themselves nowhere and would drift the moment a republish
+    -- updated the document and missed a projection. That is precisely what
+    -- `catalogs.descriptor` and `resources.attributes` did.
+    --
+    -- Named `document` rather than `offer` because every table now spells it
+    -- the same way, `OfferPatch.Document` in the domain already did, and
+    -- `offer.offer` reads as a mistake at every call site.
+    document     JSONB       NOT NULL DEFAULT '{}'::jsonb,
 
     -- An expired offer must not be returned. The catalog's own validity does
     -- not cover this: a live catalog routinely carries last month's offer.
@@ -1064,7 +1087,7 @@ CREATE TABLE offers (
 CREATE INDEX idx_offers_resource_ids ON offers USING GIN (resource_ids);
 
 -- For attribute filters rooted at the offer path (Task 22).
-CREATE INDEX idx_offers_offer ON offers USING GIN (offer jsonb_path_ops);
+CREATE INDEX idx_offers_document ON offers USING GIN (document jsonb_path_ops);
 ```
 
 **`resource_ids` is an array with no foreign key, because PostgreSQL cannot
@@ -1600,9 +1623,10 @@ rather than a `Catalog`: for `provider`, `validity`, `descriptor` and
 `resourceAttributes` there is no default to fall back on, so *omitted* and *sent
 empty* are different instructions and the type has to carry the difference.
 
-**Everything derived is derived after the merge.** `name`, `descriptor`,
-`schema_context`, `schema_type`, `search_tsv`, `embedding` and the H3 covers are
-functions of the *result*, not of the patch. A merge that touched one attribute
+**Everything derived is derived after the merge.** Since A17 that is every
+column but the document itself: `name`, `schema_context`, `schema_type`,
+`search_tsv`, `embedding`, the gate quartet and the H3 covers are functions of
+the *result*, not of the patch. A merge that touched one attribute
 and then rebuilt `search_tsv` from the patch alone would leave that resource
 findable by one word. This is why publish is read-modify-write, and it is where
 `embedding_source_hash` earns its keep: the embedder re-runs only when the
@@ -1778,8 +1802,8 @@ Three rules this encodes:
 
 **Geometry rows are replaced, not merged — and replaced from the merge
 result.** A geometry has no id, so there is nothing to key an identity merge on;
-the merge happens one level up, on `provider`, and the rows are then rebuilt
-from whatever `provider.availableAt` says afterwards. A patch that never
+the merge happens one level up, on the catalog's `document`, and the rows are
+then rebuilt from whatever `document.provider.availableAt` says afterwards. A patch that never
 mentioned `availableAt` therefore rewrites the rows it already had — idempotent,
 and one code path for both modes. Catalog-level and resource-level rows are
 replaced separately, so neither wipes the other.
@@ -2184,7 +2208,7 @@ SearchRepository.Search(ctx, query, modes):
     else:
         total ← Hydrator.Count(ctx, query, scope)
 
-    rows   ← Hydrator.Hydrate(ctx, page, scope)   # resources + provider + offers
+    rows   ← Hydrator.Hydrate(ctx, page, scope)   # resources + catalogs + offers
     return SearchResult{rows, total, degraded}
 ```
 
@@ -2255,7 +2279,7 @@ Hydrator.Hydrate(ctx, page, scope):
                   # Re-applied deliberately. It is the same gate the retrievers
                   # ran, and on twenty rows by primary key it costs nothing. It
                   # is the last line between a retriever bug and a leak.
-    providers ← select id, provider from catalogs
+    catalogs  ← select id, document from catalogs
                  where id in distinct(page.catalogIds)      # ~20 rows
     offers    ← select o.* from offers o
                  where o.catalog_id = any(@catalog_ids)
@@ -2486,22 +2510,27 @@ one.
 Three things have to happen before the expression can run:
 
 **1. Rebase the root.** The caller's path is rooted at the whole response
-document; the column is rooted at one resource's `resourceAttributes`. So
+document; the column is rooted at one stored object. Since A17 that rebase is a
+**prefix strip and nothing else**: `$.catalogs[*].resources[*]` names
+`resources.document`, so
 `$.catalogs[*].resources[*] ? (@.resourceAttributes.A.B == "x")` becomes
-`$ ? (@.A.B == "x")` evaluated against `resources.attributes`. Offer-path
-filters rebase the same way onto `offers.offer`, which is why that column is
-stored verbatim.
+`$ ? (@.resourceAttributes.A.B == "x")` with the predicate untouched.
+`$.catalogs[*].offers[*]` strips to `offers.document` the same way, and
+`$.catalogs[*]` to `catalogs.document`. Three prefixes, three columns, each
+storing its object verbatim — which is what removes the per-predicate column
+routing the shredded schema needed, and with it the case where one filter named
+two columns and could be served by neither.
 
 **2. Use the operator, not the function.** This is the difference between a
 millisecond and a sequential scan:
 
 ```sql
 -- INDEXED: the @? operator is what GIN jsonb_path_ops supports.
-WHERE r.attributes @? @filter::jsonpath
+WHERE r.document @? @filter::jsonpath
 
 -- NOT INDEXED: the function form is never index-accelerated, even though it
 -- computes the identical answer.
-WHERE jsonb_path_exists(r.attributes, @filter::jsonpath)
+WHERE jsonb_path_exists(r.document, @filter::jsonpath)
 ```
 
 **3. Know which predicates the index can actually serve.** GIN extracts clauses
@@ -2510,10 +2539,11 @@ of the form *accessor chain* `==` *constant*. Accessors may be `.key`, `[*]` and
 
 | Expression | Indexed? |
 |---|---|
-| `$ ? (@.manufacturerOrPacker.name == "Hindustan Unilever Limited")` | **yes** — chain + equality |
-| `$ ? (@.certifications[*].id == "FSSAI-123")` | **yes** — `[*]` is an accessor |
-| `$ ? (@.rating >= 4)` | no — inequality. Correct answer, full scan |
-| `$ ? (@.name like_regex "wheat.*")` | no — full scan |
+| `$ ? (@.resourceAttributes.manufacturerOrPacker.name == "Hindustan Unilever Limited")` | **yes** — chain + equality |
+| `$ ? (@.resourceAttributes.certifications[*].id == "FSSAI-123")` | **yes** — `[*]` is an accessor |
+| `$ ? (@.descriptor.name == "wheat atta 5kg")` | **yes** — and unreachable before A17, because `descriptor` was a different column |
+| `$ ? (@.resourceAttributes.rating >= 4)` | no — inequality. Correct answer, full scan |
+| `$ ? (@.descriptor.name like_regex "wheat.*")` | no — full scan |
 | `$ ? (@.a == "x" && @.b == "y")` | partially — the equalities are extracted, then rechecked |
 
 Equality filters — the example above, and most real catalogue filters — ride
@@ -2529,8 +2559,8 @@ silent => true)` form is used only where a structural mismatch must not raise.
 
 **All of this ships in Phase 1 (Task 22).** Validating the expression, rebasing
 it, and refusing the constructs that cannot be served are the whole of the work;
-no migration is involved, because both columns and both GIN indexes already land
-in Task 14.
+no migration is involved, because all three columns and all three GIN indexes
+already land in Task 14 as A17 amended it.
 
 `Degraded` does not go away with it. It stops describing *this phase* and starts
 describing *this backend*: a store whose `Capabilities` omit `jsonpath` — the
@@ -3644,16 +3674,22 @@ with a bad attribute is rejected with a pointer into `resourceAttributes`.
 **Produces:**
 
 ```pseudo
-Catalog{ID, NetworkID, Provider, ValidFrom, ValidTo,
+Catalog{ID, NetworkID string, Document json.RawMessage,
+        ValidFrom, ValidTo time.Time,
         ValidTimeFrom, ValidTimeTo *TimeOfDay,     # nil = no daily window
-        VisibleTo []string, Active, Resources, Offers,
+        VisibleTo []string, Active bool, Resources, Offers,
         Geometries []Geometry}
+    # Document is the Catalog verbatim with `resources` and `offers` stripped
+    # (A17), and every other field is derived from it. `Catalog.Provider()` is
+    # an ACCESSOR over it, not a field — the publish derivations that used to
+    # read a `Provider` column read the same bytes through the accessor and
+    # the storage layer has one thing to write.
     # Geometries here are the PROVIDER's locations. They belong to the catalog,
     # not to any one resource, and are stored once with a NULL resource_id.
     # NetworkID is the publisher's network, used only to default an empty
     # VisibleTo. It is not stored — nothing reads it back.
 
-Resource{ID, CatalogID, Name, Descriptor, Attributes,
+Resource{ID, CatalogID, Name string, Document json.RawMessage,
          SchemaContext, SchemaType string, Geometries []Geometry,
          SearchText string, Embedding []float32,
          EmbeddingSourceHash []byte,               # blake2b-256 of SearchText
@@ -3671,7 +3707,11 @@ Resource{ID, CatalogID, Name, Descriptor, Attributes,
     # comparison — the one thing the derive seam exists to keep out of it.
 
 CatalogPatch{ID, NetworkID string,
-             Provider  json.RawMessage,     # nil = absent, `null` = delete
+             Document  json.RawMessage,     # nil = absent, `null` = delete
+                                            # The catalog's own members, with
+                                            # `resources`/`offers` stripped and
+                                            # the RESOLVED `isActive` written
+                                            # in — see A9 below
              Validity  *TimePeriodPatch,    # nil = absent
              Active    bool,                # NOT a pointer — defaulted (A9)
              VisibleTo []string,            # NOT nilable — defaulted (A9)
@@ -3691,12 +3731,19 @@ CatalogPatch{ID, NetworkID string,
     # write the branch that makes it nil.
 
 ResourcePatch{ID string,
-              Descriptor json.RawMessage,     # nil = absent, `null` = delete
-              Attributes json.RawMessage}     # nil = absent, `null` = delete
+              Document   json.RawMessage}     # nil = absent, `null` = delete
+                                              # One document, not a descriptor
+                                              # and an attributes half: A17
+                                              # stores the Resource whole, and
+                                              # a patch that could name only
+                                              # two of its members could not
+                                              # move the rest.
     # The wire `Resource` is exactly {id, descriptor, resourceAttributes} (C5)
-    # and only `id` is required, so every field but the id preserves absence and
-    # NONE of them has a declared default. This is the pure A8 half, with no A9
-    # half at all — which is why it is three fields and not eight.
+    # and only `id` is required, so the document preserves absence and has no
+    # declared default. This is the pure A8 half, with no A9 half at all —
+    # which is why it is two fields and not eight, and why it is now exactly
+    # OfferPatch's shape: the descriptor/attributes split was an artefact of
+    # the columns, not of the protocol.
     #
     # No gate columns and no SchemaContext/SchemaType, though `Resource` has
     # both. The gate is copied down from the merged CATALOG, and the schema pair
@@ -3719,7 +3766,7 @@ OfferPatch{ID string,
     # `validity` have no default, so they carry absence.
     # Document is the WHOLE verbatim offer, merged by RFC 7396 against the
     # stored one, which is why it is a RawMessage and not a parsed shape: the
-    # `offer` JSONB column keeps what the publisher sent.
+    # `offers.document` column keeps what the publisher sent.
 
 TimePeriodPatch{StartDate, EndDate Nullable[time.Time],
                 StartTime, EndTime Nullable[TimeOfDay]}
@@ -3769,9 +3816,11 @@ Offer{ID, CatalogID, ResourceIDs []string, Document json.RawMessage,
       ValidFrom, ValidTo,
       ValidTimeFrom, ValidTimeTo *TimeOfDay}
     # An empty ResourceIDs means CATALOG-WIDE, not "none".
-    # Document is the verbatim offer, for the same reason Provider and GeoJSON
-    # are — it maps to the `offer` JSONB column. Named Document rather than
-    # Offer because `offer.Offer` reads as a mistake at every call site.
+    # Document is the verbatim offer, for the same reason Catalog.Document and
+    # GeoJSON are — it maps to the `offers.document` column. This table got the
+    # rule right first; A17 is that rule applied to the other two. Named
+    # Document rather than Offer because `offer.Offer` reads as a mistake at
+    # every call site.
     # There is no Descriptor or Price field: the response renders Document, and
     # a projection the storage layer does not keep is one the domain must not
     # pretend to have.
@@ -3848,8 +3897,10 @@ SchemaFilter{Context string, Type string}
     # schema predicate at all — NOT a predicate that matches nothing.
 
 AttributeFilter{Root string, Expression string}       # Task 22
-    # Root names the column the expression is rebased onto: `attributes` on a
-    # resource, `offer` on an offer. Expression is PostgreSQL SQL/JSON path
+    # Root names the column the expression is rebased onto — one of the three
+    # `document` columns, chosen by the PREFIX the caller's path carried
+    # (A17): `$.catalogs[*]`, `$.catalogs[*].resources[*]` or
+    # `$.catalogs[*].offers[*]`. Expression is PostgreSQL SQL/JSON path
     # (C10), ALREADY validated and ALREADY rebased — the store is handed an
     # expression it may cast and run, never one it must interpret.
     # A store that cannot run it must narrow NOTHING and say so in `Degraded`,
@@ -4066,8 +4117,7 @@ rather than a truncated one.
   **values**, stripping JSON-LD keywords and attribute **keys**. It is the one
   source of truth for what is searchable — which is why its *output* is not
   stored: `search_tsv` is built from it at insert, and the Phase 2 backfill
-  calls it again over `name`, `descriptor` and `attributes` rather than reading
-  a stale copy. It must therefore be **deterministic and versioned**: a change
+  calls it again over `name` and `document` rather than reading a stale copy. It must therefore be **deterministic and versioned**: a change
   to it changes what matches, so it lands with a reindex, not silently.
 - Providers: `noop` (default, A5 — returns nil, publish still succeeds),
   `hashing` (deterministic, CI), `ollama` (`nomic-embed-text`, 768-dim),
@@ -4095,10 +4145,12 @@ stable across runs.
 **Tests pin:** an **index inventory test** asserting the exact set of indexes on
 each table by name — an index silently dropped in a migration is the kind of
 regression that shows up as a latency page, not a test failure. It asserts the
-absence list too: `catalogs` carries **nothing beyond `catalogs_pkey`** — the
-index PostgreSQL builds for the primary key, which is not optional and is not a
-choice this plan made — and `resource_geometries` has **no bounding box
-index**, for the reason spelled out in Migration 004. It no longer asserts the
+absence list too: `catalogs` carries **nothing beyond `catalogs_pkey` and
+`idx_catalogs_document`** — the first is the index PostgreSQL builds for the
+primary key, which is not optional and is not a choice this plan made; the
+second is what a catalog-level filter resolves through (A17, Task 22) — and
+`resource_geometries` has **no bounding box index**, for the reason spelled out
+in Migration 004. It no longer asserts the
 absence of a path index: `idx_rg_catalog_target_path` exists, and it exists
 because the walker made `target_path` a column of many distinct values rather
 than the single constant it held when that absence was written down. A
@@ -4199,13 +4251,13 @@ reach:
   domain test proves the function; this proves the function is what the column
   ends up holding.
 - **the lock-and-load upsert returns the stored row on conflict.** A second
-  publish must see the first one's `provider`. `ON CONFLICT DO NOTHING` returns
+  publish must see the first one's `document`. `ON CONFLICT DO NOTHING` returns
   zero rows here, which would silently make every republish a merge against an
   empty document and pass every MERGE test that only publishes once.
 - **derivation runs after the merge, not before.** A patch that touches only
   `resourceAttributes.moisture` leaves `search_tsv` still matching a term that
-  came from the *stored* `descriptor` — proof the tsvector was built from the
-  merged document rather than the patch.
+  came from the *stored* `document`'s descriptor — proof the tsvector was built
+  from the merged document rather than the patch.
 - **only `touched` resources are rewritten.** Republish one resource of forty
   and assert the other thirty-nine keep their `updated_at` **and** their
   `embedding_source_hash`. This is the test that catches a re-embed of the whole
@@ -4589,6 +4641,16 @@ recurses, so a patch of `{"descriptor":{"name":"x"}}` against the whole document
 reaches the same place two separate merges reached. `ResourcePatch` is now
 exactly `OfferPatch`'s shape, which is the sign the split was accidental.
 
+**A9 survives, and it needs one deliberate step.** `isActive` now lives INSIDE
+`catalogs.document`, and RFC 7396 KEEPS a member a patch does not mention —
+which is the exact opposite of A9's "an omitted `isActive` resets to live", the
+half scenario 26 exists to pin. The mapper therefore writes the RESOLVED default
+into the patch document before the merge runs, so the merge sees an explicit
+`isActive` and sets it. `validity` is untouched by this: it keeps its
+`TimePeriodPatch` tri-state and its absence still means "keep", which is what
+RFC 7396 does anyway — the two agree, and only `isActive` disagreed. `visibleTo`
+never enters the document at all, because it arrives on the directive.
+
 **The mapper keeps the raw.** `MapCatalog` currently decodes into typed structs
 and reassembles; it must instead carry the publisher's bytes through, stripping
 only `resources` and `offers` from the catalog document. A mapper that rebuilds
@@ -4604,13 +4666,27 @@ round-trip fidelity; without it the task stores data nobody reads.
 **Tests pin:** publish a catalog exercising every member the schema allows —
 `bppId`, `bppUri`, `descriptor`, `isActive`, `validity`, `provider` with
 `providerAttributes`, a resource with a deep `resourceAttributes`, an offer with
-`addOns` and `considerations` — discover it, and assert the returned catalog is
-JSON-equal to the published one modulo the documented omissions. Then MERGE-patch
+`considerations` and `offerAttributes` — discover it, and assert the returned
+catalog is JSON-equal to the published one modulo the documented omissions.
+
+**`addOns` is missing from that list, and cannot be added.** `AddOn` in
+`beckn.yaml` is a bare `oneOf: [Resource, Offer]` and NEITHER branch sets
+`additionalProperties: false`, so any object carrying an `id` satisfies both and
+`oneOf` fails. Measured, not inferred: a one-element `addOns` array costs
+`400 SCH_SCHEMA_VALIDATION_FAILED` — *"value matches more than one schema from
+oneOf (matches schemas at indices [0 1])"* — at
+`$.message.catalogs[0].offers[0].addOns[0]`. It is unpublishable by anyone, in
+any shape, and the defect is in the protocol schema rather than in this service.
+Verbatim storage of the offer is asserted through the members that CAN get past
+L1; the conflict is recorded as **C15**. Then MERGE-patch
 one deep leaf and assert **only** that leaf moved and every untouched member
 survived, which is the assertion the shredded schema could not make because the
 members it would check were never stored. Plus: the geometry walk finds the same
 shapes at the same `target_path` as before; `deriveSearchText` output is
-unchanged for a fixture that has both a descriptor and attributes; and the
+unchanged for a fixture that has both a descriptor and attributes, **and does
+not reach the resource `id`** — a member that lived in a third place before
+this task and is now one `appendValues(words, resource.Document)` away from
+being indexed, which is the whole reason the accessors exist; and the
 `storage/conformance` suite passes unchanged against both backends.
 
 ---
@@ -4722,6 +4798,6 @@ from an accident:
 | JSONPath grammar | Which grammar the spec mandates | **PostgreSQL SQL/JSON path only.** The spec names none normatively and its one example is RFC 9535, so this is a recorded deviation — C10 |
 | Offer-level geometry | Which resource a geometry under `offers[*].provider.availableAt[*].geo` belongs to | **The offer's `resourceIds`**, one `resource_geometries` row per id, falling back to catalog-level when that array is absent or empty — the same meaning `offers.resource_ids` already carries. `Geometry.ResourceID *string` became `Owners []string` and `touched` had to start following offers; no migration, the column was always there |
 | Unavailable retrieval mode | Whether a mode the backend cannot run should degrade or refuse | **Degrade by default; refuse on request.** `SEARCH_FAIL_ON_UNAVAILABLE_MODE` defaults to `false`: the modes that work run, results come back, and the missing one is named in `X-Beckn-Degraded` (C11). Setting it `true` makes the same request a `400` / `NET_CATALOG_SOURCE_UNAVAILABLE`. The default points at degrade for one reason: Phase 1 ships `EMBEDDING_PROVIDER=noop`, so `semantic` is missing on every fresh deployment, and defaulting to refuse would make every `textSearch` a `400` until an Ollama deployment exists — a default that breaks the common case is a default nobody keeps. Silently ignoring the mode remains the option that is never taken |
-| Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), rebased onto `resources.attributes` or `offers.offer`, run through the `@?` operator. Both columns and both `jsonb_path_ops` indexes were already landing in Task 14, so promoting it costs a parser and a rebase and no migration. Scenario 18 changed from asserting the degradation to asserting the filter |
+| Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), rebased onto `catalogs.document`, `resources.document` or `offers.document` by prefix alone (A17), run through the `@?` operator. All three columns and all three `jsonb_path_ops` indexes were already landing in Task 14, so promoting it costs a parser and a rebase and no migration. Scenario 18 changed from asserting the degradation to asserting the filter |
 | Semantic search (A5) | When embeddings are turned on | **Not in Phase 1 — confirmed.** `EMBEDDING_PROVIDER=noop` ships; the column, the HNSW index and the `Embedder` seam ship with it, and `embedding IS NULL` is the backfill queue for whenever an Ollama deployment exists. Deferred deliberately, not undecided |
 | `networkId` default (discover) | Whether an omitted `networkId` scopes to `APP_NETWORK_ID` or searches every network | **Searches every network.** `visibleTo` is how a publisher restricts a catalog to specific networks; it is not an access boundary a network-less discover caller is presumed locked out of by default. A caller wanting isolation supplies `networkId`. Publish's own default — `APP_NETWORK_ID`, to fill an empty `visibleTo` — is unchanged (C8); the two fields answer different questions and no longer share a fallback |

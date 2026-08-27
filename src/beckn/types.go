@@ -102,6 +102,108 @@ type Catalog struct {
 	// nil, so a publisher trying to clear a validity would be answered with
 	// silence and a window that never went away.
 	Validity json.RawMessage `json:"validity,omitempty"`
+
+	// Raw is the catalog exactly as it arrived, and it is what reaches the
+	// catalogs.document column once its two child arrays are lifted off (A17).
+	//
+	// The same reason Offer has one: re-marshalling the struct would emit the
+	// members this file happens to name and drop the rest, and a column that
+	// claims to hold what the publisher sent would be lying to exactly the
+	// publishers who checked.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes a catalog and keeps the bytes it decoded.
+//
+// The alias breaks the recursion. The captured bytes are the caller's slice,
+// which encoding/json does not retain after the call, so they are copied.
+func (c *Catalog) UnmarshalJSON(data []byte) error {
+	type wire Catalog
+
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*c = Catalog(decoded)
+	c.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MarshalJSON writes the stored document back with the two child arrays
+// spliced in.
+//
+// Not the plain verbatim write Offer does, because a catalog's document is the
+// one that had members REMOVED before storage: `resources` and `offers` live in
+// their own tables (A17), so the bytes are only a whole catalog again once they
+// are put back. Splicing here rather than at the caller is what lets discover
+// return `descriptor`, `bppId`, `bppUri` and `validity` without this service
+// naming them anywhere — they ride along in Raw.
+//
+// It carries Offer's caveat and one of its own. A field edited on a decoded
+// Catalog does not reach the output; only Resources and Offers do. Nothing
+// edits one — publish stores the document and discover renders it — and the two
+// exceptions are exactly the two members that must be assembled.
+func (c Catalog) MarshalJSON() ([]byte, error) {
+	members, err := c.WithoutChildren()
+	if err != nil {
+		return nil, err
+	}
+
+	// Absent rather than empty when there is nothing: `resources` is not in
+	// Catalog's required list, so a catalog of offers alone is legal, and an
+	// empty array would be this service asserting the publisher sent one.
+	if len(c.Resources) > 0 {
+		if members["resources"], err = json.Marshal(c.Resources); err != nil {
+			return nil, err
+		}
+	}
+	if len(c.Offers) > 0 {
+		if members["offers"], err = json.Marshal(c.Offers); err != nil {
+			return nil, err
+		}
+	}
+
+	return json.Marshal(members)
+}
+
+// WithoutChildren is the catalog's own members: everything the publisher sent
+// except `resources` and `offers`.
+//
+// A map rather than bytes because the publish mapper has a member of its own to
+// resolve into the document before storing it — `isActive`, which A9 defaults
+// and RFC 7396 would otherwise leave to the merge — and handing back bytes
+// would make that a second decode of the same document.
+//
+// A Catalog with no Raw was built in Go rather than decoded, so its members are
+// whatever the struct holds. That path exists for tests and for the conformance
+// suite; every catalog that arrives over the wire has Raw.
+func (c Catalog) WithoutChildren() (map[string]json.RawMessage, error) {
+	raw := c.Raw
+	if len(raw) == 0 {
+		type wire Catalog
+
+		bare := wire(c)
+		bare.Resources, bare.Offers = nil, nil
+
+		encoded, err := json.Marshal(bare)
+		if err != nil {
+			return nil, err
+		}
+		raw = encoded
+	}
+
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return nil, err
+	}
+	if members == nil {
+		members = map[string]json.RawMessage{}
+	}
+
+	delete(members, "resources")
+	delete(members, "offers")
+	return members, nil
 }
 
 // Resource is a referenceable unit of value in a catalog. The spec gives it
@@ -111,6 +213,37 @@ type Resource struct {
 	ID                 string          `json:"id"`
 	Descriptor         json.RawMessage `json:"descriptor,omitempty"`
 	ResourceAttributes json.RawMessage `json:"resourceAttributes,omitempty"`
+
+	// Raw is the resource exactly as it arrived, and it is what reaches the
+	// resources.document column (A17). Same reason as Offer.Raw: the spec
+	// leaves additionalProperties unset, so re-marshalling the three named
+	// members would drop whatever else a publisher sent.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes a resource and keeps the bytes it decoded.
+func (r *Resource) UnmarshalJSON(data []byte) error {
+	type wire Resource
+
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*r = Resource(decoded)
+	r.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MarshalJSON writes the resource back exactly as it arrived, or from its
+// fields when it was built in Go rather than decoded.
+func (r Resource) MarshalJSON() ([]byte, error) {
+	if len(r.Raw) > 0 {
+		return r.Raw, nil
+	}
+
+	type wire Resource
+	return json.Marshal(wire(r))
 }
 
 // Offer is the commercial terms under which resources may be committed.

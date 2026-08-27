@@ -11,7 +11,7 @@ import (
 
 type Catalog struct {
 	ID            string
-	Provider      []byte
+	Document      []byte
 	VisibleTo     []string
 	Active        bool
 	ValidFrom     pgtype.Timestamptz
@@ -26,7 +26,7 @@ type Offer struct {
 	ID            string
 	CatalogID     string
 	ResourceIds   []string
-	Offer         []byte
+	Document      []byte
 	ValidFrom     pgtype.Timestamptz
 	ValidTo       pgtype.Timestamptz
 	ValidTimeFrom pgtype.Time
@@ -45,8 +45,7 @@ type Resource struct {
 	ValidTimeFrom       pgtype.Time
 	ValidTimeTo         pgtype.Time
 	Name                string
-	Descriptor          []byte
-	Attributes          []byte
+	Document            []byte
 	SchemaContext       string
 	SchemaType          string
 	SearchTsv           interface{}

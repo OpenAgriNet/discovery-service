@@ -16,7 +16,10 @@ const point = `{"type":"Point","coordinates":[77.5946,12.9716]}`
 // catalogWith builds a merged catalog carrying one provider document, so a test
 // only has to say what shape it put where.
 func catalogWith(provider string) domain.Catalog {
-	return domain.Catalog{ID: "c1", Provider: json.RawMessage(provider)}
+	return domain.Catalog{
+		ID:       "c1",
+		Document: json.RawMessage(`{"id":"c1","provider":` + provider + `}`),
+	}
 }
 
 func typesOf(found []domain.Geometry) []string {
@@ -81,11 +84,13 @@ func TestSourcePathKeepsItsIndexAndWildcardsTheCatalogs(t *testing.T) {
 // that carries one owner set into a sibling subtree.
 func TestOwnershipFollowsThePathNotTheFieldName(t *testing.T) {
 	catalog := domain.Catalog{
-		ID:       "c1",
-		Provider: json.RawMessage(`{"availableAt":[{"geo":` + point + `}]}`),
+		ID: "c1",
+		Document: json.RawMessage(
+			`{"id":"c1","provider":{"availableAt":[{"geo":` + point + `}]}}`),
 		Resources: []domain.Resource{{
-			ID:         "wheat",
-			Attributes: json.RawMessage(`{"serviceArea":{"geo":` + point + `}}`),
+			ID: "wheat",
+			Document: json.RawMessage(
+				`{"id":"wheat","resourceAttributes":{"serviceArea":{"geo":` + point + `}}}`),
 		}},
 		Offers: []domain.Offer{
 			{

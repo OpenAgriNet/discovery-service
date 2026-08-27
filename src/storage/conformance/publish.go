@@ -62,10 +62,18 @@ func catalogPatch(id string, resources ...domain.ResourcePatch) domain.CatalogPa
 	}
 }
 
-// resourcePatch is one resource with an attributes document and nothing else,
-// which is the shape most of these cases care about.
+// resourcePatch is one resource carrying an attributes document and nothing
+// else, which is the shape most of these cases care about.
+//
+// The attributes are nested under `resourceAttributes` inside the resource
+// document rather than standing alone, because since A17 that is where they
+// live — and RFC 7396 merges recursively, so a case patching one leaf two
+// levels down still means what it meant when the column was flat.
 func resourcePatch(id, attributes string) domain.ResourcePatch {
-	return domain.ResourcePatch{ID: id, Attributes: json.RawMessage(attributes)}
+	return domain.ResourcePatch{
+		ID:       id,
+		Document: json.RawMessage(`{"id":"` + id + `","resourceAttributes":` + attributes + `}`),
+	}
 }
 
 // noDerive is the derive a case supplies when it is not testing derivation.
@@ -299,7 +307,8 @@ func anEmptyVisibleToBecomesTheNetwork() Case {
 // publishes only once.
 func theUpsertReturnsTheStoredRowOnConflict() Case {
 	first := catalogPatch("c1")
-	first.Provider = json.RawMessage(`{"name":"Anitha Farms","gstin":"29ABCDE"}`)
+	first.Document = json.RawMessage(
+		`{"id":"c1","provider":{"name":"Anitha Farms","gstin":"29ABCDE"}}`)
 
 	// A republish that says nothing about the provider at all.
 	second := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
@@ -317,13 +326,13 @@ func theUpsertReturnsTheStoredRowOnConflict() Case {
 				Name  string `json:"name"`
 				GSTIN string `json:"gstin"`
 			}
-			if err := json.Unmarshal(stored.Provider, &provider); err != nil {
-				t.Fatalf("the stored provider is not an object: %v (%s)", err, stored.Provider)
+			if err := json.Unmarshal(stored.Provider(), &provider); err != nil {
+				t.Fatalf("the stored provider is not an object: %v (%s)", err, stored.Provider())
 			}
 			if provider.Name != "Anitha Farms" || provider.GSTIN != "29ABCDE" {
 				t.Errorf("after a republish carrying no provider the catalog holds %s, want the "+
 					"first publish's provider — the upsert returned no row to merge against",
-					stored.Provider)
+					stored.Provider())
 			}
 		},
 	}
@@ -353,8 +362,9 @@ func fieldLevelMergeSurvivesTheRoundTrip() Case {
 			resource := resourceByID(t, stored.Resources, "r1")
 
 			var attributes map[string]any
-			if err := json.Unmarshal(resource.Attributes, &attributes); err != nil {
-				t.Fatalf("the stored attributes are not an object: %v (%s)", err, resource.Attributes)
+			if err := json.Unmarshal(resource.ResourceAttributes(), &attributes); err != nil {
+				t.Fatalf("the stored attributes are not an object: %v (%s)",
+					err, resource.ResourceAttributes())
 			}
 
 			if attributes["grade"] != "A" {
@@ -376,9 +386,9 @@ func fieldLevelMergeSurvivesTheRoundTrip() Case {
 func derivationRunsAfterTheMerge() Case {
 	first := catalogPatch("c1")
 	first.Resources = []domain.ResourcePatch{{
-		ID:         "r1",
-		Descriptor: json.RawMessage(`{"name":"Alphonso mangoes"}`),
-		Attributes: json.RawMessage(`{"grade":"A"}`),
+		ID: "r1",
+		Document: json.RawMessage(
+			`{"id":"r1","descriptor":{"name":"Alphonso mangoes"},"resourceAttributes":{"grade":"A"}}`),
 	}}
 
 	// Touches attributes only. The descriptor is absent, so it survives the
@@ -420,7 +430,7 @@ func recordDescriptorName() domain.DeriveFunc {
 			// of JSON input", which is not a fixture problem — it is the
 			// ordinary shape of a patch that carried only attributes. It
 			// contributes no name.
-			if err := json.Unmarshal(merged.Resources[index].Descriptor, &descriptor); err != nil {
+			if err := json.Unmarshal(merged.Resources[index].Descriptor(), &descriptor); err != nil {
 				continue
 			}
 			merged.Resources[index].Name = descriptor.Name

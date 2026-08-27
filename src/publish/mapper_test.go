@@ -71,8 +71,8 @@ func TestAbsenceAndExplicitNullStayDistinct(t *testing.T) {
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %v, want none", fatal)
 	}
-	if absent.Provider != nil {
-		t.Errorf("Provider = %s for an omitted key, want nil", absent.Provider)
+	if got := documentMember(t, absent.Document, "provider"); got != nil {
+		t.Errorf("provider = %s for an omitted key, want it absent from the document", got)
 	}
 	if absent.Validity != nil {
 		t.Errorf("Validity = %#v for an omitted key, want nil", absent.Validity)
@@ -82,8 +82,8 @@ func TestAbsenceAndExplicitNullStayDistinct(t *testing.T) {
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %v, want none", fatal)
 	}
-	if string(cleared.Provider) != "null" {
-		t.Errorf("Provider = %s for an explicit null, want the delete", cleared.Provider)
+	if got := documentMember(t, cleared.Document, "provider"); string(got) != "null" {
+		t.Errorf("provider = %s for an explicit null, want the delete carried verbatim", got)
 	}
 	if cleared.Validity == nil {
 		t.Fatal("Validity = nil for an explicit null, want the four-column delete")
@@ -112,17 +112,107 @@ func TestAResourcesOptionalDocumentsKeepTheirThreeStates(t *testing.T) {
 		t.Fatalf("Resources = %d, want 3", len(patch.Resources))
 	}
 
-	if patch.Resources[0].Descriptor != nil || patch.Resources[0].Attributes != nil {
-		t.Errorf("an omitted document mapped to %s / %s, want nil",
-			patch.Resources[0].Descriptor, patch.Resources[0].Attributes)
+	omittedDescriptor := documentMember(t, patch.Resources[0].Document, "descriptor")
+	omittedAttributes := documentMember(t, patch.Resources[0].Document, "resourceAttributes")
+	if omittedDescriptor != nil || omittedAttributes != nil {
+		t.Errorf("an omitted document mapped to %s / %s, want both absent",
+			omittedDescriptor, omittedAttributes)
 	}
-	if string(patch.Resources[1].Descriptor) != "null" || string(patch.Resources[1].Attributes) != "null" {
+
+	clearedDescriptor := documentMember(t, patch.Resources[1].Document, "descriptor")
+	clearedAttributes := documentMember(t, patch.Resources[1].Document, "resourceAttributes")
+	if string(clearedDescriptor) != "null" || string(clearedAttributes) != "null" {
 		t.Errorf("an explicit null mapped to %s / %s, want the delete",
-			patch.Resources[1].Descriptor, patch.Resources[1].Attributes)
+			clearedDescriptor, clearedAttributes)
 	}
-	if string(patch.Resources[2].Descriptor) != `{"name":"Wheat"}` {
-		t.Errorf("Descriptor = %s, want the bytes as published", patch.Resources[2].Descriptor)
+
+	if got := documentMember(t, patch.Resources[2].Document, "descriptor"); string(got) != `{"name":"Wheat"}` {
+		t.Errorf("descriptor = %s, want the bytes as published", got)
 	}
+}
+
+// A9 lives INSIDE the document since A17, and the mapper is what settles it.
+//
+// RFC 7396 keeps a member a patch does not mention, and A9 says an omitted
+// `isActive` RESETS the catalog to live — the two rules point opposite ways at
+// the same bytes. Resolving it here means the merge only ever sees a patch that
+// mentions it, so scenario 26 keeps its answer and MergeCatalog keeps having no
+// branch for a default.
+//
+// It is also what stops the document and the `active` column from disagreeing:
+// both are this one resolved bool.
+func TestTheResolvedIsActiveIsWrittenIntoTheStoredDocument(t *testing.T) {
+	for _, unit := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"omitted, so the default", `{"id":"c1"}`, "true"},
+		{"a deliberate false", `{"id":"c1","isActive":false}`, "false"},
+		{"an explicit true", `{"id":"c1","isActive":true}`, "true"},
+	} {
+		t.Run(unit.name, func(t *testing.T) {
+			patch, fatal, _ := mapOne(t, unit.body)
+			if len(fatal) != 0 {
+				t.Fatalf("fatal = %v, want none", fatal)
+			}
+
+			if got := documentMember(t, patch.Document, "isActive"); string(got) != unit.want {
+				t.Errorf("the stored document holds isActive %s, want %s", got, unit.want)
+			}
+			if patch.Active != (unit.want == "true") {
+				t.Errorf("the Active column holds %v while the document holds %s; "+
+					"they are one resolved value and must not disagree",
+					patch.Active, unit.want)
+			}
+		})
+	}
+}
+
+// The two child arrays do NOT reach the catalog document: they own their own
+// rows (A17), and a document keeping a copy would give one MERGE two places to
+// apply and no rule for which wins.
+func TestTheCatalogDocumentDoesNotCarryItsChildren(t *testing.T) {
+	patch, fatal, _ := mapOne(t, `{"id":"c1","bppId":"b1","descriptor":{"name":"Depot"},
+		"resources":[{"id":"r1"}],"offers":[{"id":"o1"}]}`)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+
+	for _, child := range []string{"resources", "offers"} {
+		if got := documentMember(t, patch.Document, child); got != nil {
+			t.Errorf("the catalog document still carries %s = %s", child, got)
+		}
+	}
+
+	// And everything else is still there, verbatim — the whole point of
+	// keeping the document rather than a projection of it.
+	if got := documentMember(t, patch.Document, "bppId"); string(got) != `"b1"` {
+		t.Errorf("bppId = %s, want it kept", got)
+	}
+	if got := documentMember(t, patch.Document, "descriptor"); string(got) != `{"name":"Depot"}` {
+		t.Errorf("descriptor = %s, want it kept", got)
+	}
+}
+
+// documentMember reads one top-level member of a stored document, or nil when
+// the document does not carry it.
+//
+// Absence and an explicit null are the distinction most of these cases are
+// about, so they must not collapse: an absent member is nil here, and a null
+// one is the four bytes `null`.
+func documentMember(t *testing.T, document json.RawMessage, name string) json.RawMessage {
+	t.Helper()
+
+	if len(document) == 0 {
+		return nil
+	}
+
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(document, &members); err != nil {
+		t.Fatalf("the stored document is not an object: %v (%s)", err, document)
+	}
+	return members[name]
 }
 
 // A resource with no id stores NOTHING.

@@ -115,7 +115,7 @@ func MergeCatalog(stored Catalog, patch CatalogPatch) (Catalog, []string) {
 	// to [""], a network nobody is on, rather than to the publisher's own.
 	merged.NetworkID = patch.NetworkID
 
-	merged.Provider = patchDocument(stored.Provider, patch.Provider)
+	merged.Document = patchDocument(stored.Document, patch.Document)
 
 	// Unconditional, both of them (A9). By here the mapper has already resolved
 	// the declared default, so silence means "sent with its default" rather
@@ -216,15 +216,13 @@ func mergeResources(catalogID string, stored []Resource, patches []ResourcePatch
 			// on both sides of.
 			at[patch.ID] = len(merged)
 			merged = append(merged, Resource{
-				ID:         patch.ID,
-				CatalogID:  catalogID,
-				Descriptor: patchDocument(nil, patch.Descriptor),
-				Attributes: patchDocument(nil, patch.Attributes),
+				ID:        patch.ID,
+				CatalogID: catalogID,
+				Document:  patchDocument(nil, patch.Document),
 			})
 			continue
 		}
-		merged[position].Descriptor = patchDocument(merged[position].Descriptor, patch.Descriptor)
-		merged[position].Attributes = patchDocument(merged[position].Attributes, patch.Attributes)
+		merged[position].Document = patchDocument(merged[position].Document, patch.Document)
 	}
 	return merged, touched
 }

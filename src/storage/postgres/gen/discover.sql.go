@@ -287,6 +287,69 @@ func (q *Queries) FuzzyCandidates(ctx context.Context, arg FuzzyCandidatesParams
 	return items, nil
 }
 
+const hydrateCatalogs = `-- name: HydrateCatalogs :many
+SELECT c.id, c.document, c.visible_to, c.active,
+       c.valid_from, c.valid_to, c.valid_time_from, c.valid_time_to
+  FROM catalogs c
+ WHERE c.id = ANY($1::text[])
+`
+
+type HydrateCatalogsRow struct {
+	ID            string
+	Document      []byte
+	VisibleTo     []string
+	Active        bool
+	ValidFrom     pgtype.Timestamptz
+	ValidTo       pgtype.Timestamptz
+	ValidTimeFrom pgtype.Time
+	ValidTimeTo   pgtype.Time
+}
+
+// HydrateCatalogs loads the catalog document once per catalog on the page.
+//
+// Named for the catalog rather than the provider since A17: it returns the
+// whole stored Catalog, which is what makes a discover response carry the
+// `descriptor`, `bppId`, `bppUri` and `validity` a publisher sent. While it
+// returned only `provider`, those four had nowhere to come from.
+//
+// The ONE query in the read path that touches `catalogs`, and it runs after the
+// page is decided — roughly twenty rows by primary key. That is the whole
+// reason the scope gate was copied onto `resources`: a retriever that joined
+// here would probe this table once per match rather than once per page.
+//
+// No gate. The gate columns on this row are the source the resources' copies
+// were written from, and every resource on the page has already been through
+// them; re-testing here would reject a catalog for a state its own resources
+// were just admitted under, which can only be a bug.
+func (q *Queries) HydrateCatalogs(ctx context.Context, catalogIds []string) ([]HydrateCatalogsRow, error) {
+	rows, err := q.db.Query(ctx, hydrateCatalogs, catalogIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HydrateCatalogsRow{}
+	for rows.Next() {
+		var i HydrateCatalogsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Document,
+			&i.VisibleTo,
+			&i.Active,
+			&i.ValidFrom,
+			&i.ValidTo,
+			&i.ValidTimeFrom,
+			&i.ValidTimeTo,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const hydrateGeometries = `-- name: HydrateGeometries :many
 SELECT g.catalog_id, g.resource_id, g.target_path, g.source_path, g.geojson
   FROM resource_geometries g
@@ -344,7 +407,7 @@ func (q *Queries) HydrateGeometries(ctx context.Context, arg HydrateGeometriesPa
 }
 
 const hydrateOffers = `-- name: HydrateOffers :many
-SELECT o.catalog_id, o.id, o.resource_ids, o.offer,
+SELECT o.catalog_id, o.id, o.resource_ids, o.document,
        o.valid_from, o.valid_to, o.valid_time_from, o.valid_time_to
   FROM offers o
  WHERE o.catalog_id = ANY($1::text[])
@@ -369,7 +432,7 @@ type HydrateOffersRow struct {
 	CatalogID     string
 	ID            string
 	ResourceIds   []string
-	Offer         []byte
+	Document      []byte
 	ValidFrom     pgtype.Timestamptz
 	ValidTo       pgtype.Timestamptz
 	ValidTimeFrom pgtype.Time
@@ -407,65 +470,7 @@ func (q *Queries) HydrateOffers(ctx context.Context, arg HydrateOffersParams) ([
 			&i.CatalogID,
 			&i.ID,
 			&i.ResourceIds,
-			&i.Offer,
-			&i.ValidFrom,
-			&i.ValidTo,
-			&i.ValidTimeFrom,
-			&i.ValidTimeTo,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const hydrateProviders = `-- name: HydrateProviders :many
-SELECT c.id, c.provider, c.visible_to, c.active,
-       c.valid_from, c.valid_to, c.valid_time_from, c.valid_time_to
-  FROM catalogs c
- WHERE c.id = ANY($1::text[])
-`
-
-type HydrateProvidersRow struct {
-	ID            string
-	Provider      []byte
-	VisibleTo     []string
-	Active        bool
-	ValidFrom     pgtype.Timestamptz
-	ValidTo       pgtype.Timestamptz
-	ValidTimeFrom pgtype.Time
-	ValidTimeTo   pgtype.Time
-}
-
-// HydrateProviders loads the provider document once per catalog on the page.
-//
-// The ONE query in the read path that touches `catalogs`, and it runs after the
-// page is decided — roughly twenty rows by primary key. That is the whole
-// reason the scope gate was copied onto `resources`: a retriever that joined
-// here would probe this table once per match rather than once per page.
-//
-// No gate. The gate columns on this row are the source the resources' copies
-// were written from, and every resource on the page has already been through
-// them; re-testing here would reject a catalog for a state its own resources
-// were just admitted under, which can only be a bug.
-func (q *Queries) HydrateProviders(ctx context.Context, catalogIds []string) ([]HydrateProvidersRow, error) {
-	rows, err := q.db.Query(ctx, hydrateProviders, catalogIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []HydrateProvidersRow{}
-	for rows.Next() {
-		var i HydrateProvidersRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.Provider,
-			&i.VisibleTo,
-			&i.Active,
+			&i.Document,
 			&i.ValidFrom,
 			&i.ValidTo,
 			&i.ValidTimeFrom,
@@ -484,7 +489,7 @@ func (q *Queries) HydrateProviders(ctx context.Context, catalogIds []string) ([]
 const hydrateResources = `-- name: HydrateResources :many
 SELECT r.catalog_id, r.id, r.visible_to, r.active,
        r.valid_from, r.valid_to, r.valid_time_from, r.valid_time_to,
-       r.name, r.descriptor, r.attributes, r.schema_context, r.schema_type,
+       r.name, r.document, r.schema_context, r.schema_type,
        r.embedding, r.embedding_source_hash
   FROM resources r
   JOIN (SELECT c.v AS catalog_id, i.v AS resource_id
@@ -516,8 +521,7 @@ type HydrateResourcesRow struct {
 	ValidTimeFrom       pgtype.Time
 	ValidTimeTo         pgtype.Time
 	Name                string
-	Descriptor          []byte
-	Attributes          []byte
+	Document            []byte
 	SchemaContext       string
 	SchemaType          string
 	Embedding           *pgvector_go.Vector
@@ -551,8 +555,7 @@ func (q *Queries) HydrateResources(ctx context.Context, arg HydrateResourcesPara
 			&i.ValidTimeFrom,
 			&i.ValidTimeTo,
 			&i.Name,
-			&i.Descriptor,
-			&i.Attributes,
+			&i.Document,
 			&i.SchemaContext,
 			&i.SchemaType,
 			&i.Embedding,

@@ -130,45 +130,65 @@ func (s *Service) negotiate(query domain.SearchQuery) ([]domain.Capability, []st
 
 // render turns stored catalogs into the response's.
 //
-// Four members — id, provider, resources, offers — and nothing this service
-// would have to invent. `isActive` is not among them: every catalog that
-// survives the scope gate is live, so rendering it would be a constant true
-// dressed as information.
+// The whole stored catalog, not a projection of it. Since A17 the catalog a
+// publisher sent is kept verbatim in `catalogs.document` with its two child
+// arrays lifted onto their own tables, so rendering is: decode the document,
+// put the children back, and let beckn.Catalog's MarshalJSON write the bytes
+// out again. `descriptor`, `bppId`, `bppUri` and `validity` come back for free
+// — this function does not name them, and would not have to name the next
+// member the protocol adds either.
 //
-// `descriptor` is missing, and the schema requires it. Catalog in beckn.yaml is
-// required:[id, descriptor, provider] with additionalProperties:false, so what
-// this emits does not satisfy its own response shape. Nothing here can fix
-// that: domain.Catalog has no Descriptor, no column stores one and the publish
-// mapper never read one, so the value does not exist to be rendered. The gap is
-// in the plan's Deferred table with what closing it costs — it is a schema and
-// write-path change, not a projection this function is declining to make.
+// That is what closes the gap this comment used to describe: Catalog in
+// beckn.yaml is required:[id, descriptor, provider], and while the row held a
+// `provider` column and nothing else, the response could not satisfy its own
+// schema no matter what was projected here.
 //
-// SearchResult.Total is dropped for the neighbouring reason: OnDiscoverAction
-// admits `catalogs` alone. That one is not free — the repository issues a count
-// query to produce it — and it is in the same table.
+// A document that will not decode is dropped rather than half-rendered, for the
+// reason renderOffers gives below. An EMPTY one is a different thing and is not
+// dropped: `catalogs.document` defaults to an empty object, so a row that
+// predates a document — or a caller that built a domain.Catalog in Go rather
+// than through publish — still has an id, and the id is the row's own primary
+// key rather than anything the document has to supply.
+//
+// SearchResult.Total is still dropped: OnDiscoverAction admits `catalogs`
+// alone. That one is not free — the repository issues a count query to produce
+// it — and it is in the plan's Deferred table.
 func render(catalogs []domain.Catalog) []beckn.Catalog {
 	rendered := make([]beckn.Catalog, 0, len(catalogs))
 	for _, catalog := range catalogs {
-		rendered = append(rendered, beckn.Catalog{
-			ID:        catalog.ID,
-			Provider:  catalog.Provider,
-			Resources: renderResources(catalog.Resources),
-			Offers:    renderOffers(catalog.Offers),
-		})
+		decoded := beckn.Catalog{ID: catalog.ID}
+		if len(catalog.Document) > 0 {
+			if err := json.Unmarshal(catalog.Document, &decoded); err != nil {
+				continue
+			}
+		}
+
+		decoded.Resources = renderResources(catalog.Resources)
+		decoded.Offers = renderOffers(catalog.Offers)
+		rendered = append(rendered, decoded)
 	}
 	return rendered
 }
 
-// renderResources projects the three members the wire Resource has (C5). There
-// is no category field anywhere in v2.0.0, so there is none to render.
+// renderResources gives back each stored Document, which is the resource
+// exactly as its publisher wrote it — the same contract renderOffers has had
+// since the offer column was added, now that resources have a document rather
+// than two shredded columns.
+//
+// An empty document falls back to the row's id for the reason render gives
+// above: `id` is the only member a Resource requires, the row has it, and a
+// resource that vanished from the response would look to the caller exactly
+// like one the gate refused.
 func renderResources(resources []domain.Resource) []beckn.Resource {
 	rendered := make([]beckn.Resource, 0, len(resources))
 	for _, resource := range resources {
-		rendered = append(rendered, beckn.Resource{
-			ID:                 resource.ID,
-			Descriptor:         resource.Descriptor,
-			ResourceAttributes: resource.Attributes,
-		})
+		decoded := beckn.Resource{ID: resource.ID}
+		if len(resource.Document) > 0 {
+			if err := json.Unmarshal(resource.Document, &decoded); err != nil {
+				continue
+			}
+		}
+		rendered = append(rendered, decoded)
 	}
 	return rendered
 }

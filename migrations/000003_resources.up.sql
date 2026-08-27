@@ -19,14 +19,19 @@ CREATE TABLE resources (
     -- which is exactly why the unconditional rewrite below is safe.
     -- ----------------------------------------------------------------------
 
-    -- A duplicate of descriptor->>'name', and knowingly so: fuzzy search needs
-    -- GIN (name gin_trgm_ops), and a trigram index over a JSONB extraction is
-    -- worse to build, to read and to explain. A duplicate paid for by an index.
+    -- A duplicate of document->'descriptor'->>'name', and knowingly so: fuzzy
+    -- search needs GIN (name gin_trgm_ops), and a trigram index over a JSONB
+    -- extraction is worse to build, to read and to explain. A duplicate paid
+    -- for by an index.
     name        TEXT  NOT NULL DEFAULT '',
-    descriptor  JSONB NOT NULL DEFAULT '{}'::jsonb,
 
-    -- JSON-LD domain attributes, already validated by L2.
-    attributes  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- The Resource as the publisher sent it — `{id, descriptor,
+    -- resourceAttributes}` — verbatim and entire (A17). There is no
+    -- `descriptor` column and no `attributes` column: they were two halves of
+    -- this one document, and splitting them meant a filter predicate naming
+    -- both had no single column to run against, while a member the protocol
+    -- adds later had nowhere at all to go.
+    document    JSONB NOT NULL DEFAULT '{}'::jsonb,
 
     -- resourceAttributes.@context and .@type, both scalar `string` and both
     -- REQUIRED by the Attributes schema (C4). Two plain columns, because the
@@ -43,13 +48,12 @@ CREATE TABLE resources (
     -- and passed in as a parameter, so the Go function stays the one source of
     -- truth for what is searchable. Only the tsvector is kept.
     --
-    -- There is no `search_text` column. It would be the concatenation
-    -- of `name`, `descriptor` and every value in `attributes` — the largest
-    -- text on the widest, hottest table, holding a second copy of bytes already
-    -- in three columns of the same row. Its only reader was the Phase 2
-    -- embedding backfill, which already loads those three columns and can call
-    -- `deriveSearchText` on them for far less than the cost of storing the
-    -- answer on every row for ever.
+    -- There is no `search_text` column. It would be the concatenation of every
+    -- value in `document` — the largest text on the widest, hottest table,
+    -- holding a second copy of bytes already in the same row. Its only reader
+    -- was the Phase 2 embedding backfill, which already loads `document` and
+    -- can call `deriveSearchText` on it for far less than the cost of storing
+    -- the answer on every row for ever.
     search_tsv  TSVECTOR NOT NULL DEFAULT ''::tsvector,
 
     -- Nullable: a publish must succeed when the embedding service is down, and
@@ -133,7 +137,7 @@ CREATE INDEX idx_resources_schema ON resources (schema_context, schema_type)
 -- jsonb_path_ops, not the default jsonb_ops: a third the size and faster for
 -- the path-exists queries this service issues (Task 22). It cannot serve
 -- key-existence (?) queries, which nothing here needs.
-CREATE INDEX idx_resources_attributes ON resources USING GIN (attributes jsonb_path_ops);
+CREATE INDEX idx_resources_document ON resources USING GIN (document jsonb_path_ops);
 
 -- HNSW, not IVFFlat: no training pass, so it works from the first row. Not
 -- partial: a partial HNSW would have to be rebuilt when `active` flips.

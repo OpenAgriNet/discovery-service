@@ -1,3 +1,5 @@
--- No index to drop first: this table deliberately carries nothing beyond the
--- btree PostgreSQL builds for its primary key, and that goes with the table.
+-- The GIN index goes with the table, but it is named here because it is the
+-- one object on `catalogs` that a partially-applied migration could leave
+-- behind, and DROP TABLE would then fail on a name it does not own.
+DROP INDEX IF EXISTS idx_catalogs_document;
 DROP TABLE IF EXISTS catalogs;

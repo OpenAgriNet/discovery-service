@@ -98,7 +98,7 @@ func (q *Queries) DeleteResourcesNotIn(ctx context.Context, arg DeleteResourcesN
 }
 
 const getCatalogRow = `-- name: GetCatalogRow :one
-SELECT id, provider, visible_to, active,
+SELECT id, document, visible_to, active,
        valid_from, valid_to, valid_time_from, valid_time_to
   FROM catalogs
  WHERE id = $1
@@ -106,7 +106,7 @@ SELECT id, provider, visible_to, active,
 
 type GetCatalogRowRow struct {
 	ID            string
-	Provider      []byte
+	Document      []byte
 	VisibleTo     []string
 	Active        bool
 	ValidFrom     pgtype.Timestamptz
@@ -125,7 +125,7 @@ func (q *Queries) GetCatalogRow(ctx context.Context, id string) (GetCatalogRowRo
 	var i GetCatalogRowRow
 	err := row.Scan(
 		&i.ID,
-		&i.Provider,
+		&i.Document,
 		&i.VisibleTo,
 		&i.Active,
 		&i.ValidFrom,
@@ -184,7 +184,7 @@ func (q *Queries) ListStoredGeometries(ctx context.Context, catalogID string) ([
 }
 
 const listStoredOffers = `-- name: ListStoredOffers :many
-SELECT id, catalog_id, resource_ids, offer,
+SELECT id, catalog_id, resource_ids, document,
        valid_from, valid_to, valid_time_from, valid_time_to
   FROM offers
  WHERE catalog_id = $1
@@ -195,7 +195,7 @@ type ListStoredOffersRow struct {
 	ID            string
 	CatalogID     string
 	ResourceIds   []string
-	Offer         []byte
+	Document      []byte
 	ValidFrom     pgtype.Timestamptz
 	ValidTo       pgtype.Timestamptz
 	ValidTimeFrom pgtype.Time
@@ -215,7 +215,7 @@ func (q *Queries) ListStoredOffers(ctx context.Context, catalogID string) ([]Lis
 			&i.ID,
 			&i.CatalogID,
 			&i.ResourceIds,
-			&i.Offer,
+			&i.Document,
 			&i.ValidFrom,
 			&i.ValidTo,
 			&i.ValidTimeFrom,
@@ -234,7 +234,7 @@ func (q *Queries) ListStoredOffers(ctx context.Context, catalogID string) ([]Lis
 const listStoredResources = `-- name: ListStoredResources :many
 SELECT id, catalog_id, visible_to, active,
        valid_from, valid_to, valid_time_from, valid_time_to,
-       name, descriptor, attributes, schema_context, schema_type,
+       name, document, schema_context, schema_type,
        embedding, embedding_source_hash
   FROM resources
  WHERE catalog_id = $1
@@ -251,8 +251,7 @@ type ListStoredResourcesRow struct {
 	ValidTimeFrom       pgtype.Time
 	ValidTimeTo         pgtype.Time
 	Name                string
-	Descriptor          []byte
-	Attributes          []byte
+	Document            []byte
 	SchemaContext       string
 	SchemaType          string
 	Embedding           *pgvector_go.Vector
@@ -283,8 +282,7 @@ func (q *Queries) ListStoredResources(ctx context.Context, catalogID string) ([]
 			&i.ValidTimeFrom,
 			&i.ValidTimeTo,
 			&i.Name,
-			&i.Descriptor,
-			&i.Attributes,
+			&i.Document,
 			&i.SchemaContext,
 			&i.SchemaType,
 			&i.Embedding,
@@ -306,13 +304,13 @@ const lockAndLoadCatalog = `-- name: LockAndLoadCatalog :one
 
 INSERT INTO catalogs (id) VALUES ($1)
 ON CONFLICT (id) DO UPDATE SET updated_at = now()
-RETURNING id, provider, visible_to, active,
+RETURNING id, document, visible_to, active,
           valid_from, valid_to, valid_time_from, valid_time_to
 `
 
 type LockAndLoadCatalogRow struct {
 	ID            string
-	Provider      []byte
+	Document      []byte
 	VisibleTo     []string
 	Active        bool
 	ValidFrom     pgtype.Timestamptz
@@ -344,7 +342,7 @@ func (q *Queries) LockAndLoadCatalog(ctx context.Context, id string) (LockAndLoa
 	var i LockAndLoadCatalogRow
 	err := row.Scan(
 		&i.ID,
-		&i.Provider,
+		&i.Document,
 		&i.VisibleTo,
 		&i.Active,
 		&i.ValidFrom,
@@ -453,7 +451,7 @@ func (q *Queries) PruneOfferResourceIDs(ctx context.Context, catalogID string) e
 const updateCatalogRow = `-- name: UpdateCatalogRow :exec
 
 UPDATE catalogs
-   SET provider        = $2,
+   SET document        = $2,
        visible_to      = $3,
        active          = $4,
        valid_from      = $5,
@@ -466,7 +464,7 @@ UPDATE catalogs
 
 type UpdateCatalogRowParams struct {
 	ID            string
-	Provider      []byte
+	Document      []byte
 	VisibleTo     []string
 	Active        bool
 	ValidFrom     pgtype.Timestamptz
@@ -488,7 +486,7 @@ type UpdateCatalogRowParams struct {
 func (q *Queries) UpdateCatalogRow(ctx context.Context, arg UpdateCatalogRowParams) error {
 	_, err := q.db.Exec(ctx, updateCatalogRow,
 		arg.ID,
-		arg.Provider,
+		arg.Document,
 		arg.VisibleTo,
 		arg.Active,
 		arg.ValidFrom,

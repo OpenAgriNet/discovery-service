@@ -8,12 +8,19 @@ CREATE TABLE catalogs (
     -- depends on it is how it stops being true somewhere else.
     id           TEXT PRIMARY KEY CHECK (id <> ''),
 
-    -- Verbatim, and stored exactly once per catalog. A providers table would
-    -- add a join to every read to save nothing: no query reaches a provider
-    -- except through its catalog.
+    -- The Catalog as the publisher sent it, with `resources` and `offers`
+    -- STRIPPED — those own their own rows (A17). Everything else on this table
+    -- is derived from it and exists to be indexed; this column is the only
+    -- thing stored, so a member the protocol adds tomorrow survives without a
+    -- migration and comes back out of a discover unchanged.
+    --
+    -- Stripped rather than kept whole because a resource would otherwise exist
+    -- in two places with nothing keeping them agreed, and one MERGE would have
+    -- two documents to apply itself to.
+    --
     -- DEFAULT so the lock-and-load INSERT that opens every publish can name
     -- `id` alone. See `updateMode` — MERGE and FULL.
-    provider     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    document     JSONB       NOT NULL DEFAULT '{}'::jsonb,
 
     -- publishDirective.visibleTo: the network ids this catalog is discoverable
     -- from. An array because that is what the directive carries — a publisher
@@ -45,3 +52,10 @@ CREATE TABLE catalogs (
     published_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The filter index for `$.catalogs[*] ? (...)` (Task 22).
+--
+-- jsonb_path_ops rather than the default jsonb_ops: it stores one hash per
+-- (full path, value) leaf instead of one entry per key AND per value, which is
+-- both smaller and the operator class the `@?` operator can actually use.
+CREATE INDEX idx_catalogs_document ON catalogs USING GIN (document jsonb_path_ops);

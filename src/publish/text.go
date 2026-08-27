@@ -33,8 +33,8 @@ func jsonLDKeyword(key string) bool {
 // by exactly that.
 //
 // Its OUTPUT is deliberately not stored. `search_tsv` is built from it at
-// insert and the Phase 2 embedding backfill calls it again over `name`,
-// `descriptor` and `attributes` rather than reading a stale copy — which is
+// insert and the Phase 2 embedding backfill calls it again over `name` and
+// `document` rather than reading a stale copy — which is
 // only sound because it is deterministic. It must therefore stay so: the result
 // is hashed into `embedding_source_hash`, and that hash is the A5 re-embed
 // decision, so a derivation that varied would re-embed a catalog that changed
@@ -48,8 +48,8 @@ func deriveSearchText(resource domain.Resource) string {
 	if resource.Name != "" {
 		words = append(words, resource.Name)
 	}
-	words = appendValues(words, resource.Descriptor)
-	words = appendValues(words, resource.Attributes)
+	words = appendValues(words, resource.Descriptor())
+	words = appendValues(words, resource.ResourceAttributes())
 
 	return strings.Join(words, " ")
 }
