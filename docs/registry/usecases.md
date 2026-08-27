@@ -130,10 +130,13 @@ Everything needed is already on the request body:
 ```
 offer.provider.id            → "mausamgram"
 resourceAttributes["@type"]  → "openagrinet:WeatherObservation"
-action                       → "select"
 
-bindingKey = "mausamgram|openagrinet:WeatherObservation|select"
+bindingKey = "mausamgram|openagrinet:WeatherObservation"
 ```
+
+Two values, joined by a `|`. **The action is not part of it** — the adapter does not need
+to know it is serving `select` in order to find the call plan; see
+[registry.md §3](registry.md#3-registry-schema) for what would change that.
 
 The `@type` is the **same string the advertisement carried** — one type spans both calls,
 which is what makes the key derivable rather than looked up.

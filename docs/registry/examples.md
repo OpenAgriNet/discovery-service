@@ -115,7 +115,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ```json
 { "ProviderCapability": {
-  "bindingKey": "mausamgram|openagrinet:WeatherObservation|select",
+  "bindingKey": "mausamgram|openagrinet:WeatherObservation",
   "providerId": "mausamgram",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
@@ -131,7 +131,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ```json
 { "ProviderCapability": {
-  "bindingKey": "imd-city-weather|openagrinet:WeatherObservation|select",
+  "bindingKey": "imd-city-weather|openagrinet:WeatherObservation",
   "providerId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
@@ -148,7 +148,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ```json
 { "ProviderCapability": {
-  "bindingKey": "agmarknet|openagrinet:MandiPrice|select",
+  "bindingKey": "agmarknet|openagrinet:MandiPrice",
   "providerId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPrice",
   "method": "GET",
@@ -164,7 +164,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ```json
 { "ProviderCapability": {
-  "bindingKey": "hasura-content|openagrinet:KnowledgeResource|select",
+  "bindingKey": "hasura-content|openagrinet:KnowledgeResource",
   "providerId": "hasura-content",
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST",
@@ -180,7 +180,7 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ```json
 { "ProviderCapability": {
-  "bindingKey": "oan-vector|openagrinet:KnowledgeResource|select",
+  "bindingKey": "oan-vector|openagrinet:KnowledgeResource",
   "providerId": "oan-vector",
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST",
