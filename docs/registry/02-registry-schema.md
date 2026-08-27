@@ -247,7 +247,7 @@ to it.
 | `bindingKey` | string | three-part key — pattern and `not` given verbatim below | ✓ |
 | `providerId` | string | `^[a-z0-9][a-z0-9._:-]{2,63}$` | ✓ |
 | `capabilityCode` | string | same pattern and `not` as on `Capability` | ✓ |
-| `action` | string | `discover` `select` `init` `confirm` `status` `track` `update` `cancel` `rate` `support`, default `select` | ✓ |
+| `action` | string | `discover` `select` `init` `confirm` `status` `track` `update` `cancel` `rate` `support`, default `select`. **Dropped in OAN v1** — see below | ✓ |
 | `responseMapping` | string | `^mappings/(?!.*\.\.)[a-z0-9][a-z0-9._/-]*\.jsonata$` | ✓ |
 | `status` | string | `active` \| `inactive` | ✓ |
 | `method` | string | `GET` \| `POST` | single |
@@ -304,6 +304,13 @@ shape or the other, never half of each:
 
 The fourth clause is the load-bearing one — it is what pushes `sessionGrant` down onto the
 step that earns it, and the reason is worked through below.
+
+> **OAN v1 does not store `action`.** It is not in `indexFields`, so it answered no query;
+> the adapter builds the key from the request and looks it up exactly, never reading the
+> column back; and its enum was already enforced by the key pattern's own alternation. The
+> key keeps its third segment — that is the discriminator between `…|init` and `…|status`
+> — but the column is gone. See [OpenAgriNet registry — v1](oan-v1.md). BV's own records
+> below are unchanged and still carry it.
 
 **Two integrity rules no JSON Schema can express.** `bindingKey` must agree with its own
 `providerId`, `capabilityCode` and `action`, and both ids must resolve to live records.

@@ -123,7 +123,6 @@ on `baseTypes[]`, where a broad request can still fan out to it.
 | `bindingKey` | string | `<providerId>\|<capabilityCode>\|<action>` | ✓ |
 | `providerId` | string | must match segment 1 | ✓ |
 | `capabilityCode` | string | must match segment 2 | ✓ |
-| `action` | string | `discover` `select` `init` `confirm` `status` `track` `update` `cancel` `rate` `support`, default `select` — see below | ✓ |
 | `responseMapping` | string | `^mappings/(?!.*\.\.)[a-z0-9][a-z0-9._/-]*\.jsonata$` | ✓ |
 | `status` | string | `active` \| `inactive` | ✓ |
 | `method` `path` `requestMapping` | | **single-call shape** — all three, and no `steps` | |
@@ -135,32 +134,33 @@ on `baseTypes[]`, where a broad request can still fan out to it.
 The single/multi split is a `oneOf`, not documentation — a record is one shape or the
 other, never half of each. **All five v1 bindings are single-call.**
 
-The key is three-part because `uniqueIndexFields` is a single field: under a two-part key
-`pm-kisan|BeneficiaryStatus|init` and `…|status` collide. Whether RC then rejects or
-silently overwrites is a property of the deployed build worth confirming — but the
-three-part key removes the question.
-
 ```
 "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}\\|openagrinet:[A-Z][A-Za-z0-9]*\\|(discover|select|init|confirm|status|track|update|cancel|rate|support)$"
 "not":     { "pattern": "\\|openagrinet:Agriculture(Capability|Resource)(\\||$)" }
 ```
 
 **Two integrity rules no JSON Schema can express**, so they run in onboarding and in the
-conformance suite: `bindingKey` must agree with its own three fields, and both ids must
-resolve to live records.
+conformance suite: `bindingKey`'s first two segments must agree with `providerId` and
+`capabilityCode`, and both must resolve to live records.
 
-**Why `providerId`, `capabilityCode` and `action` are stored at all**, when `bindingKey`
-already contains all three: RC indexes and searches whole fields, never a substring, so a
-segment that is only inside the key cannot be queried. `providerId` and `capabilityCode`
-are in `indexFields` and earn it — *list every binding for this provider* is what
-onboarding and deactivation need.
+**`providerId` and `capabilityCode` are stored** even though `bindingKey` contains them,
+because RC indexes and searches whole fields, never a substring: a segment that lives only
+inside the key cannot be queried. Both are in `indexFields`, and *list every binding for
+this provider* is what onboarding and deactivation need. They earn the duplication.
 
-`action` earns less. It is not in `indexFields`, the adapter never reads it back (it
-*builds* the key from the request and does one exact-match lookup), and the enum it
-declares is already enforced by the key pattern's own alternation. It is a third copy of a
-fact, useful for reading a row and for grouping a preload without splitting strings, and
-nothing else. Worth raising with the adapter team — either index it or derive it — but not
-worth diverging this copy over.
+**`action` is not stored.** BV's schema has it as a required column; OAN v1 drops it. It
+was never in `indexFields`, so it answered no query. The adapter *builds* the key from the
+incoming request and does one exact-match lookup — it never reads `action` back off the
+row. And the enum it declared was already enforced by the key pattern's own alternation,
+so it validated nothing the pattern did not. A third copy of a fact that no code reads is
+just a third thing that can disagree with the other two.
+
+The **key keeps all three segments**. It has to: `uniqueIndexFields` is a single field, and
+`pm-kisan|…|init` and `pm-kisan|…|status` are different call plans for the same provider
+and capability — under a two-part key they collide, and whether RC then rejects or silently
+overwrites is a property of the deployed build nobody has confirmed. The third segment
+removes the question. What went away is the redundant column, not the discriminator; to
+display or group by action, split the key.
 
 **Mappings live in files, not in the row.** The Mausamgram response transform is 76 lines
 of JSONata; stored in the row it is one string with every newline escaped, unreviewable in
@@ -293,7 +293,6 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "bindingKey": "mausamgram|openagrinet:WeatherObservation|select",
   "providerId": "mausamgram",
   "capabilityCode": "openagrinet:WeatherObservation",
-  "action": "select",
   "method": "GET",
   "path": "/get-daily",
   "enricher": "pointFromIntent",
@@ -310,7 +309,6 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "bindingKey": "imd-city-weather|openagrinet:WeatherObservation|select",
   "providerId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
-  "action": "select",
   "method": "GET",
   "path": "/citywx/city_weather_test.php",
   "enricher": { "name": "nearestStation",
@@ -328,7 +326,6 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "bindingKey": "agmarknet|openagrinet:MandiPriceObservation|select",
   "providerId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPriceObservation",
-  "action": "select",
   "method": "GET",
   "path": "/v1/fetch-agmarknet-vistaar-location",
   "enricher": "marketAndCommodityCodes",
@@ -345,7 +342,6 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "bindingKey": "hasura-content|openagrinet:KnowledgeResource|select",
   "providerId": "hasura-content",
   "capabilityCode": "openagrinet:KnowledgeResource",
-  "action": "select",
   "method": "POST",
   "path": "/v1/graphql",
   "enricher": "knowledgeQueryParams",
@@ -362,7 +358,6 @@ outcome type; they are told apart on the published resource by `subjectCategorie
   "bindingKey": "oan-vector|openagrinet:KnowledgeResource|select",
   "providerId": "oan-vector",
   "capabilityCode": "openagrinet:KnowledgeResource",
-  "action": "select",
   "method": "POST",
   "path": "/indexes/oan-index/search",
   "enricher": "knowledgeQueryParams",
