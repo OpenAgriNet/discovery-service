@@ -126,4 +126,4 @@ if someone changes it back. A commit message that restates the diff is wasted.
 | `config/` | `common.yaml` (committed, reviewed); `instance.yaml` is mounted per deployment |
 | `tests/` | `acceptance/`, `dbtest/`, `testdata/`, and `architecture/boundary_test.go` — the import-graph guard on the TRD §5 swap boundary |
 | `docs/design/`, `docs/adr/` | The plan, and the 16 ADRs behind it — 0001 is superseded by 0016 |
-| `docs/registry/` | `README.md` is the registry: architecture, deployment topologies, schema, APIs, one worked execution. `imported/` is the BV Beckn adapter's own design set — a **different system**, copied verbatim for interop context and kept diffable against its source. Binding on nothing here; `docs/design/` still wins |
+| `docs/registry/` | `registry.md` is the main document — architecture, deployment topologies, schema, API spec; `examples.md` the records to seed, `usecases.md` one worked execution. `imported/` is the BV Beckn adapter's own design set — a **different system**, copied verbatim for interop context and kept diffable against its source. Binding on nothing here; `docs/design/` still wins |
