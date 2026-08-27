@@ -46,6 +46,7 @@ type Resource struct {
 	ValidTimeTo         pgtype.Time
 	Name                string
 	Document            []byte
+	FilterDoc           []byte
 	SchemaContext       string
 	SchemaType          string
 	SearchTsv           interface{}

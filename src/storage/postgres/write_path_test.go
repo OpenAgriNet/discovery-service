@@ -120,15 +120,20 @@ func resourceXmin(t *testing.T, pool *pgxpool.Pool, catalogID, resourceID string
 	return version
 }
 
-// A touched resource is written ONCE, not twice.
+// Every resource row is written for a reason, and no resource is written twice
+// for the same one.
 //
 // Two resources, and a republish that names one of them while moving the gate.
-// The touched one is written by the upsert; the untouched one is written by the
-// gate propagate; neither is written by both. Three tuple updates instead of two
-// is the regression — a second row version, a second WAL record, a dead tuple
-// and a second insertion into a GIN index for a value that did not change,
-// invisible in every functional test and visible in bloat a quarter later.
-func TestATouchedResourceIsWrittenOnceNotTwice(t *testing.T) {
+// The touched one is written by the upsert and again by RebuildFilterDocs,
+// because its composite is a projection of a document that just changed and
+// could not have been assembled at the time of the first write (A18). The
+// untouched one is written by the gate propagate and NOT by the rebuild,
+// because nothing it can see moved. Four updates instead of three is the
+// regression the gate propagate used to have — a second row version, a second
+// WAL record, a dead tuple and a second insertion into a GIN index built with
+// `fastupdate = off`, for a value that did not change; invisible in every
+// functional test and visible in bloat a quarter later.
+func TestEveryResourceRowIsWrittenForAReason(t *testing.T) {
 	pool := dedicatedPool(t, nil)
 	repository := postgres.NewCatalogRepository(pool, resolution)
 	ctx := context.Background()
@@ -157,12 +162,56 @@ func TestATouchedResourceIsWrittenOnceNotTwice(t *testing.T) {
 		t.Fatalf("the republish: %v", err)
 	}
 
-	if updates := tupleUpdates(t, pool) - before; updates != 2 {
-		t.Errorf("the republish updated %d resource tuples, want 2 — one for the touched "+
-			"resource and one for the untouched one the gate propagate reaches", updates)
+	if updates := tupleUpdates(t, pool) - before; updates != 3 {
+		t.Errorf("the republish updated %d resource tuples, want 3 — the touched resource "+
+			"twice, for its row and for the composite its new document changed, and "+
+			"the untouched one once, for the gate the propagate reaches", updates)
 	}
 	if versionAfter := resourceXmin(t, pool, "c1", "r1"); versionAfter == versionBefore {
 		t.Errorf("r1 still carries xmin %s; the republish named it and did not write it", versionBefore)
+	}
+}
+
+// A republish that changes nothing writes nothing.
+//
+// This is the sharper half of the count above, and the one that fails the
+// moment a statement drops its `IS DISTINCT FROM` guard. Both statements that
+// sweep the whole catalog carry one — the gate propagate and the composite
+// rebuild — and without them every republish of an unchanged catalog would
+// rewrite every resource row twice, which no functional test can see and which
+// costs two GIN insertions per row per publish.
+func TestARepublishThatChangesNothingWritesNothing(t *testing.T) {
+	pool := dedicatedPool(t, nil)
+	repository := postgres.NewCatalogRepository(pool, resolution)
+	ctx := context.Background()
+
+	patch := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true, VisibleTo: []string{"n1"},
+		Document: json.RawMessage(`{"id":"c1","descriptor":{"code":"HUL-BLR"}}`),
+		Resources: []domain.ResourcePatch{
+			resourcePatch("r1", `{"grade":"A"}`),
+			resourcePatch("r2", `{"grade":"B"}`),
+		},
+		Offers: []domain.OfferPatch{
+			{ID: "o1", ResourceIDs: []string{"r1"}, Document: json.RawMessage(`{"id":"o1"}`)},
+		},
+	}
+	if _, err := repository.UpsertCatalog(ctx, patch, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("the first publish: %v", err)
+	}
+
+	before := tupleUpdates(t, pool)
+	if _, err := repository.UpsertCatalog(ctx, patch, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("the identical republish: %v", err)
+	}
+
+	// The upsert itself writes the two named rows — it has no way to know the
+	// document is byte-identical without reading it back, which costs more than
+	// the write. The two sweeping statements are what must stay silent.
+	if updates := tupleUpdates(t, pool) - before; updates != 2 {
+		t.Errorf("an identical republish updated %d resource tuples, want 2 — the upsert "+
+			"writes the rows it was given, and neither the gate propagate nor the "+
+			"composite rebuild may add to that when nothing moved", updates)
 	}
 }
 
@@ -547,5 +596,247 @@ func TestASharedGeometrySurvivesARepublishNamingOneOwner(t *testing.T) {
 
 	if len(owners) != 2 || owners[0] != "r1" || owners[1] != "r2" {
 		t.Fatalf("the shared shape is owned by %v, want [r1 r2]", owners)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// filter_doc — the composite the attribute filter runs against (A18)
+// ---------------------------------------------------------------------------
+
+// filterDoc reads the composite off one resource row.
+//
+// Read as a decoded map rather than compared to an expected string: the
+// composite is assembled by jsonb_build_object, whose key order is PostgreSQL's
+// and not this test's, and a byte comparison would pin the ordering of a value
+// nothing reads in order.
+func filterDoc(t *testing.T, pool *pgxpool.Pool, catalogID, resourceID string) map[string]any {
+	t.Helper()
+
+	var raw []byte
+	err := pool.QueryRow(context.Background(),
+		`SELECT filter_doc FROM resources WHERE catalog_id = $1 AND id = $2`,
+		catalogID, resourceID).Scan(&raw)
+	if err != nil {
+		t.Fatalf("reading filter_doc for %s/%s: %v", catalogID, resourceID, err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decoding filter_doc for %s/%s: %v", catalogID, resourceID, err)
+	}
+	return doc
+}
+
+// theOneCatalog unwraps `{"catalogs":[ ... ]}` and asserts the array holds
+// exactly one element on the way through.
+//
+// More than one would mean the composite had stopped being this row's own view
+// of its catalog, which is the property every assertion below rests on.
+func theOneCatalog(t *testing.T, doc map[string]any) map[string]any {
+	t.Helper()
+
+	catalogs, ok := doc["catalogs"].([]any)
+	if !ok || len(catalogs) != 1 {
+		t.Fatalf("filter_doc holds %v under `catalogs`, want an array of exactly one", doc["catalogs"])
+	}
+	block, ok := catalogs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("catalogs[0] is %T, want an object", catalogs[0])
+	}
+	return block
+}
+
+// idsUnder collects the `id` of every element of an array member, sorted, so an
+// assertion names a SET and not PostgreSQL's aggregation order.
+func idsUnder(t *testing.T, block map[string]any, member string) []string {
+	t.Helper()
+
+	elements, ok := block[member].([]any)
+	if !ok {
+		t.Fatalf("the catalog block holds %v under %q, want an array", block[member], member)
+	}
+
+	ids := make([]string, 0, len(elements))
+	for _, element := range elements {
+		object, ok := element.(map[string]any)
+		if !ok {
+			t.Fatalf("an element of %q is %T, want an object", member, element)
+		}
+		id, named := object["id"].(string)
+		if !named {
+			t.Fatalf("an element of %q carries no string id: %v", member, object)
+		}
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// filter_doc carries THIS resource alone, beside its catalog and its offers.
+//
+// The single-element `resources` array is the load-bearing half and it is
+// correctness rather than thrift: with the sibling present,
+// `$.catalogs[*].resources[*] ? (@.grade == "A")` matches the grade-B row
+// because its NEIGHBOUR passed. Everything else here — the catalog's members
+// copied down, the offers narrowed to the ones that apply — is what makes a
+// predicate crossing all three levels answerable against ONE jsonb value.
+func TestFilterDocCarriesThisResourceAloneWithItsCatalogAndItsOffers(t *testing.T) {
+	pool := dbtest.NewPostgres(t)
+	repository := postgres.NewCatalogRepository(pool, resolution)
+
+	patch := domain.CatalogPatch{
+		ID:        "c1",
+		NetworkID: "n1",
+		Active:    true,
+		Document: json.RawMessage(`{
+			"id": "c1",
+			"descriptor": {"code": "HUL-BLR", "name": "HUL Bangalore"},
+			"provider": {"id": "p1", "availableAt": [{"gps": "12.97,77.59"}]},
+			"bppId": "bpp.example.com"
+		}`),
+		Resources: []domain.ResourcePatch{
+			resourcePatch("r-a", `{"grade":"A"}`),
+			resourcePatch("r-b", `{"grade":"B"}`),
+		},
+		Offers: []domain.OfferPatch{
+			{ID: "o-a", ResourceIDs: []string{"r-a"}, Document: json.RawMessage(`{"id":"o-a","channel":"retail"}`)},
+			{ID: "o-wide", ResourceIDs: []string{}, Document: json.RawMessage(`{"id":"o-wide","channel":"wholesale"}`)},
+		},
+	}
+	if _, err := repository.UpsertCatalog(context.Background(), patch, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("publishing: %v", err)
+	}
+
+	block := theOneCatalog(t, filterDoc(t, pool, "c1", "r-a"))
+
+	// The catalog's own members are copied down, which is what lets
+	// `$.catalogs[*] ? (@.descriptor.code == "HUL-BLR")` run on the same scan.
+	descriptor, copied := block["descriptor"].(map[string]any)
+	if !copied {
+		t.Fatalf("the catalog block carries no descriptor object: %v", block["descriptor"])
+	}
+	if descriptor["code"] != "HUL-BLR" {
+		t.Errorf("the catalog block carries descriptor %v, want the published one", block["descriptor"])
+	}
+	if block["bppId"] != "bpp.example.com" {
+		t.Errorf("the catalog block carries bppId %v, want the published one", block["bppId"])
+	}
+
+	// provider, minus availableAt: geometry is answered by resource_geometries
+	// and polygons are the bulky half of a block copied onto every resource.
+	provider, ok := block["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("the catalog block carries provider %v, want the published object", block["provider"])
+	}
+	if provider["id"] != "p1" {
+		t.Errorf("provider.id is %v, want p1 — the block is copied down, not emptied", provider["id"])
+	}
+	if _, present := provider["availableAt"]; present {
+		t.Errorf("provider still carries availableAt: %v — geometry is answered by "+
+			"resource_geometries, and the polygons are the bulky half of a block "+
+			"copied onto every resource of the catalog", provider["availableAt"])
+	}
+
+	// THIS resource, alone.
+	if got := idsUnder(t, block, "resources"); !slices.Equal(got, []string{"r-a"}) {
+		t.Errorf("r-a's filter_doc holds resources %v, want [r-a] alone — a sibling here "+
+			"makes `@.resources[*] ? (@.grade == \"A\")` match this row for the "+
+			"NEIGHBOUR's grade", got)
+	}
+
+	// The offers that apply to it: the one naming it, and the catalog-wide one.
+	if got := idsUnder(t, block, "offers"); !slices.Equal(got, []string{"o-a", "o-wide"}) {
+		t.Errorf("r-a's filter_doc holds offers %v, want [o-a o-wide] — the offer naming "+
+			"it and the catalog-wide one", got)
+	}
+
+	// And the sibling gets its own view: its own resource, and only the
+	// catalog-wide offer.
+	sibling := theOneCatalog(t, filterDoc(t, pool, "c1", "r-b"))
+	if got := idsUnder(t, sibling, "resources"); !slices.Equal(got, []string{"r-b"}) {
+		t.Errorf("r-b's filter_doc holds resources %v, want [r-b] alone", got)
+	}
+	if got := idsUnder(t, sibling, "offers"); !slices.Equal(got, []string{"o-wide"}) {
+		t.Errorf("r-b's filter_doc holds offers %v, want [o-wide] — o-a names r-a and "+
+			"must not reach r-b's row", got)
+	}
+}
+
+// A catalog-only republish refreshes EVERY resource's composite.
+//
+// This is the write amplification A18 accepted, and it is the case a derivation
+// living only in the resource upsert gets wrong: a publisher who changes the
+// catalog's descriptor while naming no resource writes the catalog row and
+// nothing else, and every filter_doc keeps answering for the OLD descriptor —
+// silently, because the resource documents inside them are still correct.
+func TestACatalogOnlyRepublishRefreshesEveryFilterDoc(t *testing.T) {
+	pool := dbtest.NewPostgres(t)
+	repository := postgres.NewCatalogRepository(pool, resolution)
+	ctx := context.Background()
+
+	first := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true,
+		Document:  json.RawMessage(`{"id":"c1","descriptor":{"code":"OLD"}}`),
+		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A"}`)},
+	}
+	if _, err := repository.UpsertCatalog(ctx, first, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("the first publish: %v", err)
+	}
+
+	catalogOnly := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true,
+		Document: json.RawMessage(`{"descriptor":{"code":"NEW"}}`),
+	}
+	if _, err := repository.UpsertCatalog(ctx, catalogOnly, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("the catalog-only republish: %v", err)
+	}
+
+	block := theOneCatalog(t, filterDoc(t, pool, "c1", "r1"))
+	descriptor, copied := block["descriptor"].(map[string]any)
+	if !copied {
+		t.Fatalf("the catalog block carries no descriptor object: %v", block["descriptor"])
+	}
+	if descriptor["code"] != "NEW" {
+		t.Errorf("r1's filter_doc still answers for descriptor %v after a catalog-only "+
+			"republish, want NEW — the catalog's members are copied onto every "+
+			"resource row, so a catalog-level edit has to rewrite all of them", block["descriptor"])
+	}
+}
+
+// An offer-only republish refreshes the composites of the resources it names.
+//
+// Offers are written AFTER the resources in the same transaction, so a
+// derivation computed alongside the resource upsert would read the offers as
+// they were BEFORE this publish — right for every republish that also names the
+// resource, and wrong for exactly this one.
+func TestAnOfferOnlyRepublishRefreshesTheCompositesItNames(t *testing.T) {
+	pool := dbtest.NewPostgres(t)
+	repository := postgres.NewCatalogRepository(pool, resolution)
+	ctx := context.Background()
+
+	first := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true,
+		Document:  json.RawMessage(`{"id":"c1"}`),
+		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A"}`)},
+	}
+	if _, err := repository.UpsertCatalog(ctx, first, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("the first publish: %v", err)
+	}
+
+	offerOnly := domain.CatalogPatch{
+		ID: "c1", NetworkID: "n1", Active: true,
+		Offers: []domain.OfferPatch{
+			{ID: "o1", ResourceIDs: []string{"r1"}, Document: json.RawMessage(`{"id":"o1","channel":"retail"}`)},
+		},
+	}
+	if _, err := repository.UpsertCatalog(ctx, offerOnly, domain.UpdateModeMerge, noDerive); err != nil {
+		t.Fatalf("the offer-only republish: %v", err)
+	}
+
+	block := theOneCatalog(t, filterDoc(t, pool, "c1", "r1"))
+	if got := idsUnder(t, block, "offers"); !slices.Equal(got, []string{"o1"}) {
+		t.Errorf("r1's filter_doc holds offers %v after the offer arrived, want [o1] — "+
+			"offers are written after the resources, so the composite has to be "+
+			"assembled once every table has reached its final state", got)
 	}
 }

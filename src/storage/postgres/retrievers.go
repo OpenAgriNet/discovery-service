@@ -40,6 +40,8 @@ type predicates struct {
 	centerLat   pgtype.Float8
 	centerLon   pgtype.Float8
 	radiusM     pgtype.Float8
+
+	attributeFilter pgtype.Text
 }
 
 // sharedPredicates reduces a SearchQuery to the parameters every read query
@@ -68,6 +70,20 @@ func sharedPredicates(query domain.SearchQuery) predicates {
 
 	if query.Spatial != nil {
 		shared.spatial(*query.Spatial, query.TargetPaths)
+	}
+
+	// One expression, cast and evaluated verbatim (A18). It is already rooted
+	// at `$.catalogs`, which is what filter_doc holds, so there is nothing to
+	// rebase and nothing to assemble: the mapper's gate has settled the three
+	// shapes PostgreSQL answers wrongly without complaint, and what survives is
+	// a PARAMETER — `@filter::jsonpath` — never a fragment of SQL.
+	//
+	// Only the first is bound. The domain carries a slice because the shape
+	// outlives this version of the protocol, and `Intent.filters` is one object
+	// today; combining two would mean concatenating jsonpath text, which is the
+	// thing this service will not do.
+	if len(query.Filters) > 0 {
+		shared.attributeFilter = nullableText(query.Filters[0].Expression)
 	}
 	return shared
 }
@@ -172,24 +188,25 @@ func (l *LexicalRetriever) Retrieve(
 ) ([]string, error) {
 	shared := sharedPredicates(query)
 	rows, err := l.queries.LexicalCandidates(ctx, gen.LexicalCandidatesParams{
-		NetworkID:      shared.networkID,
-		SchemaContexts: shared.schemaContexts,
-		SchemaTypes:    shared.schemaTypes,
-		SpatialOp:      shared.spatialOp,
-		GeoNegate:      shared.geoNegate,
-		TargetPaths:    shared.targetPaths,
-		MatchNegate:    shared.matchNegate,
-		MinLat:         shared.minLat,
-		MaxLat:         shared.maxLat,
-		MinLon:         shared.minLon,
-		MaxLon:         shared.maxLon,
-		QCover:         shared.qCover,
-		QFull:          shared.qFull,
-		CenterLat:      shared.centerLat,
-		CenterLon:      shared.centerLon,
-		RadiusM:        shared.radiusM,
-		QueryText:      nullableText(query.Text),
-		RowLimit:       l.limit,
+		NetworkID:       shared.networkID,
+		SchemaContexts:  shared.schemaContexts,
+		SchemaTypes:     shared.schemaTypes,
+		SpatialOp:       shared.spatialOp,
+		GeoNegate:       shared.geoNegate,
+		TargetPaths:     shared.targetPaths,
+		MatchNegate:     shared.matchNegate,
+		MinLat:          shared.minLat,
+		MaxLat:          shared.maxLat,
+		MinLon:          shared.minLon,
+		MaxLon:          shared.maxLon,
+		QCover:          shared.qCover,
+		QFull:           shared.qFull,
+		CenterLat:       shared.centerLat,
+		CenterLon:       shared.centerLon,
+		RadiusM:         shared.radiusM,
+		AttributeFilter: shared.attributeFilter,
+		QueryText:       nullableText(query.Text),
+		RowLimit:        l.limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("run the lexical retriever: %w", err)
@@ -222,24 +239,25 @@ func (f *FuzzyRetriever) Retrieve(
 ) ([]string, error) {
 	shared := sharedPredicates(query)
 	rows, err := f.queries.FuzzyCandidates(ctx, gen.FuzzyCandidatesParams{
-		NetworkID:      shared.networkID,
-		SchemaContexts: shared.schemaContexts,
-		SchemaTypes:    shared.schemaTypes,
-		SpatialOp:      shared.spatialOp,
-		GeoNegate:      shared.geoNegate,
-		TargetPaths:    shared.targetPaths,
-		MatchNegate:    shared.matchNegate,
-		MinLat:         shared.minLat,
-		MaxLat:         shared.maxLat,
-		MinLon:         shared.minLon,
-		MaxLon:         shared.maxLon,
-		QCover:         shared.qCover,
-		QFull:          shared.qFull,
-		CenterLat:      shared.centerLat,
-		CenterLon:      shared.centerLon,
-		RadiusM:        shared.radiusM,
-		QueryText:      nullableText(query.Text),
-		RowLimit:       f.limit,
+		NetworkID:       shared.networkID,
+		SchemaContexts:  shared.schemaContexts,
+		SchemaTypes:     shared.schemaTypes,
+		SpatialOp:       shared.spatialOp,
+		GeoNegate:       shared.geoNegate,
+		TargetPaths:     shared.targetPaths,
+		MatchNegate:     shared.matchNegate,
+		MinLat:          shared.minLat,
+		MaxLat:          shared.maxLat,
+		MinLon:          shared.minLon,
+		MaxLon:          shared.maxLon,
+		QCover:          shared.qCover,
+		QFull:           shared.qFull,
+		CenterLat:       shared.centerLat,
+		CenterLon:       shared.centerLon,
+		RadiusM:         shared.radiusM,
+		AttributeFilter: shared.attributeFilter,
+		QueryText:       nullableText(query.Text),
+		RowLimit:        f.limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("run the fuzzy retriever: %w", err)
@@ -286,24 +304,25 @@ func (s *SemanticRetriever) Retrieve(
 
 	shared := sharedPredicates(query)
 	rows, err := s.queries.SemanticCandidates(ctx, gen.SemanticCandidatesParams{
-		NetworkID:      shared.networkID,
-		SchemaContexts: shared.schemaContexts,
-		SchemaTypes:    shared.schemaTypes,
-		SpatialOp:      shared.spatialOp,
-		GeoNegate:      shared.geoNegate,
-		TargetPaths:    shared.targetPaths,
-		MatchNegate:    shared.matchNegate,
-		MinLat:         shared.minLat,
-		MaxLat:         shared.maxLat,
-		MinLon:         shared.minLon,
-		MaxLon:         shared.maxLon,
-		QCover:         shared.qCover,
-		QFull:          shared.qFull,
-		CenterLat:      shared.centerLat,
-		CenterLon:      shared.centerLon,
-		RadiusM:        shared.radiusM,
-		QueryVector:    vector,
-		RowLimit:       s.limit,
+		NetworkID:       shared.networkID,
+		SchemaContexts:  shared.schemaContexts,
+		SchemaTypes:     shared.schemaTypes,
+		SpatialOp:       shared.spatialOp,
+		GeoNegate:       shared.geoNegate,
+		TargetPaths:     shared.targetPaths,
+		MatchNegate:     shared.matchNegate,
+		MinLat:          shared.minLat,
+		MaxLat:          shared.maxLat,
+		MinLon:          shared.minLon,
+		MaxLon:          shared.maxLon,
+		QCover:          shared.qCover,
+		QFull:           shared.qFull,
+		CenterLat:       shared.centerLat,
+		CenterLon:       shared.centerLon,
+		RadiusM:         shared.radiusM,
+		AttributeFilter: shared.attributeFilter,
+		QueryVector:     vector,
+		RowLimit:        s.limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("run the semantic retriever: %w", err)

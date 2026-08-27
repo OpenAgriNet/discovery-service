@@ -1,5 +1,3 @@
--- The GIN index goes with the table, but it is named here because it is the
--- one object on `catalogs` that a partially-applied migration could leave
--- behind, and DROP TABLE would then fail on a name it does not own.
-DROP INDEX IF EXISTS idx_catalogs_document;
+-- Nothing to drop ahead of the table: since A18 `catalogs` carries no index
+-- beyond its primary key, and a primary key goes with the table it constrains.
 DROP TABLE IF EXISTS catalogs;

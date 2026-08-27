@@ -32,11 +32,13 @@ import (
 //     has no relevance to rank by; they agree on the stable (catalog_id, id)
 //     tail, which is what the one pagination case — deliberately text-free —
 //     pins.
-//   - Any case where Postgres cannot skip its count query (an offset past
-//     zero, a full page, a degraded mode) carries NO text. Postgres's counter
-//     unions every mode's clause including fuzzy, so a text query would count
-//     rows the requested lexical mode never retrieved, while the memory backend
-//     counts what it matched.
+//   - No case asserts a total, because there is none (A19). What a paginating
+//     caller actually depends on is pinned instead: that the offset SLICES a
+//     stable order rather than re-ranking it.
+//   - No case names `jsonpath` either. Since Task 22 Postgres executes the
+//     subset and the memory backend declines it, so a filter case would pin
+//     the difference between them rather than an agreement — which is what
+//     puts the filter's own tests on the Postgres side.
 func DiscoverCases(resolution int) []Case {
 	return []Case{
 		anOmittedNetworkSearchesEveryNetwork(),
@@ -238,14 +240,11 @@ func offerIDs(result domain.SearchResult) []string {
 
 // assertPage fails with both lists spelled out, because "want 2 got 1" sends
 // the reader back to the fixture to find out which one went missing.
-func assertPage(t *testing.T, result domain.SearchResult, wantIDs []string, wantTotal int) {
+func assertPage(t *testing.T, result domain.SearchResult, wantIDs []string) {
 	t.Helper()
 
 	if got := matchedIDs(result); !slices.Equal(got, wantIDs) {
 		t.Errorf("the page holds %v, want %v", got, wantIDs)
-	}
-	if result.Total != wantTotal {
-		t.Errorf("Total is %d, want %d", result.Total, wantTotal)
 	}
 }
 
@@ -306,11 +305,11 @@ func anOmittedNetworkSearchesEveryNetwork() Case {
 		}},
 		Then: func(t *testing.T, backends Backends) {
 			unscoped := searched(t, backends, domain.SearchQuery{}, lexical)
-			assertPage(t, unscoped, []string{"r-north", "r-south"}, 2)
+			assertPage(t, unscoped, []string{"r-north", "r-south"})
 
 			scoped := searched(t, backends,
 				domain.SearchQuery{NetworkID: "south.example.com"}, lexical)
-			assertPage(t, scoped, []string{"r-south"}, 1)
+			assertPage(t, scoped, []string{"r-south"})
 		},
 	}
 }
@@ -346,7 +345,7 @@ func theGateHidesWhatIsNotLive() Case {
 		},
 		Then: func(t *testing.T, backends Backends) {
 			assertPage(t, searched(t, backends, domain.SearchQuery{}, lexical),
-				[]string{"r-live"}, 1)
+				[]string{"r-live"})
 		},
 	}
 }
@@ -378,7 +377,7 @@ func aWindowThatWrapsMidnightIsLiveAndItsForwardTwinIsNot() Case {
 		},
 		Then: func(t *testing.T, backends Backends) {
 			assertPage(t, searched(t, backends, domain.SearchQuery{}, lexical),
-				[]string{"r-wrapping"}, 1)
+				[]string{"r-wrapping"})
 		},
 	}
 }
@@ -409,18 +408,18 @@ func schemaFilteringComparesContextAndTypeAsAPair() Case {
 				{Context: agri, Type: "SeedLot"},
 				{Context: mobility, Type: "RideService"},
 			}}, lexical)
-			assertPage(t, pair, []string{"r-ride", "r-seed"}, 2)
+			assertPage(t, pair, []string{"r-ride", "r-seed"})
 
 			// An entry with no type is every type under that context, which is
 			// what picks the cross-product row up.
 			anyType := searched(t, backends, domain.SearchQuery{Schemas: []domain.SchemaFilter{
 				{Context: agri},
 			}}, lexical)
-			assertPage(t, anyType, []string{"r-cross", "r-seed"}, 2)
+			assertPage(t, anyType, []string{"r-cross", "r-seed"})
 
 			// An empty list is NO predicate, never one matching nothing.
 			none := searched(t, backends, domain.SearchQuery{}, lexical)
-			assertPage(t, none, []string{"r-cross", "r-ride", "r-seed"}, 3)
+			assertPage(t, none, []string{"r-cross", "r-ride", "r-seed"})
 		},
 	}
 }
@@ -445,12 +444,12 @@ func lexicalMatchesAnyTermRatherThanAllOfThem() Case {
 		Then: func(t *testing.T, backends Backends) {
 			assertPage(t, searched(t, backends,
 				domain.SearchQuery{Text: "wheat seeds"}, lexical),
-				[]string{"r-seeds", "r-wheat"}, 2)
+				[]string{"r-seeds", "r-wheat"})
 
 			// And an empty text is no predicate rather than one matching
 			// nothing: a geo-only intent carries no text at all.
 			assertPage(t, searched(t, backends, domain.SearchQuery{}, lexical),
-				[]string{"r-seeds", "r-tractor", "r-wheat"}, 3)
+				[]string{"r-seeds", "r-tractor", "r-wheat"})
 		},
 	}
 }
@@ -480,13 +479,13 @@ func aRadiusSelectsTheNearShopAndNotTheFarOne(resolution int) Case {
 		Then: func(t *testing.T, backends Backends) {
 			assertPage(t, searched(t, backends,
 				domain.SearchQuery{Spatial: within(bengaluru, 5000, resolution)}, lexical),
-				[]string{"r-near"}, 1)
+				[]string{"r-near"})
 
 			// Wide enough to reach both, which is what proves the narrow answer
 			// above came from the radius and not from a cover that declined.
 			assertPage(t, searched(t, backends,
 				domain.SearchQuery{Spatial: within(bengaluru, 400000, resolution)}, lexical),
-				[]string{"r-far", "r-near"}, 2)
+				[]string{"r-far", "r-near"})
 		},
 	}
 }
@@ -521,7 +520,7 @@ func aCatalogGeometryMatchesEveryResourceAndAResourceOneOnlyItsOwn(resolution in
 		Then: func(t *testing.T, backends Backends) {
 			assertPage(t, searched(t, backends,
 				domain.SearchQuery{Spatial: within(bengaluru, 5000, resolution)}, lexical),
-				[]string{"r-a", "r-b", "r-here"}, 3)
+				[]string{"r-a", "r-b", "r-here"})
 		},
 	}
 }
@@ -553,7 +552,7 @@ func targetsSelectsBetweenTwoGeometriesOnOneResource(resolution int) Case {
 				Spatial:     within(bengaluru, 5000, resolution),
 				TargetPaths: []string{shopfront.TargetPath},
 			}, lexical)
-			assertPage(t, atShopfront, []string{"r-both"}, 1)
+			assertPage(t, atShopfront, []string{"r-both"})
 
 			// The same radius, the same resource, the other target: the shape
 			// under it is 290km away, so this must be empty.
@@ -561,14 +560,14 @@ func targetsSelectsBetweenTwoGeometriesOnOneResource(resolution int) Case {
 				Spatial:     within(bengaluru, 5000, resolution),
 				TargetPaths: []string{serviceArea.TargetPath},
 			}, lexical)
-			assertPage(t, atServiceArea, nil, 0)
+			assertPage(t, atServiceArea, nil)
 
 			// No targets is every shape the resource can be found by, which is
 			// what proves the two above were narrowed rather than broken.
 			untargeted := searched(t, backends, domain.SearchQuery{
 				Spatial: within(chennai, 5000, resolution),
 			}, lexical)
-			assertPage(t, untargeted, []string{"r-both"}, 1)
+			assertPage(t, untargeted, []string{"r-both"})
 		},
 	}
 }
@@ -599,7 +598,7 @@ func offersAreTheOnesTouchingThePagePlusTheCatalogWideOnes() Case {
 		},
 		Then: func(t *testing.T, backends Backends) {
 			result := searched(t, backends, domain.SearchQuery{Text: "onpage"}, lexical)
-			assertPage(t, result, []string{"r-onpage"}, 1)
+			assertPage(t, result, []string{"r-onpage"})
 
 			if got := offerIDs(result); !slices.Equal(got, []string{"o-onpage", "o-wide"}) {
 				t.Errorf("the page carries offers %v, want [o-onpage o-wide]", got)
@@ -630,7 +629,7 @@ func anExpiredOfferIsNotReturnedWithALiveCatalog() Case {
 		},
 		Then: func(t *testing.T, backends Backends) {
 			result := searched(t, backends, domain.SearchQuery{}, lexical)
-			assertPage(t, result, []string{"r1"}, 1)
+			assertPage(t, result, []string{"r1"})
 
 			if got := offerIDs(result); !slices.Equal(got, []string{"o-live"}) {
 				t.Errorf("the page carries offers %v, want [o-live]", got)
@@ -653,7 +652,7 @@ func pageTwoDoesNotOverlapPageOne() Case {
 	}
 
 	return Case{
-		Name: "page two does not overlap page one and the total counts every match",
+		Name: "page two does not overlap page one",
 		Given: []Publish{{
 			Patch: catalogPatch("c1", resources...),
 			Mode:  domain.UpdateModeMerge, Derive: deriveSearchable,
@@ -669,26 +668,25 @@ func pageTwoDoesNotOverlapPageOne() Case {
 				t.Errorf("page two is %v, want [r-02 r-03]", got)
 			}
 
-			// The total is the size of the match, not of the page, on BOTH
-			// pages: a caller cannot render "showing 3-4 of 5" from a number
-			// that changes as they walk.
-			if first.Total != 5 || second.Total != 5 {
-				t.Errorf("totals are %d and %d, want 5 and 5", first.Total, second.Total)
-			}
+			// There is no total to assert (A19). What remains is the property
+			// a caller walking pages actually depends on: the offset SLICES a
+			// stable order rather than re-ranking it, so page two holds the
+			// next two and not two of the same.
 		},
 	}
 }
 
 // A mode neither backend can run is REPORTED, not silently dropped.
 //
-// jsonpath, because it is the one capability both backends decline — a case
-// naming `fuzzy` would pin the difference between them rather than an
-// agreement. The page must still be the page: a request for two modes of which
-// one is missing is a degraded answer, and a degraded answer is not an error.
+// The mode is a name NO backend declares, and that is deliberate. Since Task 22
+// there is no real capability both decline — Postgres executes the jsonpath
+// subset and the memory backend does not, Postgres declares `fuzzy` and the
+// memory backend does not — so naming a real one would pin which backend lacks
+// what, when the contract being pinned is what happens to a mode a backend
+// cannot run, whichever mode that turns out to be.
 //
-// No text here, because a degraded mode is exactly the condition that stops
-// Postgres skipping its count query, and its counter unions clauses the
-// requested mode never ran.
+// The page must still be the page: a request for two modes of which one is
+// missing is a degraded answer, and a degraded answer is not an error.
 func aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch() Case {
 	return Case{
 		Name: "a mode this backend cannot run is degraded and does not fail the search",
@@ -697,12 +695,14 @@ func aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch() Case {
 			Mode:  domain.UpdateModeMerge, Derive: deriveSearchable,
 		}},
 		Then: func(t *testing.T, backends Backends) {
-			result := searched(t, backends, domain.SearchQuery{},
-				[]domain.Capability{domain.CapabilityLexical, domain.CapabilityJSONPath})
+			const unrunnable = domain.Capability("no-such-mode")
 
-			assertPage(t, result, []string{"r1"}, 1)
-			if !slices.Equal(result.Degraded, []string{string(domain.CapabilityJSONPath)}) {
-				t.Errorf("Degraded is %v, want [jsonpath]", result.Degraded)
+			result := searched(t, backends, domain.SearchQuery{},
+				[]domain.Capability{domain.CapabilityLexical, unrunnable})
+
+			assertPage(t, result, []string{"r1"})
+			if !slices.Equal(result.Degraded, []string{string(unrunnable)}) {
+				t.Errorf("Degraded is %v, want [%s]", result.Degraded, unrunnable)
 			}
 		},
 	}
@@ -723,7 +723,7 @@ func askingForNoRetrievalModeAtAllReturnsNothing() Case {
 			Mode:  domain.UpdateModeMerge, Derive: deriveSearchable,
 		}},
 		Then: func(t *testing.T, backends Backends) {
-			assertPage(t, searched(t, backends, domain.SearchQuery{}, nil), nil, 0)
+			assertPage(t, searched(t, backends, domain.SearchQuery{}, nil), nil)
 		},
 	}
 }
@@ -763,7 +763,7 @@ func aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution int) Case {
 				domain.SearchQuery{Spatial: within(bengaluru, 5000, resolution)},
 				[]domain.Capability{domain.CapabilitySpatial})
 
-			assertPage(t, result, []string{"r-near"}, 1)
+			assertPage(t, result, []string{"r-near"})
 			if len(result.Degraded) > 0 {
 				t.Errorf("Degraded is %v, want none: the geometry was applied, not dropped",
 					result.Degraded)

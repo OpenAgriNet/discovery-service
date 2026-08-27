@@ -23,8 +23,11 @@ type Retriever interface {
 // because a retriever may come from an index that has no notion of validity or
 // visibility — a vector index is one — and the gate has to be applied
 // somewhere that does.
+//
+// There is no Count (A19). It was the one method here that answered a question
+// no response could carry, and the only one whose cost was not bounded by the
+// page.
 type Hydrator interface {
 	ScopeFilter(ctx context.Context, ids []string, scope Scope) ([]string, error)
 	Hydrate(ctx context.Context, ids []string, scope Scope) ([]Catalog, error)
-	Count(ctx context.Context, query SearchQuery, scope Scope) (int, error)
 }

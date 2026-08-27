@@ -448,6 +448,83 @@ func (q *Queries) PruneOfferResourceIDs(ctx context.Context, catalogID string) e
 	return err
 }
 
+const rebuildFilterDocs = `-- name: RebuildFilterDocs :exec
+WITH built AS (
+    SELECT r.id,
+           jsonb_build_object('catalogs', jsonb_build_array(
+               CASE WHEN jsonb_typeof(c.document -> 'provider') = 'object'
+                    THEN (c.document - 'resources' - 'offers')
+                         || jsonb_build_object('provider',
+                                (c.document -> 'provider') - 'availableAt')
+                    ELSE (c.document - 'resources' - 'offers')
+               END
+               || jsonb_build_object(
+                   -- Exactly ONE element, and that is correctness rather than
+                   -- thrift: with the siblings present,
+                   -- ` + "`" + `$.catalogs[*].resources[*] ? (@.grade == "A")` + "`" + ` matches
+                   -- this row because a NEIGHBOUR passed.
+                   'resources', jsonb_build_array(r.document),
+                   -- The offers that apply to this resource: the ones naming
+                   -- it, plus the catalog-wide ones, which are the offers whose
+                   -- ` + "`" + `resource_ids` + "`" + ` is EMPTY rather than the ones it is absent
+                   -- from. Ordered by id so the value is a function of the rows
+                   -- and not of the plan that read them.
+                   'offers', COALESCE((
+                       SELECT jsonb_agg(o.document ORDER BY o.id)
+                         FROM offers o
+                        WHERE o.catalog_id = r.catalog_id
+                          AND (cardinality(o.resource_ids) = 0
+                               OR r.id = ANY (o.resource_ids))
+                   ), '[]'::jsonb))
+           )) AS doc
+      FROM resources r
+      JOIN catalogs c ON c.id = r.catalog_id
+     WHERE r.catalog_id = $1
+)
+UPDATE resources r
+   SET filter_doc = built.doc,
+       updated_at = now()
+  FROM built
+ WHERE r.catalog_id = $1
+   AND r.id = built.id
+   AND r.filter_doc IS DISTINCT FROM built.doc
+`
+
+// RebuildFilterDocs assembles the A18 composite for every resource of the
+// catalog, from the rows the rest of this transaction has just written.
+//
+// It runs LAST, after the resources, the offers, the deletes and the prune,
+// because it is a projection of their FINAL state and of nothing else. That is
+// what makes `filter_doc` reconstructible rather than merely maintained: this
+// statement takes no parameter but the catalog id, so replaying it can never
+// disagree with the three documents it reads.
+//
+// It cannot live in `UpsertResource`. Three publishes it would get wrong:
+// a catalog-only republish names no resource at all and must still refresh
+// every composite, because the catalog's members are copied into all of them;
+// an offer-only republish is the same case one level down; and offers are
+// written AFTER the resources, so a composite built beside the resource upsert
+// reads the offers as they were BEFORE this publish.
+//
+// The cost is that a resource whose document changed is written twice in this
+// transaction — once by the upsert, once here. That is the write amplification
+// A18 accepted, narrowed by the `IS DISTINCT FROM` guard below to the rows
+// whose composite actually moved: the ordinary republish that changes nothing,
+// and every untouched resource of a catalog-only edit that changes nothing they
+// can see, cost no row version and no GIN insertion at all.
+//
+// `- 'resources' - 'offers'` is belt over A17's brace. A17 strips both before
+// `catalogs.document` is ever written, so they are already absent; if that ever
+// stops being true this subtraction is what keeps a sibling resource out of the
+// composite, which is the one error here that returns wrong rows rather than
+// none. `provider` is replaced rather than subtracted, and only when it is an
+// object — an absent or null one passes through as the publisher sent it,
+// because `'null'::jsonb - 'availableAt'` is an error and not an empty object.
+func (q *Queries) RebuildFilterDocs(ctx context.Context, catalogID string) error {
+	_, err := q.db.Exec(ctx, rebuildFilterDocs, catalogID)
+	return err
+}
+
 const updateCatalogRow = `-- name: UpdateCatalogRow :exec
 
 UPDATE catalogs

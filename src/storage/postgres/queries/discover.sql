@@ -1,4 +1,11 @@
--- The read path. Three retrievers, one counter, three hydration queries.
+-- The read path. Three retrievers and four hydration queries.
+--
+-- There is NO counter (A19). It answered `SearchResult.Total`, which
+-- OnDiscoverAction has nowhere to carry: additionalProperties:false with
+-- `catalogs` as its only property. Measured on PG16 over 100k rows, the count
+-- cost 150.6 ms against retrieval's 1.5 ms — 100x, on every request, because
+-- it could not take a LIMIT without making the number wrong in the one state a
+-- caller cannot detect.
 --
 -- Every block below is repeated per query rather than factored into a view or a
 -- function, and that is forced rather than chosen: sqlc compiles these files at
@@ -9,8 +16,28 @@
 -- it reads THIS file and fails when a query drops a clause.
 --
 -- Nothing here concatenates SQL and nothing interpolates a JSONPath. The
--- attribute filter (Task 22) is absent for that reason and lands as a bound
--- `@?` parameter when it arrives, never as text spliced into these queries.
+-- attribute filter is a BOUND parameter cast to ::jsonpath by PostgreSQL's own
+-- parser and applied with `@?` against `resources.filter_doc` — never text
+-- spliced into these queries, and never rewritten on the way in.
+--
+-- That clause is spelled bare in each WHERE below, like every other shared
+-- predicate, so the whole of it is said once here:
+--
+--   filter_doc, not document. `document` is one level of one object; the
+--   composite is the only value a predicate crossing catalog, resource and
+--   offer can be evaluated against at all (A18) — and under OR it is not a
+--   matter of convenience, because a row-level disjunction has no
+--   decomposition into per-table results.
+--
+--   `@?` and NEVER `@@`. They take different expression forms and neither
+--   mispairing raises an error: `@?` given a predicate expression matches
+--   EVERY row, because a comparison always yields an item and `false` is an
+--   item; `@@` given the filter form this service accepts matches ZERO. That
+--   is why jsonpath.Accept refuses predicate form at the edge, and why `@@`
+--   appears nowhere in this file.
+--
+--   NULL means NO predicate, not a predicate that matches nothing. An intent
+--   carrying no filter must not be narrowed by one.
 
 
 -- ---------------------------------------------------------------------------
@@ -50,6 +77,8 @@ SELECT r.catalog_id, r.id
                                  WITH ORDINALITY AS st(typ, n) USING (n)
                          WHERE r.schema_context = sc.ctx
                            AND (st.typ = '' OR r.schema_type = st.typ))))
+   AND (sqlc.narg('attribute_filter')::text IS NULL
+        OR r.filter_doc @? sqlc.narg('attribute_filter')::text::jsonpath)
    AND (
      sqlc.narg('spatial_op')::text IS NULL
      OR @geo_negate::boolean <> EXISTS (
@@ -123,6 +152,8 @@ SELECT r.catalog_id, r.id
                                  WITH ORDINALITY AS st(typ, n) USING (n)
                          WHERE r.schema_context = sc.ctx
                            AND (st.typ = '' OR r.schema_type = st.typ))))
+   AND (sqlc.narg('attribute_filter')::text IS NULL
+        OR r.filter_doc @? sqlc.narg('attribute_filter')::text::jsonpath)
    AND (
      sqlc.narg('spatial_op')::text IS NULL
      OR @geo_negate::boolean <> EXISTS (
@@ -179,8 +210,8 @@ SELECT r.catalog_id, r.id
 --
 -- The ORDER BY is what drives the index; there is no distance threshold,
 -- because HNSW answers "the nearest N" and not "everything within d". The pool
--- this draws from is every embedded row the shared predicates admit, which is
--- what CountCandidates counts for this mode.
+-- this draws from is every embedded row the shared predicates admit; the LIMIT
+-- is what turns that pool into candidates.
 --
 -- name: SemanticCandidates :many
 SELECT r.catalog_id, r.id
@@ -202,6 +233,8 @@ SELECT r.catalog_id, r.id
                                  WITH ORDINALITY AS st(typ, n) USING (n)
                          WHERE r.schema_context = sc.ctx
                            AND (st.typ = '' OR r.schema_type = st.typ))))
+   AND (sqlc.narg('attribute_filter')::text IS NULL
+        OR r.filter_doc @? sqlc.narg('attribute_filter')::text::jsonpath)
    AND (
      sqlc.narg('spatial_op')::text IS NULL
      OR @geo_negate::boolean <> EXISTS (
@@ -247,94 +280,6 @@ SELECT r.catalog_id, r.id
  ORDER BY r.embedding <=> sqlc.narg('query_vector')::vector,
           r.catalog_id, r.id
  LIMIT @row_limit::int;
-
--- ---------------------------------------------------------------------------
--- the counter
--- ---------------------------------------------------------------------------
-
--- CountCandidates is the size of the set the fusion draws from.
---
--- Deliberately no LIMIT: capping truncates the PAGE's candidate pool and must
--- never truncate the count, or a capped mode would make Total wrong in the one
--- state a caller has no way to detect.
---
--- The text clause is the OR of every mode's, because the page is a union of
--- every mode's. A counter carrying only lexical's returns a number no page can
--- be paginated out of — fewer results than page 1 already showed. The first
--- disjunct covers the geo-only intent, where no mode carries text and every row
--- the other predicates admit is a candidate.
---
--- `r.name % NULL` and `search_tsv @@ NULL` are NULL, not FALSE, and NULL is a
--- miss under a WHERE — which is exactly the behaviour a disabled mode wants.
--- They can only fail to contribute; they can never turn another mode's TRUE
--- into a miss, because `TRUE OR NULL` is TRUE.
---
--- name: CountCandidates :one
-SELECT count(*)
-  FROM resources r
- WHERE (sqlc.narg('network_id')::text IS NULL
-        OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
-   AND r.active
-   AND (r.valid_from IS NULL OR r.valid_from <= now())
-   AND (r.valid_to   IS NULL OR r.valid_to   >= now())
-   AND within_daily_window(r.valid_time_from, r.valid_time_to,
-                           (now() AT TIME ZONE 'UTC')::time)
-   AND (   sqlc.narg('schema_contexts')::text[] IS NULL
-        OR cardinality(sqlc.narg('schema_contexts')::text[]) = 0
-        OR (    r.schema_context = ANY(sqlc.narg('schema_contexts')::text[])
-            AND EXISTS (SELECT 1
-                          FROM unnest(sqlc.narg('schema_contexts')::text[])
-                                 WITH ORDINALITY AS sc(ctx, n)
-                          JOIN unnest(sqlc.narg('schema_types')::text[])
-                                 WITH ORDINALITY AS st(typ, n) USING (n)
-                         WHERE r.schema_context = sc.ctx
-                           AND (st.typ = '' OR r.schema_type = st.typ))))
-   AND (
-     sqlc.narg('spatial_op')::text IS NULL
-     OR @geo_negate::boolean <> EXISTS (
-       SELECT 1 FROM resource_geometries g
-        WHERE g.catalog_id = r.catalog_id
-          AND (g.resource_id IS NULL OR g.resource_id = r.id)
-          AND (sqlc.narg('target_paths')::text[] IS NULL
-               OR g.target_path = ANY(sqlc.narg('target_paths')::text[]))
-          AND @match_negate::boolean <> (
-                 (sqlc.narg('min_lat')::double precision IS NULL
-                  OR sqlc.narg('spatial_op')::text = 'S_DISJOINT'
-                  OR (    g.max_lat >= sqlc.narg('min_lat')::double precision
-                      AND g.min_lat <= sqlc.narg('max_lat')::double precision
-                      AND g.max_lon >= sqlc.narg('min_lon')::double precision
-                      AND g.min_lon <= sqlc.narg('max_lon')::double precision))
-                 AND (g.cells_cover IS NULL
-                      OR sqlc.narg('q_cover')::bigint[] IS NULL
-                      OR CASE sqlc.narg('spatial_op')::text
-                           WHEN 'S_INTERSECTS' THEN g.cells_cover && sqlc.narg('q_cover')::bigint[]
-                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && sqlc.narg('q_full')::bigint[])
-                                               AND NOT (g.cells_cover <@ sqlc.narg('q_full')::bigint[])
-                                               AND NOT (sqlc.narg('q_cover')::bigint[] <@ g.cells_full)
-                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ sqlc.narg('q_cover')::bigint[]
-                           WHEN 'S_CONTAINS'   THEN sqlc.narg('q_cover')::bigint[] <@ g.cells_cover
-                           WHEN 'S_DWITHIN'    THEN g.cells_cover && sqlc.narg('q_cover')::bigint[]
-                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && sqlc.narg('q_cover')::bigint[]
-                                               AND NOT (g.cells_cover <@ sqlc.narg('q_full')::bigint[])
-                                               AND NOT (sqlc.narg('q_cover')::bigint[] <@ g.cells_full)
-                           WHEN 'S_EQUALS'     THEN g.cells_cover = sqlc.narg('q_cover')::bigint[]
-                                               AND g.cells_full  = sqlc.narg('q_full')::bigint[]
-                           ELSE TRUE
-                         END)
-                 AND (sqlc.narg('center_lat')::double precision IS NULL
-                      OR g.geojson->>'type' <> 'Point'
-                      OR geo_distance_m(g.geojson,
-                                        sqlc.narg('center_lat')::double precision,
-                                        sqlc.narg('center_lon')::double precision)
-                          <= sqlc.narg('radius_m')::double precision))
-     )
-   )
-   AND (   (sqlc.narg('lexical_text')::text IS NULL
-            AND sqlc.narg('fuzzy_text')::text IS NULL
-            AND sqlc.narg('query_vector')::vector IS NULL)
-        OR r.search_tsv @@ discover_tsquery(sqlc.narg('lexical_text')::text)
-        OR r.name % sqlc.narg('fuzzy_text')::text
-        OR (sqlc.narg('query_vector')::vector IS NOT NULL AND r.embedding IS NOT NULL));
 
 -- ---------------------------------------------------------------------------
 -- hydration — three queries, all keyed by the decided page

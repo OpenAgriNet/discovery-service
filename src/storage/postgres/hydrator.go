@@ -135,61 +135,6 @@ func (h *Hydrator) Hydrate(
 	return assemble(ids, resources, catalogs, geometries, offers), nil
 }
 
-// Count is the size of the set the fusion drew from.
-//
-// It carries no LIMIT, deliberately: capping truncates the PAGE's candidate
-// pool and must never truncate the count, or a capped mode would make Total
-// wrong in the one state a caller has no way to detect. The text clause is the
-// OR of every mode's, because the page is a union of every mode's.
-//
-// Every mode's text is bound whether or not that mode ran. The alternative —
-// binding only the enabled modes — would make Total shrink when a mode
-// degrades, which is the opposite of what a caller paginating through the
-// results needs: the pool did not get smaller because a retriever died. The one
-// exception is a mode whose provider is unreachable, below: a vector that
-// cannot be produced cannot be bound.
-func (h *Hydrator) Count(
-	ctx context.Context, query domain.SearchQuery, _ domain.Scope,
-) (int, error) {
-	// A provider that is DOWN narrows the count rather than failing it. The
-	// retriever embeds the same text with the same embedder, so an unreachable
-	// provider has already failed there and the mode is already named in
-	// Degraded — which is what explains the narrower Total to the caller. Taking
-	// the whole response down here would throw away a page that was successfully
-	// produced, to avoid reporting a number the caller has been told is partial.
-	vector, err := queryVector(ctx, h.embedder, query.Text)
-	if err != nil {
-		vector = nil
-	}
-
-	shared := sharedPredicates(query)
-	total, err := h.queries.CountCandidates(ctx, gen.CountCandidatesParams{
-		NetworkID:      shared.networkID,
-		SchemaContexts: shared.schemaContexts,
-		SchemaTypes:    shared.schemaTypes,
-		SpatialOp:      shared.spatialOp,
-		GeoNegate:      shared.geoNegate,
-		TargetPaths:    shared.targetPaths,
-		MatchNegate:    shared.matchNegate,
-		MinLat:         shared.minLat,
-		MaxLat:         shared.maxLat,
-		MinLon:         shared.minLon,
-		MaxLon:         shared.maxLon,
-		QCover:         shared.qCover,
-		QFull:          shared.qFull,
-		CenterLat:      shared.centerLat,
-		CenterLon:      shared.centerLon,
-		RadiusM:        shared.radiusM,
-		LexicalText:    nullableText(query.Text),
-		FuzzyText:      nullableText(query.Text),
-		QueryVector:    vector,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("count the candidate set: %w", err)
-	}
-	return int(total), nil
-}
-
 // assemble folds four flat row sets back into catalogs, in the PAGE's order.
 //
 // The order is the fusion's, and it is the only ranking the caller ever sees. A

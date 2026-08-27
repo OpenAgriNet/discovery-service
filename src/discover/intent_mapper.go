@@ -88,11 +88,21 @@ func MapIntent(
 	spatial, targets, spatialFatal, partial := mapSpatial(intent.Spatial, cfg)
 	limit, offset, pageFaults := mapPage(page, cfg.Search)
 
-	fatal := append(append(schemaFaults, spatialFatal...), pageFaults...)
+	// Whether anything else has already cut the corpus down, which is what
+	// decides between an unindexable filter costing one slow query and costing
+	// a read of every gated row in the catalogue. Read from the MAPPED values
+	// rather than from the intent: a spatial constraint that faulted is not a
+	// constraint, and treating it as one would let the guard be defeated by
+	// sending a broken one.
+	narrowed := intent.TextSearch != "" || spatial != nil || len(schemas) > 0
+	filters, filterFaults := mapFilters(intent.Filters, narrowed)
+
+	fatal := append(append(append(schemaFaults, spatialFatal...), pageFaults...), filterFaults...)
 
 	return domain.SearchQuery{
 		Text:        intent.TextSearch,
 		Schemas:     schemas,
+		Filters:     filters,
 		Spatial:     spatial,
 		TargetPaths: targets,
 		Limit:       limit,

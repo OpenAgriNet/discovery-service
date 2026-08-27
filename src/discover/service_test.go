@@ -139,6 +139,71 @@ func TestAMissingModeIsRefusedWhenTheDeploymentAsksToBe(t *testing.T) {
 	}
 }
 
+// A filter on a backend that cannot execute the subset is REPORTED, not
+// ignored.
+//
+// The memory store is that backend and is not hypothetical: it holds the
+// documents and not PostgreSQL's jsonpath engine, so it declares `jsonpath`
+// false. Silence here is the one failure with no symptom — a caller who
+// filtered for one manufacturer and received every manufacturer has a page that
+// looks exactly like a correct one.
+func TestAFilterABackendCannotRunIsDegradedRatherThanIgnored(t *testing.T) {
+	repo := &stubRepo{
+		capabilities: phase1(),
+		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
+	}
+
+	catalogs, degraded, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{},
+		beckn.Intent{Filters: &beckn.Filters{
+			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
+		}},
+		discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if len(catalogs) != 1 {
+		t.Errorf("catalogs = %d, want the one the backend found — degrading is not failing", len(catalogs))
+	}
+	if !slices.Equal(degraded, []string{string(domain.CapabilityJSONPath)}) {
+		t.Errorf("degraded = %v, want [jsonpath] — a filter this backend cannot run and "+
+			"an answer that says so is the whole of C11", degraded)
+	}
+	if len(repo.gotQuery.Filters) != 1 {
+		t.Errorf("the query carried %d filters; the expression is still MAPPED for a "+
+			"backend that declines it, because whether it runs is the backend's "+
+			"answer and not the mapper's", len(repo.gotQuery.Filters))
+	}
+}
+
+// The same filter under SEARCH_FAIL_ON_UNAVAILABLE_MODE=true.
+func TestAFilterABackendCannotRunIsRefusedWhenTheDeploymentAsksToBe(t *testing.T) {
+	repo := &stubRepo{capabilities: phase1()}
+
+	cfg := settings()
+	cfg.Search.FailOnUnavailableMode = true
+
+	_, _, err := discover.NewService(repo, cfg).Discover(
+		t.Context(), beckn.Context{},
+		beckn.Intent{Filters: &beckn.Filters{
+			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
+		}},
+		discover.Page{})
+	if err == nil {
+		t.Fatal("a filter the backend cannot run was served; the deployment asked to be told")
+	}
+	if got := codeOf(t, err); got != beckn.CodeNetworkCatalogSourceUnavailable {
+		t.Errorf("code = %q, want NET_CATALOG_SOURCE_UNAVAILABLE", got)
+	}
+	if !strings.Contains(err.Error(), string(domain.CapabilityJSONPath)) {
+		t.Errorf("message = %q, want the missing mode named", err.Error())
+	}
+	if repo.calls != 0 {
+		t.Errorf("the backend was searched %d times; a refusal runs no query", repo.calls)
+	}
+}
+
 // Nothing degrades when the backend has everything, and the header is then
 // absent rather than empty.
 func TestNothingIsReportedDegradedWhenNothingIs(t *testing.T) {
@@ -146,7 +211,9 @@ func TestNothingIsReportedDegradedWhenNothingIs(t *testing.T) {
 
 	_, degraded, err := discover.NewService(repo, settings()).Discover(
 		t.Context(), beckn.Context{},
-		beckn.Intent{TextSearch: "wheat", Filters: &beckn.Filters{Type: "jsonpath", Expression: "$"}},
+		beckn.Intent{TextSearch: "wheat", Filters: &beckn.Filters{
+			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
+		}},
 		discover.Page{})
 	if err != nil {
 		t.Fatalf("Discover: %v", err)

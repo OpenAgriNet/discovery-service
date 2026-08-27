@@ -53,9 +53,13 @@ CREATE TABLE catalogs (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- The filter index for `$.catalogs[*] ? (...)` (Task 22).
+-- NO index over `document`. A filter rooted at the catalog path,
+-- `$.catalogs[*] ? (...)`, does NOT resolve here: since A18 it runs against
+-- `resources.filter_doc`, which carries this catalog's own members copied down
+-- onto each of its resource rows. That is what lets one expression mix a
+-- catalog predicate with a resource or offer one — including under OR, which
+-- no set of per-table results can reassemble — and it is why a catalog-level
+-- filter costs neither a join nor a second query.
 --
--- jsonb_path_ops rather than the default jsonb_ops: it stores one hash per
--- (full path, value) leaf instead of one entry per key AND per value, which is
--- both smaller and the operator class the `@?` operator can actually use.
-CREATE INDEX idx_catalogs_document ON catalogs USING GIN (document jsonb_path_ops);
+-- This table is therefore reached only by primary key, to hydrate the catalogs
+-- a page of resources belongs to. `catalogs_pkey` is the whole inventory.

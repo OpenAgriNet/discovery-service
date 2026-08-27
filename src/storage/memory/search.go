@@ -22,8 +22,14 @@ import (
 // are not things a map can approximate: a backend that declared `fuzzy` and
 // answered it with a substring match would return a different page from the one
 // Postgres returns and no fixture could say which was right. Declaring them
-// missing is what puts them in Degraded, which is the honest answer. JSONPath is
-// absent on both backends until Task 22.
+// missing is what puts them in Degraded, which is the honest answer.
+//
+// JSONPath is absent for the same reason and is the sharpest case of it: the
+// documents ARE here, and PostgreSQL's SQL/JSON path engine is not. Evaluating
+// the subset by hand would mean owning a jsonpath parser to disagree with
+// PostgreSQL's — and an attribute filter that silently narrowed nothing would
+// return the whole corpus as a filtered page, which is precisely what
+// src/platform/jsonpath refuses on the way in.
 func (r *Repository) Capabilities() domain.Capabilities {
 	return domain.Capabilities{
 		domain.CapabilityLexical: true,
@@ -77,7 +83,6 @@ func (r *Repository) Search(
 		// smaller because this backend cannot run a trigram index. There is no
 		// per-mode cap here to make it larger than the fused list either, which
 		// is why it is never a second query the way it is on the Postgres side.
-		Total:    len(matched),
 		Degraded: degraded,
 	}, nil
 }

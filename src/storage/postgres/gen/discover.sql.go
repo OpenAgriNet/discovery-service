@@ -12,143 +12,6 @@ import (
 	pgvector_go "github.com/pgvector/pgvector-go"
 )
 
-const countCandidates = `-- name: CountCandidates :one
-
-SELECT count(*)
-  FROM resources r
- WHERE ($1::text IS NULL
-        OR r.visible_to @> ARRAY[$1::text])
-   AND r.active
-   AND (r.valid_from IS NULL OR r.valid_from <= now())
-   AND (r.valid_to   IS NULL OR r.valid_to   >= now())
-   AND within_daily_window(r.valid_time_from, r.valid_time_to,
-                           (now() AT TIME ZONE 'UTC')::time)
-   AND (   $2::text[] IS NULL
-        OR cardinality($2::text[]) = 0
-        OR (    r.schema_context = ANY($2::text[])
-            AND EXISTS (SELECT 1
-                          FROM unnest($2::text[])
-                                 WITH ORDINALITY AS sc(ctx, n)
-                          JOIN unnest($3::text[])
-                                 WITH ORDINALITY AS st(typ, n) USING (n)
-                         WHERE r.schema_context = sc.ctx
-                           AND (st.typ = '' OR r.schema_type = st.typ))))
-   AND (
-     $4::text IS NULL
-     OR $5::boolean <> EXISTS (
-       SELECT 1 FROM resource_geometries g
-        WHERE g.catalog_id = r.catalog_id
-          AND (g.resource_id IS NULL OR g.resource_id = r.id)
-          AND ($6::text[] IS NULL
-               OR g.target_path = ANY($6::text[]))
-          AND $7::boolean <> (
-                 ($8::double precision IS NULL
-                  OR $4::text = 'S_DISJOINT'
-                  OR (    g.max_lat >= $8::double precision
-                      AND g.min_lat <= $9::double precision
-                      AND g.max_lon >= $10::double precision
-                      AND g.min_lon <= $11::double precision))
-                 AND (g.cells_cover IS NULL
-                      OR $12::bigint[] IS NULL
-                      OR CASE $4::text
-                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $13::bigint[])
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $12::bigint[]
-                           WHEN 'S_CONTAINS'   THEN $12::bigint[] <@ g.cells_cover
-                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $12::bigint[]
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_EQUALS'     THEN g.cells_cover = $12::bigint[]
-                                               AND g.cells_full  = $13::bigint[]
-                           ELSE TRUE
-                         END)
-                 AND ($14::double precision IS NULL
-                      OR g.geojson->>'type' <> 'Point'
-                      OR geo_distance_m(g.geojson,
-                                        $14::double precision,
-                                        $15::double precision)
-                          <= $16::double precision))
-     )
-   )
-   AND (   ($17::text IS NULL
-            AND $18::text IS NULL
-            AND $19::vector IS NULL)
-        OR r.search_tsv @@ discover_tsquery($17::text)
-        OR r.name % $18::text
-        OR ($19::vector IS NOT NULL AND r.embedding IS NOT NULL))
-`
-
-type CountCandidatesParams struct {
-	NetworkID      pgtype.Text
-	SchemaContexts []string
-	SchemaTypes    []string
-	SpatialOp      pgtype.Text
-	GeoNegate      bool
-	TargetPaths    []string
-	MatchNegate    bool
-	MinLat         pgtype.Float8
-	MaxLat         pgtype.Float8
-	MinLon         pgtype.Float8
-	MaxLon         pgtype.Float8
-	QCover         []int64
-	QFull          []int64
-	CenterLat      pgtype.Float8
-	CenterLon      pgtype.Float8
-	RadiusM        pgtype.Float8
-	LexicalText    pgtype.Text
-	FuzzyText      pgtype.Text
-	QueryVector    *pgvector_go.Vector
-}
-
-// ---------------------------------------------------------------------------
-// the counter
-// ---------------------------------------------------------------------------
-// CountCandidates is the size of the set the fusion draws from.
-//
-// Deliberately no LIMIT: capping truncates the PAGE's candidate pool and must
-// never truncate the count, or a capped mode would make Total wrong in the one
-// state a caller has no way to detect.
-//
-// The text clause is the OR of every mode's, because the page is a union of
-// every mode's. A counter carrying only lexical's returns a number no page can
-// be paginated out of — fewer results than page 1 already showed. The first
-// disjunct covers the geo-only intent, where no mode carries text and every row
-// the other predicates admit is a candidate.
-//
-// `r.name % NULL` and `search_tsv @@ NULL` are NULL, not FALSE, and NULL is a
-// miss under a WHERE — which is exactly the behaviour a disabled mode wants.
-// They can only fail to contribute; they can never turn another mode's TRUE
-// into a miss, because `TRUE OR NULL` is TRUE.
-func (q *Queries) CountCandidates(ctx context.Context, arg CountCandidatesParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countCandidates,
-		arg.NetworkID,
-		arg.SchemaContexts,
-		arg.SchemaTypes,
-		arg.SpatialOp,
-		arg.GeoNegate,
-		arg.TargetPaths,
-		arg.MatchNegate,
-		arg.MinLat,
-		arg.MaxLat,
-		arg.MinLon,
-		arg.MaxLon,
-		arg.QCover,
-		arg.QFull,
-		arg.CenterLat,
-		arg.CenterLon,
-		arg.RadiusM,
-		arg.LexicalText,
-		arg.FuzzyText,
-		arg.QueryVector,
-	)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const fuzzyCandidates = `-- name: FuzzyCandidates :many
 SELECT r.catalog_id, r.id
   FROM resources r
@@ -169,72 +32,75 @@ SELECT r.catalog_id, r.id
                                  WITH ORDINALITY AS st(typ, n) USING (n)
                          WHERE r.schema_context = sc.ctx
                            AND (st.typ = '' OR r.schema_type = st.typ))))
+   AND ($4::text IS NULL
+        OR r.filter_doc @? $4::text::jsonpath)
    AND (
-     $4::text IS NULL
-     OR $5::boolean <> EXISTS (
+     $5::text IS NULL
+     OR $6::boolean <> EXISTS (
        SELECT 1 FROM resource_geometries g
         WHERE g.catalog_id = r.catalog_id
           AND (g.resource_id IS NULL OR g.resource_id = r.id)
-          AND ($6::text[] IS NULL
-               OR g.target_path = ANY($6::text[]))
-          AND $7::boolean <> (
-                 ($8::double precision IS NULL
-                  OR $4::text = 'S_DISJOINT'
-                  OR (    g.max_lat >= $8::double precision
-                      AND g.min_lat <= $9::double precision
-                      AND g.max_lon >= $10::double precision
-                      AND g.min_lon <= $11::double precision))
+          AND ($7::text[] IS NULL
+               OR g.target_path = ANY($7::text[]))
+          AND $8::boolean <> (
+                 ($9::double precision IS NULL
+                  OR $5::text = 'S_DISJOINT'
+                  OR (    g.max_lat >= $9::double precision
+                      AND g.min_lat <= $10::double precision
+                      AND g.max_lon >= $11::double precision
+                      AND g.min_lon <= $12::double precision))
                  AND (g.cells_cover IS NULL
-                      OR $12::bigint[] IS NULL
-                      OR CASE $4::text
-                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $13::bigint[])
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $12::bigint[]
-                           WHEN 'S_CONTAINS'   THEN $12::bigint[] <@ g.cells_cover
-                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $12::bigint[]
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_EQUALS'     THEN g.cells_cover = $12::bigint[]
-                                               AND g.cells_full  = $13::bigint[]
+                      OR $13::bigint[] IS NULL
+                      OR CASE $5::text
+                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $13::bigint[]
+                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $14::bigint[])
+                                               AND NOT (g.cells_cover <@ $14::bigint[])
+                                               AND NOT ($13::bigint[] <@ g.cells_full)
+                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $13::bigint[]
+                           WHEN 'S_CONTAINS'   THEN $13::bigint[] <@ g.cells_cover
+                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $13::bigint[]
+                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $13::bigint[]
+                                               AND NOT (g.cells_cover <@ $14::bigint[])
+                                               AND NOT ($13::bigint[] <@ g.cells_full)
+                           WHEN 'S_EQUALS'     THEN g.cells_cover = $13::bigint[]
+                                               AND g.cells_full  = $14::bigint[]
                            ELSE TRUE
                          END)
-                 AND ($14::double precision IS NULL
+                 AND ($15::double precision IS NULL
                       OR g.geojson->>'type' <> 'Point'
                       OR geo_distance_m(g.geojson,
-                                        $14::double precision,
-                                        $15::double precision)
-                          <= $16::double precision))
+                                        $15::double precision,
+                                        $16::double precision)
+                          <= $17::double precision))
      )
    )
-   AND ($17::text IS NULL
-        OR r.name % $17::text)
- ORDER BY similarity(r.name, $17::text) DESC NULLS LAST,
+   AND ($18::text IS NULL
+        OR r.name % $18::text)
+ ORDER BY similarity(r.name, $18::text) DESC NULLS LAST,
           r.catalog_id, r.id
- LIMIT $18::int
+ LIMIT $19::int
 `
 
 type FuzzyCandidatesParams struct {
-	NetworkID      pgtype.Text
-	SchemaContexts []string
-	SchemaTypes    []string
-	SpatialOp      pgtype.Text
-	GeoNegate      bool
-	TargetPaths    []string
-	MatchNegate    bool
-	MinLat         pgtype.Float8
-	MaxLat         pgtype.Float8
-	MinLon         pgtype.Float8
-	MaxLon         pgtype.Float8
-	QCover         []int64
-	QFull          []int64
-	CenterLat      pgtype.Float8
-	CenterLon      pgtype.Float8
-	RadiusM        pgtype.Float8
-	QueryText      pgtype.Text
-	RowLimit       int32
+	NetworkID       pgtype.Text
+	SchemaContexts  []string
+	SchemaTypes     []string
+	AttributeFilter pgtype.Text
+	SpatialOp       pgtype.Text
+	GeoNegate       bool
+	TargetPaths     []string
+	MatchNegate     bool
+	MinLat          pgtype.Float8
+	MaxLat          pgtype.Float8
+	MinLon          pgtype.Float8
+	MaxLon          pgtype.Float8
+	QCover          []int64
+	QFull           []int64
+	CenterLat       pgtype.Float8
+	CenterLon       pgtype.Float8
+	RadiusM         pgtype.Float8
+	QueryText       pgtype.Text
+	RowLimit        int32
 }
 
 type FuzzyCandidatesRow struct {
@@ -253,6 +119,7 @@ func (q *Queries) FuzzyCandidates(ctx context.Context, arg FuzzyCandidatesParams
 		arg.NetworkID,
 		arg.SchemaContexts,
 		arg.SchemaTypes,
+		arg.AttributeFilter,
 		arg.SpatialOp,
 		arg.GeoNegate,
 		arg.TargetPaths,
@@ -594,72 +461,75 @@ SELECT r.catalog_id, r.id
                                  WITH ORDINALITY AS st(typ, n) USING (n)
                          WHERE r.schema_context = sc.ctx
                            AND (st.typ = '' OR r.schema_type = st.typ))))
+   AND ($4::text IS NULL
+        OR r.filter_doc @? $4::text::jsonpath)
    AND (
-     $4::text IS NULL
-     OR $5::boolean <> EXISTS (
+     $5::text IS NULL
+     OR $6::boolean <> EXISTS (
        SELECT 1 FROM resource_geometries g
         WHERE g.catalog_id = r.catalog_id
           AND (g.resource_id IS NULL OR g.resource_id = r.id)
-          AND ($6::text[] IS NULL
-               OR g.target_path = ANY($6::text[]))
-          AND $7::boolean <> (
-                 ($8::double precision IS NULL
-                  OR $4::text = 'S_DISJOINT'
-                  OR (    g.max_lat >= $8::double precision
-                      AND g.min_lat <= $9::double precision
-                      AND g.max_lon >= $10::double precision
-                      AND g.min_lon <= $11::double precision))
+          AND ($7::text[] IS NULL
+               OR g.target_path = ANY($7::text[]))
+          AND $8::boolean <> (
+                 ($9::double precision IS NULL
+                  OR $5::text = 'S_DISJOINT'
+                  OR (    g.max_lat >= $9::double precision
+                      AND g.min_lat <= $10::double precision
+                      AND g.max_lon >= $11::double precision
+                      AND g.min_lon <= $12::double precision))
                  AND (g.cells_cover IS NULL
-                      OR $12::bigint[] IS NULL
-                      OR CASE $4::text
-                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $13::bigint[])
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $12::bigint[]
-                           WHEN 'S_CONTAINS'   THEN $12::bigint[] <@ g.cells_cover
-                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $12::bigint[]
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_EQUALS'     THEN g.cells_cover = $12::bigint[]
-                                               AND g.cells_full  = $13::bigint[]
+                      OR $13::bigint[] IS NULL
+                      OR CASE $5::text
+                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $13::bigint[]
+                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $14::bigint[])
+                                               AND NOT (g.cells_cover <@ $14::bigint[])
+                                               AND NOT ($13::bigint[] <@ g.cells_full)
+                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $13::bigint[]
+                           WHEN 'S_CONTAINS'   THEN $13::bigint[] <@ g.cells_cover
+                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $13::bigint[]
+                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $13::bigint[]
+                                               AND NOT (g.cells_cover <@ $14::bigint[])
+                                               AND NOT ($13::bigint[] <@ g.cells_full)
+                           WHEN 'S_EQUALS'     THEN g.cells_cover = $13::bigint[]
+                                               AND g.cells_full  = $14::bigint[]
                            ELSE TRUE
                          END)
-                 AND ($14::double precision IS NULL
+                 AND ($15::double precision IS NULL
                       OR g.geojson->>'type' <> 'Point'
                       OR geo_distance_m(g.geojson,
-                                        $14::double precision,
-                                        $15::double precision)
-                          <= $16::double precision))
+                                        $15::double precision,
+                                        $16::double precision)
+                          <= $17::double precision))
      )
    )
-   AND ($17::text IS NULL
-        OR r.search_tsv @@ discover_tsquery($17::text))
- ORDER BY ts_rank_cd(r.search_tsv, discover_tsquery($17::text)) DESC NULLS LAST,
+   AND ($18::text IS NULL
+        OR r.search_tsv @@ discover_tsquery($18::text))
+ ORDER BY ts_rank_cd(r.search_tsv, discover_tsquery($18::text)) DESC NULLS LAST,
           r.catalog_id, r.id
- LIMIT $18::int
+ LIMIT $19::int
 `
 
 type LexicalCandidatesParams struct {
-	NetworkID      pgtype.Text
-	SchemaContexts []string
-	SchemaTypes    []string
-	SpatialOp      pgtype.Text
-	GeoNegate      bool
-	TargetPaths    []string
-	MatchNegate    bool
-	MinLat         pgtype.Float8
-	MaxLat         pgtype.Float8
-	MinLon         pgtype.Float8
-	MaxLon         pgtype.Float8
-	QCover         []int64
-	QFull          []int64
-	CenterLat      pgtype.Float8
-	CenterLon      pgtype.Float8
-	RadiusM        pgtype.Float8
-	QueryText      pgtype.Text
-	RowLimit       int32
+	NetworkID       pgtype.Text
+	SchemaContexts  []string
+	SchemaTypes     []string
+	AttributeFilter pgtype.Text
+	SpatialOp       pgtype.Text
+	GeoNegate       bool
+	TargetPaths     []string
+	MatchNegate     bool
+	MinLat          pgtype.Float8
+	MaxLat          pgtype.Float8
+	MinLon          pgtype.Float8
+	MaxLon          pgtype.Float8
+	QCover          []int64
+	QFull           []int64
+	CenterLat       pgtype.Float8
+	CenterLon       pgtype.Float8
+	RadiusM         pgtype.Float8
+	QueryText       pgtype.Text
+	RowLimit        int32
 }
 
 type LexicalCandidatesRow struct {
@@ -667,7 +537,14 @@ type LexicalCandidatesRow struct {
 	ID        string
 }
 
-// The read path. Three retrievers, one counter, three hydration queries.
+// The read path. Three retrievers and four hydration queries.
+//
+// There is NO counter (A19). It answered `SearchResult.Total`, which
+// OnDiscoverAction has nowhere to carry: additionalProperties:false with
+// `catalogs` as its only property. Measured on PG16 over 100k rows, the count
+// cost 150.6 ms against retrieval's 1.5 ms — 100x, on every request, because
+// it could not take a LIMIT without making the number wrong in the one state a
+// caller cannot detect.
 //
 // Every block below is repeated per query rather than factored into a view or a
 // function, and that is forced rather than chosen: sqlc compiles these files at
@@ -678,8 +555,29 @@ type LexicalCandidatesRow struct {
 // it reads THIS file and fails when a query drops a clause.
 //
 // Nothing here concatenates SQL and nothing interpolates a JSONPath. The
-// attribute filter (Task 22) is absent for that reason and lands as a bound
-// `@?` parameter when it arrives, never as text spliced into these queries.
+// attribute filter is a BOUND parameter cast to ::jsonpath by PostgreSQL's own
+// parser and applied with `@?` against `resources.filter_doc` — never text
+// spliced into these queries, and never rewritten on the way in.
+//
+// That clause is spelled bare in each WHERE below, like every other shared
+// predicate, so the whole of it is said once here:
+//
+//	filter_doc, not document. `document` is one level of one object; the
+//	composite is the only value a predicate crossing catalog, resource and
+//	offer can be evaluated against at all (A18) — and under OR it is not a
+//	matter of convenience, because a row-level disjunction has no
+//	decomposition into per-table results.
+//
+//	`@?` and NEVER `@@`. They take different expression forms and neither
+//	mispairing raises an error: `@?` given a predicate expression matches
+//	EVERY row, because a comparison always yields an item and `false` is an
+//	item; `@@` given the filter form this service accepts matches ZERO. That
+//	is why jsonpath.Accept refuses predicate form at the edge, and why `@@`
+//	appears nowhere in this file.
+//
+//	NULL means NO predicate, not a predicate that matches nothing. An intent
+//	carrying no filter must not be narrowed by one.
+//
 // ---------------------------------------------------------------------------
 // retrieval — one query per ranked mode, all sharing one WHERE
 // ---------------------------------------------------------------------------
@@ -700,6 +598,7 @@ func (q *Queries) LexicalCandidates(ctx context.Context, arg LexicalCandidatesPa
 		arg.NetworkID,
 		arg.SchemaContexts,
 		arg.SchemaTypes,
+		arg.AttributeFilter,
 		arg.SpatialOp,
 		arg.GeoNegate,
 		arg.TargetPaths,
@@ -811,72 +710,75 @@ SELECT r.catalog_id, r.id
                                  WITH ORDINALITY AS st(typ, n) USING (n)
                          WHERE r.schema_context = sc.ctx
                            AND (st.typ = '' OR r.schema_type = st.typ))))
+   AND ($4::text IS NULL
+        OR r.filter_doc @? $4::text::jsonpath)
    AND (
-     $4::text IS NULL
-     OR $5::boolean <> EXISTS (
+     $5::text IS NULL
+     OR $6::boolean <> EXISTS (
        SELECT 1 FROM resource_geometries g
         WHERE g.catalog_id = r.catalog_id
           AND (g.resource_id IS NULL OR g.resource_id = r.id)
-          AND ($6::text[] IS NULL
-               OR g.target_path = ANY($6::text[]))
-          AND $7::boolean <> (
-                 ($8::double precision IS NULL
-                  OR $4::text = 'S_DISJOINT'
-                  OR (    g.max_lat >= $8::double precision
-                      AND g.min_lat <= $9::double precision
-                      AND g.max_lon >= $10::double precision
-                      AND g.min_lon <= $11::double precision))
+          AND ($7::text[] IS NULL
+               OR g.target_path = ANY($7::text[]))
+          AND $8::boolean <> (
+                 ($9::double precision IS NULL
+                  OR $5::text = 'S_DISJOINT'
+                  OR (    g.max_lat >= $9::double precision
+                      AND g.min_lat <= $10::double precision
+                      AND g.max_lon >= $11::double precision
+                      AND g.min_lon <= $12::double precision))
                  AND (g.cells_cover IS NULL
-                      OR $12::bigint[] IS NULL
-                      OR CASE $4::text
-                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $13::bigint[])
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $12::bigint[]
-                           WHEN 'S_CONTAINS'   THEN $12::bigint[] <@ g.cells_cover
-                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $12::bigint[]
-                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $12::bigint[]
-                                               AND NOT (g.cells_cover <@ $13::bigint[])
-                                               AND NOT ($12::bigint[] <@ g.cells_full)
-                           WHEN 'S_EQUALS'     THEN g.cells_cover = $12::bigint[]
-                                               AND g.cells_full  = $13::bigint[]
+                      OR $13::bigint[] IS NULL
+                      OR CASE $5::text
+                           WHEN 'S_INTERSECTS' THEN g.cells_cover && $13::bigint[]
+                           WHEN 'S_DISJOINT'   THEN NOT (g.cells_full && $14::bigint[])
+                                               AND NOT (g.cells_cover <@ $14::bigint[])
+                                               AND NOT ($13::bigint[] <@ g.cells_full)
+                           WHEN 'S_WITHIN'     THEN g.cells_cover <@ $13::bigint[]
+                           WHEN 'S_CONTAINS'   THEN $13::bigint[] <@ g.cells_cover
+                           WHEN 'S_DWITHIN'    THEN g.cells_cover && $13::bigint[]
+                           WHEN 'S_OVERLAPS'   THEN g.cells_cover && $13::bigint[]
+                                               AND NOT (g.cells_cover <@ $14::bigint[])
+                                               AND NOT ($13::bigint[] <@ g.cells_full)
+                           WHEN 'S_EQUALS'     THEN g.cells_cover = $13::bigint[]
+                                               AND g.cells_full  = $14::bigint[]
                            ELSE TRUE
                          END)
-                 AND ($14::double precision IS NULL
+                 AND ($15::double precision IS NULL
                       OR g.geojson->>'type' <> 'Point'
                       OR geo_distance_m(g.geojson,
-                                        $14::double precision,
-                                        $15::double precision)
-                          <= $16::double precision))
+                                        $15::double precision,
+                                        $16::double precision)
+                          <= $17::double precision))
      )
    )
-   AND $17::vector IS NOT NULL
+   AND $18::vector IS NOT NULL
    AND r.embedding IS NOT NULL
- ORDER BY r.embedding <=> $17::vector,
+ ORDER BY r.embedding <=> $18::vector,
           r.catalog_id, r.id
- LIMIT $18::int
+ LIMIT $19::int
 `
 
 type SemanticCandidatesParams struct {
-	NetworkID      pgtype.Text
-	SchemaContexts []string
-	SchemaTypes    []string
-	SpatialOp      pgtype.Text
-	GeoNegate      bool
-	TargetPaths    []string
-	MatchNegate    bool
-	MinLat         pgtype.Float8
-	MaxLat         pgtype.Float8
-	MinLon         pgtype.Float8
-	MaxLon         pgtype.Float8
-	QCover         []int64
-	QFull          []int64
-	CenterLat      pgtype.Float8
-	CenterLon      pgtype.Float8
-	RadiusM        pgtype.Float8
-	QueryVector    *pgvector_go.Vector
-	RowLimit       int32
+	NetworkID       pgtype.Text
+	SchemaContexts  []string
+	SchemaTypes     []string
+	AttributeFilter pgtype.Text
+	SpatialOp       pgtype.Text
+	GeoNegate       bool
+	TargetPaths     []string
+	MatchNegate     bool
+	MinLat          pgtype.Float8
+	MaxLat          pgtype.Float8
+	MinLon          pgtype.Float8
+	MaxLon          pgtype.Float8
+	QCover          []int64
+	QFull           []int64
+	CenterLat       pgtype.Float8
+	CenterLon       pgtype.Float8
+	RadiusM         pgtype.Float8
+	QueryVector     *pgvector_go.Vector
+	RowLimit        int32
 }
 
 type SemanticCandidatesRow struct {
@@ -894,13 +796,14 @@ type SemanticCandidatesRow struct {
 //
 // The ORDER BY is what drives the index; there is no distance threshold,
 // because HNSW answers "the nearest N" and not "everything within d". The pool
-// this draws from is every embedded row the shared predicates admit, which is
-// what CountCandidates counts for this mode.
+// this draws from is every embedded row the shared predicates admit; the LIMIT
+// is what turns that pool into candidates.
 func (q *Queries) SemanticCandidates(ctx context.Context, arg SemanticCandidatesParams) ([]SemanticCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, semanticCandidates,
 		arg.NetworkID,
 		arg.SchemaContexts,
 		arg.SchemaTypes,
+		arg.AttributeFilter,
 		arg.SpatialOp,
 		arg.GeoNegate,
 		arg.TargetPaths,

@@ -142,15 +142,27 @@ func isMemberName(name string) bool {
 		return false
 	}
 	for i := 0; i < len(name); i++ {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-		case c == '_', c == '-', c == '@':
-		default:
+		if !isMemberByte(name[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// isMemberByte reports whether c may appear in a member name.
+//
+// Split out of isMemberName so that rootMember, which has to find where a name
+// ENDS rather than check one it already has, reads the same character class.
+// Two copies of this class would be two chances for a name to be addressable
+// in one file and not the other.
+func isMemberByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c == '-', c == '@':
+		return true
+	}
+	return false
 }
 
 // isIndex reports whether digits is a non-negative integer in its only spelling.

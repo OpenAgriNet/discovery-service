@@ -18,10 +18,11 @@ import (
 //
 // A sentinel, because the caller has to tell this apart from a query that
 // legitimately ran out of results: the fused list holds at most
-// MaxCandidatesPerMode ids, so an offset beyond it can only slice past the end
-// — while Total correctly reports thousands, because the count query has no
-// cap. Answering with the empty slice would give a caller walking pages a full
-// page 25 and an empty page 26 indistinguishable from the end of the results.
+// MaxCandidatesPerMode ids, so an offset beyond it can only slice past the end.
+// Answering with the empty slice would give a caller walking pages a full page
+// 25 and an empty page 26 indistinguishable from the end of the results — and
+// since A19 removed the count, this refusal is the ONLY thing that tells them
+// apart.
 var ErrRetrievalDepth = errors.New("the requested page is past the retrieval depth")
 
 // SearchRepository is the read half of the PostgreSQL adapter: the modes, the
@@ -87,29 +88,33 @@ func NewSearchRepository(
 
 // Capabilities declares what this backend can answer.
 //
-// Spatial is unconditional and is NOT a ranked mode: it is part of the WHERE
-// clause every retriever and the counter share, so a backend that has any
-// retriever at all can answer it. JSONPath is absent until the attribute filter
-// lands (Task 22) — Postgres could run one, but this adapter does not yet bind
-// it, and a capability declared before the predicate exists would narrow
-// nothing while telling the negotiation it had.
+// Neither Spatial nor JSONPath is a ranked mode: both are part of the WHERE
+// clause every retriever shares, so a backend that has any retriever at all can
+// answer them. Both are unconditional here — the geometry predicate needs only
+// the H3 columns and the filter predicate only `resources.filter_doc`, and
+// every publish through this adapter writes both.
+//
+// The memory backend declares JSONPath false and is right to: it holds the
+// documents but not PostgreSQL's jsonpath engine, and the whole point of the
+// capability is that the negotiation learns which of the two it is talking to
+// BEFORE a filter silently narrows nothing.
 func (s *SearchRepository) Capabilities() domain.Capabilities {
 	return domain.Capabilities{
 		domain.CapabilityLexical:  true,
 		domain.CapabilityFuzzy:    true,
 		domain.CapabilitySemantic: s.semantic,
 		domain.CapabilitySpatial:  true,
+		domain.CapabilityJSONPath: true,
 	}
 }
 
 // outcome is one mode's answer. Collected per mode rather than merged as they
-// arrive, because `capped` and `err` are per-mode facts the count guards read
-// individually.
+// arrive, because a failure is a per-mode fact: it names ONE mode in Degraded,
+// and a merged stream would have lost which.
 type outcome struct {
-	mode   domain.Capability
-	ids    []string
-	capped bool
-	err    error
+	mode domain.Capability
+	ids  []string
+	err  error
 }
 
 // Search runs the enabled modes concurrently under one deadline, fuses them and
@@ -135,30 +140,25 @@ func (s *SearchRepository) Search(
 
 	ranked, filtering, degraded := s.negotiate(modes)
 
-	lists, failed, anyCap := fold(s.retrieve(ctx, query, ranked, scope))
+	lists, failed := fold(s.retrieve(ctx, query, ranked, scope))
 	degraded = append(degraded, failed...)
 
 	if len(lists) == 0 && filtering {
-		ids, capped, err := s.filterOnly(ctx, query, scope)
+		ids, err := s.filterOnly(ctx, query, scope)
 		if err != nil {
 			return domain.SearchResult{}, err
 		}
-		lists, anyCap = append(lists, ids), anyCap || capped
+		lists = append(lists, ids)
 	}
 
 	fused := RRF(lists...)
 	page := pageOf(fused, query.Offset, query.Limit)
 
-	total, err := s.total(ctx, query, scope, fused, page, len(degraded) > 0, anyCap)
-	if err != nil {
-		return domain.SearchResult{}, err
-	}
-
 	catalogs, err := s.hydrator.Hydrate(ctx, page, scope)
 	if err != nil {
 		return domain.SearchResult{}, err
 	}
-	return domain.SearchResult{Catalogs: catalogs, Total: total, Degraded: degraded}, nil
+	return domain.SearchResult{Catalogs: catalogs, Degraded: degraded}, nil
 }
 
 // withinRetrievalDepth refuses a page that lies past what any mode retrieves.
@@ -188,30 +188,34 @@ func (s *SearchRepository) withinRetrievalDepth(query domain.SearchQuery) error 
 // Only one of those is an answer.
 func (s *SearchRepository) filterOnly(
 	ctx context.Context, query domain.SearchQuery, scope domain.Scope,
-) (ids []string, capped bool, err error) {
-	ids, err = s.candidates.Retrieve(ctx, query, scope)
+) ([]string, error) {
+	ids, err := s.candidates.Retrieve(ctx, query, scope)
 	if err != nil {
-		return nil, false, fmt.Errorf("run the candidate retrieval: %w", err)
+		return nil, fmt.Errorf("run the candidate retrieval: %w", err)
 	}
-	return ids, len(ids) == s.search.MaxCandidatesPerMode, nil
+	return ids, nil
 }
 
-// fold splits the per-mode outcomes into the lists to fuse, the modes to report
-// and whether any of them stopped at its cap.
+// fold splits the per-mode outcomes into the lists to fuse and the modes to
+// report.
 //
 // A failed mode is RECORDED, not fatal. Two modes returning is a better answer
 // than none — and the caller is TOLD, through X-Beckn-Degraded, which is the
 // difference between a degraded answer and a wrong one.
-func fold(outcomes []outcome) (ranked [][]string, degraded []string, anyCapped bool) {
+//
+// Whether a mode stopped at its cap is no longer tracked (A19). Its only reader
+// was the count, which had to know that a short list meant "truncated" rather
+// than "the end"; the page itself never cared, because it is sliced from the
+// fusion either way.
+func fold(outcomes []outcome) (ranked [][]string, degraded []string) {
 	for _, result := range outcomes {
 		if result.err != nil {
 			degraded = append(degraded, string(result.mode))
 			continue
 		}
 		ranked = append(ranked, result.ids)
-		anyCapped = anyCapped || result.capped
 	}
-	return ranked, degraded, anyCapped
+	return ranked, degraded
 }
 
 // negotiate splits the requested modes into the ranked ones this backend will
@@ -277,34 +281,10 @@ func (s *SearchRepository) retrieve(
 			// shared write and no mutex. A channel here would buy nothing: the
 			// barrier below already waits for all of them.
 			slot.ids, slot.err = s.retrievers[slot.mode].Retrieve(ctx, query, scope)
-			slot.capped = len(slot.ids) == s.search.MaxCandidatesPerMode
 		}(&outcomes[index])
 	}
 	waiting.Wait()
 	return outcomes
-}
-
-// total answers the count, skipping the query when the fused list already IS
-// the count.
-//
-// All four guards are load-bearing, and each of them alone would under-report:
-//   - offset > 0 means the caller is past page 1, so nothing here can say how
-//     much sits behind them.
-//   - a full page means there may be more; only a short one proves the end.
-//   - a degraded mode makes the list short because a retriever died.
-//   - a capped mode makes it short because a retriever stopped early.
-//
-// When none of them fires, every id in the union is in `fused`, so len(fused)
-// IS the count and issuing the query would spend milliseconds re-deriving a
-// number already in hand.
-func (s *SearchRepository) total(
-	ctx context.Context, query domain.SearchQuery, scope domain.Scope,
-	fused, page []string, degraded, capped bool,
-) (int, error) {
-	if query.Offset == 0 && len(page) < query.Limit && !degraded && !capped {
-		return len(fused), nil
-	}
-	return s.hydrator.Count(ctx, query, scope)
 }
 
 // pageOf slices the fused list, clamping rather than panicking.

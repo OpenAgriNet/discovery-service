@@ -33,6 +33,34 @@ CREATE TABLE resources (
     -- adds later had nowhere at all to go.
     document    JSONB NOT NULL DEFAULT '{}'::jsonb,
 
+    -- The COMPOSITE the attribute filter runs against (A18) — this resource,
+    -- its catalog, and the offers that apply to it, in ONE jsonb value:
+    --
+    --   {"catalogs": [{ <catalog scalars>, "descriptor": {...},
+    --                   "provider":  {...},        -- availableAt STRIPPED
+    --                   "resources": [ <THIS resource, and only it> ],
+    --                   "offers":    [ <offers naming it + catalog-wide> ] }]}
+    --
+    -- Derived at publish from the three documents. Never publisher-supplied,
+    -- and rebuildable from them at any time.
+    --
+    -- ONE value because PostgreSQL evaluates a jsonpath against ONE jsonb: no
+    -- `@?` spans tables. `$.catalogs[*] ? (@.isActive == true && exists(
+    -- @.offers[*] ? (@.channel == "retail")))` is unwritable without it, and an
+    -- OR across levels is a ROW-level disjunction that no set of per-table
+    -- results can reassemble.
+    --
+    -- `resources` holds exactly ONE element, and that is correctness rather
+    -- than thrift: with siblings present, `$.catalogs[*].resources[*] ?
+    -- (@.grade == "A")` matches a grade-B resource's row because its NEIGHBOUR
+    -- passed — measured, not reasoned. The single element is also what makes
+    -- `@.resources[*]` mean "this resource" by construction.
+    --
+    -- `provider.availableAt` is stripped: geometry is answered by
+    -- resource_geometries, and polygons are the bulky half of a block that is
+    -- already copied onto every resource of the catalog.
+    filter_doc  JSONB NOT NULL DEFAULT '{}'::jsonb,
+
     -- resourceAttributes.@context and .@type, both scalar `string` and both
     -- REQUIRED by the Attributes schema (C4). Two plain columns, because the
     -- filter that reads them must match them as a PAIR — see below. Default ''
@@ -134,10 +162,23 @@ CREATE INDEX idx_resources_schema ON resources (schema_context, schema_type)
 -- index on the same leading column is a duplicate that only the write path
 -- pays for.
 
--- jsonb_path_ops, not the default jsonb_ops: a third the size and faster for
--- the path-exists queries this service issues (Task 22). It cannot serve
--- key-existence (?) queries, which nothing here needs.
-CREATE INDEX idx_resources_document ON resources USING GIN (document jsonb_path_ops);
+-- The one filter index, over the composite (A18). jsonb_path_ops, not the
+-- default jsonb_ops: a third the size and faster for the path-exists queries
+-- this service issues (Task 22). It cannot serve key-existence (?) queries,
+-- which nothing here needs.
+--
+-- Measured on PG16 over 100k rows: all 20 expression shapes tried are captured
+-- by this index — AND and OR across catalog, resource and offer, every 3-way
+-- ordering, (a&&b)||c, (a||b)&&c, exists(), and quoted colon-bearing field
+-- names. Equality is what jsonb_path_ops extracts; inequality, like_regex and
+-- `starts with` remain correct but scan, which is the operator class and not a
+-- choice this plan made.
+--
+-- There is NO idx_resources_document, NO idx_catalogs_document and NO
+-- idx_offers_document. filter_doc contains what all three indexed, so any of
+-- them would be write cost with no reader.
+CREATE INDEX idx_resources_filter_doc ON resources
+    USING GIN (filter_doc jsonb_path_ops);
 
 -- HNSW, not IVFFlat: no training pass, so it works from the first row. Not
 -- partial: a partial HNSW would have to be rebuilt when `active` flips.

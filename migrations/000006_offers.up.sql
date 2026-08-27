@@ -47,5 +47,10 @@ CREATE TABLE offers (
 -- overlap (&&), which is a GIN scan.
 CREATE INDEX idx_offers_resource_ids ON offers USING GIN (resource_ids);
 
--- For attribute filters rooted at the offer path (Task 22).
-CREATE INDEX idx_offers_document ON offers USING GIN (document jsonb_path_ops);
+-- NO GIN over `document`. An attribute filter rooted at the offer path
+-- (`$.catalogs[*].offers[*] ? (...)`) does NOT resolve here: since A18 it runs
+-- against `resources.filter_doc`, which carries the offers applying to each
+-- resource copied down beside it. That is what lets one expression mix an offer
+-- predicate with a catalog or resource predicate — including under OR, which no
+-- per-table result set can reassemble. This table is hydration-only: read by
+-- `resource_ids` overlap after the page is decided, never scanned by a filter.

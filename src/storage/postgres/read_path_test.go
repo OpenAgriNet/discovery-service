@@ -109,6 +109,13 @@ func deriveVectors(ids ...string) domain.DeriveFunc {
 type readFixture struct {
 	catalog   string
 	visibleTo []string
+
+	// document is the catalog's own members, for the cases whose predicate
+	// reaches ABOVE the resource. Optional: most cases here search on resource
+	// text and would only be describing a catalog nothing reads. Since A18 it
+	// is copied onto every resource row's composite, so what is set here is
+	// what a catalog-level filter runs against.
+	document  json.RawMessage
 	resources []domain.ResourcePatch
 	offers    []domain.OfferPatch
 	derive    domain.DeriveFunc
@@ -155,6 +162,7 @@ func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture
 		faults, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
 			ID:        fixture.catalog,
 			NetworkID: visibleTo[0],
+			Document:  fixture.document,
 			Active:    true,
 			VisibleTo: visibleTo,
 			Resources: fixture.resources,
@@ -342,12 +350,9 @@ func TestTotalIsTheSizeOfTheUnionOfEveryModesTextClause(t *testing.T) {
 	result := search(t, repository, domain.SearchQuery{Text: "kharif"})
 
 	if got := len(matchedIDs(result)); got != 3 {
-		t.Fatalf("the page holds %d resources, want the 3 in the union: %v",
+		t.Fatalf("the page holds %d resources, want the 3 in the union: %v — "+
+			"the union of the lexical and fuzzy clauses, not either one alone",
 			got, matchedIDs(result))
-	}
-	if result.Total != 3 {
-		t.Errorf("Total is %d, want 3 — the union of the lexical and fuzzy clauses, "+
-			"not either one alone", result.Total)
 	}
 }
 
@@ -367,85 +372,22 @@ func TestPageTwoDoesNotOverlapPageOne(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// the count skip, and its four guards
-// ---------------------------------------------------------------------------
-
-// oracle is Total computed the long way: the count query itself, run against
-// the same corpus with the same predicates and no skip in front of it.
-//
-// This is what "the same query with the skip forced on and forced off" means
-// without a switch in production code to force it — a switch that would exist
-// only for the test and would itself be the thing most likely to drift.
-func oracle(
-	t *testing.T, pool *pgxpool.Pool, embedder embeddings.Embedder, query domain.SearchQuery,
-) int {
-	t.Helper()
-
-	total, err := postgres.NewHydrator(pool, embedder).
-		Count(context.Background(), query, domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()})
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	return total
-}
-
-// The skip is an optimisation, so the number it produces must be the number the
-// query would have produced. Every sub-case asserts against the count query
-// rather than against a literal, which is what makes this an agreement test and
-// not two independent guesses at the same corpus.
-func TestTheCountSkipAgreesWithTheCountItSkips(t *testing.T) {
-	// Eleven rows sharing a token, against a cap of eight, so the capped guard
-	// has something to be capped by — plus one row nothing else resembles, so
-	// there is a query narrow enough for the skip itself to fire.
-	resources := append(kharifLots(11), searchable(
-		"r-papaya", "singular papaya", "", "https://beckn.org/Agri", "SeedLot"))
-	repository, pool := publish(t, nil, readFixture{catalog: "cat-count", resources: resources})
-
-	for _, testCase := range []struct {
-		name  string
-		query domain.SearchQuery
-	}{
-		// offset 0, a short page, nothing degraded, nothing capped: len(fused)
-		// IS the count and no query is issued. The one case where the skip
-		// actually fires, and therefore the one that would catch it firing
-		// wrongly.
-		{name: "the skip fires", query: domain.SearchQuery{Text: "papaya"}},
-
-		// Past page 1: nothing in hand can say how much sits behind the caller.
-		{name: "offset past zero", query: domain.SearchQuery{Text: "kharif", Limit: 4, Offset: 4}},
-
-		// Both text modes return exactly the cap, so the fused list is a
-		// truncation of the corpus rather than the answer.
-		//
-		// The capped guard sits BEHIND the full-page guard here and cannot be
-		// reached alone: config's validate keeps MaxPageSize <= the cap, so a
-		// capped mode always fills the page and the page-length guard fires
-		// first. It is kept because it is the guard that stays right if that
-		// ratio is ever relaxed — and what this case pins is the outcome, which
-		// is wrong if BOTH are dropped.
-		{name: "a capped mode", query: domain.SearchQuery{Text: "kharif", Limit: 4}},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			result := search(t, repository, testCase.query)
-			if want := oracle(t, pool, nil, testCase.query); result.Total != want {
-				t.Errorf("Total is %d; the count query says %d", result.Total, want)
-			}
-		})
-	}
-}
-
-// The degraded guard, given a corpus where it changes the answer.
+// A mode that ERRORS is degraded, and the page is what the other modes found.
 //
 // The vectors are 768 wide because the column is, and the repository embeds at
-// 384: the semantic retriever's `<=>` is a width mismatch and errors, while the
-// counter — which only asks whether a row HAS an embedding — does not. So the
-// pool the count describes holds three rows the fused list cannot, which is the
-// under-report the guard exists to prevent. Every other degradation shape has
-// the same shape as this one and a less visible arithmetic.
-func TestADegradedModeForcesTheCountAndTheCountIsWider(t *testing.T) {
+// 384, so the semantic retriever's `<=>` is a width mismatch and fails at query
+// time — a real failure inside a mode rather than a mode this backend never
+// declared. The two are worth separating: an undeclared mode is refused by
+// negotiate before anything runs, while this one dies mid-fan-out, and only
+// this shape proves the fan-out survives it.
+//
+// The page must therefore be exactly the text modes' answer: the three embedded
+// rows are NOT in it, and a fusion that let a failed mode contribute an empty
+// list rather than no list would be indistinguishable here if the assertion
+// were on the count instead of on the ids.
+func TestAModeThatFailsIsDegradedAndThePageIsWhatTheOthersFound(t *testing.T) {
 	embedded := kharifLots(3)
-	repository, pool := publish(t, embeddings.NewHashing(384), readFixture{
+	repository, _ := publish(t, embeddings.NewHashing(384), readFixture{
 		catalog:   "cat-degraded-count",
 		resources: append(embedded, searchable("r-papaya", "singular papaya", "", "https://beckn.org/Agri", "SeedLot")),
 		derive:    deriveVectors("r-00", "r-01", "r-02"),
@@ -463,24 +405,14 @@ func TestADegradedModeForcesTheCountAndTheCountIsWider(t *testing.T) {
 	if got := matchedIDs(result); !slices.Equal(got, []string{"r-papaya"}) {
 		t.Fatalf("the page holds %v, want the one row the text modes matched", got)
 	}
-
-	if want := oracle(t, pool, embeddings.NewHashing(384), query); result.Total != want {
-		t.Errorf("Total is %d; the count query says %d", result.Total, want)
-	}
-	if result.Total != 4 {
-		t.Errorf("Total is %d, want 4 — one text match plus the three rows the "+
-			"semantic pool holds; the skip would have said 1", result.Total)
-	}
 }
 
 // An embedder that is DOWN must degrade the mode, not fail the request.
 //
-// The counter embeds the same text with the same embedder as the retriever, so
-// a provider that is unreachable breaks both. The retriever's failure is
-// already reported in Degraded; the counter's must therefore narrow the count
-// to the modes that ran rather than take the whole response down with it — a
-// page was produced, and answering 502 because the total could not be widened
-// throws away work the caller can use.
+// A provider that is unreachable fails inside the semantic retriever, which is
+// reported in Degraded — and the page the other modes produced is still a page.
+// Answering 502 here would throw away work the caller can use, to avoid
+// returning results the caller has already been told are partial.
 func TestAnUnreachableEmbedderDegradesTheModeRatherThanFailingTheSearch(t *testing.T) {
 	repository, _ := publish(t, unreachable{}, readFixture{
 		catalog:   "cat-unreachable",
@@ -496,8 +428,8 @@ func TestAnUnreachableEmbedderDegradesTheModeRatherThanFailingTheSearch(t *testi
 	if !slices.Contains(result.Degraded, string(domain.CapabilitySemantic)) {
 		t.Errorf("Degraded is %v, want it to name semantic", result.Degraded)
 	}
-	if result.Total != 1 {
-		t.Errorf("Total is %d, want the 1 the modes that ran found", result.Total)
+	if got := matchedIDs(result); !slices.Equal(got, []string{"r-1"}) {
+		t.Errorf("the page holds %v, want the one row the modes that ran found", got)
 	}
 }
 
@@ -830,4 +762,294 @@ func mustInstant(t *testing.T, literal string) time.Time {
 		t.Fatalf("fixture carries an unparseable time %q: %v", literal, err)
 	}
 	return instant
+}
+
+// ---------------------------------------------------------------------------
+// the attribute filter
+// ---------------------------------------------------------------------------
+
+// filterModes is what an intent that named a filter and no text asks for.
+// `jsonpath` is unranked, so it produces no list of its own — it turns the
+// candidate retrieval into the whole query.
+var filterModes = []domain.Capability{domain.CapabilityJSONPath}
+
+// filterFor is the query one expression answers, alone.
+func filterFor(expression string) domain.SearchQuery {
+	return domain.SearchQuery{
+		Filters: []domain.AttributeFilter{{Expression: expression}},
+		Limit:   searchConfig().MaxPageSize,
+	}
+}
+
+// filtered runs a filter-only search and returns the ids it matched, sorted.
+//
+// Sorted because a filter-only intent supplied no relevance: `filterOnly` hands
+// the candidate order through untouched, and asserting against it would pin the
+// retriever's ORDER BY rather than the predicate these cases are about.
+func filtered(t *testing.T, repository *postgres.SearchRepository, expression string) []string {
+	t.Helper()
+
+	result, err := repository.Search(context.Background(), filterFor(expression), filterModes)
+	if err != nil {
+		t.Fatalf("search %s: %v", expression, err)
+	}
+	ids := matchedIDs(result)
+	slices.Sort(ids)
+	return ids
+}
+
+// filterCorpus is ONE catalog whose two resources differ at every level the
+// composite carries: their own attributes, and the offers that name them.
+//
+// One catalog rather than two, deliberately. Across two catalogs every
+// predicate below passes by reaching the right ROW, which is the case that
+// works whatever the composite holds. Siblings inside one catalog are the case
+// A18 was measured against — a filter_doc carrying the catalog's every resource
+// answers a resource predicate for the neighbour's value.
+func filterCorpus(t *testing.T) *postgres.SearchRepository {
+	t.Helper()
+
+	repository, _ := publish(t, nil, readFixture{
+		catalog:  "c1",
+		document: json.RawMessage(`{"id":"c1","isActive":true,"descriptor":{"code":"HUL-BLR"}}`),
+		resources: []domain.ResourcePatch{
+			graded("r-hul", "A"),
+			graded("r-other", "B"),
+		},
+		offers: []domain.OfferPatch{
+			{
+				ID:          "o-retail",
+				ResourceIDs: []string{"r-hul"},
+				Document:    json.RawMessage(`{"id":"o-retail","channel":"retail"}`),
+			},
+			{
+				ID:          "o-wholesale",
+				ResourceIDs: []string{"r-other"},
+				Document:    json.RawMessage(`{"id":"o-wholesale","channel":"wholesale"}`),
+			},
+		},
+	})
+	return repository
+}
+
+// graded is a searchable resource carrying one distinguishing attribute.
+func graded(id, grade string) domain.ResourcePatch {
+	document, err := json.Marshal(map[string]any{
+		"id": id,
+		"resourceAttributes": map[string]string{
+			"name": id, "text": "kharif lot",
+			"@context": "https://beckn.org/Agri", "@type": "SeedLot",
+			"grade": grade,
+		},
+	})
+	if err != nil {
+		panic("fixture attributes will not marshal: " + err.Error())
+	}
+	return domain.ResourcePatch{ID: id, Document: document}
+}
+
+// A cross-level predicate answers for the resource's OWN catalog and its OWN
+// offers, and never for a sibling's.
+//
+// This is the shape three separate `document` columns could not answer at all:
+// `@.isActive` is a catalog member and `@.offers[*].channel` an offer member,
+// and PostgreSQL evaluates a jsonpath against ONE jsonb value. Both resources
+// share the catalog, so the isActive half passes for both; the offer half
+// separates them only because each row's composite carries the offers naming
+// IT.
+func TestACrossLevelPredicateAnswersForThisResourceAndNotItsSibling(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository,
+		`$.catalogs[*] ? (@.isActive == true && exists(@.offers[*] ? (@.channel == "retail")))`)
+
+	if !slices.Equal(got, []string{"r-hul"}) {
+		t.Errorf("the cross-level filter returned %v, want [r-hul] — r-other shares the "+
+			"catalog and its offer is wholesale, so a composite carrying the catalog's "+
+			"every offer answers this predicate for both rows", got)
+	}
+}
+
+// A resource predicate answers on THIS resource, not on a neighbour's value.
+//
+// The single-element `resources` array is what makes `@.resources[*]` mean
+// "this resource" by construction. With every sibling in the array this returns
+// both rows, because `@?` asks only whether the expression yielded an item and
+// the neighbour's grade yields one.
+func TestAResourcePredicateDoesNotMatchOnASiblingsAttributes(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository,
+		`$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`)
+
+	if !slices.Equal(got, []string{"r-hul"}) {
+		t.Errorf("the resource filter returned %v, want [r-hul] alone — r-other is grade B "+
+			"and reaches this page only if its own row's composite carries r-hul", got)
+	}
+}
+
+// A catalog predicate needs no join and no second query.
+//
+// It was the case A17's prefix routing sent to a separate `catalogs.document`;
+// since A18 the catalog's members are copied onto every resource row, so it
+// rides the same scan as everything else and returns the catalog's resources
+// entire.
+func TestACatalogPredicateRunsOnTheSameScanAndReturnsItsResources(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository, `$.catalogs[*] ? (@.descriptor.code == "HUL-BLR")`)
+
+	if !slices.Equal(got, []string{"r-hul", "r-other"}) {
+		t.Errorf("the catalog filter returned %v, want both resources of the matching "+
+			"catalog — the predicate names nothing below the catalog, so nothing "+
+			"below it may be excluded", got)
+	}
+	if empty := filtered(t, repository, `$.catalogs[*] ? (@.descriptor.code == "NOBODY")`); len(empty) != 0 {
+		t.Errorf("a catalog code no catalog carries matched %v, want nothing", empty)
+	}
+}
+
+// An expression PostgreSQL's own parser refuses is an error, never a page.
+//
+// It reaches the cast as a PARAMETER, so the refusal is the cast's and the
+// caller's bytes never leave a bind slot. The gate in front of this moves three
+// SILENT failures ahead of it; it does not try to replace it — PostgreSQL stays
+// the last word on syntax.
+func TestAMalformedExpressionIsAnErrorFromTheCastAndNotAPage(t *testing.T) {
+	repository := filterCorpus(t)
+
+	// Passes the gate — rooted at $.catalogs, filter form, one root, an `==`
+	// for the indexability guard — and is still not jsonpath, because the
+	// comparison has nothing on its right.
+	_, err := repository.Search(context.Background(),
+		filterFor(`$.catalogs[*] ? (@.descriptor.code == )`), filterModes)
+	if err == nil {
+		t.Fatal("a malformed expression returned a page; want the cast's own refusal, " +
+			"because a filter that did not run and a filter that matched nothing " +
+			"are the same empty page at the caller")
+	}
+}
+
+// A quote in the expression is a value, not a way out of it.
+//
+// Asserting an empty page rather than an error is the point: the expression is
+// bound, so this is a filter that matches nothing rather than a statement that
+// ended early. There is no injection to report because there is nowhere for one
+// to happen.
+func TestAQuotedExpressionIsAValueAndNotAnEscape(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository,
+		`$.catalogs[*] ? (@.descriptor.code == "x'); DROP TABLE resources; --")`)
+	if len(got) != 0 {
+		t.Errorf("the filter matched %v, want nothing — no catalog carries that code", got)
+	}
+}
+
+// GIN extracts a key from the equality form and extracts nothing from the
+// range form.
+//
+// Not "one uses the index and the other does not" — measured, both plan a
+// bitmap scan over idx_resources_filter_doc, because a jsonb_path_ops search
+// that extracts no key degrades to reading the WHOLE index rather than to
+// refusing it. The difference is what the index hands up: the equality form
+// returns the matching rows, the range form returns every row and leaves the
+// recheck to discard them. That is the cost behind the parser's refusal of an
+// unnarrowed range filter, and pinning the plan's SHAPE instead would have
+// pinned a distinction PostgreSQL does not draw.
+func TestGinExtractsAKeyFromEqualityAndNothingFromARange(t *testing.T) {
+	const corpus = 20
+
+	resources := make([]domain.ResourcePatch, 0, corpus)
+	resources = append(resources, graded("r-00", "A"))
+	for index := 1; index < corpus; index++ {
+		resources = append(resources, graded(fmt.Sprintf("r-%02d", index), "B"))
+	}
+	_, pool := publish(t, nil, readFixture{
+		catalog:   "c1",
+		document:  json.RawMessage(`{"id":"c1","isActive":true}`),
+		resources: resources,
+	})
+
+	// The planner picks a sequential scan on a table this small whatever the
+	// index offers, so the choice is forced rather than persuaded: this asks
+	// what the index CAN do, not what the planner prefers at twenty rows.
+	if _, err := pool.Exec(context.Background(), "SET enable_seqscan = off"); err != nil {
+		t.Fatalf("disable the sequential scan: %v", err)
+	}
+
+	equality := indexRows(t, pool, `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`)
+	if equality != 1 {
+		t.Errorf("the equality form read %d rows out of the index, want the 1 that matches — "+
+			"an extractable clause that stopped being extracted is every attribute "+
+			"filter reading every gated row", equality)
+	}
+
+	// At LEAST the corpus, not exactly it: a bitmap index scan counts the hits
+	// it hands up before the bitmap deduplicates them, and a row whose
+	// composite carries several path-value pairs is hit once per pair. The
+	// claim being pinned is that the index narrowed nothing — every row came
+	// back, and none of them matched.
+	inequality := indexRows(t, pool, `$.catalogs[*].resources[*] ? (@.resourceAttributes.rating >= 4)`)
+	if inequality < corpus {
+		t.Errorf("the range form read %d hits out of the index for a corpus of %d — if a "+
+			"range has become extractable, the refusal of an unnarrowed range filter "+
+			"is guarding a cost that moved and should move with it", inequality, corpus)
+	}
+}
+
+// indexRows is how many rows the filter index actually handed up for one
+// expression.
+//
+// EXPLAIN ANALYZE rather than a cost estimate, because an estimate is the
+// planner's opinion and this case is about what the index did. The expression
+// is a bound parameter here for the same reason it is one in the query this
+// stands for — an EXPLAIN that interpolated would prove the plan of a statement
+// the service never runs.
+func indexRows(t *testing.T, pool *pgxpool.Pool, expression string) int {
+	t.Helper()
+
+	var plan []byte
+	err := pool.QueryRow(context.Background(),
+		`EXPLAIN (ANALYZE, FORMAT JSON) SELECT id FROM resources WHERE filter_doc @? $1::text::jsonpath`,
+		expression).Scan(&plan)
+	if err != nil {
+		t.Fatalf("explain %s: %v", expression, err)
+	}
+
+	var explained []struct {
+		Plan map[string]any `json:"Plan"`
+	}
+	if err := json.Unmarshal(plan, &explained); err != nil {
+		t.Fatalf("read the plan for %s: %v", expression, err)
+	}
+
+	rows, found := indexScanRows(explained[0].Plan)
+	if !found {
+		t.Fatalf("the plan for %s never reaches %s:\n%s",
+			expression, "idx_resources_filter_doc", plan)
+	}
+	return rows
+}
+
+// indexScanRows finds the filter index's scan node and returns its actual rows.
+func indexScanRows(node map[string]any) (int, bool) {
+	if name, isScan := node["Index Name"].(string); isScan && name == "idx_resources_filter_doc" {
+		rows, counted := node["Actual Rows"].(float64)
+		return int(rows), counted
+	}
+	children, nested := node["Plans"].([]any)
+	if !nested {
+		return 0, false
+	}
+	for _, child := range children {
+		nested, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		if rows, found := indexScanRows(nested); found {
+			return rows, found
+		}
+	}
+	return 0, false
 }

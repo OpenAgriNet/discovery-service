@@ -101,18 +101,23 @@ type SchemaFilter struct {
 	Type    string
 }
 
-// AttributeFilter is a structured predicate over a JSONB column (Task 22).
+// AttributeFilter is a structured predicate over the composite the store keeps
+// for each resource (Task 22).
 //
-// Root names the column the expression is rebased onto: `attributes` on a
-// resource, `offer` on an offer. Expression is PostgreSQL SQL/JSON path (C10),
-// ALREADY validated and ALREADY rebased — the store is handed an expression it
-// may cast and run, never one it must interpret.
+// Expression is PostgreSQL SQL/JSON path (C10), ALREADY validated — the store
+// is handed an expression it may cast and run, never one it must interpret.
+//
+// There is no Root, and its absence is A18. Root named the column an expression
+// was rebased onto, which per-column routing needed and which per-column
+// routing cannot survive: `catalog.x == 1 || offer.y == 2` is a ROW-level
+// disjunction with no decomposition into per-table results. One composite
+// column answers it, one root reaches that column, and a field that can hold
+// only one value is a field two code paths will eventually disagree about.
 //
 // A store that cannot run it must narrow NOTHING and say so in Degraded,
 // because a wrongly narrowed page and a correctly narrowed one are the same page
 // at the caller.
 type AttributeFilter struct {
-	Root       string
 	Expression string
 }
 
@@ -146,9 +151,18 @@ type SearchQuery struct {
 // OnDiscoverAction is additionalProperties:false with exactly `catalogs`, so a
 // `degraded` key would be a response that fails validation at the first
 // consumer strict enough to check (C11).
+// There is NO `Total` (A19). OnDiscoverAction is additionalProperties:false
+// with `catalogs` as its only property, so a count has nowhere on the wire to
+// go — and it was computed on every request anyway. Measured on PG16 over 100k
+// rows: retrieval with its scope gate, text predicate and spatial join answers
+// in 1.5 ms under LIMIT 200, while the matching counter costs 150.6 ms, because
+// it cannot take a LIMIT without making the number wrong in the one state a
+// caller cannot detect. 100x the query it accompanied, for a value the service
+// discarded. Removed rather than deferred: a deferral reads as "we will use
+// this later", and nothing in Phase 1 can. Should a header ever carry a count,
+// it returns a CAPPED one.
 type SearchResult struct {
 	Catalogs []Catalog
-	Total    int
 	Degraded []string
 }
 

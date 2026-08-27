@@ -84,10 +84,13 @@ func readsResources(query namedQuery) bool {
 }
 
 // retrieves reports whether this is one of the queries the page is decided by —
-// the three retrievers and the counter. They are the queries that must ALSO
-// carry the spatial and schema predicates, because a candidate the retriever
+// the three retrievers. They are the queries that must ALSO carry the spatial,
+// schema and attribute-filter predicates, because a candidate the retriever
 // admits is a candidate the page can contain, and the hydrator is keyed by
 // primary key and narrows nothing.
+//
+// There is no counter to include (A19), which is why nothing here special-cases
+// a `Count` prefix any more.
 func retrieves(query namedQuery) bool {
 	return strings.HasSuffix(query.name, "Candidates")
 }
@@ -109,9 +112,9 @@ func TestEveryDiscoverQueryOverResourcesCarriesTheScopeGate(t *testing.T) {
 
 	// Without this the test passes on a file with no queries in it at all, and
 	// would keep passing if `FROM resources r` were re-aliased to dodge it.
-	if gated < 5 {
-		t.Fatalf("only %d discover queries read `FROM resources r`; the three retrievers, "+
-			"the counter and the hydrator all must", gated)
+	if gated < 4 {
+		t.Fatalf("only %d discover queries read `FROM resources r`; the three retrievers "+
+			"and the hydrator all must", gated)
 	}
 }
 
@@ -141,7 +144,7 @@ func TestEveryRetrievalQueryCarriesTheSpatialAndSchemaPredicates(t *testing.T) {
 
 	retrievers := 0
 	for _, query := range namedQueries(t, discoverQueries) {
-		if !retrieves(query) && !strings.HasPrefix(query.name, "Count") {
+		if !retrieves(query) {
 			continue
 		}
 		retrievers++
@@ -153,38 +156,76 @@ func TestEveryRetrievalQueryCarriesTheSpatialAndSchemaPredicates(t *testing.T) {
 		}
 	}
 
-	// Three retrievers and one counter. A mode dropped from the file is a mode
-	// silently missing from every fused page.
-	if retrievers != 4 {
-		t.Fatalf("found %d candidate-deciding queries, want 4 — lexical, fuzzy, "+
-			"semantic and the counter", retrievers)
+	// A mode dropped from the file is a mode silently missing from every fused
+	// page.
+	if retrievers != 3 {
+		t.Fatalf("found %d candidate-deciding queries, want 3 — lexical, fuzzy "+
+			"and semantic", retrievers)
 	}
 }
 
-// The counter's text clause is the OR of every mode's, and that is what makes
-// Total the size of the set the fusion draws from. A counter carrying one
-// mode's clause returns a number no page can be paginated out of: fewer results
-// than page 1 already showed, or more than exist.
+// The attribute filter is pinned as SOURCE for a reason no result can supply.
 //
-// Asserted as "names every mode's parameter" rather than "contains every mode's
-// operator", because semantic's operator is a DISTANCE and a distance is not a
-// membership test. The pool the HNSW retriever draws its top-N from is every
-// embedded row, so that is what the counter counts.
-func TestTheCounterCarriesEveryModesTextClause(t *testing.T) {
+// A retriever that drops the `@?` clause returns MORE rows, not fewer, and the
+// fusion then hands them to a page that looks perfectly ordinary. A functional
+// test only catches that if its corpus happens to hold a row the filter should
+// have excluded AND that row happens to reach the page — so the day the clause
+// goes missing from one of three near-identical queries is the day nothing
+// fails. Hence: present in every query that decides candidates, spelled the one
+// way that is correct.
+//
+// The spelling matters as much as the presence:
+//
+//	filter_doc   — not `document`. `document` is one level of one object; the
+//	               composite is the only value a cross-level predicate can be
+//	               evaluated against (A18), and `document @? …` would silently
+//	               answer a narrower question.
+//	@?           — never `@@`. `@@` takes a PREDICATE expression, and pairing
+//	               it with the filter form this service accepts matches ZERO
+//	               rows, while `@?` with a predicate expression matches EVERY
+//	               row. Admitting both operators would make the trap
+//	               jsonpath.Accept exists to close indistinguishable from an
+//	               intentional query.
+//	narg + ::jsonpath — a BOUND parameter cast by PostgreSQL's own parser. The
+//	               nullable form is what makes "no filter" mean "no predicate"
+//	               rather than an expression that matches nothing.
+func TestEveryRetrievalQueryCarriesTheAttributeFilter(t *testing.T) {
+	filtered := 0
 	for _, query := range namedQueries(t, discoverQueries) {
-		if !strings.HasPrefix(query.name, "Count") {
+		if !retrieves(query) {
 			continue
 		}
+		filtered++
+
 		for _, clause := range []string{
-			"r.search_tsv @@ discover_tsquery(",
-			"r.name %",
-			"sqlc.narg('query_vector')::vector IS NOT NULL",
+			"sqlc.narg('attribute_filter')::text IS NULL",
+			"r.filter_doc @? sqlc.narg('attribute_filter')::text::jsonpath",
 		} {
 			if !strings.Contains(query.body, clause) {
-				t.Errorf("%s does not carry %q — Total would not count the union", query.name, clause)
+				t.Errorf("%s decides candidates but does not carry %q", query.name, clause)
 			}
 		}
-		return
 	}
-	t.Fatal("discover.sql holds no counter")
+	if filtered != 3 {
+		t.Fatalf("found %d candidate-deciding queries, want 3", filtered)
+	}
+}
+
+// `@@` must not appear anywhere in the file.
+//
+// Spelled as an absence rather than folded into the test above because the two
+// fail for different reasons: the clause going MISSING is a filter that stops
+// filtering, and `@@` APPEARING is a filter that silently inverts — every row
+// or no row depending on which form the caller sent, with no error either way.
+// A file-wide check also catches it arriving somewhere the loop above skips.
+func TestTheJSONPathMatchOperatorIsNeverUsed(t *testing.T) {
+	for _, query := range namedQueries(t, discoverQueries) {
+		// `search_tsv @@ discover_tsquery(...)` is full-text's own operator
+		// and is unrelated; it is the JSONB spelling that is forbidden.
+		if strings.Contains(query.body, "filter_doc @@") {
+			t.Errorf("%s uses `@@` on filter_doc: it takes a predicate expression, "+
+				"and this service accepts only filter form, which `@@` matches zero "+
+				"rows against", query.name)
+		}
+	}
 }

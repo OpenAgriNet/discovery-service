@@ -51,14 +51,18 @@ func TestTheIndexInventoryIsExactlyWhatTheMigrationsBuild(t *testing.T) {
 
 	want := map[string][]string{
 		// The primary key's own btree, which PostgreSQL builds whether or not
-		// this plan wanted it, and the document index Task 22's catalog-level
-		// filter resolves through. Catalogs are otherwise reached by id, or by
-		// a join from a resource that was already found.
-		"catalogs": {"catalogs_pkey", "idx_catalogs_document"},
+		// this plan wanted it, and nothing else. Catalogs are reached by id or
+		// by a join from a resource that was already found — and since A18 a
+		// catalog-level filter is answered from the resource's own composite,
+		// so there is no read that enters through catalogs.document.
+		"catalogs": {"catalogs_pkey"},
 
 		"resources": {
-			"idx_resources_document",
 			"idx_resources_embedding",
+			// The ONE index the whole attribute filter resolves through (A18),
+			// at every level: catalog, resource and offer members all live in
+			// the composite it covers.
+			"idx_resources_filter_doc",
 			"idx_resources_name_trgm",
 			"idx_resources_schema",
 			"idx_resources_search_tsv",
@@ -75,7 +79,6 @@ func TestTheIndexInventoryIsExactlyWhatTheMigrationsBuild(t *testing.T) {
 		},
 
 		"offers": {
-			"idx_offers_document",
 			"idx_offers_resource_ids",
 			"offers_pkey",
 		},
@@ -115,6 +118,28 @@ func TestTheIndexesThisPlanDeliberatelyDoesNotBuildAreAbsent(t *testing.T) {
 			"offers", "idx_offers_catalog_id",
 			"offers is keyed (catalog_id, id) for the same reason; offers_pkey already " +
 				"leads with catalog_id",
+		},
+		{
+			"catalogs", "idx_catalogs_document",
+			"the attribute filter runs against ONE column (A18) and it is not this one. A " +
+				"jsonpath is evaluated against a single jsonb value, so a predicate " +
+				"crossing catalog and offer members could never have been split across " +
+				"per-table indexes; catalogs.document is copied into every resource's " +
+				"filter_doc instead, and this index would be paid for on every publish " +
+				"to serve a read that no longer arrives",
+		},
+		{
+			"resources", "idx_resources_document",
+			"superseded by idx_resources_filter_doc, which covers a SUPERSET of it: the " +
+				"composite carries this resource's document verbatim alongside its " +
+				"catalog's and its offers'. Two GIN indexes over the same bytes is the " +
+				"write cost of one of them for nothing",
+		},
+		{
+			"offers", "idx_offers_document",
+			"same as the other two: an offer's members reach the filter through the " +
+				"composite of every resource it names, which is where A18 pays its " +
+				"write amplification and collects the read",
 		},
 	}
 

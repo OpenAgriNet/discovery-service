@@ -191,6 +191,13 @@ func (r *CatalogRepository) persist(
 			return nil, err
 		}
 	}
+
+	// LAST, and deliberately: filter_doc projects the three documents this
+	// transaction has just settled (A18). RebuildFilterDocs names the three
+	// publishes an earlier derivation gets wrong.
+	if err := queries.RebuildFilterDocs(ctx, merged.ID); err != nil {
+		return nil, fmt.Errorf("rebuild the filter composites: %w", err)
+	}
 	return coverFaults, nil
 }
 
