@@ -1,11 +1,17 @@
 # Use case execution
 
-**All five v1 use cases, each traced end to end.** For every one: the records that must be
-in the registry, the API calls the adopter makes, and the payload at each hop.
+**The four v1 categories across five providers, each traced end to end.** For every one: the
+records that must be in the registry, the API calls the adopter makes, and the payload at each
+hop.
 
 The schema these records satisfy is [registry.md §3](registry.md#3-the-schemas); the
 records themselves, in write form, are [examples.md](examples.md). This page is
 self-contained — it does not depend on anything under `archive/`.
+
+> **The `on_select` payloads below are what the mappings emit today, not what the OAN domain
+> packs accept.** Weather conforms. Mandi and both Advisory cases do not — three violations
+> and six respectively, each one listed with its fix in [dpg-fit.md](dpg-fit.md). They are
+> shown here unaltered so the gap is visible against the real upstream response.
 
 | | Use case | Capability | Provider | Shape of the call |
 |---|---|---|---|---|
@@ -58,9 +64,37 @@ indistinguishable from an honest empty result.
 | quoting | `['@type']`, `'literal'` | `."@type"`, `"literal"` — double quotes |
 | membership | `anyof [a, b]` | no such operator — expand to `a \|\| b` |
 
-Root at `$.catalogs`. A filter starting `$[?(...)]` addresses the wrong node.
+**Select the node that owns the attribute, which is the resource and not the catalog.** The
+expression runs against `resources.filter_doc`, a composite rooted at `$.catalogs` and
+holding exactly one resource beside its catalog and its offers, so `resourceAttributes` is
+reachable only at `$.catalogs[*].resources[*]`. Every filter below therefore reads
+`$.catalogs[*].resources[*] ? (…)`.
 
-All five filters below were run against a live PostgreSQL and are GIN-indexable.
+Getting that wrong costs a whole page and reports nothing. `$.catalogs[*] ? (@.resourceAttributes… )`
+has the right root and a real predicate, so `jsonpath.Accept` passes it and PostgreSQL
+evaluates it without error — against a node that has no `resourceAttributes`. `@?` yields no
+item, the row is excluded, and the caller gets `200` with an empty list. A filter starting
+`$[?(...)]` is refused outright, which is the kinder failure.
+
+Each expression below was checked twice: through `jsonpath.Accept`, and with `@?` against a
+representative `filter_doc` on the running PostgreSQL — matching where it should and, for the
+category filters, not matching the other category.
+
+**`spatial.targets` is a different grammar again, and roots at the same place.** It is not
+evaluated as a path at all — publish stores the path it found each geometry at, discover
+canonicalises the caller's `targets` and compares the two as bytes
+(`target_path = ANY($targets)`). So dot and bracket spellings are interchangeable, both
+normalise to `$['catalogs'][*][…]`, and a `targets` that omits `catalogs[*]` matches no
+stored path. That failure is silent too: the spatial constraint excludes every row, and the
+caller gets `200` and an empty list.
+
+| `targets` | canonicalises to | matches a stored `target_path` |
+|---|---|---|
+| `$['provider']['availableAt'][*]['geo']` | itself | **no** — the root is missing |
+| `$['catalogs'][*]['provider']['availableAt'][*]['geo']` | itself | yes |
+| `$.catalogs[*].provider.availableAt[*].geo` | the bracket form above | yes |
+
+Checked through `jsonpath.Canonicalise` against the `target_path` the publish walker writes.
 
 ### What `Intent` cannot carry, and why `select` exists
 
@@ -136,11 +170,11 @@ Nashik.
     "textSearch": "weather forecast rain next five days",
     "filters": {
       "type": "jsonpath",
-      "expression": "$.catalogs[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:WeatherObservation\")"
+      "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:WeatherObservation\")"
     },
     "spatial": [{
       "op": "S_DWITHIN",
-      "targets": "$['provider']['availableAt'][*]['geo']",
+      "targets": "$['catalogs'][*]['provider']['availableAt'][*]['geo']",
       "geometry": { "type": "Point", "coordinates": [73.7898, 19.9975] },
       "distanceMeters": 250000, "quantifier": "ANY"
     }]
@@ -275,7 +309,7 @@ Provider answers in its native shape:
 
 ### ⑥ Map the response, send it back
 
-`responseMapping` runs over `{request, response, _local}` — `_local` stays in scope so the
+`responseMapping` runs over `{beckn, _local, response}` — `_local` stays in scope so the
 resolved point reaches the output. Five forecast days become five typed resources:
 
 ```json
@@ -349,7 +383,7 @@ changes, and nothing about `mausamgram` changes.
 ### ① – ② Same intent, same filter
 
 ```
-$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:WeatherObservation")
+$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:WeatherObservation")
 ```
 
 `on_discover` returns **both** weather providers. Choosing between them is the experience
@@ -508,7 +542,7 @@ Commodity: soybean. Date: today. Location: the device's point.
 ```json
 "filters": {
   "type": "jsonpath",
-  "expression": "$.catalogs[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:MandiPrice\")"
+  "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:MandiPrice\")"
 }
 ```
 
@@ -654,8 +688,8 @@ path, and it is the reason this is stated here rather than left to the mapping a
 ### ② `discover` — the filter that separates the two Advisory categories
 
 ```
-$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource"
-              && @.resourceAttributes.subjectCategories[*] == "Scheme")
+$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource"
+                            && @.resourceAttributes.subjectCategories[*] == "Scheme")
 ```
 
 `subjectCategories` is a **required** enum on the shared `AgricultureResource` field set —
@@ -804,8 +838,8 @@ body. The enricher extracts the query intent; the mapping shapes it for one upst
 ### ② `discover` — same type, different category
 
 ```
-$.catalogs[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource"
-              && @.resourceAttributes.subjectCategories[*] == "Crop")
+$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource"
+                            && @.resourceAttributes.subjectCategories[*] == "Crop")
 ```
 
 Narrow further with `agricultureSubjects[].subjectType` ∈ `{Pest, Disease}` when the

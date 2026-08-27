@@ -13,11 +13,10 @@
       "required": ["providerId", "name", "baseUrl", "status", "auth"],
       "properties": {
         "providerId": { "$ref": "#/definitions/ProviderId" },
-        "name":       { "type": "string", "minLength": 1 },
-        "baseUrl":    { "type": "string", "pattern": "^https?://[^/].*[^/]$" },
+        "name":       { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "baseUrl":    { "type": "string", "maxLength": 2000, "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$" },
         "status":     { "$ref": "#/definitions/Status" },
-        "auth":       { "$ref": "#/definitions/Auth" },
-        "signing":    { "$ref": "#/definitions/Signing" }
+        "auth":       { "$ref": "#/definitions/Auth" }
       },
       "allOf": [
         {
@@ -26,7 +25,7 @@
             "properties": { "auth": { "required": ["scheme"],
                                       "properties": { "scheme": { "not": { "const": "none" } } } } }
           },
-          "then": { "properties": { "baseUrl": { "pattern": "^https://[^/].*[^/]$" } } }
+          "then": { "properties": { "baseUrl": { "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$" } } }
         }
       ]
     },
@@ -36,72 +35,42 @@
       "additionalProperties": false,
       "required": ["scheme"],
       "properties": {
-        "scheme":       { "type": "string",
-                          "enum": ["none", "apiKeyQuery", "apiKeyHeader", "basic",
-                                   "bearer", "loginToken", "encryptedEnvelope"] },
-        "paramName":    { "type": "string", "minLength": 1 },
-        "secrets":      { "type": "object", "minProperties": 1,
-                          "additionalProperties": { "$ref": "#/definitions/Secret" } },
-        "extraHeaders": { "type": "object", "minProperties": 1,
-                          "additionalProperties": { "$ref": "#/definitions/Secret" } },
-        "envelope":     { "type": "object", "additionalProperties": false,
-                          "required": ["algorithm"],
-                          "properties": { "algorithm": { "type": "string",
-                                          "enum": ["aes-128-cbc", "aes-256-cbc", "aes-256-gcm"] } } },
-        "login":        { "$ref": "#/definitions/Login" }
+        "scheme":      { "type": "string",
+                         "enum": ["none", "apiKeyQuery", "apiKeyHeader", "basic"] },
+        "paramName":   { "$ref": "#/definitions/ParamName" },
+        "valuePrefix": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,30} $" },
+        "secrets":     { "type": "object", "minProperties": 1,
+                         "additionalProperties": { "$ref": "#/definitions/Secret" } }
       },
       "allOf": [
         { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "none" } } },
-          "then": { "not": { "required": ["secrets"] } } },
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "enum": ["apiKeyQuery", "apiKeyHeader", "bearer"] } } },
-          "then": { "required": ["paramName", "secrets"] } },
+          "then": { "allOf": [ { "not": { "required": ["secrets"] } },
+                               { "not": { "required": ["paramName"] } },
+                               { "not": { "required": ["valuePrefix"] } } ] } },
+        { "if":   { "required": ["scheme"], "properties": { "scheme": { "enum": ["apiKeyQuery", "apiKeyHeader"] } } },
+          "then": { "required": ["paramName", "secrets"],
+                    "properties": { "secrets": { "maxProperties": 1 } } } },
+        { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "apiKeyQuery" } } },
+          "then": { "not": { "required": ["valuePrefix"] } } },
         { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "basic" } } },
           "then": { "required": ["secrets"],
-                    "properties": { "secrets": { "required": ["username", "password"] } } } },
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "loginToken" } } },
-          "then": { "required": ["paramName", "secrets", "login"] } },
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "encryptedEnvelope" } } },
-          "then": { "required": ["secrets", "envelope"] } }
+                    "properties": { "secrets": { "required": ["username", "password"] } },
+                    "allOf": [ { "not": { "required": ["paramName"] } },
+                               { "not": { "required": ["valuePrefix"] } } ] } }
       ]
     },
 
-    "Login": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "tokenPath", "ttlSeconds"],
-      "properties": {
-        "path":        { "$ref": "#/definitions/Path" },
-        "tokenPath":   { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$" },
-        "ttlSeconds":  { "type": "integer", "minimum": 30, "maximum": 86400 },
-        "method":      { "type": "string", "enum": ["GET", "POST"], "default": "POST" },
-        "bodyMapping": { "type": "string", "minLength": 1 }
-      }
-    },
-
-    "Signing": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["keyId", "publicKey", "algorithm", "validFrom", "validUntil"],
-      "properties": {
-        "keyId":      { "type": "string",
-                        "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}\\|[a-z0-9-]{1,32}\\|[a-z0-9-]{1,32}$" },
-        "publicKey":  { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$" },
-        "algorithm":  { "type": "string", "enum": ["ed25519", "ed25519-raw"] },
-        "validFrom":  { "type": "string", "format": "date-time" },
-        "validUntil": { "type": "string", "format": "date-time" }
-      }
-    },
-
+    "ParamName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
     "ProviderId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
     "Status": { "type": "string", "enum": ["active", "inactive"] },
-    "Path": { "type": "string", "pattern": "^/[A-Za-z0-9._~%/-]*$" },
-    "Secret": { "type": "string", "pattern": "^(env://[A-Z][A-Z0-9_]*|inline:.+)$" }
+    "Secret": { "type": "string", "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998})$" }
   },
 
   "_osConfig": {
     "uniqueIndexFields": ["providerId"],
     "indexFields":       ["status"],
-    "privateFields":     ["$.auth.secrets", "$.auth.extraHeaders"],
+    "privateFields":     ["$.auth.secrets"],
+    "roles":             ["registryOperator"],
     "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
   }
 }

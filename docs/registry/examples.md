@@ -50,33 +50,15 @@ outcome type; they are told apart on the published resource by `subjectCategorie
 
 ### Providers
 
-**No v1 provider carries a `signing` block, and none carries an `inline:` secret.** All
-five upstreams are plain HTTP APIs that sign nothing, and every credential below is an
-`env://` pointer resolved in the adapter's own environment. Both are in the schema
-([§3.1](registry.md#31-provider)) for providers that need them.
+**No v1 provider carries an `inline:` secret.** All five upstreams are plain HTTP APIs, and
+every credential below is an `env://` pointer resolved in the adapter's own environment. The
+`inline:` form is in the schema ([§3.1](registry.md#31-provider)) for operators who cannot
+set that environment, and it costs three things: `/search` must be authenticated, the database
+holds live key material, and rotation becomes a registry write.
 
-A record that did need them — shown once, seeded nowhere:
-
-```json
-{ "Provider": {
-  "providerId": "example-signed",
-  "name": "A provider that signs, and whose key we cannot hold in the environment",
-  "baseUrl": "https://api.example.gov.in",
-  "status": "active",
-  "auth": { "scheme": "apiKeyHeader",
-            "paramName": "x-api-key",
-            "secrets": { "apiKey": "inline:a7f3c9d2e1b84f60a1c5" } },
-  "signing": { "keyId": "example-signed|key-1|ed25519",
-               "publicKey": "MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=",
-               "algorithm": "ed25519",
-               "validFrom": "2026-08-01T00:00:00Z",
-               "validUntil": "2027-08-01T00:00:00Z" }
-} }
-```
-
-The `inline:` prefix is not decoration: a bare pasted key fails the pattern and is rejected
-at write time, so storing a credential has to be deliberate — and because the prefix is
-literal, *which providers hold a real key* is one query over the table.
+The prefix is not decoration: a bare pasted key fails the pattern and is rejected at write
+time, so storing a credential has to be deliberate — and because the prefix is literal,
+*which providers hold a real key* is one query over the table.
 
 ```json
 { "Provider": {
@@ -224,7 +206,7 @@ literal, *which providers hold a real key* is one query over the table.
 
 - **Reads are authenticated.** Seeding needs the Operator token; the adapter needs a
   read-only one. `/search` is not open — see
-  [registry.md §4](registry.md#5-apis).
+  [registry.md §5](registry.md#5-apis).
 - Seed in order: `Capability`, then `Provider`, then `ProviderCapability`. The binding's
   two integrity rules require the other two to exist and be `active`.
 - `agmarknet`'s `select.request.jsonata` must emit `lat`, `long`, `commodity_id` and a
@@ -233,4 +215,9 @@ literal, *which providers hold a real key* is one query over the table.
 - Both `KnowledgeResource` bindings share `enricher.name: knowledgeQueryParams`. Their request
   mappings do not — one shapes a Hasura GraphQL `variables` block, the other a vector
   search body.
-
+- The **read-only role does not exist yet.** RC's `_osConfig.roles` gates the entity, not the
+  verb, so on the pinned build any token that can read these records can also write them.
+  Close that before seeding a credential of any kind.
+- Three of the five bindings emit responses the OAN domain packs reject — both
+  `KnowledgeResource` ones and `agmarknet`. Seeding is unaffected; the response mappings are
+  not. Each violation is in [dpg-fit.md](dpg-fit.md).

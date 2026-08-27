@@ -13,8 +13,8 @@
       "required": ["capabilityCode", "name", "schemaUrl", "status"],
       "properties": {
         "capabilityCode": { "$ref": "#/definitions/CapabilityCode" },
-        "name":           { "type": "string", "minLength": 1 },
-        "schemaUrl":      { "type": "string",
+        "name":           { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "schemaUrl":      { "type": "string", "maxLength": 2000,
                             "pattern": "^https://(?!.*/refs/heads/)(?!.*/(main|master|develop)/).+/attributes\\.yaml$" },
         "status":         { "$ref": "#/definitions/Status" },
         "baseTypes":      { "type": "array", "uniqueItems": true,
@@ -32,6 +32,7 @@
   "_osConfig": {
     "uniqueIndexFields": ["capabilityCode"],
     "indexFields":       ["status"],
+    "roles":             ["registryOperator"],
     "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
   }
 }
