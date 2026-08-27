@@ -41,6 +41,8 @@ func PublishCases() []Case {
 		aDanglingOfferReferenceIsANamedPartial(),
 		anOfferPrunedToEmptyIsNotWritten(),
 		deletingACatalogRemovesEverythingUnderIt(),
+		theProtocolVersionRoundTrips(),
+		aRepublishMovesTheProtocolVersion(),
 	}
 	return cases
 }
@@ -52,13 +54,18 @@ func PublishCases() []Case {
 // catalogPatch is the minimum a publish needs: an id, a network and the two
 // A9-resolved fields the mapper has already defaulted by the time a patch
 // reaches the repository.
+//
+// ProtocolVersion is set for the same reason: the mapper resolves it before a
+// patch ever reaches a backend, so a fixture that left it empty would be
+// testing a state the write path cannot produce.
 func catalogPatch(id string, resources ...domain.ResourcePatch) domain.CatalogPatch {
 	return domain.CatalogPatch{
-		ID:        id,
-		NetworkID: network,
-		Active:    true,
-		VisibleTo: []string{network},
-		Resources: resources,
+		ID:              id,
+		NetworkID:       network,
+		Active:          true,
+		VisibleTo:       []string{network},
+		ProtocolVersion: beckn.Version,
+		Resources:       resources,
 	}
 }
 
@@ -733,6 +740,52 @@ func deletingACatalogRemovesEverythingUnderIt() Case {
 			// the retry the thing that reports a problem.
 			if err := backends.Catalogs.DeleteCatalog(t.Context(), "c1"); err != nil {
 				t.Errorf("deleting c1 a second time: %v, want nil — delete is idempotent", err)
+			}
+		},
+	}
+}
+
+// The version the publisher declared is stored and read back. Asserted against
+// a version this build does NOT serve, because `beckn.Version` would pass
+// equally against a backend that ignored the field and let the column default
+// fill it in.
+func theProtocolVersionRoundTrips() Case {
+	patch := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
+	patch.ProtocolVersion = "2.1.0"
+
+	return Case{
+		Name:  "the declared protocol version is stored and read back",
+		Given: []Publish{{Patch: patch, Mode: domain.UpdateModeMerge, Derive: noDerive}},
+		Then: func(t *testing.T, backends Backends) {
+			if stored := mustGet(t, backends, "c1"); stored.ProtocolVersion != "2.1.0" {
+				t.Errorf("ProtocolVersion = %q, want %q — a version the column's own "+
+					"DEFAULT cannot produce, which is the point", stored.ProtocolVersion, "2.1.0")
+			}
+		},
+	}
+}
+
+// A republish under a different version moves the stored one. This is what the
+// column's DEFAULT cannot do on its own: DEFAULT fires on INSERT, so an upsert
+// that did not name the column would leave the first publish's version in place
+// for ever and report a version the latest request never sent.
+func aRepublishMovesTheProtocolVersion() Case {
+	first := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
+	first.ProtocolVersion = "2.0.0"
+
+	second := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
+	second.ProtocolVersion = "2.1.0"
+
+	return Case{
+		Name: "a republish under a new protocol version replaces the stored one",
+		Given: []Publish{
+			{Patch: first, Mode: domain.UpdateModeMerge, Derive: noDerive},
+			{Patch: second, Mode: domain.UpdateModeMerge, Derive: noDerive},
+		},
+		Then: func(t *testing.T, backends Backends) {
+			if stored := mustGet(t, backends, "c1"); stored.ProtocolVersion != "2.1.0" {
+				t.Errorf("ProtocolVersion = %q, want %q — the upsert must SET the column, "+
+					"because a DEFAULT only fires on INSERT", stored.ProtocolVersion, "2.1.0")
 			}
 		},
 	}

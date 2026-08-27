@@ -37,6 +37,12 @@ type Catalog struct {
 	VisibleTo []string
 	Active    bool
 
+	// ProtocolVersion is the Beckn version the publisher declared in
+	// `context.version`. It is stored rather than derived because it describes
+	// the DOCUMENT, not the build: `beckn.Version` says what this binary
+	// serves today, and the two agree only until they do not.
+	ProtocolVersion string
+
 	Resources  []Resource
 	Offers     []Offer
 	Geometries []Geometry
@@ -235,6 +241,11 @@ type CatalogPatch struct {
 
 	Active    bool
 	VisibleTo []string
+
+	// ProtocolVersion is resolved by the mapper and is never empty by the time
+	// it reaches a backend — the column is NOT NULL, and an empty string this
+	// far down cannot be told apart from a publisher who sent one.
+	ProtocolVersion string
 
 	Resources []ResourcePatch
 	Offers    []OfferPatch

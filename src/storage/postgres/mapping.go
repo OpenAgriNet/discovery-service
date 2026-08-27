@@ -165,14 +165,15 @@ func cells(indexes []uint64) []int64 {
 // through a statement that creates rows — spells no conversion at all.
 func storedCatalog(row gen.GetCatalogRowRow) domain.Catalog {
 	return domain.Catalog{
-		ID:            row.ID,
-		Document:      json.RawMessage(row.Document),
-		VisibleTo:     row.VisibleTo,
-		Active:        row.Active,
-		ValidFrom:     instant(row.ValidFrom),
-		ValidTo:       instant(row.ValidTo),
-		ValidTimeFrom: timeOfDay(row.ValidTimeFrom),
-		ValidTimeTo:   timeOfDay(row.ValidTimeTo),
+		ID:              row.ID,
+		Document:        json.RawMessage(row.Document),
+		VisibleTo:       row.VisibleTo,
+		Active:          row.Active,
+		ValidFrom:       instant(row.ValidFrom),
+		ValidTo:         instant(row.ValidTo),
+		ValidTimeFrom:   timeOfDay(row.ValidTimeFrom),
+		ValidTimeTo:     timeOfDay(row.ValidTimeTo),
+		ProtocolVersion: row.ProtocolVersion,
 	}
 }
 
@@ -275,14 +276,15 @@ func geometryType(raw []byte) string {
 
 func catalogRowParams(catalog domain.Catalog) gen.UpdateCatalogRowParams {
 	return gen.UpdateCatalogRowParams{
-		ID:            catalog.ID,
-		Document:      document(catalog.Document),
-		VisibleTo:     list(catalog.VisibleTo),
-		Active:        catalog.Active,
-		ValidFrom:     timestamp(catalog.ValidFrom),
-		ValidTo:       timestamp(catalog.ValidTo),
-		ValidTimeFrom: clock(catalog.ValidTimeFrom),
-		ValidTimeTo:   clock(catalog.ValidTimeTo),
+		ID:              catalog.ID,
+		Document:        document(catalog.Document),
+		VisibleTo:       list(catalog.VisibleTo),
+		Active:          catalog.Active,
+		ValidFrom:       timestamp(catalog.ValidFrom),
+		ValidTo:         timestamp(catalog.ValidTo),
+		ValidTimeFrom:   clock(catalog.ValidTimeFrom),
+		ValidTimeTo:     clock(catalog.ValidTimeTo),
+		ProtocolVersion: catalog.ProtocolVersion,
 	}
 }
 

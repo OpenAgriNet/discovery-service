@@ -88,6 +88,7 @@ func (s *Service) Publish(
 			directive:      applyDirectiveDefaults(directive, catalog.ID, network),
 			directiveIndex: directiveIndex,
 			network:        network,
+			version:        envelope.Version,
 		}))
 	}
 	return results
@@ -102,6 +103,10 @@ type request struct {
 	directive      beckn.PublishDirective
 	directiveIndex int
 	network        string
+
+	// version is context.version, carried per-request rather than read from
+	// the service because it describes the envelope, not the deployment.
+	version string
 }
 
 // publishOne runs the whole path for one catalog.
@@ -110,7 +115,7 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 		return rejected(req.catalog.ID, *refusal)
 	}
 
-	patch, fatal, partial := MapCatalog(req.catalog, req.directive, req.network, s.zone)
+	patch, fatal, partial := MapCatalog(req.catalog, req.directive, req.network, s.zone, req.version)
 	if len(fatal) > 0 {
 		return rejected(req.catalog.ID, catalogRelative(fatal, req.catalogIndex)...)
 	}

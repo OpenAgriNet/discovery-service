@@ -123,6 +123,14 @@ func MergeCatalog(stored Catalog, patch CatalogPatch) (Catalog, []string) {
 	merged.Active = patch.Active
 	merged.VisibleTo = patch.VisibleTo
 
+	// Unconditional for the same reason, and it is the reason the column has no
+	// merge semantics at all: a catalog reports the version of the request that
+	// last wrote it, not of the request that first created it. The mapper has
+	// already resolved an absent context.version to this build's own, so
+	// carrying `stored` forward here would make a republish claim a version its
+	// own envelope did not declare.
+	merged.ProtocolVersion = patch.ProtocolVersion
+
 	validity := window{stored.ValidFrom, stored.ValidTo, stored.ValidTimeFrom, stored.ValidTimeTo}.patched(patch.Validity)
 	merged.ValidFrom, merged.ValidTo = validity.From, validity.To
 	merged.ValidTimeFrom, merged.ValidTimeTo = validity.TimeFrom, validity.TimeTo

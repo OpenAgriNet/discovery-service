@@ -139,7 +139,7 @@ func TestEveryResourceRowIsWrittenForAReason(t *testing.T) {
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true, VisibleTo: []string{"n1"},
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version, VisibleTo: []string{"n1"},
 		Resources: []domain.ResourcePatch{
 			resourcePatch("r1", `{"grade":"A"}`),
 			resourcePatch("r2", `{"grade":"B"}`),
@@ -155,7 +155,7 @@ func TestEveryResourceRowIsWrittenForAReason(t *testing.T) {
 	// Names r1 only, and moves the gate — so the propagate has real work to do
 	// on r2 and would have apparent work to do on r1.
 	second := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true, VisibleTo: []string{"n1", "n2"},
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version, VisibleTo: []string{"n1", "n2"},
 		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A+"}`)},
 	}
 	if _, err := repository.UpsertCatalog(ctx, second, domain.UpdateModeMerge, noDerive); err != nil {
@@ -186,7 +186,7 @@ func TestARepublishThatChangesNothingWritesNothing(t *testing.T) {
 	ctx := context.Background()
 
 	patch := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true, VisibleTo: []string{"n1"},
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version, VisibleTo: []string{"n1"},
 		Document: json.RawMessage(`{"id":"c1","descriptor":{"code":"HUL-BLR"}}`),
 		Resources: []domain.ResourcePatch{
 			resourcePatch("r1", `{"grade":"A"}`),
@@ -269,7 +269,7 @@ func TestTheStatementCountDoesNotGrowWithTheCatalog(t *testing.T) {
 	ctx := context.Background()
 
 	publish := func(catalogID string, resources int) int {
-		patch := domain.CatalogPatch{ID: catalogID, NetworkID: "n1", Active: true}
+		patch := domain.CatalogPatch{ID: catalogID, NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version}
 		for index := range resources {
 			patch.Resources = append(patch.Resources,
 				resourcePatch(fmt.Sprintf("r%d", index), `{"grade":"A"}`))
@@ -306,7 +306,7 @@ func TestAMidTransactionFailureLeavesNoPartialCatalog(t *testing.T) {
 	// package's, which is what makes it a genuine mid-transaction failure
 	// rather than a fault this code raised on purpose.
 	patch := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{resourcePatch("", `{"grade":"A"}`)},
 	}
 	if _, err := repository.UpsertCatalog(ctx, patch, domain.UpdateModeMerge, noDerive); err == nil {
@@ -332,7 +332,7 @@ func TestOnlyTouchedResourcesAreRewritten(t *testing.T) {
 	repository := postgres.NewCatalogRepository(pool, resolution)
 	ctx := context.Background()
 
-	patch := domain.CatalogPatch{ID: "c1", NetworkID: "n1", Active: true}
+	patch := domain.CatalogPatch{ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version}
 	for index := range 40 {
 		patch.Resources = append(patch.Resources,
 			resourcePatch(fmt.Sprintf("r%02d", index), `{"grade":"A"}`))
@@ -374,7 +374,7 @@ func TestOnlyTouchedResourcesAreRewritten(t *testing.T) {
 	// writer left is the upsert. A republish that also moved the gate would
 	// rewrite all forty for a reason this test is not about.
 	republish := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{resourcePatch("r07", `{"grade":"A+"}`)},
 	}
 	if _, err := repository.UpsertCatalog(ctx, republish, domain.UpdateModeMerge, stampHash("second")); err != nil {
@@ -415,7 +415,7 @@ func TestAFullRepublishDeletesAnOfferWhoseResourcesAreGone(t *testing.T) {
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{
 			resourcePatch("r1", `{"grade":"A"}`),
 			resourcePatch("r2", `{"grade":"B"}`),
@@ -430,7 +430,7 @@ func TestAFullRepublishDeletesAnOfferWhoseResourcesAreGone(t *testing.T) {
 
 	// FULL, dropping r1. o1 named it and nothing else.
 	second := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{resourcePatch("r2", `{"grade":"B"}`)},
 		Offers: []domain.OfferPatch{
 			{ID: "o1", Document: json.RawMessage(`{"price":"10"}`), ResourceIDs: []string{"r1"}},
@@ -475,7 +475,7 @@ func TestTwoConcurrentRepublishesBothSurvive(t *testing.T) {
 	ctx := context.Background()
 
 	seed := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A"}`)},
 	}
 	if _, err := repository.UpsertCatalog(ctx, seed, domain.UpdateModeMerge, noDerive); err != nil {
@@ -493,7 +493,7 @@ func TestTwoConcurrentRepublishesBothSurvive(t *testing.T) {
 			defer done.Done()
 			start.Wait() // both goroutines enter the write at once, not in turn
 			_, errs[index] = repository.UpsertCatalog(ctx, domain.CatalogPatch{
-				ID: "c1", NetworkID: "n1", Active: true,
+				ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 				Resources: []domain.ResourcePatch{resourcePatch("r1", attributes)},
 			}, domain.UpdateModeMerge, noDerive)
 		}()
@@ -556,7 +556,7 @@ func TestASharedGeometrySurvivesARepublishNamingOneOwner(t *testing.T) {
 	ctx := context.Background()
 
 	patch := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{
 			resourcePatch("r1", `{"grade":"A"}`),
 			resourcePatch("r2", `{"grade":"B"}`),
@@ -569,7 +569,7 @@ func TestASharedGeometrySurvivesARepublishNamingOneOwner(t *testing.T) {
 	// Only r1 is named, so only r1 is touched — but the shape it carries still
 	// belongs to r2 as well.
 	republish := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A+"}`)},
 	}
 	if _, err := repository.UpsertCatalog(ctx, republish, domain.UpdateModeMerge, shareShape); err != nil {
@@ -685,9 +685,10 @@ func TestFilterDocCarriesThisResourceAloneWithItsCatalogAndItsOffers(t *testing.
 	repository := postgres.NewCatalogRepository(pool, resolution)
 
 	patch := domain.CatalogPatch{
-		ID:        "c1",
-		NetworkID: "n1",
-		Active:    true,
+		ID:              "c1",
+		NetworkID:       "n1",
+		Active:          true,
+		ProtocolVersion: beckn.Version,
 		Document: json.RawMessage(`{
 			"id": "c1",
 			"descriptor": {"code": "HUL-BLR", "name": "HUL Bangalore"},
@@ -775,7 +776,7 @@ func TestACatalogOnlyRepublishRefreshesEveryFilterDoc(t *testing.T) {
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Document:  json.RawMessage(`{"id":"c1","descriptor":{"code":"OLD"}}`),
 		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A"}`)},
 	}
@@ -784,7 +785,7 @@ func TestACatalogOnlyRepublishRefreshesEveryFilterDoc(t *testing.T) {
 	}
 
 	catalogOnly := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Document: json.RawMessage(`{"descriptor":{"code":"NEW"}}`),
 	}
 	if _, err := repository.UpsertCatalog(ctx, catalogOnly, domain.UpdateModeMerge, noDerive); err != nil {
@@ -815,7 +816,7 @@ func TestAnOfferOnlyRepublishRefreshesTheCompositesItNames(t *testing.T) {
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Document:  json.RawMessage(`{"id":"c1"}`),
 		Resources: []domain.ResourcePatch{resourcePatch("r1", `{"grade":"A"}`)},
 	}
@@ -824,7 +825,7 @@ func TestAnOfferOnlyRepublishRefreshesTheCompositesItNames(t *testing.T) {
 	}
 
 	offerOnly := domain.CatalogPatch{
-		ID: "c1", NetworkID: "n1", Active: true,
+		ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version,
 		Offers: []domain.OfferPatch{
 			{ID: "o1", ResourceIDs: []string{"r1"}, Document: json.RawMessage(`{"id":"o1","channel":"retail"}`)},
 		},

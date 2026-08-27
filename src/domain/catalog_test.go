@@ -156,6 +156,27 @@ func TestTheDefaultedFieldsApplyEvenWhenTheyResetStoredValues(t *testing.T) {
 	}
 }
 
+// The protocol version follows the same unconditional rule, and it is the
+// reason the column has no merge semantics of its own: a catalog reports the
+// version of the request that LAST wrote it, not of the one that created it.
+// Keeping the stored value would make a republish claim a version its own
+// envelope never declared, and the mapper has already resolved an absent
+// context.version by the time a patch gets here — so there is no "absent" left
+// for this function to honour.
+func TestARepublishMovesTheProtocolVersion(t *testing.T) {
+	stored := storedCatalog()
+	stored.ProtocolVersion = "2.0.0"
+
+	patch := defaultedPatch()
+	patch.ProtocolVersion = "2.1.0"
+
+	merged, _ := MergeCatalog(stored, patch)
+
+	if merged.ProtocolVersion != "2.1.0" {
+		t.Errorf("protocolVersion = %q, want the republishing envelope's 2.1.0", merged.ProtocolVersion)
+	}
+}
+
 func TestAnAbsentValidityKeepsAllFourColumns(t *testing.T) {
 	stored := storedCatalog()
 

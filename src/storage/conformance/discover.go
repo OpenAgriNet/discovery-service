@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 )
@@ -291,15 +292,17 @@ func anOmittedNetworkSearchesEveryNetwork() Case {
 		Given: []Publish{{
 			Patch: domain.CatalogPatch{
 				ID: "c-north", NetworkID: "north.example.com", Active: true,
-				VisibleTo: []string{"north.example.com"},
-				Resources: []domain.ResourcePatch{searchable("r-north", "north", "", "", "")},
+				ProtocolVersion: beckn.Version,
+				VisibleTo:       []string{"north.example.com"},
+				Resources:       []domain.ResourcePatch{searchable("r-north", "north", "", "", "")},
 			},
 			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
 		}, {
 			Patch: domain.CatalogPatch{
 				ID: "c-south", NetworkID: "south.example.com", Active: true,
-				VisibleTo: []string{"south.example.com"},
-				Resources: []domain.ResourcePatch{searchable("r-south", "south", "", "", "")},
+				ProtocolVersion: beckn.Version,
+				VisibleTo:       []string{"south.example.com"},
+				Resources:       []domain.ResourcePatch{searchable("r-south", "south", "", "", "")},
 			},
 			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
 		}},

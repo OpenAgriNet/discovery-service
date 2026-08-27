@@ -10,16 +10,17 @@ import (
 )
 
 type Catalog struct {
-	ID            string
-	Document      []byte
-	VisibleTo     []string
-	Active        bool
-	ValidFrom     pgtype.Timestamptz
-	ValidTo       pgtype.Timestamptz
-	ValidTimeFrom pgtype.Time
-	ValidTimeTo   pgtype.Time
-	PublishedAt   pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
+	ID              string
+	Document        []byte
+	VisibleTo       []string
+	Active          bool
+	ProtocolVersion string
+	ValidFrom       pgtype.Timestamptz
+	ValidTo         pgtype.Timestamptz
+	ValidTimeFrom   pgtype.Time
+	ValidTimeTo     pgtype.Time
+	PublishedAt     pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type Offer struct {

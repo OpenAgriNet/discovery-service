@@ -99,20 +99,22 @@ func (q *Queries) DeleteResourcesNotIn(ctx context.Context, arg DeleteResourcesN
 
 const getCatalogRow = `-- name: GetCatalogRow :one
 SELECT id, document, visible_to, active,
-       valid_from, valid_to, valid_time_from, valid_time_to
+       valid_from, valid_to, valid_time_from, valid_time_to,
+       protocol_version
   FROM catalogs
  WHERE id = $1
 `
 
 type GetCatalogRowRow struct {
-	ID            string
-	Document      []byte
-	VisibleTo     []string
-	Active        bool
-	ValidFrom     pgtype.Timestamptz
-	ValidTo       pgtype.Timestamptz
-	ValidTimeFrom pgtype.Time
-	ValidTimeTo   pgtype.Time
+	ID              string
+	Document        []byte
+	VisibleTo       []string
+	Active          bool
+	ValidFrom       pgtype.Timestamptz
+	ValidTo         pgtype.Timestamptz
+	ValidTimeFrom   pgtype.Time
+	ValidTimeTo     pgtype.Time
+	ProtocolVersion string
 }
 
 // GetCatalogRow reads the catalog row WITHOUT touching it.
@@ -132,6 +134,7 @@ func (q *Queries) GetCatalogRow(ctx context.Context, id string) (GetCatalogRowRo
 		&i.ValidTo,
 		&i.ValidTimeFrom,
 		&i.ValidTimeTo,
+		&i.ProtocolVersion,
 	)
 	return i, err
 }
@@ -305,18 +308,20 @@ const lockAndLoadCatalog = `-- name: LockAndLoadCatalog :one
 INSERT INTO catalogs (id) VALUES ($1)
 ON CONFLICT (id) DO UPDATE SET updated_at = now()
 RETURNING id, document, visible_to, active,
-          valid_from, valid_to, valid_time_from, valid_time_to
+          valid_from, valid_to, valid_time_from, valid_time_to,
+          protocol_version
 `
 
 type LockAndLoadCatalogRow struct {
-	ID            string
-	Document      []byte
-	VisibleTo     []string
-	Active        bool
-	ValidFrom     pgtype.Timestamptz
-	ValidTo       pgtype.Timestamptz
-	ValidTimeFrom pgtype.Time
-	ValidTimeTo   pgtype.Time
+	ID              string
+	Document        []byte
+	VisibleTo       []string
+	Active          bool
+	ValidFrom       pgtype.Timestamptz
+	ValidTo         pgtype.Timestamptz
+	ValidTimeFrom   pgtype.Time
+	ValidTimeTo     pgtype.Time
+	ProtocolVersion string
 }
 
 // The write path. Every statement `UpsertCatalog` issues, in the order it
@@ -337,6 +342,12 @@ type LockAndLoadCatalogRow struct {
 // everything the publisher did not resend. It also takes no lock on the
 // conflicting row, which is what serialises two concurrent republishes of one
 // catalog into a safe order.
+//
+// `protocol_version` is returned even though the merge always overwrites it,
+// because it keeps this row type field-for-field identical to GetCatalogRow's.
+// One mapping function serves both only while that holds, and the day it stops
+// holding is a compile error rather than a column silently read as its zero
+// value.
 func (q *Queries) LockAndLoadCatalog(ctx context.Context, id string) (LockAndLoadCatalogRow, error) {
 	row := q.db.QueryRow(ctx, lockAndLoadCatalog, id)
 	var i LockAndLoadCatalogRow
@@ -349,6 +360,7 @@ func (q *Queries) LockAndLoadCatalog(ctx context.Context, id string) (LockAndLoa
 		&i.ValidTo,
 		&i.ValidTimeFrom,
 		&i.ValidTimeTo,
+		&i.ProtocolVersion,
 	)
 	return i, err
 }
@@ -528,26 +540,28 @@ func (q *Queries) RebuildFilterDocs(ctx context.Context, catalogID string) error
 const updateCatalogRow = `-- name: UpdateCatalogRow :exec
 
 UPDATE catalogs
-   SET document        = $2,
-       visible_to      = $3,
-       active          = $4,
-       valid_from      = $5,
-       valid_to        = $6,
-       valid_time_from = $7,
-       valid_time_to   = $8,
-       updated_at      = now()
+   SET document         = $2,
+       visible_to       = $3,
+       active           = $4,
+       valid_from       = $5,
+       valid_to         = $6,
+       valid_time_from  = $7,
+       valid_time_to    = $8,
+       protocol_version = $9,
+       updated_at       = now()
  WHERE id = $1
 `
 
 type UpdateCatalogRowParams struct {
-	ID            string
-	Document      []byte
-	VisibleTo     []string
-	Active        bool
-	ValidFrom     pgtype.Timestamptz
-	ValidTo       pgtype.Timestamptz
-	ValidTimeFrom pgtype.Time
-	ValidTimeTo   pgtype.Time
+	ID              string
+	Document        []byte
+	VisibleTo       []string
+	Active          bool
+	ValidFrom       pgtype.Timestamptz
+	ValidTo         pgtype.Timestamptz
+	ValidTimeFrom   pgtype.Time
+	ValidTimeTo     pgtype.Time
+	ProtocolVersion string
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +574,11 @@ type UpdateCatalogRowParams struct {
 // an omitted `validity` is a reset, and under MERGE the merge already resolved
 // what to carry forward. A conditional here would be a second implementation of
 // A8, in SQL.
+//
+// `protocol_version` is set here for a related but distinct reason: its column
+// DEFAULT fires only on INSERT, and the INSERT is the lock-and-load above,
+// which names `id` alone. Leaving it out would pin every catalog to the version
+// of its FIRST publish for ever.
 func (q *Queries) UpdateCatalogRow(ctx context.Context, arg UpdateCatalogRowParams) error {
 	_, err := q.db.Exec(ctx, updateCatalogRow,
 		arg.ID,
@@ -570,6 +589,7 @@ func (q *Queries) UpdateCatalogRow(ctx context.Context, arg UpdateCatalogRowPara
 		arg.ValidTo,
 		arg.ValidTimeFrom,
 		arg.ValidTimeTo,
+		arg.ProtocolVersion,
 	)
 	return err
 }

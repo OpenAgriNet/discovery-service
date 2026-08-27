@@ -79,6 +79,21 @@ CREATE TABLE catalogs (
     -- same as narrowing.
     active       BOOLEAN     NOT NULL DEFAULT TRUE,
 
+    -- context.version: the Beckn version this catalog was published under.
+    --
+    -- Stored rather than derived from the build, because it describes the
+    -- DOCUMENT and not the binary. `beckn.Version` says what this service
+    -- serves today; the two agree only until a second version is served, and
+    -- on that day the question "which version was this written under" has no
+    -- other answer.
+    --
+    -- The DEFAULT is a fail-safe for a hand-written INSERT, NOT the mechanism:
+    -- a DEFAULT fires only on INSERT, so the upsert names this column
+    -- unconditionally and a republish under a new version moves it. The mapper
+    -- resolves an absent context.version before the row is written, because it
+    -- is the last layer that can tell absent from declared.
+    protocol_version TEXT   NOT NULL DEFAULT '2.0.0' CHECK (protocol_version <> ''),
+
     -- catalog.validity is a TimePeriod, and a TimePeriod carries TWO windows
     -- that the spec's anyOf lets appear separately or together:
     --   startDate/endDate  a one-off calendar range   ("live Jan -> Mar")

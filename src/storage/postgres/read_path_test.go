@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
@@ -160,13 +161,14 @@ func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture
 		}
 
 		faults, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
-			ID:        fixture.catalog,
-			NetworkID: visibleTo[0],
-			Document:  fixture.document,
-			Active:    true,
-			VisibleTo: visibleTo,
-			Resources: fixture.resources,
-			Offers:    fixture.offers,
+			ID:              fixture.catalog,
+			NetworkID:       visibleTo[0],
+			Document:        fixture.document,
+			Active:          true,
+			ProtocolVersion: beckn.Version,
+			VisibleTo:       visibleTo,
+			Resources:       fixture.resources,
+			Offers:          fixture.offers,
 		}, domain.UpdateModeFull, derive)
 		if err != nil {
 			t.Fatalf("publish %s: %v", fixture.catalog, err)
@@ -478,7 +480,7 @@ func TestARetrieverNeverReturnsMoreThanItsCap(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
 	writer := postgres.NewCatalogRepository(pool, resolution)
 	if _, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
-		ID: "cat-cap", NetworkID: "bap.example.com", Active: true,
+		ID: "cat-cap", NetworkID: "bap.example.com", Active: true, ProtocolVersion: beckn.Version,
 		VisibleTo: []string{"bap.example.com"}, Resources: resources,
 	}, domain.UpdateModeFull, deriveSearchable); err != nil {
 		t.Fatalf("publish: %v", err)

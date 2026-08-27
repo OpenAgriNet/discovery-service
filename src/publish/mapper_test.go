@@ -32,7 +32,7 @@ func mapOne(t *testing.T, body string) (domain.CatalogPatch, []domain.Fault, []d
 	if err := json.Unmarshal([]byte(body), &catalog); err != nil {
 		t.Fatalf("decoding the fixture: %v", err)
 	}
-	return publish.MapCatalog(catalog, beckn.PublishDirective{CatalogID: catalog.ID}, network, kolkata(t))
+	return publish.MapCatalog(catalog, beckn.PublishDirective{CatalogID: catalog.ID}, network, kolkata(t), beckn.Version)
 }
 
 // A9, the defaulted half. Both modes, because a default the mapper resolves is
@@ -352,7 +352,7 @@ func TestTheDirectiveSuppliesTheIdentityAndTheVisibility(t *testing.T) {
 	patch, fatal, _ := publish.MapCatalog(
 		beckn.Catalog{ID: "c1"},
 		beckn.PublishDirective{CatalogID: "c1", VisibleTo: []string{"a.net", "b.net"}},
-		network, time.UTC,
+		network, time.UTC, beckn.Version,
 	)
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %v, want none", fatal)
@@ -365,5 +365,46 @@ func TestTheDirectiveSuppliesTheIdentityAndTheVisibility(t *testing.T) {
 	}
 	if patch.NetworkID != network {
 		t.Errorf("NetworkID = %q, want %q", patch.NetworkID, network)
+	}
+}
+
+// The protocol version the publisher declared travels from `context.version`
+// onto the catalog, so a stored catalog says which version of the protocol it
+// was written under. Read from the envelope rather than from `beckn.Version`,
+// which is what THIS BUILD serves: the two agree today and the whole point of
+// storing it is the day they do not.
+func TestTheProtocolVersionIsCarriedFromTheEnvelope(t *testing.T) {
+	var catalog beckn.Catalog
+	if err := json.Unmarshal([]byte(`{"id":"c1"}`), &catalog); err != nil {
+		t.Fatalf("decoding the fixture: %v", err)
+	}
+
+	patch, fatal, _ := publish.MapCatalog(
+		catalog, beckn.PublishDirective{CatalogID: catalog.ID}, network, kolkata(t), "2.1.0")
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+	if patch.ProtocolVersion != "2.1.0" {
+		t.Errorf("ProtocolVersion = %q, want %q", patch.ProtocolVersion, "2.1.0")
+	}
+}
+
+// An envelope with no `version` is not a catalog with no version. The column is
+// NOT NULL and the mapper is the last place that can say what the default is,
+// because by the time the row is written an empty string is indistinguishable
+// from a publisher who sent one.
+func TestAnAbsentProtocolVersionFallsBackToTheBuildsOwn(t *testing.T) {
+	var catalog beckn.Catalog
+	if err := json.Unmarshal([]byte(`{"id":"c1"}`), &catalog); err != nil {
+		t.Fatalf("decoding the fixture: %v", err)
+	}
+
+	patch, fatal, _ := publish.MapCatalog(
+		catalog, beckn.PublishDirective{CatalogID: catalog.ID}, network, kolkata(t), "")
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+	if patch.ProtocolVersion != beckn.Version {
+		t.Errorf("ProtocolVersion = %q, want %q", patch.ProtocolVersion, beckn.Version)
 	}
 }

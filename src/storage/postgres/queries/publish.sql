@@ -20,11 +20,18 @@
 -- conflicting row, which is what serialises two concurrent republishes of one
 -- catalog into a safe order.
 --
+-- `protocol_version` is returned even though the merge always overwrites it,
+-- because it keeps this row type field-for-field identical to GetCatalogRow's.
+-- One mapping function serves both only while that holds, and the day it stops
+-- holding is a compile error rather than a column silently read as its zero
+-- value.
+--
 -- name: LockAndLoadCatalog :one
 INSERT INTO catalogs (id) VALUES ($1)
 ON CONFLICT (id) DO UPDATE SET updated_at = now()
 RETURNING id, document, visible_to, active,
-          valid_from, valid_to, valid_time_from, valid_time_to;
+          valid_from, valid_to, valid_time_from, valid_time_to,
+          protocol_version;
 
 -- ListStoredResources loads what the patch will merge against.
 --
@@ -74,16 +81,22 @@ SELECT catalog_id, resource_id, target_path, source_path, geojson
 -- what to carry forward. A conditional here would be a second implementation of
 -- A8, in SQL.
 --
+-- `protocol_version` is set here for a related but distinct reason: its column
+-- DEFAULT fires only on INSERT, and the INSERT is the lock-and-load above,
+-- which names `id` alone. Leaving it out would pin every catalog to the version
+-- of its FIRST publish for ever.
+--
 -- name: UpdateCatalogRow :exec
 UPDATE catalogs
-   SET document        = $2,
-       visible_to      = $3,
-       active          = $4,
-       valid_from      = $5,
-       valid_to        = $6,
-       valid_time_from = $7,
-       valid_time_to   = $8,
-       updated_at      = now()
+   SET document         = $2,
+       visible_to       = $3,
+       active           = $4,
+       valid_from       = $5,
+       valid_to         = $6,
+       valid_time_from  = $7,
+       valid_time_to    = $8,
+       protocol_version = $9,
+       updated_at       = now()
  WHERE id = $1;
 
 -- name: DeleteCatalog :exec
@@ -371,6 +384,7 @@ UPDATE resources r
 --
 -- name: GetCatalogRow :one
 SELECT id, document, visible_to, active,
-       valid_from, valid_to, valid_time_from, valid_time_to
+       valid_from, valid_to, valid_time_from, valid_time_to,
+       protocol_version
   FROM catalogs
  WHERE id = $1;

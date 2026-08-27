@@ -144,6 +144,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A19** | **`SearchResult.Total` and the count query are REMOVED, not deferred.** The Deferred table recorded that `OnDiscoverAction` is `additionalProperties: false` with `catalogs` as its only property, so a computed count has nowhere on the wire to go — and then computed it on every request anyway. Measured against the same 100k-resource corpus as A18: retrieval with its scope gate, text predicate, jsonpath filter and a selective spatial join answers in **1.5 ms** under `LIMIT 200`; the matching counter, which cannot take a `LIMIT` without making `Total` wrong in the one state a caller has no way to detect, costs **150.6 ms**. That is 100x the query it accompanies, paid every time, for a number `discover.Service.Discover` discards. `SearchRepository.Search` stops calling `total()`, `SearchResult.Total` goes along with the `storage/conformance` assertion over it, and `CountCandidates` leaves `discover.sql`. Should a header ever carry it — the way `X-Beckn-Degraded` carries the other thing the body cannot (C11) — it returns **capped**: `SELECT count(*) FROM (SELECT 1 FROM ... LIMIT 10001) t`, exact below the cap and "10000+" above, which is what makes it affordable at all | 11, 16, 19 |
 | **A20** | **The router is `net/http.ServeMux`, not chi v5.** D1 chose chi and the service shipped without it — chi is not in `go.mod` and never was, so for all of Phase 1 this document named a dependency the binary does not have. Kept as shipped rather than corrected toward the document: D1's four stated requirements — `net/http` types throughout, native `context.Context` propagation, `httptest`, `otelhttp` with no adapter — are all properties of `net/http` itself, which is why chi could only ever have satisfied them by being a thin layer over the thing that already did. What chi added on top was method and parameter routing, and `ServeMux` gained method patterns in Go 1.22; this module is on Go 1.25. The features that remain distinctive to chi — nested routers, URL parameters, middleware groups — are unused: four routes, all fixed paths, and a middleware chain composed by hand in `chain(a)` so its order reads as a list. One behaviour differs and is correct: `ServeMux` answers a matching path with a non-matching method as **405 with `Allow`**, where a wildcard mount would have said 404. That is not the C2 case — `/catalog/publish` is a PATH that must read as absent, and it still 404s. Recorded in ADR-0016, which supersedes ADR-0001 | 20 |
 | **A21** | **The schema ships as ONE migration at version 1, and the six that this document numbered 001-006 are now sections of it.** They were never a history: `git log -- migrations/` shows all six created in a single commit and then edited in place twice, so their numbering recorded the order they were typed in rather than any sequence a database had lived through. Six versions no database ever visited one at a time are six things to keep consistent and one story to read. Identity was proven rather than assumed — two throwaway `pgvector/pgvector:0.8.0-pg16` instances, one given the six originals and one the squash, agree on `pg_dump --schema-only` (identical md5), on a 285-row catalog introspection covering every column type, constraint definition, index `indexdef` + `reloptions` + **per-column opclass**, and every function's signature, volatility, strictness and `md5(prosrc)`, and on an `up -> down -all -> up` round trip that leaves no residue beyond golang-migrate's own bookkeeping table. Even the auto-generated `resource_geometries_check` / `check1` names match, which is what says CHECK declaration order survived. **This is defensible only pre-release, and the window closes at the first deployment.** golang-migrate compares version NUMBERS and never file contents, so a database this project did not create cannot be reconciled with an edited version 1 — it is not silently stranded, which was the fear, but loudly so: the binary refuses to boot with `no migration found for version 6`. A developer holding a volume from the six must `make down` (the `-v` is the point) and `make up`, once. **The first schema change after the first deployment is therefore `000002_*`, and every one after it is additive.** Section order inside the file is load-bearing, not editorial: `vector` and `pg_trgm` before the indexes that name their opclasses, `catalogs` before everything referencing it, `resources` before `resource_geometries`' composite foreign key, and `geo_haversine_m` before `geo_distance_m`, whose body calls it and is parsed at CREATE time | all |
+| **A22** | **`context.version` is stored on `catalogs.protocol_version`, resolved by the mapper and moved by every republish.** It describes the DOCUMENT, not the build: `beckn.Version` says what this binary serves today, and the two agree only until a second version is served — on that day "which version was this catalog written under" has no other answer, and a version derived at read time would answer for the reader instead of the writer. **Today the column is provably constant, and that is worth saying out loud rather than discovering later.** C6's envelope rules make `version` REQUIRED and pin it to `beckn.Version`, so an absent one is `CTX_MISSING_FIELD` and any other value is `CTX_VERSION_UNSUPPORTED` — both refused before the mapper runs. Every row this service can currently write therefore holds `2.0.0`. The column is built now anyway because the alternative is a backfill with no source: once a second version is accepted, rows written before the ALTER would have to be assigned a version nobody recorded, and the only honest value for them would be a guess. Three decisions carry it. **The mapper resolves the default, not the column.** `DEFAULT '2.0.0'` fires only on INSERT, so a republish that dropped `version` would silently keep whatever the first publish declared and the catalog would report a version no request in its history sent; `publish.MapCatalog` takes the envelope's version as a parameter and substitutes `beckn.Version` for an empty one, because the mapper is the last layer that can still tell an absent version from a declared one. That branch is unreachable through HTTP while C6 holds and is exercised by unit tests directly — it is the seam the gate will relax onto, not dead code, and the DEFAULT stays as a fail-safe for a hand-written INSERT. **`MergeCatalog` applies it unconditionally**, alongside `isActive` and `visibleTo` under A9 — there is no "absent" left by then, so keeping the stored value would make a republish claim a version its own envelope never declared. **`CHECK (protocol_version <> '')` is the pin**, and it is what makes a writer that forgot the field fail loudly rather than store a catalog claiming no version at all; it is also why every fixture that reaches a backend directly must set it, which is a cost paid once and the reason it is worth paying. Like `visible_to`, `active` and the four validity columns, this one is write-side state: discover's hydration reads `id` and `document` alone, so nothing serves it back today | 1, 3 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -486,6 +487,21 @@ CREATE TABLE catalogs (
     -- same as narrowing.
     active       BOOLEAN     NOT NULL DEFAULT TRUE,
 
+    -- context.version: the Beckn version this catalog was published under.
+    --
+    -- Stored rather than derived from the build, because it describes the
+    -- DOCUMENT and not the binary. `beckn.Version` says what this service
+    -- serves today; the two agree only until a second version is served, and
+    -- on that day the question "which version was this written under" has no
+    -- other answer.
+    --
+    -- The DEFAULT is a fail-safe for a hand-written INSERT, NOT the mechanism:
+    -- a DEFAULT fires only on INSERT, so the upsert names this column
+    -- unconditionally and a republish under a new version moves it. The mapper
+    -- resolves an absent context.version before the row is written, because it
+    -- is the last layer that can tell absent from declared.
+    protocol_version TEXT   NOT NULL DEFAULT '2.0.0' CHECK (protocol_version <> ''),
+
     -- catalog.validity is a TimePeriod, and a TimePeriod carries TWO windows
     -- that the spec's anyOf lets appear separately or together:
     --   startDate/endDate  a one-off calendar range   ("live Jan -> Mar")
@@ -507,8 +523,8 @@ CREATE TABLE catalogs (
 
 **The gate columns above are written and never read, and that is on purpose.**
 Discover issues exactly one query against this table — `select id, document
-from catalogs where id = any(...)` at hydration — so `visible_to`, `active` and
-the four validity columns are write-side state only. They stay for two reasons
+from catalogs where id = any(...)` at hydration — so `visible_to`, `active`,
+`protocol_version` and the four validity columns are write-side state only. They stay for two reasons
 the dropped columns below did not have: this table has **one row per catalog**,
 not one per resource, so the storage argument that removes a column from
 `resources` does not apply here; and they are the record of what the publisher
@@ -1518,7 +1534,7 @@ publishOne(ctx, network, catalog, directive):
         # is a placeholder that shipped.
 
     # ---- map wire → PATCH, not a finished domain object --------------------
-    patch, fatal, partial ← mapper.MapCatalog(catalog, directive, network)
+    patch, fatal, partial ← mapper.MapCatalog(catalog, directive, network, zone, version)
     if fatal is non-empty:
         return REJECTED(fatal)           # nothing is written
     # A *patch*, because absence has to survive this step (A8). A struct whose
@@ -4483,7 +4499,7 @@ one `Retriever` per mode, `Hydrator`, `RRF`
 **Files:** `src/publish/mapper.go`, `geometry.go`,
 `src/discover/intent_mapper.go`, `src/platform/jsonpath/canonical.go`
 
-**Produces:** `publish.MapCatalog(catalog, directive, network) →
+**Produces:** `publish.MapCatalog(catalog, directive, network, zone, version) →
 domain.CatalogPatch, fatal, partial` (the two fault kinds separately),
 `publish.ExtractGeometries(catalogIndex, merged domain.Catalog) →
 []domain.Geometry, []domain.Fault`, `discover.MapIntent`,

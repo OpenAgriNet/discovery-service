@@ -43,8 +43,13 @@ var clockReferenceDate = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 // zone is APP_DEFAULT_TIMEZONE, and it is a parameter rather than a config
 // lookup so that a test can ask what 09:00:00 means in Kolkata without setting
 // a process-wide environment variable.
+// version is `context.version` from the publish envelope, and it is a
+// parameter for the same reason zone is: the mapper is the last layer that can
+// tell an absent version from a declared one, and the fallback belongs where
+// that distinction still exists.
 func MapCatalog(
 	catalog beckn.Catalog, directive beckn.PublishDirective, network string, zone *time.Location,
+	version string,
 ) (domain.CatalogPatch, []domain.Fault, []domain.Fault) {
 	validity, fatal := mapValidity(catalog.Validity, "$['validity']", zone)
 
@@ -77,6 +82,8 @@ func MapCatalog(
 
 		Active:    active,
 		VisibleTo: visibleTo(directive, network),
+
+		ProtocolVersion: protocolVersion(version),
 
 		Resources: resources,
 		Offers:    offers,
@@ -431,4 +438,25 @@ func isJSONNull(raw json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// protocolVersion resolves an absent `context.version` to the version this
+// build serves.
+//
+// Defaulted here rather than by the column's own DEFAULT, because the DEFAULT
+// only fires on INSERT: a republish that dropped `version` would otherwise keep
+// whatever the first publish declared, and a catalog would report a version no
+// request in its history ever sent.
+//
+// C6's envelope rules make `version` required and pin it to `beckn.Version`, so
+// nothing arriving over HTTP can currently reach the empty branch. It is here
+// because this is where the resolution belongs the day that gate widens, and
+// because MapCatalog is called directly by tests and by any future caller that
+// does not come through the validator — a mapper that only works behind one
+// particular gate is a mapper with an unwritten precondition.
+func protocolVersion(declared string) string {
+	if declared == "" {
+		return beckn.Version
+	}
+	return declared
 }
