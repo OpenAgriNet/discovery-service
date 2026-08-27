@@ -3,7 +3,7 @@
 Status: **RESOLVED 2026-08-27.** The decisions were taken and folded into
 `discover-and-publish.md` as **A18** (the `filter_doc` composite) and **A19**
 (the count query removed); the geometry measurement became a note under
-Migration 004. That plan is the spec — this file is kept only for the EVIDENCE,
+the `resource_geometries` schema. That plan is the spec — this file is kept only for the EVIDENCE,
 which does not fit in an amendment row and which the next person to question one
 of these numbers will want.
 
@@ -14,7 +14,7 @@ of these numbers will want.
 | `filter_doc` composite + its GIN index | **Adopted** (A18) |
 | Count query removed | **Adopted** (A19) |
 | Five tables, splitting a derived `resource_index` off `resources` | **Rejected.** Four tables stand; `filter_doc` is a column on `resources`. The split bought a rebuild story and a clearer storage/index boundary, not a measurement — retrieval scans one table either way, at the same speed. Not worth a 1:1 table split |
-| `resource_geometry.resource_id NOT NULL`, catalog shapes copied down | **Rejected for now.** 70 ms to 1.1 ms on the selective query, against ~2x slower broad queries, 4x storage, and a real publish obligation to keep the copies in sync. The number is recorded under Migration 004 so it can be revisited against evidence rather than re-derived |
+| `resource_geometry.resource_id NOT NULL`, catalog shapes copied down | **Rejected for now.** 70 ms to 1.1 ms on the selective query, against ~2x slower broad queries, 4x storage, and a real publish obligation to keep the copies in sync. The number is recorded under the `resource_geometries` schema so it can be revisited against evidence rather than re-derived |
 
 This document exists because the Task 22 design was being argued from memory.
 Everything below that says "fast" or "indexable" was measured on

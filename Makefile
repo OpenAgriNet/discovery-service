@@ -65,7 +65,11 @@ sqlc-verify: $(SQLC)
 migrate: $(MIGRATE)
 	$(MIGRATE) -path migrations -database "$(DATABASE_URL)" up
 
-## migrate-down: roll back the most recent migration
+## migrate-down: roll back one migration — today that is the WHOLE schema
+# The schema ships as a single migration at version 1 (A21), so `down 1` is
+# `down -all`: it drops every table, function and extension the service owns.
+# Once a second migration exists this becomes the one-step operation its name
+# implies.
 migrate-down: $(MIGRATE)
 	$(MIGRATE) -path migrations -database "$(DATABASE_URL)" down 1
 
