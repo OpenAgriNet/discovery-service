@@ -309,7 +309,7 @@ step that earns it, and the reason is worked through below.
 > the adapter builds the key from the request and looks it up exactly, never reading the
 > column back; and its enum was already enforced by the key pattern's own alternation. The
 > key keeps its third segment — that is the discriminator between `…|init` and `…|status`
-> — but the column is gone. See [OpenAgriNet registry — v1](oan-v1.md). BV's own records
+> — but the column is gone. See [OpenAgriNet registry — v1](../oan-v1.md). BV's own records
 > below are unchanged and still carry it.
 
 **Two integrity rules no JSON Schema can express.** `bindingKey` must agree with its own

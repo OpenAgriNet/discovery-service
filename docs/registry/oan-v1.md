@@ -4,8 +4,8 @@ Three things: the **schema**, the **records to store**, and the **execution** fr
 experience layer to provider.
 
 Scoped to the v1 provider set. The imported BV pages
-([overview](01-overview.md) · [schema](02-registry-schema.md) ·
-[use cases](usecases/README.md)) carry the full reasoning, eleven bindings and four call
+([overview](imported/01-overview.md) · [schema](imported/02-registry-schema.md) ·
+[use cases](imported/usecases/README.md)) carry the full reasoning, eleven bindings and four call
 shapes; this page carries what v1 needs. Where they disagree, they are describing BV and
 this is describing us.
 
@@ -655,7 +655,7 @@ because the `parameters` item declares `required: [parameter, value, unit]` with
 closing the object, so a private qualifier passes and means nothing to any other
 participant. There is no conformant way to say *tomorrow's high is 30.6 and low is 22.1*,
 and every Indian weather upstream reports `tmin`/`tmax`. Real gap, tracked as issue 3 of
-[Open issues](reference/open-issues.md), and it lands on Weather — a v1 category.
+[Open issues](imported/reference/open-issues.md), and it lands on Weather — a v1 category.
 
 ---
 

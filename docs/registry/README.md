@@ -1,97 +1,46 @@
-# BV Beckn Adapter — design docs
+# Registry
 
-> **Imported reference. Not binding on this service.**
->
-> Copied verbatim on 2026-08-27 from
-> `OpenAgriNetLegacy/BharatVistaar/Beckn/docs/design` (not a git repository, so
-> there is no commit to cite — the newest file was written 2026-08-27). These
-> pages describe a **different system**: the BV adapter, which is Beckn ONIX
-> customised against a Sunbird RC registry on Postgres.
->
-> They are here because discovery-service and that adapter meet on the same
-> network and have to agree about what `discover` and `publish` mean. Read them
-> for that: what the registry holds, and what an adapter expects a DS to answer.
-> Nothing in this directory constrains discovery-service. Its own binding spec is
-> [`docs/design/discover-and-publish.md`](../design/discover-and-publish.md), and
-> where the two disagree that one wins — as does `beckn.yaml` over both.
->
-> **This copy has diverged from the source.** One edit was made at import time:
-> the five **Background** links below pointed one level up in the source
-> repository, and now point at [`background/`](background/), where those notes
-> were brought along so the set has no dead links.
->
-> Three corrections were made afterwards, on 2026-08-27, each verified against
-> `beckn.yaml`, a live PostgreSQL, or `background/PROVIDERS.md`. **They have not
-> been sent upstream.** Reconcile before treating either copy as current:
->
-> | Where | What changed |
-> |---|---|
-> | [`usecases/mausamgram.md`](usecases/mausamgram.md) | The `discover` filter expression was RFC 9535 and used `anyof`; rewritten in SQL/JSON path and verified against Postgres. A table now states the dialect difference, because nothing validates it. |
-> | [`02-registry-schema.md`](02-registry-schema.md) | `baseUrl` allowed plaintext HTTP while `Auth` required credentials, so one could be sent in clear and no control would object. Two `if`/`then` clauses now require TLS whenever the record carries one. |
-> | [`usecases/README.md`](usecases/README.md) | The `agmarknet` binding named the non-production endpoint and said `POST`; both variants are `GET`, and the record now names the location variant production actually calls. |
-> | [`02-registry-schema.md`](02-registry-schema.md) | Noted that OAN v1 drops the required `ProviderCapability.action` column as redundant with the key's third segment. A note only — BV's field table and every record below it are unchanged. |
->
-> Everything else is as it was written — including `reference/open-issues.md`,
-> which its own page warns goes stale fastest, so check it against the source
-> before acting on it.
+The registry holds **how to reach a provider**. It answers exactly one question at
+runtime: *I have this provider and this capability — how do I call them?* Nothing else
+lives here. It is not read by discovery-service; the adapter and the experience layer
+read it.
 
-The adapter answers one question at runtime: *I have this **provider** and this
-**capability** — how do I call them?* The registry holds the answer, the adapter is
-**Beckn ONIX** customised, and the registry is **Sunbird RC on Postgres**.
-
----
-
-## For OpenAgriNet v1, read this instead
+## Read this
 
 **[OpenAgriNet registry — v1](oan-v1.md)** — the schema, the thirteen records to seed,
-and one end-to-end execution, scoped to the four v1 categories (Weather, Mandi prices,
-Schemes, Crop & Pest). Written here rather than folded into the pages below, so this
-import stays reconcilable with its source.
+and one end-to-end execution from farmer to provider. Scoped to the four v1 categories:
+Weather, Mandi prices, Schemes, Crop & Pest.
 
-The pages below remain the reference: they cover eleven bindings, four call shapes and
-the reasoning behind each schema decision. Go to them when v1 is not enough.
+That is the whole of what v1 needs. If you read one file in this directory, read that one.
 
----
+## Everything else is [`imported/`](imported/README.md)
 
-## Start here
+A verbatim copy of another team's design — the **BV Beckn adapter** and its Sunbird RC
+registry. A **different system**, on the same network, copied so the two can agree about
+what `discover` and `publish` mean.
 
-| | |
+**It is binding on nothing here.** It describes eight providers, eleven bindings and four
+call shapes; v1 has five providers, five bindings and one call shape. Where it and
+`oan-v1.md` disagree, it is describing BV and `oan-v1.md` is describing us. Where either
+disagrees with [`docs/design/discover-and-publish.md`](../design/discover-and-publish.md),
+the plan wins — as does `beckn.yaml` over all three.
+
+Go there for the *why* behind something `oan-v1.md` states:
+
+| Question | Page |
 |---|---|
-| **[1. Overview](01-overview.md)** | How it works, which action is the second call, and the two deployment topologies. |
-| **[2. Registry schema](02-registry-schema.md)** | The three entities — `Provider`, `Capability`, `ProviderCapability` — with one worked example. Read once. |
-| **[3. Adding a provider](03-adding-a-provider.md)** | The checklist. Open this one when you have actual work to do. |
+| Why is the schema shaped this way? | [`imported/02-registry-schema.md`](imported/02-registry-schema.md) |
+| What does a full call look like, with real payloads? | [`imported/usecases/mausamgram.md`](imported/usecases/mausamgram.md) |
+| What do the upstream APIs actually do today? | [`imported/background/PROVIDERS.md`](imported/background/PROVIDERS.md) |
+| What did they leave unresolved? | [`imported/reference/open-issues.md`](imported/reference/open-issues.md) |
 
-## Use cases
+`imported/README.md` is their own index, and carries the provenance: what was copied,
+when, and the four places this copy has diverged from its source.
 
-Eleven bindings across eight providers, but only **four call shapes**. Each page is one
-provider: its registry records, and how a farmer's question becomes an upstream call.
+## Why the split is a directory and not a paragraph
 
-| Shape | Provider | What it introduces |
-|---|---|---|
-| simple | **[mausamgram](usecases/mausamgram.md)** | one action, one call — traced end to end with real payloads |
-| enriched | **[imd-city-weather](usecases/imd-city-weather.md)** | `enricher` object form: config and an `env://` DSN in the registry |
-| multi-step | **[pm-kisan](usecases/pm-kisan.md)** | `steps[]`, later steps reading `steps.<id>` |
-| gated multi-step | **[pmfby](usecases/pmfby.md)** | `sessionGate` / `sessionGrant` across three actions |
-
-**[→ All eleven bindings](usecases/README.md)**, including the four providers that add no
-new shape.
-
-## Reference
-
-| | |
-|---|---|
-| **[Open issues](reference/open-issues.md)** | Asks on network-specs, and questions this design leaves open. Goes stale fastest — check against `git log`. |
-| **[Merged schema](reference/merged-schema.md)** | The denormalised alternative: all three entities in one record, one read instead of two. Built and validated; what it costs and why the three still stand. |
-| **[Conformance](reference/conformance.md)** | The executed evidence: schema validation, JSONata, Beckn v2.0.0 and network-specs conformance, referential integrity. Plus the file inventory. |
-
-## Background
-
-Pre-existing notes on the upstreams as they behave **today**, before the adapter:
-[`PROVIDERS.md`](background/PROVIDERS.md) · [`NETWORKS.md`](background/NETWORKS.md) · [`IMD.md`](background/IMD.md) ·
-[`MANDI_PRICE_FLOW.md`](background/MANDI_PRICE_FLOW.md) · [`PMFBY_FLOW.md`](background/PMFBY_FLOW.md)
-
----
-
-> These pages replace the single `REGISTRY-SCHEMA.md`. Nothing was dropped: the registry
-> records that used to sit in its appendix now live beside the flow that uses them, and
-> the conformance suite reads them from `docs/design/usecases/`, so the two cannot drift.
+The two sets have different authority and different lifetimes. `oan-v1.md` is ours to
+change; `imported/` is someone else's, and its value is that it can still be diffed
+against the source it came from — one `diff -r` against their tree, with nothing of ours
+mixed in to filter out. Folding v1 into those pages would have bought a shorter directory
+listing and cost that reconciliation permanently.
