@@ -2,13 +2,16 @@
 
 A Go service exposing synchronous `POST /publish` and `POST /discover` that
 ingest [Beckn v2.0.0](https://becknprotocol.io) catalogs into PostgreSQL and
-serve geo + lexical discovery under 20 ms.
+serve geo + lexical discovery. One discover over ten thousand resources answers
+in 19-22 ms; sixteen concurrent ones do not, and the plan's A16 records the
+measurement and what it means.
 
 - **Architecture:** `controller → service → repository`. Two ports live in
   `src/domain/`: `CatalogRepository` (write, driven by publish) and
   `SearchRepository` (read, driven by discover). Neither capability package
   imports a driver, so the backend is swappable.
-- **Stack:** Go 1.25 · chi v5 · pgx/v5 + sqlc · PostgreSQL 16 + pgvector 0.8 ·
+- **Stack:** Go 1.25 · `net/http.ServeMux` · pgx/v5 + sqlc · PostgreSQL 16 +
+  pgvector 0.8 ·
   uber/h3-go v4 · kin-openapi · zap · testify · testcontainers-go.
 
 The design is specified in
@@ -81,7 +84,8 @@ src/domain/              the contract between them; stdlib + uuid only
 src/beckn/               Beckn v2.0.0 wire types
 src/indexing/            H3 geospatial covers, embeddings
 src/storage/             postgres, memory, and the conformance suite both pass
-src/platform/            config, logging, errors, validation, middleware
+src/platform/            config, logging, errors, crypto, validation, middleware,
+                         httpx, jsonpath, registry
 src/app/                 composition root
 config/  migrations/  schemas/  tests/  docs/
 tools/                   separate module pinning the build toolchain

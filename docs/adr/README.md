@@ -13,7 +13,7 @@ Start from [`0000-template.md`](0000-template.md).
 
 | # | Decision | Source |
 |---|---|---|
-| [0001](0001-router-chi-v5.md) | chi v5 for HTTP routing | D1 |
+| [0001](0001-router-chi-v5.md) | ~~chi v5 for HTTP routing~~ — superseded by 0016 | D1 |
 | [0002](0002-data-access-sqlc-pgx.md) | sqlc over pgx/v5 for data access | D2 |
 | [0003](0003-dependency-injection-explicit-constructors.md) | Explicit constructors for dependency injection | D3 |
 | [0004](0004-l1-validation-kin-openapi.md) | kin-openapi for L1 schema validation | D4 |
@@ -28,6 +28,7 @@ Start from [`0000-template.md`](0000-template.md).
 | [0013](0013-protocol-version-coexistence.md) | Protocol version coexistence, recorded but not built | T5 |
 | [0014](0014-seams-that-ship-with-only-a-no-op.md) | `CatalogReplicator` and `Keyring`: what a seam must carry to ship | A7 |
 | [0015](0015-master-catalogs-and-inheritance-refused.md) | Master catalogs and resource inheritance are refused at intake | A1 |
+| [0016](0016-router-net-http-servemux.md) | `net/http.ServeMux` for HTTP routing, superseding 0001 | D1 |
 
 **Source** points at the design document: `D` rows are the Technology Decisions
 table, `T` rows are TRD Alignment, `A` rows are Amendments.

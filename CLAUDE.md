@@ -46,6 +46,13 @@ make lint       # golangci-lint run + fmt --diff; must be 0 issues
 make test       # go test -race ./... with EMBEDDING_PROVIDER=hashing
 ```
 
+The three above are the gates. Three more need a running stack (`make run`),
+and they answer different questions: `make verify` asserts the sample requests
+still return the ids they returned before, `make newman` does the same through
+the Postman collection, and `make audit` recomputes the expected answers from
+the published catalog instead of trusting either — so it catches an answer that
+is wrong rather than merely changed.
+
 `make test` pins the embedding provider rather than inheriting it: production
 defaults to `noop` (A5), so without the pin the entire semantic path — query
 embedding, HNSW, RRF, the dimension guard, the degradation report — would go
@@ -115,7 +122,7 @@ if someone changes it back. A commit message that restates the diff is wasted.
 | `src/publish/`, `src/discover/` | The two request paths |
 | `src/indexing/` | H3 geometry covers and the embedding seam |
 | `src/storage/` | `postgres/` and `memory/`, plus the `conformance/` suite both must pass |
-| `src/platform/` | Config, logging, errors, crypto, middleware, validation, telemetry |
+| `src/platform/` | Config, logging, errors, crypto, middleware, validation, plus `httpx` (envelope + response writer), `jsonpath` and `registry`. `telemetry/` and `constants/` are empty placeholders — telemetry is Task 23 |
 | `config/` | `common.yaml` (committed, reviewed); `instance.yaml` is mounted per deployment |
 | `tests/` | `acceptance/`, `dbtest/`, `testdata/`, and `architecture/boundary_test.go` — the import-graph guard on the TRD §5 swap boundary |
-| `docs/design/`, `docs/adr/` | The plan, and the 15 ADRs behind it |
+| `docs/design/`, `docs/adr/` | The plan, and the 16 ADRs behind it — 0001 is superseded by 0016 |

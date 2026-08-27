@@ -110,7 +110,8 @@ func TestTenThousandResourcesStayUnderTwentyMilliseconds(t *testing.T) {
 	//
 	// The plan sizes the pool as `modes × in-flight` — two ranked modes times
 	// sixteen discovers. That counts only the retrieval fan-out. A discover
-	// then issues a count and four hydration queries, each taking a connection
+	// then issues its hydration queries — four, since A19 removed the count —
+	// each taking a connection
 	// while its SIXTEEN siblings are still inside their two-connection fan-out,
 	// so the peak is `(modes + 1) × in-flight`. Measured: 32 leaves 180 acquires
 	// waiting, 48 leaves none, and 96 leaves none no faster — so 48 is the

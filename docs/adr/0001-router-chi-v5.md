@@ -1,6 +1,6 @@
 # ADR-0001 — chi v5 for HTTP routing
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0016](0016-router-net-http-servemux.md)
 **Date:** 2026-08-25
 
 ## Context

@@ -20,7 +20,11 @@ not being implemented, so the Ed25519 primitives are not built and the
 `Signature` middleware is not written. Task 22 is Phase 1 despite sounding
 deferred — see the notes under the checklist for all three.
 
-**Next task to implement: Task 7, `Envelope` only.**
+**Next task to implement: Task 23, OpenTelemetry Tracing & Metrics.**
+
+Tasks 1-22 have landed, with three holes that are decisions rather than
+omissions: **6** is parked, **7** shipped at half scope (`Envelope` only), and
+**10** (L2 validation) is deferred. Task 23 is the last one in the plan.
 
 ---
 
@@ -62,101 +66,41 @@ summarize what you built — don't continue to the next task until I say go.
 
 ## Next task — ready to paste
 
-Task 8. Paste this verbatim into a fresh session.
+Task 23. Paste this verbatim into a fresh session.
+
+An earlier version of this section carried Task 8's prompt and stayed there
+while twelve tasks landed past it, which is the failure mode of a document that
+duplicates state it does not own. The per-task template above is the thing that
+does not go stale; this block is only ever the template with one number filled
+in, and it is worth keeping only because it saves the paste.
 
 ```
-Implement Task 8 — Request Logger & Rate Limit Middleware from
-docs/design/discover-and-publish.md, and only Task 8.
+Implement Task 23 — OpenTelemetry Tracing & Metrics from
+docs/design/discover-and-publish.md, and only Task 23.
 
 Rules:
 - Follow the task's own steps literally, in TDD order (failing test first, run
   it, watch it fail, then the minimal thing that makes it pass, then run it
   again). A test you never saw fail pins nothing.
 - The Global Constraints table (near the top of the doc) applies to everything
-  you write, not just this task.
-- Code blocks marked `pseudo` in the doc are intent, not literal source — write
-  idiomatic Go against the interfaces the task names. DDL, SQL predicates and
-  wire shapes are literal contracts — copy them as-is.
-- Run `make build`, `make lint` and `make test` and paste the actual output
-  before claiming the task is done. `make lint` must be 0 issues.
-- One commit per task step marked *Commit*, Conventional Commits format:
-  `<type>: <summary in imperative mood> [#1]`. The body carries the why — what
-  you chose, what you rejected, what breaks if someone changes it back.
-- Never push. Committing on the working branch is yours; pushing is the
-  human's.
-- No TODO left on main — anything you would defer belongs back in the doc's
-  Deferred / Out of Scope section, flagged to me, not left in a comment.
-- If you hit a genuine ambiguity the doc does not resolve (check Spec
-  Conflicts, Amendments and Open Items first — most things are already decided
-  there, with the why), stop and ask me rather than guessing.
-- Before you say you are done, self-review: re-read this task's own section
-  side-by-side with your diff. Every file, type, function signature and
-  behaviour it names, present under the name it uses, and nothing drifted from
-  it or from Global Constraints. Report it as a short matched / deviated
-  checklist with a reason per deviation — not a silent pass.
+  you write; read it before starting.
+- Check Spec Conflicts, Amendments and Open Items before asking a question —
+  most things are already decided there, with the reasoning.
+- Names from the plan are load-bearing. Do not simplify them.
+- Stop when Task 23 is done. Summarize what you built, paste the real output of
+  `make build`, `make lint` and `make test`, and wait for review.
 
-What already exists, so you neither rebuild it nor re-derive it:
-- `logger.New`, `NewContext`, `FromContext`, `With` and the field constructors
-  `RequestID`, `TransactionID`, `MessageID`, `Action`, `ErrorType`, `ErrorCode`
-  (Task 3). The field *names* are spelled in that package and nowhere else —
-  one key spelled two ways is two fields to whatever queries the logs.
-- `httpx.WriteNack(ctx, w, cfg config.Errors, messageID string, err error)`
-  (Task 5) — the single writer. It sets the status, `X-Beckn-Error-Type`,
-  `Retry-After` when the fault carries a back-off, and logs the code and the
-  category once. Do not assemble a rejection body anywhere else; there is a
-  test that fails if you do.
-- `apperrors.RateLimited(retryAfter time.Duration, message string)` — the
-  constructor `RateLimit` must use. It exists precisely so the back-off cannot
-  be forgotten after construction; `WriteNack` turns it into the header.
-- `middlewares.Envelope(cfg config.Errors, maxBodyBytes int64)` and
-  `EnvelopeFromContext` (Task 7). The body ceiling is already enforced there —
-  do not add a second one anywhere in this task.
-- `config.RateLimit{RPS, Burst}` (`RATE_LIMIT_RPS=20`, `RATE_LIMIT_BURST=40`)
-  and `config.Errors` (Task 2). Do not re-declare either.
+What this task specifically replaces: Task 8 shipped `Trace` as a no-op
+pass-through whose only effect is appending `trace` to `X-Beckn-Chain`. Task 23
+puts real `otelhttp` instrumentation in its place and drops that chain entry.
+The chain itself does not move — Task 20's order test reads the remaining
+entries and must still pass.
 
-Four things this task must get right, because everything downstream reads them:
-
-1. X-Beckn-Chain is built here, and it is what Task 20 tests the chain order
-   with. `Trace` and `Recover` each `Header().Add` one entry — `trace` and
-   `recover` — BEFORE calling the next handler. `Add` preserves insertion
-   order, so `Values("X-Beckn-Chain")` reads back as the order the two links
-   actually ran. A single presence marker cannot do this: both stamp before
-   `Recover` writes its 500, so a presence assertion passes whichever way round
-   the two are mounted. Read the paragraph in Task 8's own section; it is the
-   reason `Trace` is a pass-through with a side effect rather than a
-   pass-through.
-
-2. RequestID mints; it never trusts an inbound X-Request-Id. Phase 1 is
-   unauthenticated, so an inbound value is one the caller chose — honouring it
-   lets a caller collide two requests' log lines or write control characters
-   into a log field. It is also first in the chain for a reason: until it
-   installs the request-scoped logger, `logger.FromContext` returns the no-op
-   logger and `WriteNack`'s log line goes nowhere.
-
-3. X-Response-Time has to be stamped inside the ResponseWriter wrapper's
-   WriteHeader. A header set after the handler has written is a header that
-   never reaches the wire, so a `RequestLogger` that sets it on the way back
-   out will pass a test that only ever exercises a handler which wrote nothing.
-   The wrapper is also what captures the status the completion line reports.
-   `error_type` is read back off `X-Beckn-Error-Type`, which `WriteNack`
-   already set — do not derive the category a second time; C1 exists to have
-   exactly one place that decides it.
-
-4. The rate limit bucket is keyed on the remote address, NOT the subscriber id
-   — and this is a deliberate departure from A4's wording that the doc records
-   in Deferred. `context.bapId` on an unverified request is a claim: keying on
-   it lets any caller shed its own limit by rotating the field, and lets any
-   caller exhaust a named third party's bucket by claiming their id. Do not
-   "fix" this back. Do not read `X-Forwarded-For` either — there is no
-   trusted-proxy list to make that safe. Evict idle buckets; a map keyed on
-   remote address that only ever grows is a leak an unauthenticated caller
-   drives.
-
-When the task's tests pass, self-review is done and it is committed, stop and
-summarize what you built — do not continue to the next task until I say go.
+Note before you start: `src/platform/telemetry/` exists but holds only a
+`.gitkeep`. ADR-0011 is the accepted decision and describes the shape; the OTel
+modules are currently INDIRECT dependencies in go.mod and this task is what
+makes them direct.
 ```
-
----
 
 ## Task checklist
 

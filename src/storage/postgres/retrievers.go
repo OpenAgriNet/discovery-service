@@ -338,15 +338,18 @@ func (s *SemanticRetriever) Retrieve(
 // queryVector embeds text for whichever side is asking, or answers nil when
 // there is nothing to embed.
 //
-// Shared by the semantic retriever and the counter, and that sharing is the
-// point: the two must bind the SAME vector for the same request, or Total would
-// describe a pool the page was not drawn from.
+// It had a second caller — the counter — and the sharing was the point: the two
+// had to bind the SAME vector for one request or `Total` described a pool the
+// page was not drawn from. A19 deleted both, so this is the semantic
+// retriever's alone now. Kept as a function rather than folded into Retrieve
+// because the nil-embedder case below is a contract with the composition root,
+// not a local branch.
 //
-// A nil embedder or an empty text is nil and no error. Both queries read a NULL
+// A nil embedder or an empty text is nil and no error. The query reads a NULL
 // vector as "this mode contributes no rows", which is exactly true for a
 // geo-only intent and for the default configuration, where semantic is off
-// (A5). Failing instead would take down every page whose count guards did not
-// fire, on the deployment this service actually ships as.
+// (A5). Failing instead would take down every such page, on the deployment this
+// service actually ships as.
 //
 // The dimension guard runs HERE rather than at the statement, because
 // pgvector's own width check fires inside the query and reports a storage
