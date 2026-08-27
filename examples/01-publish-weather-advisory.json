@@ -1,0 +1,280 @@
+{
+  "context": {
+    "domain": "agriculture",
+    "action": "publish",
+    "version": "2.0.0",
+    "bppId": "weather.karnataka.example.org",
+    "bppUri": "https://weather.karnataka.example.org/beckn",
+    "transactionId": "3f9a1c62-4d5e-4a7b-9c8d-1e2f3a4b5c6d",
+    "messageId": "8b7c6d5e-4f3a-42b1-a0c9-d8e7f6a5b4c3",
+    "timestamp": "2026-08-27T06:30:00Z",
+    "schemaContext": [
+      "https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld#openagrinet:WeatherAdvisoryCapability"
+    ]
+  },
+  "message": {
+    "catalogs": [
+      {
+        "id": "cat-ksndmc-weather-advisory",
+        "bppId": "weather.karnataka.example.org",
+        "bppUri": "https://weather.karnataka.example.org/beckn",
+        "isActive": true,
+        "descriptor": {
+          "code": "KSNDMC-WX-ADVISORY",
+          "name": "Karnataka Weather Advisory Services",
+          "shortDesc": "Weather-informed agricultural advisories for Karnataka",
+          "longDesc": "Village- and point-level weather advisories covering irrigation, spraying and crop protection decisions across Karnataka."
+        },
+        "provider": {
+          "id": "prov-ksndmc",
+          "descriptor": {
+            "code": "KSNDMC",
+            "name": "Karnataka State Natural Disaster Monitoring Centre"
+          },
+          "availableAt": [
+            {
+              "geo": {
+                "type": "Polygon",
+                "coordinates": [
+                  [
+                    [
+                      74.05,
+                      11.55
+                    ],
+                    [
+                      78.6,
+                      11.55
+                    ],
+                    [
+                      78.6,
+                      18.45
+                    ],
+                    [
+                      74.05,
+                      18.45
+                    ],
+                    [
+                      74.05,
+                      11.55
+                    ]
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "validity": {
+          "startDate": "2026-01-01T00:00:00Z",
+          "endDate": "2027-12-31T23:59:59Z"
+        },
+        "resources": [
+          {
+            "id": "res-wx-village-belagavi",
+            "descriptor": {
+              "code": "WX-VILLAGE-BLG",
+              "name": "Village weather advisory, Belagavi",
+              "shortDesc": "Seven-day village-level irrigation and spraying advisory",
+              "longDesc": "Rainfall, temperature, humidity and wind advisories at village granularity for the Belagavi district, refreshed every three hours."
+            },
+            "resourceAttributes": {
+              "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld",
+              "@type": "openagrinet:WeatherAdvisoryCapability",
+              "subjectCategories": [
+                "Crop",
+                "Weather"
+              ],
+              "agricultureSubjects": [
+                {
+                  "subjectId": "https://taxonomy.openagrinet.global/crop/sugarcane",
+                  "subjectType": "Crop",
+                  "descriptor": {
+                    "code": "SUGARCANE",
+                    "name": "Sugarcane"
+                  }
+                }
+              ],
+              "languages": [
+                "en",
+                "hi",
+                "kn",
+                "mr"
+              ],
+              "coverageAreas": [
+                {
+                  "codeScheme": "ISO-3166-2",
+                  "areaCode": "IN-KA",
+                  "areaLevel": "State",
+                  "areaName": "Karnataka"
+                },
+                {
+                  "type": "Polygon",
+                  "coordinates": [
+                    [
+                      [
+                        74.05,
+                        15.45
+                      ],
+                      [
+                        75.25,
+                        15.45
+                      ],
+                      [
+                        75.25,
+                        16.55
+                      ],
+                      [
+                        74.05,
+                        16.55
+                      ],
+                      [
+                        74.05,
+                        15.45
+                      ]
+                    ]
+                  ]
+                }
+              ],
+              "topics": [
+                "Irrigation",
+                "Spraying",
+                "CropProtection"
+              ],
+              "weatherParameters": [
+                "Rainfall",
+                "Temperature",
+                "Humidity",
+                "WindSpeed"
+              ],
+              "forecastHorizon": "P7D",
+              "updateFrequency": "PT3H",
+              "geographicGranularity": "Village"
+            }
+          },
+          {
+            "id": "res-wx-point-dharwad",
+            "descriptor": {
+              "code": "WX-POINT-DWD",
+              "name": "Point weather advisory, Dharwad",
+              "shortDesc": "Three-day hyperlocal spraying advisory",
+              "longDesc": "Hourly-refreshed rainfall, wind speed and humidity advisory for a single field location near Dharwad, intended for spray-window decisions."
+            },
+            "resourceAttributes": {
+              "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld",
+              "@type": "openagrinet:WeatherAdvisoryCapability",
+              "subjectCategories": [
+                "Crop",
+                "Weather"
+              ],
+              "agricultureSubjects": [
+                {
+                  "subjectId": "https://taxonomy.openagrinet.global/crop/cotton",
+                  "subjectType": "Crop",
+                  "descriptor": {
+                    "code": "COTTON",
+                    "name": "Cotton"
+                  }
+                }
+              ],
+              "languages": [
+                "en",
+                "kn"
+              ],
+              "coverageAreas": [
+                {
+                  "type": "Point",
+                  "coordinates": [
+                    75.0078,
+                    15.4589
+                  ]
+                }
+              ],
+              "topics": [
+                "Spraying",
+                "Irrigation"
+              ],
+              "weatherParameters": [
+                "Rainfall",
+                "WindSpeed",
+                "Humidity"
+              ],
+              "forecastHorizon": "P3D",
+              "updateFrequency": "PT1H",
+              "geographicGranularity": "Point"
+            }
+          },
+          {
+            "id": "res-wx-alert-statewide",
+            "descriptor": {
+              "code": "WX-ALERT-KA",
+              "name": "Statewide severe weather alerts",
+              "shortDesc": "District-level cyclone and heavy rainfall alerts",
+              "longDesc": "Severe weather alerting at district granularity for the whole of Karnataka. Carries no coordinate geometry, only a governed area code."
+            },
+            "resourceAttributes": {
+              "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld",
+              "@type": "openagrinet:WeatherAdvisoryCapability",
+              "subjectCategories": [
+                "Weather"
+              ],
+              "languages": [
+                "en",
+                "kn"
+              ],
+              "coverageAreas": [
+                {
+                  "codeScheme": "ISO-3166-2",
+                  "areaCode": "IN-KA",
+                  "areaLevel": "State",
+                  "areaName": "Karnataka"
+                }
+              ],
+              "topics": [
+                "CropProtection"
+              ],
+              "weatherParameters": [
+                "Alert",
+                "Rainfall",
+                "WindSpeed"
+              ],
+              "forecastHorizon": "P2D",
+              "updateFrequency": "PT30M",
+              "geographicGranularity": "District"
+            }
+          }
+        ],
+        "offers": [
+          {
+            "id": "offer-wx-free-tier",
+            "resourceIds": [
+              "res-wx-village-belagavi",
+              "res-wx-alert-statewide"
+            ],
+            "descriptor": {
+              "code": "FREE-TIER",
+              "name": "Free public advisory tier"
+            }
+          },
+          {
+            "id": "offer-wx-subscription",
+            "resourceIds": [
+              "res-wx-point-dharwad"
+            ],
+            "descriptor": {
+              "code": "SUBSCRIPTION",
+              "name": "Paid hyperlocal subscription"
+            }
+          }
+        ]
+      }
+    ],
+    "publishDirectives": [
+      {
+        "catalogId": "cat-ksndmc-weather-advisory",
+        "catalogType": "REGULAR",
+        "visibleTo": [
+          "local-network"
+        ]
+      }
+    ]
+  }
+}

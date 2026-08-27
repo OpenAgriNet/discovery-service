@@ -54,6 +54,17 @@ at the cache path. The boot logs one warning about the registry fetch it did
 not do, which is why it works with no network; set `VALIDATION_SPEC_URL` to
 exercise the fetch path instead.
 
+With the stack up, there is a worked catalog and the requests that find it:
+
+```sh
+make verify    # publish the sample catalog, assert text, spatial and filter retrieval
+make newman    # the same checks through the Postman collection
+```
+
+Both assert the exact set of resource ids each request returns, and the cases
+are built to disagree with each other — see [`examples/`](examples/README.md)
+for what each one pins and why.
+
 ## Layout
 
 ```

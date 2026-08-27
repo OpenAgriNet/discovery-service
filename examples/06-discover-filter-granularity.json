@@ -1,0 +1,19 @@
+{
+  "context": {
+    "domain": "agriculture",
+    "action": "discover",
+    "version": "2.0.0",
+    "transactionId": "a1000000-0000-4000-8000-000000000006",
+    "messageId": "b1000000-0000-4000-8000-000000000006",
+    "timestamp": "2026-08-27T06:30:00Z"
+  },
+  "message": {
+    "intent": {
+      "textSearch": "weather advisory",
+      "filters": {
+        "type": "jsonpath",
+        "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.geographicGranularity == \"Village\")"
+      }
+    }
+  }
+}

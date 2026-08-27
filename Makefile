@@ -91,7 +91,20 @@ run:
 logs:
 	docker compose --profile app logs -f discovery-service
 
+## verify: publish the sample catalog and assert text, spatial and filter
+##         retrieval against a stack already running via `make run`
+verify:
+	./examples/verify.sh
+
+## newman: the same checks through the Postman collection, if newman is around
+newman:
+	npx --yes newman run examples/OpenAgriNet-discovery-service.postman_collection.json
+
 ## down: stop the local stack and discard its volumes
+##       -v matters: migrations are edited in place during development, and
+##       golang-migrate tracks only version NUMBERS — so a volume migrated by
+##       an older revision of the same file keeps its old columns forever and
+##       fails at the first write instead of at boot
 down:
 	docker compose --profile app down -v
 
@@ -122,4 +135,4 @@ $(MIGRATE): tools/go.mod tools/go.sum
 	$(GO) -C tools build -tags postgres -o ../$@ github.com/golang-migrate/migrate/v4/cmd/migrate
 
 .PHONY: help build test test-short cover lint fmt sqlc sqlc-verify migrate run logs \
-	migrate-down security docker up down tools clean
+	migrate-down security docker up down verify newman tools clean

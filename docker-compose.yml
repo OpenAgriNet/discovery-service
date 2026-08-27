@@ -72,10 +72,14 @@ services:
       # boot logs one warning about the fetch it could not do; that warning is
       # accurate and is not a failure.
       #
-      # To exercise the fetch path instead, set VALIDATION_SPEC_URL above and
-      # drop this line. A configured URL is trusted precisely because an
-      # operator configured it — a URL arriving in a request body is not, which
-      # is the whole meaning of EXT_ALLOW_NETWORK_FETCH=false.
+      # To exercise the fetch path instead, drop this line and point
+      # VALIDATION_SPEC_URL at
+      #   https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/heads/main/api/v2.0.0/beckn.yaml
+      # which is where this file came from. A configured URL is trusted
+      # precisely because an operator configured it — a URL arriving in a
+      # request body is not, which is the whole meaning of
+      # EXT_ALLOW_NETWORK_FETCH=false. That URL tracks `main`, though, so the
+      # fetch path pins nothing; the mount is what makes a run reproducible.
       - ./tests/testdata/beckn-v2.0.0.yaml:/app/.cache/beckn/beckn.yaml:ro
 
     # No healthcheck, and not an omission: the runtime stage is
