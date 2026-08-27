@@ -112,15 +112,37 @@ EXPECT = [
         "predicates allow, not none, or a geo-only discover answers empty.",
     ),
     (
+        "14-discover-text-and-filter.json",
+        "14 Combination - text AND filter, no geometry",
+        [ALERT],
+        ["offer-wx-free-tier"],
+        "The third leg of the leave-one-out triangle around case 12. Drop the "
+        "filter and you get case 10 (point); drop the text and you get case 11 "
+        "(village); drop the GEOMETRY and you get this (alert).",
+    ),
+    (
         "12-discover-text-geo-filter-empty.json",
-        "12 Combination - all three, disjoint, expects EMPTY",
+        "12 Combination - all three, pairwise-overlapping, expects EMPTY",
         [],
         None,
-        "Text selects the point resource, the geometry selects the village, and "
-        "no resource is both. Empty is the only answer a conjunction can give. "
-        "If the dimensions were OR'd this returns two resources; if one were "
-        "dropped it returns one. Cases 10 and 11 are what stop this passing "
-        "vacuously against a service returning nothing for everything.",
+        "text -> point+alert, geo -> point+village, filter -> village+alert. "
+        "Every PAIR overlaps in exactly one resource and all three share none, "
+        "so removing ANY dimension changes the answer to a different single "
+        "resource (10, 11, 14) and keeping all three gives EMPTY. That is what "
+        "proves all three are applied and ANDed. An earlier version of this "
+        "case came out empty whichever of two dimensions you dropped, so it "
+        "only ever proved one of them mattered.",
+    ),
+    (
+        "15-discover-text-geo-filter.json",
+        "15 Combination - all three, non-empty",
+        [VILLAGE],
+        ["offer-wx-free-tier"],
+        "The same three dimensions with a text term reaching all three "
+        "resources, so the answer is non-empty. Geometry and filter are each "
+        "load-bearing here and the text is not: with three resources and only "
+        "two geo-indexed, a non-empty three-way answer cannot make all three "
+        "matter at once. Case 12 is where that proof lives.",
     ),
     (
         "13-discover-fuzzy-typos.json",

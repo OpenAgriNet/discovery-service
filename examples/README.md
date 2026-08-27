@@ -90,7 +90,9 @@ generous.
 | `08-discover-invalid-jsonpath.json` | the form gate | **400** |
 | `10-discover-text-and-geo.json` | text **and** geo | point alone |
 | `11-discover-geo-and-filter.json` | geo **and** filter, no text at all | village alone |
-| `12-discover-text-geo-filter-empty.json` | all three, disjoint | **empty** |
+| `14-discover-text-and-filter.json` | text **and** filter, no geometry | alert alone |
+| `12-discover-text-geo-filter-empty.json` | all three, pairwise-overlapping | **empty** |
+| `15-discover-text-geo-filter.json` | all three, non-empty | village alone |
 | `13-discover-fuzzy-typos.json` | trigram mode, every term misspelled | village alone |
 
 Several of these are worth the extra sentence.
@@ -132,13 +134,41 @@ service rejects the shape before the cast instead.
 
 These are two different rules and cases 10–13 exist to separate them.
 
+The formula, precisely:
+
+```
+( lexical_tsvector  OR  fuzzy_trigram  OR  semantic_vector )   <- modes UNION
+      AND geo  AND jsonpath  AND schemaContext
+      AND visibility  AND validity                             <- constraints AND
+```
+
 Look at any retriever in `discover.sql` and the shape is the same: **one shared
 `WHERE`** carrying visibility, validity, `schemaContext`, the attribute filter
 and the whole spatial predicate, and then a per-mode `ORDER BY`. So every
 constraint is ANDed inside every mode — adding a geometry to a filtered intent
-narrows it, it never widens it. Case 12 is the sharp end of that: text picks the
-point resource, the geometry picks the village, and the correct answer is
-**empty**. Under OR it would return two.
+narrows it, it never widens it. Case 12 is the sharp end, and it earns that
+by a **leave-one-out triangle**:
+
+| | text | geo | filter | answer |
+|---|---|---|---|---|
+| case 10 | ✓ | ✓ | — | point |
+| case 11 | — | ✓ | ✓ | village |
+| case 14 | ✓ | — | ✓ | alert |
+| **case 12** | ✓ | ✓ | ✓ | **empty** |
+
+`cotton cyclone` reaches point+alert, the 25 km circle reaches point+village,
+the FREE-TIER offer reaches village+alert. Every *pair* overlaps in exactly one
+resource and all three share none — so removing **any** dimension changes the
+answer to a different single resource. That is what says all three are applied
+and ANDed, and it is a real improvement on the first version of this case,
+which came out empty whichever of two dimensions you dropped and so only ever
+proved that one of them mattered.
+
+Case 15 is the same three dimensions with a text term reaching all three
+resources, so the answer is non-empty. There the geometry and the filter are
+each load-bearing and the text is not — with three resources and only two of
+them geo-indexed, a non-empty three-way answer cannot make all three matter at
+once, which is exactly why case 12 is the one that carries the proof.
 
 The modes themselves are the opposite. `LexicalCandidates` gates on
 `search_tsv @@ discover_tsquery(...)`; `FuzzyCandidates` gates on

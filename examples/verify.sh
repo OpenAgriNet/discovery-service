@@ -257,15 +257,43 @@ discover_case 11-discover-geo-and-filter.json \
   "$VILLAGE" \
   "offer-wx-free-tier"
 
-# All three dimensions, and the answer is EMPTY — which is the point. Text
-# selects the point resource, the geometry selects the village, and no resource
-# is both. If the three were being OR'd rather than ANDed this returns two
-# resources; if any one were being dropped it returns one. Empty is the only
-# answer a conjunction can give, and cases 10 and 11 are what stop this from
-# passing vacuously against a service that returns nothing for everything.
+# The three-way case, and the LEAVE-ONE-OUT triangle that gives it teeth.
+#
+#   text "cotton cyclone"     -> point + alert    (cotton is only in the point
+#                                                  resource, cyclone only in the
+#                                                  alert)
+#   S_DWITHIN 25km of Dharwad -> point + village
+#   offers FREE-TIER          -> village + alert
+#
+# Every PAIR overlaps in exactly one resource and all three share none, so:
+#
+#   drop the filter (case 10) -> point
+#   drop the text   (case 11) -> village
+#   drop the geo    (case 14) -> alert
+#   all three       (case 12) -> EMPTY
+#
+# Three different single answers and an empty one. Removing ANY dimension
+# changes the result, which is what says all three are actually being applied —
+# an earlier version of case 12 came out empty whichever of two dimensions you
+# dropped, so it only ever proved one of them mattered.
+discover_case 14-discover-text-and-filter.json \
+  "14  text AND filter, no geometry -> alert alone" \
+  "$ALERT" \
+  "offer-wx-free-tier"
+
 discover_case 12-discover-text-geo-filter-empty.json \
-  "12  text AND geo AND filter, disjoint -> empty" \
+  "12  text AND geo AND filter, pairwise-overlapping -> EMPTY" \
   ""
+
+# The same three dimensions with a text term that reaches all three resources,
+# so the answer is non-empty. Here the geometry and the filter are each
+# load-bearing and the text is not — with three resources and only two of them
+# geo-indexed, a non-empty three-way answer cannot make all three matter at
+# once, and case 12 is where that proof lives instead.
+discover_case 15-discover-text-geo-filter.json \
+  "15  text AND geo AND filter, non-empty -> village alone" \
+  "$VILLAGE" \
+  "offer-wx-free-tier"
 
 # Retrieval modes UNION. Every term here is misspelled, so the tsvector admits
 # nothing at all; the resource comes back through the trigram index on `name`,

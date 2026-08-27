@@ -446,7 +446,9 @@ def main():
         # excludes something the others admit.
         "10-discover-text-and-geo.json",
         "11-discover-geo-and-filter.json",
+        "14-discover-text-and-filter.json",
         "12-discover-text-geo-filter-empty.json",
+        "15-discover-text-geo-filter.json",
         "13-discover-fuzzy-typos.json",
     ]
 

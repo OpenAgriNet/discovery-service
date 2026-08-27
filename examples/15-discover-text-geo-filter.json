@@ -3,13 +3,13 @@
     "domain": "agriculture",
     "action": "discover",
     "version": "2.0.0",
-    "transactionId": "a1000000-0000-4000-8000-000000000012",
-    "messageId": "b1000000-0000-4000-8000-000000000012",
+    "transactionId": "a1000000-0000-4000-8000-000000000015",
+    "messageId": "b1000000-0000-4000-8000-000000000015",
     "timestamp": "2026-08-27T06:30:00Z"
   },
   "message": {
     "intent": {
-      "textSearch": "cotton cyclone",
+      "textSearch": "cyclone irrigation",
       "spatial": [
         {
           "op": "S_DWITHIN",
