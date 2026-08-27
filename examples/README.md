@@ -40,6 +40,19 @@ Two offers split the resources, which is what makes case 07 meaningful:
 `offer-wx-free-tier` names the village and alert resources,
 `offer-wx-subscription` names the point.
 
+The two geometries also land on either side of the cell budget, which is
+useful by accident and worth knowing about. The Dharwad point gets a single H3
+cell and is matched through the cell index. The Belagavi polygon spans roughly
+14,000 km², over `MaxIndexCoverCells` (~6,000 km² at resolution 8), so **both**
+cell columns are stored nil and its bounding box decides alone. That is
+deliberate: a cover truncated to fit the budget would make the shape
+discoverable only in whichever corner the fill happened to reach, which is a
+wrong answer wearing the shape of a right one. The practical consequence is
+that matching against a large polygon is bounding-box coarse — it can return a
+resource whose true geometry the query misses. Check
+`array_length(cells_cover, 1)` in `resource_geometries` if a match looks too
+generous.
+
 ## The requests
 
 | File | Exercises | Returns |
