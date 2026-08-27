@@ -100,6 +100,29 @@ same thing to the reader and a different string to the filter.
 
 Four scalars and one `auth` object. That is the whole entity.
 
+Every field, in the shape RC receives it. This is a **valid record** — the checker below
+validates it against `schemas/Provider.json` and fails if any field goes unexercised — but
+the constraints are in the table above, not here.
+
+```jsonc
+{ "Provider": {                                 // write bodies are wrapped: the key is the entity
+  "providerId": "hasura-content",               // required · Beckn provider.id
+  "name":       "Vistaar Knowledge Content",    // required · display only
+  "baseUrl":    "https://content.internal",     // required · no trailing slash
+  "status":     "active",                       // required · active | inactive
+  "auth": {                                     // required
+    "scheme":      "apiKeyHeader",              // required · none | apiKeyQuery | apiKeyHeader | basic
+    "paramName":   "Authorization",             // required for both apiKey schemes
+    "valuePrefix": "Bearer ",                   // optional · apiKeyHeader only · trailing space required
+    "secrets":     { "token": "env://HASURA_TOKEN" }   // env://VAR or inline:… — nothing else
+  }
+} }
+```
+
+`scheme` decides which of the other three may appear at all; the table below is that rule.
+`none` carries none of them, `basic` carries only `secrets` and needs exactly `username` and
+`password`.
+
 | field | type | constraint | req |
 |---|---|---|---|
 | `providerId` | string | `ProviderId` — this is the Beckn `provider.id` | ✓ |
@@ -208,6 +231,16 @@ forces `baseUrl` to `https` whenever `auth.scheme != "none"`. Plaintext stays le
 
 ### 3.2 `Capability`
 
+```jsonc
+{ "Capability": {
+  "capabilityCode": "openagrinet:WeatherObservation",   // required · the outcome @type
+  "name":           "Weather Observation and Forecast", // required · display only
+  "schemaUrl":      "https://raw.githubusercontent.com/OpenAgriNet/network-specs/3e593b3627acae6f416382e6d4bd58f641f309e8/schema/WeatherObservation/v0.1/attributes.yaml",
+  "status":         "active",                           // required · active | inactive
+  "baseTypes":      ["openagrinet:AgricultureResource"] // optional · unique, composed with allOf
+} }
+```
+
 | field | type | constraint | req |
 |---|---|---|---|
 | `capabilityCode` | string | `CapabilityCode`. **This is the outcome `@type`** | ✓ |
@@ -232,6 +265,26 @@ also excluding hosts that do not expose one.
 ### 3.3 `ProviderCapability`
 
 The entity that does the work. A record is **one call** — one shape, no alternatives.
+
+```jsonc
+{ "ProviderCapability": {
+  "bindingKey":      "imd-city-weather|openagrinet:WeatherObservation",  // required · providerId + "|" + capabilityCode
+  "providerId":      "imd-city-weather",             // required · must equal segment 1
+  "capabilityCode":  "openagrinet:WeatherObservation",  // required · must equal segment 2
+  "status":          "active",                       // required · active | inactive
+  "method":          "GET",                          // required · GET | POST
+  "path":            "/citywx/city_weather_test.php",   // required · appended to Provider.baseUrl
+  "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",   // required
+  "responseMapping": "mappings/imd-city-weather/select.response.jsonata",  // required
+  "enricher": {                                      // optional · a Go plugin, run before the request mapping
+    "name":    "nearestStation",                     // required inside enricher
+    "config":  { "maxDistanceKm": 50 },              // optional · free-form, passed to the plugin
+    "secrets": { "dsn": "env://IMD_DB_DSN" }         // optional · same two forms as Provider.auth
+  },
+  "timeoutMs": 15000,                                // optional · 1000–120000, default 15000
+  "retryMax":  0                                     // optional · 0–5, default 0
+} }
+```
 
 | field | type | constraint | req |
 |---|---|---|---|
