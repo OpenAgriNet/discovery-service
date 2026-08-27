@@ -157,10 +157,11 @@ just a third thing that can disagree with the other two.
 
 The **key keeps all three segments**. It has to: `uniqueIndexFields` is a single field, and
 `pm-kisan|…|init` and `pm-kisan|…|status` are different call plans for the same provider
-and capability — under a two-part key they collide, and whether RC then rejects or silently
-overwrites is a property of the deployed build nobody has confirmed. The third segment
-removes the question. What went away is the redundant column, not the discriminator; to
-display or group by action, split the key.
+and capability — under a two-part key they collide. Whether RC then rejects the second
+write or silently overwrites the first is a property of the RC build, and since v1 picks
+its own build that is a question to answer once with a test rather than design around. The
+three-part key means the answer never matters. What went away is the redundant column, not
+the discriminator; to display or group by action, split the key.
 
 **Mappings live in files, not in the row.** The Mausamgram response transform is 76 lines
 of JSONata; stored in the row it is one string with every newline escaped, unreviewable in
@@ -615,6 +616,6 @@ category.
 | An `OnDemand` advert fails its own pack | The outcome packs require `observationType`, `source`, `location`, `generatedAt` — all Direct-only. Needs an `if`/`then` on `informationMode` upstream. Until then the advert validates against `AgricultureCapability`, so the mode selects the contract. |
 | No min/max qualifier on `parameter` | Daily high/low is inexpressible. Affects Weather. |
 | `informationMode` is not in `docs/design/` | Zero mentions in our plan and zero in `src/`. The DS has no notion of advertisement-vs-result today. |
-| `schemaUrl` host is a placeholder | Three `Capability` records carry `https://REPLACE-ME.invalid/`. They satisfy the schema pattern but resolve to nothing; the real host must be filled in before seeding. |
+| `schemaUrl` host is a placeholder | Three `Capability` records carry `https://REPLACE-ME.invalid/`. They satisfy the schema pattern but resolve to nothing. Needs a decision on where the network-specs packs are served from — the pattern already forbids a branch ref, so whatever host is chosen must serve commit-pinned paths. |
 | `oan-vector` on plain HTTP | Legal (`scheme: none`) but should move behind TLS before real traffic. |
-| `registry/schemas/` and `samples/` not imported | The prose here describes the schema; the schema files themselves live in the BV repo. Conformance cannot be re-run from this directory. |
+| No JSON Schema files behind this page | Everything above is prose. Sunbird RC boots from JSON Schema, not from a table, so `Provider`, `Capability` and `ProviderCapability` have to be authored before anything can be seeded. Nothing is being migrated — v1 stands the registry up from scratch — so these are ours to write, not BV's to send. |
