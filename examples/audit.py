@@ -441,6 +441,11 @@ def main():
         "05-discover-spatial-intersects.json",
         "06-discover-filter-granularity.json",
         "07-discover-filter-cross-level.json",
+        # A filter with no text and no geometry: the one intent that reaches
+        # the candidates path carrying a filter. 04 and 05 reach it with a
+        # geometry instead, so without this the NULL-query fallthrough could
+        # stop applying filter_doc and nothing here would notice.
+        "16-discover-filter-only.json",
         # Combinations. Retrieval modes union, constraints intersect — these
         # are the cases where those two rules meet, and each dimension here
         # excludes something the others admit.

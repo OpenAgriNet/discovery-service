@@ -145,6 +145,18 @@ EXPECT = [
         "matter at once. Case 12 is where that proof lives.",
     ),
     (
+        "16-discover-filter-only.json",
+        "16 Filter alone - no text, no geometry",
+        [VILLAGE],
+        None,
+        "The only case that reaches the candidates path with a filter on it. An "
+        "intent naming no ranked mode is answered by the lexical retriever with "
+        "a NULL query_text; 04 and 05 exercise that path with a geometry, and "
+        "nothing else exercises it with a filter. If the NULL-query fallthrough "
+        "stopped applying filter_doc, this returns all three and every other "
+        "case still passes.",
+    ),
+    (
         "13-discover-fuzzy-typos.json",
         "13 Retrieval modes UNION - misspelled query, trigram not tsvector",
         [VILLAGE],

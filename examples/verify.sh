@@ -295,6 +295,18 @@ discover_case 15-discover-text-geo-filter.json \
   "$VILLAGE" \
   "offer-wx-free-tier"
 
+# A filter and NOTHING else. This is the only case that reaches the
+# candidates path with a filter on it: an intent naming no ranked mode is
+# answered by the lexical retriever run with a NULL query_text, which reads as
+# "every row the shared predicate admits" and falls through to the stable key
+# order. Case 04 and 05 reach that path too, but with a geometry rather than a
+# filter — so if the NULL-query fallthrough ever stopped applying filter_doc,
+# a filter-only request would return the whole catalog and every OTHER case
+# here would still pass, because in all of them something else is narrowing.
+discover_case 16-discover-filter-only.json \
+  "16  filter alone, no text and no geometry -> village alone" \
+  "$VILLAGE"
+
 # Retrieval modes UNION. Every term here is misspelled, so the tsvector admits
 # nothing at all; the resource comes back through the trigram index on `name`,
 # which gates on similarity >= 0.3 and not on the searchable text. Without this

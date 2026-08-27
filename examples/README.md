@@ -88,6 +88,7 @@ generous.
 | `06-discover-filter-granularity.json` | jsonpath, resource-rooted | village alone |
 | `07-discover-filter-cross-level.json` | jsonpath, **offer**-rooted | point alone |
 | `08-discover-invalid-jsonpath.json` | the form gate | **400** |
+| `16-discover-filter-only.json` | filter alone — no text, no geometry | village alone |
 | `10-discover-text-and-geo.json` | text **and** geo | point alone |
 | `11-discover-geo-and-filter.json` | geo **and** filter, no text at all | village alone |
 | `14-discover-text-and-filter.json` | text **and** filter, no geometry | alert alone |
@@ -129,6 +130,16 @@ an item back, `false` is an item, and so it answers true for every row. The
 caller receives the entire corpus formatted as a filtered page with no error
 anywhere — nothing in the response distinguishes it from an honest result. The
 service rejects the shape before the cast instead.
+
+**16 is the only filter that arrives alone.** Every other filter case carries
+a `textSearch` beside it (06, 07, 14) or a geometry (11, 12, 15). An intent
+naming no ranked mode goes down the `candidates` path — the lexical retriever
+run with a NULL `query_text`, which reads as "every row the shared predicate
+admits" and falls through to the stable key order. Cases 04 and 05 exercise
+that path with a geometry; nothing exercised it with a filter. If the
+NULL-query fallthrough ever stopped applying `filter_doc`, a filter-only
+request would return the entire catalog and **every other case here would still
+pass**, because in all of them something else is doing the narrowing.
 
 ## Constraints intersect, retrieval modes union
 

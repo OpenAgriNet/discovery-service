@@ -1024,6 +1024,76 @@
           ]
         },
         {
+          "name": "16 Filter alone - no text, no geometry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/discover",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "discover"
+              ]
+            },
+            "description": "The only case that reaches the candidates path with a filter on it. An intent naming no ranked mode is answered by the lexical retriever with a NULL query_text; 04 and 05 exercise that path with a geometry, and nothing else exercises it with a filter. If the NULL-query fallthrough stopped applying filter_doc, this returns all three and every other case still passes.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000016\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000016\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const req = JSON.parse(pm.request.body.raw);",
+                  "",
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test(\"callback action is on_discover\", () =>",
+                  "    pm.expect(res.context.action).to.eql(\"on_discover\"));",
+                  "",
+                  "pm.test(\"version is 2.0.0\", () =>",
+                  "    pm.expect(res.context.version).to.eql(\"2.0.0\"));",
+                  "",
+                  "pm.test(\"transactionId and messageId are echoed\", () => {",
+                  "    pm.expect(res.context.transactionId).to.eql(req.context.transactionId);",
+                  "    pm.expect(res.context.messageId).to.eql(req.context.messageId);",
+                  "});",
+                  "",
+                  "// A NACK arrives with its own shape and would otherwise slip past every",
+                  "// assertion above that only looks at `catalogs`.",
+                  "pm.test(\"not a NACK\", () =>",
+                  "    pm.expect(res.message.status, JSON.stringify(res.message.error))",
+                  "      .to.not.eql(\"NACK\"));",
+                  "",
+                  "const resourceIds = (res.message.catalogs || [])",
+                  "    .flatMap(c => c.resources || []).map(r => r.id).sort();",
+                  "",
+                  "// EXACT, not \"contains\": a filter that has quietly stopped filtering still",
+                  "// returns rows, and a subset assertion passes for it.",
+                  "pm.test(\"resources are exactly \" + JSON.stringify([\"res-wx-village-belagavi\"]), () =>",
+                  "    pm.expect(resourceIds).to.eql([\"res-wx-village-belagavi\"]));",
+                  "",
+                  "// The service declares a missing retrieval mode rather than failing: the",
+                  "// semantic mode defaults to `noop`, so this header is EXPECTED locally.",
+                  "const degraded = pm.response.headers.get(\"X-Beckn-Degraded\");",
+                  "if (degraded) { console.log(\"degraded modes: \" + degraded); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "13 Retrieval modes UNION - misspelled query, trigram not tsvector",
           "request": {
             "method": "POST",
