@@ -25,6 +25,7 @@ Usage:  python3 examples/audit.py            (needs jsonschema + pyyaml)
 import copy
 import json
 import math
+import re
 import os
 import sys
 import urllib.error
@@ -194,6 +195,59 @@ def lexical_matches(resource, query):
     return any(stems(term) in haystack for term in query.split())
 
 
+def trigrams(text):
+    """pg_trgm's tokenisation, reimplemented: lowercase, split on anything that
+    is not alphanumeric, pad each word with two leading and one trailing space,
+    take every 3-gram, deduplicate."""
+    out = set()
+    for word in re.findall(r"[0-9a-z]+", text.lower()):
+        padded = "  " + word + " "
+        for i in range(len(padded) - 2):
+            out.add(padded[i:i + 3])
+    return out
+
+
+def trigram_similarity(a, b):
+    """pg_trgm similarity(): shared trigrams over the union of both sets.
+
+    This is the one place the oracle reimplements a documented algorithm rather
+    than deriving ground truth from first principles, so it is the one place
+    that could be wrong in the same direction as the thing it checks. It was
+    validated against PostgreSQL's own similarity() over the fixture's names
+    crossed with every query used here — 24 pairs, exact to 1e-6.
+    """
+    left, right = trigrams(a), trigrams(b)
+    if not left and not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+# pg_trgm.similarity_threshold, the value `%` reads. Nothing in this service
+# sets it, so it is PostgreSQL's 0.3 default — a deployment that moves it moves
+# what the fuzzy mode admits, and this constant with it.
+TRIGRAM_THRESHOLD = 0.3
+
+
+def fuzzy_matches(resource, query):
+    """The trigram mode, which gates on the resource NAME and not on the
+    searchable text the lexical mode uses."""
+    name = (resource.get("descriptor") or {}).get("name") or ""
+    return trigram_similarity(name, query) >= TRIGRAM_THRESHOLD
+
+
+def text_matches(resource, query):
+    """Retrieval modes UNION; constraints intersect.
+
+    Lexical and fuzzy are separate retrievers over one shared WHERE, fused by
+    RRF — so a resource either one admits is in the answer. Modelling the
+    lexical mode alone made this oracle agree with the service for eight cases
+    and it was still incomplete: a query whose every term is misspelled matches
+    no tsvector and still comes back through the trigram index. Case 13 is that
+    query, and it is why this function is not just `lexical_matches`.
+    """
+    return lexical_matches(resource, query) or fuzzy_matches(resource, query)
+
+
 # ----------------------------------------------------------------- filters
 
 
@@ -242,7 +296,7 @@ def expected_for(intent, context, catalog):
     """Recompute the resources an intent should match, from the source data."""
     matched = []
     for resource in catalog["resources"]:
-        if "textSearch" in intent and not lexical_matches(resource, intent["textSearch"]):
+        if "textSearch" in intent and not text_matches(resource, intent["textSearch"]):
             continue
 
         if context.get("schemaContext"):
@@ -387,6 +441,13 @@ def main():
         "05-discover-spatial-intersects.json",
         "06-discover-filter-granularity.json",
         "07-discover-filter-cross-level.json",
+        # Combinations. Retrieval modes union, constraints intersect — these
+        # are the cases where those two rules meet, and each dimension here
+        # excludes something the others admit.
+        "10-discover-text-and-geo.json",
+        "11-discover-geo-and-filter.json",
+        "12-discover-text-geo-filter-empty.json",
+        "13-discover-fuzzy-typos.json",
     ]
 
     for name in cases:

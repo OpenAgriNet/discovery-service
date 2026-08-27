@@ -90,6 +90,49 @@ EXPECT = [
         "three-column design an offer-rooted predicate could not select a "
         "resource at all. If this returns all three, the composite regressed.",
     ),
+    (
+        "10-discover-text-and-geo.json",
+        "10 Combination - text AND geo",
+        [POINT],
+        None,
+        "Constraints INTERSECT. 'cotton' appears only in the point resource and "
+        "'cyclone' only in the alert, so text alone gives point+alert; the 25km "
+        "circle alone gives point+village. Only the point is in both. Each "
+        "dimension excludes something the other admits, which is what makes a "
+        "dropped predicate visible here.",
+    ),
+    (
+        "11-discover-geo-and-filter.json",
+        "11 Combination - geo AND attribute filter",
+        [VILLAGE],
+        ["offer-wx-free-tier"],
+        "Geo alone gives point+village, the FREE-TIER offer covers "
+        "village+alert. Village is the only overlap. Note there is no "
+        "textSearch at all: a NULL query_text must admit every row the other "
+        "predicates allow, not none, or a geo-only discover answers empty.",
+    ),
+    (
+        "12-discover-text-geo-filter-empty.json",
+        "12 Combination - all three, disjoint, expects EMPTY",
+        [],
+        None,
+        "Text selects the point resource, the geometry selects the village, and "
+        "no resource is both. Empty is the only answer a conjunction can give. "
+        "If the dimensions were OR'd this returns two resources; if one were "
+        "dropped it returns one. Cases 10 and 11 are what stop this passing "
+        "vacuously against a service returning nothing for everything.",
+    ),
+    (
+        "13-discover-fuzzy-typos.json",
+        "13 Retrieval modes UNION - misspelled query, trigram not tsvector",
+        [VILLAGE],
+        None,
+        "Every term is misspelled, so the tsvector admits nothing. The resource "
+        "comes back through the trigram index on `name`, which gates on "
+        "similarity >= 0.3 (pg_trgm's default threshold) and NOT on the "
+        "searchable text the lexical mode uses. Constraints intersect, but "
+        "retrieval modes union - this is the case that tells them apart.",
+    ),
 ]
 
 ENVELOPE_TEST = """

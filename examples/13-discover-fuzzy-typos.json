@@ -1,0 +1,15 @@
+{
+  "context": {
+    "domain": "agriculture",
+    "action": "discover",
+    "version": "2.0.0",
+    "transactionId": "a1000000-0000-4000-8000-000000000013",
+    "messageId": "b1000000-0000-4000-8000-000000000013",
+    "timestamp": "2026-08-27T06:30:00Z"
+  },
+  "message": {
+    "intent": {
+      "textSearch": "Vilage weathr advisery Belgavi"
+    }
+  }
+}

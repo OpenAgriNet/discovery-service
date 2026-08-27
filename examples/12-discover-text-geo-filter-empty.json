@@ -1,0 +1,32 @@
+{
+  "context": {
+    "domain": "agriculture",
+    "action": "discover",
+    "version": "2.0.0",
+    "transactionId": "a1000000-0000-4000-8000-000000000012",
+    "messageId": "b1000000-0000-4000-8000-000000000012",
+    "timestamp": "2026-08-27T06:30:00Z"
+  },
+  "message": {
+    "intent": {
+      "textSearch": "cotton",
+      "spatial": [
+        {
+          "op": "S_INTERSECTS",
+          "targets": "$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]",
+          "geometry": {
+            "type": "Point",
+            "coordinates": [
+              74.5,
+              16.0
+            ]
+          }
+        }
+      ],
+      "filters": {
+        "type": "jsonpath",
+        "expression": "$.catalogs[*].offers[*] ? (@.descriptor.code == \"FREE-TIER\")"
+      }
+    }
+  }
+}

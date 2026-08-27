@@ -88,8 +88,12 @@ generous.
 | `06-discover-filter-granularity.json` | jsonpath, resource-rooted | village alone |
 | `07-discover-filter-cross-level.json` | jsonpath, **offer**-rooted | point alone |
 | `08-discover-invalid-jsonpath.json` | the form gate | **400** |
+| `10-discover-text-and-geo.json` | text **and** geo | point alone |
+| `11-discover-geo-and-filter.json` | geo **and** filter, no text at all | village alone |
+| `12-discover-text-geo-filter-empty.json` | all three, disjoint | **empty** |
+| `13-discover-fuzzy-typos.json` | trigram mode, every term misspelled | village alone |
 
-Four of these are worth the extra sentence.
+Several of these are worth the extra sentence.
 
 **09 exists because 02 could not tell OR from AND.** Every term in 02's
 query appears in both of the resources it matches, so the case passes
@@ -123,6 +127,38 @@ an item back, `false` is an item, and so it answers true for every row. The
 caller receives the entire corpus formatted as a filtered page with no error
 anywhere — nothing in the response distinguishes it from an honest result. The
 service rejects the shape before the cast instead.
+
+## Constraints intersect, retrieval modes union
+
+These are two different rules and cases 10–13 exist to separate them.
+
+Look at any retriever in `discover.sql` and the shape is the same: **one shared
+`WHERE`** carrying visibility, validity, `schemaContext`, the attribute filter
+and the whole spatial predicate, and then a per-mode `ORDER BY`. So every
+constraint is ANDed inside every mode — adding a geometry to a filtered intent
+narrows it, it never widens it. Case 12 is the sharp end of that: text picks the
+point resource, the geometry picks the village, and the correct answer is
+**empty**. Under OR it would return two.
+
+The modes themselves are the opposite. `LexicalCandidates` gates on
+`search_tsv @@ discover_tsquery(...)`; `FuzzyCandidates` gates on
+`name % query_text` — trigram similarity against the resource **name**, not
+against the searchable text. They are separate retrievers fused by RRF, so a
+resource either one admits is in the answer. Case 13 is a query whose every
+term is misspelled: no tsvector matches it, and the village resource comes back
+anyway at similarity 0.56.
+
+That distinction is easy to miss, and it was missed here. `audit.py`'s oracle
+originally modelled the lexical mode alone and agreed with the service on all
+eight single-dimension cases — not because it was right, but because no fixture
+query happened to trip the fuzzy mode without also tripping the lexical one.
+Case 13 is what exposed it. The oracle now reimplements pg_trgm (validated
+against PostgreSQL's own `similarity()` over 24 pairs, exact to 1e-6) and
+matches when **either** mode does.
+
+The threshold is `pg_trgm.similarity_threshold`, which nothing in this service
+sets — so it is PostgreSQL's 0.3 default, and a deployment that moves it moves
+what the fuzzy mode admits.
 
 ## `schemaContext` is a context field
 

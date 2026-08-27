@@ -234,6 +234,48 @@ discover_case 07-discover-filter-cross-level.json \
   "$POINT" \
   "offer-wx-subscription"
 
+printf '%s\n' "=== COMBINATIONS"
+
+# Constraints INTERSECT. Each case below is built so every dimension in it
+# excludes something the others admit — otherwise a dropped predicate is
+# invisible, because the answer would come out the same with or without it.
+#
+#   text "cotton cyclone"          -> point + alert   (cotton only in the point
+#                                                      resource, cyclone only in
+#                                                      the alert)
+#   S_DWITHIN 25km of Dharwad      -> point + village
+#   intersection                   -> point alone
+discover_case 10-discover-text-and-geo.json \
+  "10  text 'cotton cyclone' AND S_DWITHIN 25km -> point alone" \
+  "$POINT"
+
+#   S_DWITHIN 25km of Dharwad      -> point + village
+#   offers FREE-TIER               -> village + alert
+#   intersection                   -> village alone
+discover_case 11-discover-geo-and-filter.json \
+  "11  S_DWITHIN 25km AND offers FREE-TIER -> village alone" \
+  "$VILLAGE" \
+  "offer-wx-free-tier"
+
+# All three dimensions, and the answer is EMPTY — which is the point. Text
+# selects the point resource, the geometry selects the village, and no resource
+# is both. If the three were being OR'd rather than ANDed this returns two
+# resources; if any one were being dropped it returns one. Empty is the only
+# answer a conjunction can give, and cases 10 and 11 are what stop this from
+# passing vacuously against a service that returns nothing for everything.
+discover_case 12-discover-text-geo-filter-empty.json \
+  "12  text AND geo AND filter, disjoint -> empty" \
+  ""
+
+# Retrieval modes UNION. Every term here is misspelled, so the tsvector admits
+# nothing at all; the resource comes back through the trigram index on `name`,
+# which gates on similarity >= 0.3 and not on the searchable text. Without this
+# case the two modes are indistinguishable, and an oracle modelling only the
+# lexical one agrees with the service by luck of the fixture.
+discover_case 13-discover-fuzzy-typos.json \
+  "13  every term misspelled -> village, via trigram not tsvector" \
+  "$VILLAGE"
+
 printf '%s\n' "=== REFUSALS"
 
 # The same intent as 06 written WITHOUT the ? (...) filter. PostgreSQL runs it
