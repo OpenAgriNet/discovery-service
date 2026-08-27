@@ -126,3 +126,4 @@ if someone changes it back. A commit message that restates the diff is wasted.
 | `config/` | `common.yaml` (committed, reviewed); `instance.yaml` is mounted per deployment |
 | `tests/` | `acceptance/`, `dbtest/`, `testdata/`, and `architecture/boundary_test.go` — the import-graph guard on the TRD §5 swap boundary |
 | `docs/design/`, `docs/adr/` | The plan, and the 16 ADRs behind it — 0001 is superseded by 0016 |
+| `docs/registry/` | Imported reference: the BV Beckn adapter and its Sunbird RC registry. A **different system**, copied for interop context. Binding on nothing here; `docs/design/` still wins |
