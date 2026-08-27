@@ -116,4 +116,7 @@ they exist, raise an issue.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+Undecided. This repository carries no `LICENSE`, for the same reason it carries
+no `CONTRIBUTING.md` — the decision has not been made, and a licence file is the
+one placeholder that cannot be corrected later without the consent of everyone
+who relied on it. Until one is chosen, no licence is granted.

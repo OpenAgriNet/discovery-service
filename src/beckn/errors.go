@@ -17,7 +17,8 @@ type ErrorCode string
 
 // The codes this service mints. Deliberately not all 76: a constant no call
 // site spends is a guess about which fault a later task will report, and the
-// enum is in the fixture for anything this list is missing.
+// enum is in the fixture for anything this list is missing. One exception is
+// declared and named as such below, with the reason it earns its place.
 //
 // Six of them stand in for codes earlier drafts invented — the mapping and the
 // reason for each are in Task 5 of the plan. The precision those names carried
@@ -50,6 +51,17 @@ const (
 
 	// AUT_ — authentication and trust. CodeAuthRateLimited is the one code
 	// that carries a header with it (A4): 429 plus Retry-After.
+	//
+	// CodeAuthSignatureMissing is the exception to the rule above: no
+	// production call site spends it, because signature verification is out of
+	// scope for this phase and the layer that would mint it does not exist. It
+	// is declared anyway because it is the only AUT_ member left once
+	// CodeAuthRateLimited overrides itself to 429, and so the only code that
+	// can exercise `Status()`'s TypeCore -> 401 branch at all. Deleting it
+	// would not remove the branch, only the one test that proves it. Note what
+	// that means for a reader of a live deployment: 401 is unreachable today,
+	// and the day signature verification lands is the day this constant stops
+	// being test-only.
 	CodeAuthSignatureMissing ErrorCode = "AUT_SIGNATURE_MISSING"
 	CodeAuthRateLimited      ErrorCode = "AUT_RATE_LIMITED"
 
