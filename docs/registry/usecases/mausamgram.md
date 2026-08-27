@@ -139,7 +139,7 @@ adapter owns encoding.** The experience layer does not know that IMD calls this
       "textSearch": "weather forecast rain next five days",
       "filters": {
         "type": "jsonpath",
-        "expression": "$[?(@.resourceAttributes['@type'] anyof ['openagrinet:WeatherObservation','openagrinet:WeatherAdvisory'])]"
+        "expression": "$.catalogs[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:WeatherObservation\" || @.resourceAttributes.\"@type\" == \"openagrinet:WeatherAdvisory\")"
       },
       "spatial": [{
         "op": "S_DWITHIN",
@@ -154,6 +154,29 @@ adapter owns encoding.** The experience layer does not know that IMD calls this
 
 The adapter forwards this to the discovery service, which evaluates it against its
 **indexed catalog store**. No provider is contacted.
+
+**The filter is written in PostgreSQL SQL/JSON path, not RFC 9535.** That is not a style
+choice and it is the one thing on this page most likely to be copied wrongly. `beckn.yaml`
+describes `filters.expression` as *"JSONPath filter expressions per RFC 9535"* and its own
+`Intent` example uses the Goessner subscript form `$.catalogs[?(@.rating.value >= 4.0)]` —
+but a discovery service backed by Postgres executes the expression with the `@?` operator,
+which takes a different grammar. Three differences bite:
+
+| | RFC 9535 (the spec's example) | SQL/JSON path (what executes) |
+|---|---|---|
+| filter | `$.catalogs[?(...)]` | `$.catalogs[*] ? (...)` |
+| quoting | `['@type']` or `'literal'` | `."@type"` and `"literal"` — double quotes |
+| membership | `anyof [a, b]` | no such operator; expand to `a \|\| b` |
+
+An earlier version of this example used all three of the left-hand forms. None of them are
+caught by validation — `filters.expression` is declared `type: string`, so a wrong dialect
+is schema-valid and the envelope on this page passes `beckn.yaml` either way. `anyof` in
+particular is a hard Postgres syntax error, so it fails at query time, per request, on the
+provider side of the network. Write the right-hand forms.
+
+Rooting matters too: the expression is evaluated against a document whose top level is
+`catalogs`, so a filter starting `$[?(...)]` addresses the wrong node and matches nothing
+— and a filter that matches nothing is indistinguishable from an honest empty result.
 
 Two things to notice, because they are exactly why `select` has to exist — see
 [Which action is the second call?](../01-overview.md#which-action-is-the-second-call):

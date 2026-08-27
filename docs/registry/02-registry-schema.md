@@ -124,7 +124,7 @@ write, not a column that quietly appears.
 |---|---|---|---|
 | `providerId` | string | `^[a-z0-9][a-z0-9._:-]{2,63}$` — Beckn `provider.id` / `bppId` | ✓ |
 | `name` | string | `minLength: 1` | ✓ |
-| `baseUrl` | string | `^https?://[^/].*[^/]$` — no trailing slash; a common path prefix is allowed (`mausamgram` is `…/nwpapi`), per-call paths are not | ✓ |
+| `baseUrl` | string | `^https?://[^/].*[^/]$` — no trailing slash; a common path prefix is allowed (`mausamgram` is `…/nwpapi`), per-call paths are not. **`https` is required whenever the record carries a credential** — see below | ✓ |
 | `status` | string | `active` \| `inactive` | ✓ |
 | `auth` | object | → `Auth` | ✓ |
 | `authProfiles` | object | `minProperties: 1`; keys `^[a-z][a-zA-Z0-9]*$`, values → `Auth` | |
@@ -162,6 +162,40 @@ rather than left to prose:
 
 That last row is the one worth having: `scheme: "none"` with a populated `secrets` block is
 a credential nobody sends anywhere, sitting in a readable table.
+
+**A credential implies TLS.** Read the table above in the other direction: every scheme
+except `none` *requires* `secrets`, so `scheme != "none"` and "this record holds a
+credential" are the same statement. `baseUrl` allows `http://`, and nothing related the
+two — so an `apiKeyHeader` binding pointed at a plaintext base URL was a well-formed
+record that put a live secret on the wire in clear, and no validation, no conformance
+control and no review checklist would have said a word. One clause closes it:
+
+```json
+{ "if":   { "properties": { "auth": { "properties": { "scheme": { "not": { "const": "none" } } },
+                                      "required": ["scheme"] } },
+            "required": ["auth"] },
+  "then": { "properties": { "baseUrl": { "pattern": "^https://[^/].*[^/]$" } } } }
+```
+
+A second clause requires `https` whenever `authProfiles` is present at all. That is
+deliberately blunter than the first — it does not inspect each profile's scheme — because
+a profile exists precisely to authenticate *differently* from `Provider.auth`, and a
+profile set in which every entry is `none` has nothing to express. Over-strict in a case
+that should not arise beats a per-profile conditional that draft-07 states awkwardly and
+a reader checks wrongly.
+
+`http://` stays legal for `scheme: "none"`, and one seeded provider needs it:
+[`oan-vector`](usecases/README.md#oan-vector--knowledge-advisory) is a bare IP over plain
+HTTP with no credential. The rule does not pretend that is good — it is still an internal
+service reachable by anything that can route to it — it says only that no *secret* is
+being leaked by it, which is the part a schema can decide. Moving it behind TLS is
+onboarding work, not a schema change.
+
+Two negative controls belong in [Conformance](reference/conformance.md) —
+`apiKeyHeader` on a plaintext base URL, and an `authProfiles` block on one, both
+rejected. **Neither exists yet**, because this clause was written here rather than
+upstream and the suite lives with the schema files. Until they are added, the rule holds
+only because someone remembered it, which is the condition it was written to end.
 
 **`Login`** — the only pre-call this registry models: exchange stored secrets for a
 short-lived token.

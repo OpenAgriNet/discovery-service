@@ -15,12 +15,24 @@
 > [`docs/design/discover-and-publish.md`](../design/discover-and-publish.md), and
 > where the two disagree that one wins — as does `beckn.yaml` over both.
 >
-> One thing only was edited in the copy: the five **Background** links below
-> pointed one level up in the source repository, and now point at
-> [`background/`](background/), where those notes were brought along so the set
-> has no dead links. Everything else is as it was written — including
-> `reference/open-issues.md`, which its own page warns goes stale fastest, so
-> check it against the source before acting on it.
+> **This copy has diverged from the source.** One edit was made at import time:
+> the five **Background** links below pointed one level up in the source
+> repository, and now point at [`background/`](background/), where those notes
+> were brought along so the set has no dead links.
+>
+> Three corrections were made afterwards, on 2026-08-27, each verified against
+> `beckn.yaml`, a live PostgreSQL, or `background/PROVIDERS.md`. **They have not
+> been sent upstream.** Reconcile before treating either copy as current:
+>
+> | Where | What changed |
+> |---|---|
+> | [`usecases/mausamgram.md`](usecases/mausamgram.md) | The `discover` filter expression was RFC 9535 and used `anyof`; rewritten in SQL/JSON path and verified against Postgres. A table now states the dialect difference, because nothing validates it. |
+> | [`02-registry-schema.md`](02-registry-schema.md) | `baseUrl` allowed plaintext HTTP while `Auth` required credentials, so one could be sent in clear and no control would object. Two `if`/`then` clauses now require TLS whenever the record carries one. |
+> | [`usecases/README.md`](usecases/README.md) | The `agmarknet` binding named the non-production endpoint and said `POST`; both variants are `GET`, and the record now names the location variant production actually calls. |
+>
+> Everything else is as it was written — including `reference/open-issues.md`,
+> which its own page warns goes stale fastest, so check it against the source
+> before acting on it.
 
 The adapter answers one question at runtime: *I have this **provider** and this
 **capability** — how do I call them?* The registry holds the answer, the adapter is

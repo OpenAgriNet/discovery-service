@@ -52,10 +52,31 @@ is the moment it earns its own page.
 
 ### agmarknet — Mandi price discovery
 
-`enricher` resolves lat/lon to state, district, market and commodity codes before the
-mapping runs. The production endpoint takes lat/lon directly
-(`fetch-agmarknet-vistaar-location`); this binding is pinned to the branch variant the
-seed was built from.
+Two upstream variants exist and this binding names the one production actually calls.
+[`PROVIDERS.md`](../background/PROVIDERS.md) captures both:
+
+| | `/v1/fetch-agmarknet-vistaar` | `/v1/fetch-agmarknet-vistaar-location` |
+|---|---|---|
+| takes | `statecode` `districtcode` `marketcode` `commoditycode` | `lat` `long` `commodity_id` |
+| dates | `from_date` + `to_date` | one `date` |
+| needs a Postgres geo lookup | yes | **no** |
+| in production | no | **yes** |
+
+The binding was previously pinned to the left-hand column — the branch variant the seed
+was built from — which made the seeded record a description of a call nobody makes. It now
+names the location variant.
+
+`enricher` stays `marketAndCommodityCodes`, but the location variant uses only half of it:
+lat/lon go through untouched and just `commodity_id` still has to be resolved. Narrowing
+the enricher is a code change in the adapter, not a registry edit, so the name is left
+alone rather than renamed to something with no plugin behind it.
+
+`method` was also wrong: the record said `POST`, and **both** variants are `GET` with the
+token in the query string — which is what `scheme: apiKeyQuery` already says.
+
+One thing this record cannot fix by itself: `mappings/agmarknet/select.request.jsonata`
+still shapes the four-code query. It has to emit `lat`, `long`, `commodity_id` and a single
+`date` before this binding will execute. That file is not in this directory.
 
 ```json
 {
@@ -82,8 +103,8 @@ seed was built from.
     "providerId": "agmarknet",
     "capabilityCode": "openagrinet:MandiPriceObservation",
     "action": "select",
-    "method": "POST",
-    "path": "/v1/fetch-agmarknet-vistaar",
+    "method": "GET",
+    "path": "/v1/fetch-agmarknet-vistaar-location",
     "requestMapping": "mappings/agmarknet/select.request.jsonata",
     "responseMapping": "mappings/agmarknet/select.response.jsonata",
     "enricher": "marketAndCommodityCodes",
