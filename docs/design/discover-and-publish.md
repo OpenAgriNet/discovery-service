@@ -135,6 +135,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A14** | **`DeriveFunc` takes the merged catalog by POINTER: `func(merged *Catalog, touched []string) []Fault`.** A8 makes derive the post-merge seam that WRITES `searchText`, `embedding`, `embeddingSourceHash`, `schemaContext`, `schemaType` and the geometry finds onto the merged catalog before the repository stores it. Taking the catalog by value gave it a copy: everything it computed was discarded, and the columns it exists to fill would have gone to the store empty while every test that only checked the returned faults passed. The `[]Fault` return stays, because a fault is a PARTIAL that travels to the response and is not a field of the catalog | 13, 14, 15, 17 |
 | **A15** | **`Owners` is spent by the geometry WALK, and the repository never reads it back.** The walk already fans a shape out — `merged.Resources[k].Geometries <- found where k in Owners` — so an offer geometry covering three resources arrives on all three lists, each copy still naming all three. A repository that then wrote one row per owner per copy would turn N lists into N x N rows and violate `uq_resource_geometries (catalog_id, COALESCE(resource_id, ''), source_path)` on the FIRST publish of any offer geometry, not on some later republish. The rule is therefore positional: a shape is stored for the resource whose list it is on, and for the catalog when it is on the catalog's. The fill is still computed once per shape — memoised on `SourcePath`, which is unique per shape and is half of that same index — because the copies are identical shapes and H3 is the expensive half. This also settles staleness: an offer's shape cannot rot on an untouched resource, because `touched` follows offers, so patching the offer touches every resource it covers | 15, 17 |
 | **A16** | **The pool floor is `(modes + 1) x in-flight`, and scenario 25's 20 ms budget is measured rather than enforced.** Task 1 sizes the pool as `modes x in-flight` — 32 for scenario 25's sixteen discovers — which counts only the retrieval fan-out. A discover then issues a count and four hydration queries, each taking a connection while its fifteen siblings are still inside their two-connection fan-out, so the peak is one higher per request. Measured on the corpus: 32 connections leave 137-195 acquires waiting, 48 leave none, 96 leave none no faster. `MinConns` must equal `MaxConns` for the assertion to mean anything, because `EmptyAcquireCount` counts acquires that waited for a connection to be CONSTRUCTED as well as ones that waited for a release, so a pool growing lazily from 4 charges its own warm-up to the scenario. **The latency half does not survive contact with the hardware:** one discover over ten thousand resources answers in 19-22 ms, inside the budget, but sixteen concurrent ones measure p50 160 ms / p95 260 ms against a database that saturates at 91-98 requests a second on a four-CPU container — Little's law, and the measurement agrees within 5%. 20 ms at that concurrency needs ~800 requests a second, about nine times this capacity, and it is a hardware statement rather than a query one. Task 21 therefore logs p50, p95 and throughput on every run and enforces the two machine-independent halves instead: `EmptyAcquireCount` must not move, and twenty times the corpus must cost under three times the request — which is the `count(*)` joining `catalogs` the scenario names, since that one tracks matches rather than the page | 1, 21 |
+| **A17** | **Each published object is stored verbatim in exactly one row's `document`, and every other column on that row is DERIVED from it at publish time.** The schema shredded a catalog into columns chosen for indexing — `provider`, `descriptor`, `attributes` — and those columns then became the only thing stored, so a discover response could not return a catalog's `descriptor`, `bppId`, `bppUri` or `validity` at all, and a JSONPath filter had no document to run against above `resourceAttributes`. **`catalogs.document` holds the Catalog with `resources` and `offers` STRIPPED** — those own their own rows, and keeping them in both places would give one MERGE two places to apply and no constraint keeping the two agreed. `resources.document` holds the whole Resource; `offers.offer` is RENAMED `offers.document`, which is what it already held and what `OfferPatch.Document` already called it. `catalogs.provider`, `resources.descriptor` and `resources.attributes` are dropped in the same migration, so this is close to storage-neutral rather than a second copy of anything. `visible_to` stays authoritative because it arrives on the DIRECTIVE and is not in the document; `active`, the validity quartet, `name`, `schema_context`, `schema_type`, `search_tsv`, `embedding` and every `resource_geometries` row become derived — the row is now an INDEX over the document. The GIN filter index moves from `attributes` to `document` and one is added on `catalogs.document`, which is what lets Task 22 rebase by PREFIX alone: `$.catalogs[*]`, `$.catalogs[*].resources[*]` and `$.catalogs[*].offers[*]` each name exactly one column, with no per-predicate column routing and no mixed-predicate refusal case. **Migrations 000002, 000003 and 000006 are edited in place rather than superseded**: `catalogs.descriptor` was never stored, so no backfill can reconstruct a document satisfying the schema's own `required: [id, descriptor, provider]`, and every catalog would need a republish regardless — a migration that cannot produce a valid row is worse than one that is honest about needing the data again | 11, 14, 15, 16, 17, 18, 19, 21b, 22 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -4543,6 +4544,77 @@ job would be a slower and much later version of.
 
 ---
 
+### Task 21b — Verbatim Document Storage & Round-Trip Fidelity
+
+**Files:** `migrations/000002_catalogs.up.sql`, `migrations/000003_resources.up.sql`,
+`migrations/000006_offers.up.sql` (and their `.down.sql`),
+`src/storage/postgres/queries/{publish,discover}.sql`, `src/storage/postgres/gen/*`,
+`src/domain/{catalog,mergepatch}.go`, `src/publish/{mapper,service,text,geometry}.go`,
+`src/storage/postgres/{mapping,hydrator}.go`, `src/storage/memory/repository.go`,
+`src/discover/service.go`, `src/storage/conformance/{publish,discover}.go`,
+`tests/acceptance/roundtrip_test.go`
+
+A17, made real. **What a publisher sends comes back byte-equivalent, and every
+column beside `document` is an index over it.**
+
+**The rule, stated once:** each published object is stored verbatim in exactly
+one row's `document`. `catalogs.document` is the Catalog with `resources` and
+`offers` stripped; `resources.document` is the whole Resource;
+`offers.document` is the whole Offer. Nothing else stores a copy of any of it.
+
+**DDL.** `catalogs` gains `document JSONB NOT NULL` and
+`CREATE INDEX idx_catalogs_document ON catalogs USING GIN (document jsonb_path_ops)`,
+and DROPS `provider`. `resources` gains `document JSONB NOT NULL`, DROPS
+`descriptor` and `attributes`, and `idx_resources_attributes` becomes
+`idx_resources_document ON resources USING GIN (document jsonb_path_ops)`.
+`offers.offer` is renamed `document` and `idx_offers_offer` becomes
+`idx_offers_document`. `visible_to` survives on both tables because it arrives
+on the directive, not in the document. Every other column stays and is derived.
+
+**Domain.** `Catalog.Provider` becomes `Catalog.Document`;
+`Resource.Descriptor` and `Resource.Attributes` become one
+`Resource.Document`; `Offer.Document` is already right and does not move. The
+two dropped fields come back as **pure accessors** — `Resource.Descriptor()`,
+`Resource.ResourceAttributes()`, `Catalog.Provider()` — each a shallow read of
+one member. They exist so `deriveSearchText`, `schemaOf`, `descriptorName` and
+the geometry walk keep their exact present semantics: the walk must still
+descend `descriptor` and `resourceAttributes` under those two path segments and
+must NOT start emitting a geometry found beside them, and the search text must
+still be descriptor + attributes and not gain the resource `id`.
+
+`CatalogPatch.Provider` and `ResourcePatch.{Descriptor,Attributes}` collapse the
+same way, into one `Document` each. **This makes `mergeResources` one
+`patchDocument` call instead of two, and the result is identical** — RFC 7396
+recurses, so a patch of `{"descriptor":{"name":"x"}}` against the whole document
+reaches the same place two separate merges reached. `ResourcePatch` is now
+exactly `OfferPatch`'s shape, which is the sign the split was accidental.
+
+**The mapper keeps the raw.** `MapCatalog` currently decodes into typed structs
+and reassembles; it must instead carry the publisher's bytes through, stripping
+only `resources` and `offers` from the catalog document. A mapper that rebuilds
+the document from its parsed fields would reintroduce exactly the lossiness this
+task removes, one field at a time, and no test that compares parsed values would
+catch it.
+
+**Render.** `render` in `src/discover/service.go` stops assembling a catalog
+from columns and instead emits `catalogs.document` with `resources` and
+`offers` spliced back in from their own rows. This is the half that delivers
+round-trip fidelity; without it the task stores data nobody reads.
+
+**Tests pin:** publish a catalog exercising every member the schema allows —
+`bppId`, `bppUri`, `descriptor`, `isActive`, `validity`, `provider` with
+`providerAttributes`, a resource with a deep `resourceAttributes`, an offer with
+`addOns` and `considerations` — discover it, and assert the returned catalog is
+JSON-equal to the published one modulo the documented omissions. Then MERGE-patch
+one deep leaf and assert **only** that leaf moved and every untouched member
+survived, which is the assertion the shredded schema could not make because the
+members it would check were never stored. Plus: the geometry walk finds the same
+shapes at the same `target_path` as before; `deriveSearchText` output is
+unchanged for a fixture that has both a descriptor and attributes; and the
+`storage/conformance` suite passes unchanged against both backends.
+
+---
+
 ### Task 22 — Structured Attribute Filtering
 
 **Files:** `src/platform/jsonpath/subset.go`, `src/discover/filter_parser.go`,
@@ -4565,12 +4637,23 @@ the GIN index can actually serve, are in
 expression is cast with `@filter::jsonpath` — PostgreSQL's own parser, not a
 hand-written one — and **never** interpolated into SQL text.
 
-Both the resource path (`resources.attributes`) and the offer path
-(`offers.offer`) are supported, with their `jsonb_path_ops` GIN indexes. Both
-columns and both indexes already ship in Task 14, so this needs **no
-migration** — which is what makes it Phase 1 work at all: the expensive half
-landed eight tasks earlier, and this one is a parser, a rebase and a `WHERE`
-clause.
+All three paths are supported — `$.catalogs[*]` onto `catalogs.document`,
+`$.catalogs[*].resources[*]` onto `resources.document`, and
+`$.catalogs[*].offers[*]` onto `offers.document` — each with its
+`jsonb_path_ops` GIN index. **After A17 the rebase is prefix-stripping and
+nothing else:** the prefix names the column and the remainder is the predicate,
+so there is no per-predicate column routing, and a predicate mixing
+`@.descriptor.name` with `@.resourceAttributes.grade` is ordinary rather than
+unanswerable. All three columns and all three indexes ship in Task 21b, so this
+needs **no migration** — which is what makes it Phase 1 work at all: the
+expensive half landed one task earlier, and this one is a parser, a rebase and
+a `WHERE` clause.
+
+A catalog-level filter does not become a join. It resolves as
+`SELECT id FROM catalogs WHERE document @? $1` feeding `catalog_id = ANY(...)`
+into retrieval — one extra, highly selective query — which keeps the property
+Task 16 bought by copying the scope gate down onto `resources`: nothing on the
+retrieval path probes `catalogs` once per match.
 
 A backend that cannot execute the subset still declares `jsonpath` missing and
 degrades — or fails under `SEARCH_FAIL_ON_UNAVAILABLE_MODE`. What never happens
@@ -4578,7 +4661,8 @@ is silent ignoring.
 
 **Tests pin:** an RFC 9535 expression is `400` / `SCH_INVALID_JSONPATH` rather
 than an empty page; rebasing (`$.catalogs[*].resources[*] ? (@.resourceAttributes.A
-== "x")` → `$ ? (@.A == "x")`) and the offer-path equivalent; an `EXPLAIN`
+== "x")` → `$ ? (@.resourceAttributes.A == "x")` against `resources.document`)
+and the offer-path equivalent; an `EXPLAIN`
 proving the equality form uses the GIN index and the inequality form is
 knowingly a scan; and the expressions it **refuses** — a half-correct rebase
 is worse than none, so refusing must be a tested path. A malformed
