@@ -49,7 +49,7 @@ The adapter answers one question at runtime: *I have this **provider** and this
 
 ## For OpenAgriNet v1, read this instead
 
-**[OpenAgriNet registry — v1](../oan-v1.md)** — the schema, the thirteen records to seed,
+**[OpenAgriNet registry — v1](../README.md)** — the schema, the thirteen records to seed,
 and one end-to-end execution, scoped to the four v1 categories (Weather, Mandi prices,
 Schemes, Crop & Pest). Written here rather than folded into the pages below, so this
 import stays reconcilable with its source.
