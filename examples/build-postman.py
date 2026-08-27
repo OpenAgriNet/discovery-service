@@ -34,6 +34,17 @@ EXPECT = [
         "would come back.",
     ),
     (
+        "09-discover-text-or.json",
+        "09 Text search - OR over terms, not AND",
+        [ALERT, POINT, VILLAGE],
+        None,
+        "'irrigation' appears only in the village and point resources; "
+        "'cyclone' only in the statewide alert. All three coming back is what "
+        "proves lexical retrieval ORs its terms - under AND none would match. "
+        "Case 02 cannot tell the two apart, so without this one the semantics "
+        "were only assumed.",
+    ),
+    (
         "03-discover-schema-context.json",
         "03 schemaContext - WeatherAdvisoryCapability",
         [ALERT, POINT, VILLAGE],

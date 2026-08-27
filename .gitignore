@@ -22,3 +22,7 @@ config/instance.yaml
 # The shared record lives in docs/. Anything here that should be shared
 # gets moved into docs/ and committed, not un-ignored in place.
 documentations/
+
+# Byte-compiled Python from the examples/ tooling. Derived, and a .pyc that
+# outlives its .py is worse than no cache at all.
+__pycache__/

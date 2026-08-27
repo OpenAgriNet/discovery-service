@@ -181,6 +181,15 @@ discover_case 02-discover-text-search.json \
   "02  textSearch 'irrigation spraying advisory' -> village + point, NOT the alert" \
   "$POINT,$VILLAGE"
 
+# Lexical retrieval is an OR over terms, and this is the case that pins it.
+# "irrigation" appears only in the village and point resources; "cyclone" only
+# in the statewide alert. Under OR all three come back; under AND none would.
+# Case 02 cannot tell the two apart — every term in it appears in both of the
+# resources it matches — so without this case the semantics were merely assumed.
+discover_case 09-discover-text-or.json \
+  "09  textSearch 'irrigation cyclone' -> all three (OR, not AND)" \
+  "$ALERT,$POINT,$VILLAGE"
+
 # schemaContext is a Context field, not an Intent one. All three resources
 # carry the same WeatherAdvisoryCapability @context, so all three match: this
 # case pins that the filter ACCEPTS rather than that it discriminates.

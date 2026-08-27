@@ -6,7 +6,30 @@ A worked publish and the discover requests that find it, against a local stack.
 make run                # PostgreSQL + the service on :8080
 make verify             # publish, then assert every retrieval path
 make newman             # the same checks through the Postman collection
+make audit              # check the results are RIGHT, not just stable
 ```
+
+`verify.sh` and the collection both assert hard-coded id sets. That catches
+regressions, but those sets were written by watching the service run — so if it
+had been wrong that day, they would have faithfully frozen the wrong answer.
+`audit.py` exists to close that hole. It does not trust the service at all:
+
+- **oracle** — recomputes what each intent *should* match directly from
+  `01-publish-…json`, using point-in-polygon and haversine code written from
+  scratch rather than the service's H3 covering, and compares.
+- **schema** — validates each response against `beckn.yaml`. What this service
+  returns synchronously is the `/on_discover` and `/catalog/on_publish`
+  *request-body* schemas, since those are the callback shapes.
+- **fidelity** — every returned resource must be identical, member for member,
+  to what was published. That is A17 as a test: one row holds the object
+  verbatim and every other column is derived from it, so a response that
+  quietly dropped a member of `resourceAttributes` would pass every id-set
+  assertion here and still be wrong.
+
+The schema step needs `jsonschema` and `pyyaml` (`pip install jsonschema
+pyyaml`). Without them the other checks still run and the tally names the
+skipped ones — "24 passed" and "16 passed" both read as success otherwise, and
+the difference between them is every schema assertion in the run.
 
 Both runners assert the **exact** set of resource ids each request returns, not
 that it returned something. A filter that has quietly stopped filtering still
@@ -58,6 +81,7 @@ generous.
 | File | Exercises | Returns |
 |---|---|---|
 | `02-discover-text-search.json` | lexical retrieval | village + point, **not** the alert |
+| `09-discover-text-or.json` | lexical retrieval ORs its terms | all three |
 | `03-discover-schema-context.json` | `context.schemaContext` | all three |
 | `04-discover-spatial-dwithin.json` | `S_DWITHIN`, 25 km of Dharwad | point + village |
 | `05-discover-spatial-intersects.json` | `S_INTERSECTS`, inside Belagavi | village alone |
@@ -65,7 +89,16 @@ generous.
 | `07-discover-filter-cross-level.json` | jsonpath, **offer**-rooted | point alone |
 | `08-discover-invalid-jsonpath.json` | the form gate | **400** |
 
-Three of these are worth the extra sentence.
+Four of these are worth the extra sentence.
+
+**09 exists because 02 could not tell OR from AND.** Every term in 02's
+query appears in both of the resources it matches, so the case passes
+identically under either reading — it was pinning a result while leaving the
+semantics assumed. 09 splits the terms: `irrigation` is only in the village
+and point resources, `cyclone` only in the statewide alert. All three coming
+back is OR; under AND none would. This gap was found by breaking the audit's
+oracle on purpose — flipping it to AND changed nothing, which is how a test
+tells you it is not testing what you thought.
 
 **04 and 05 have to disagree.** Both are spatial, over the same target path.
 04's circle reaches the Dharwad point; 05's coordinate sits deep inside the

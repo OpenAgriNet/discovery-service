@@ -61,6 +61,19 @@ services:
 
       LOG_LEVEL: debug
 
+      # Effectively off for the local stack. The default is 20 rps / 40 burst
+      # (A4), which a Postman collection run or any scripted sweep trips
+      # immediately — and a 429 NACK carries no `catalogs`, so a harness that
+      # reads `message.catalogs` defensively turns it into an empty result and
+      # reports "no matches" for what was actually a refused request.
+      #
+      # Not zero: the config layer requires rps > 0 and burst >= rps, because a
+      # bucket smaller than one second's refill can never fill. This is a
+      # ceiling nothing local will reach, not a disabled limiter — deployments
+      # leave both unset and get the real defaults back.
+      RATE_LIMIT_RPS: "100000"
+      RATE_LIMIT_BURST: "100000"
+
     volumes:
       # The Beckn specification, which the service loads BEFORE it serves and
       # refuses to start without — the check is unconditional, so turning L1

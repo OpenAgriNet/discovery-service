@@ -59,11 +59,17 @@ With the stack up, there is a worked catalog and the requests that find it:
 ```sh
 make verify    # publish the sample catalog, assert text, spatial and filter retrieval
 make newman    # the same checks through the Postman collection
+make audit     # recompute the expected answers and check the service agrees
 ```
 
-Both assert the exact set of resource ids each request returns, and the cases
-are built to disagree with each other — see [`examples/`](examples/README.md)
-for what each one pins and why.
+The first two assert the exact set of resource ids each request returns, and
+the cases are built to disagree with each other. `make audit` answers the
+question those two cannot: their id sets were written by watching this service
+run, so they pin what it did rather than what is correct. The audit recomputes
+each expectation from the published catalog with its own geometry and text
+matching, validates every response against `beckn.yaml`, and checks each
+returned resource is byte-identical to what was published. See
+[`examples/`](examples/README.md) for what each case pins and why.
 
 ## Layout
 

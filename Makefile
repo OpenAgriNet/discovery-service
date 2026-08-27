@@ -100,6 +100,15 @@ verify:
 newman:
 	npx --yes newman run examples/OpenAgriNet-discovery-service.postman_collection.json
 
+## audit: check the answers are RIGHT, not merely unchanged. verify and newman
+##        assert id sets that were written by watching this service run, so
+##        they freeze whatever it did that day; audit recomputes the expected
+##        answer from the published catalog instead and compares.
+##        `pip install jsonschema pyyaml` to get the schema checks too — it
+##        runs without them and says loudly which checks it skipped.
+audit:
+	python3 examples/audit.py
+
 ## down: stop the local stack and discard its volumes
 ##       -v matters: migrations are edited in place during development, and
 ##       golang-migrate tracks only version NUMBERS — so a volume migrated by
@@ -135,4 +144,4 @@ $(MIGRATE): tools/go.mod tools/go.sum
 	$(GO) -C tools build -tags postgres -o ../$@ github.com/golang-migrate/migrate/v4/cmd/migrate
 
 .PHONY: help build test test-short cover lint fmt sqlc sqlc-verify migrate run logs \
-	migrate-down security docker up down verify newman tools clean
+	migrate-down security docker up down verify newman audit tools clean
