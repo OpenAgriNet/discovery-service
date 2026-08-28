@@ -13,8 +13,8 @@ Every row carries `status: "active" \| "inactive"`. Every read filters on `activ
 
 Which row a field goes on: `Participant` holds what is true of a provider whatever you ask it
 for — `baseUrl`, `auth`. `ProviderSchema` holds what varies per capability — `method`, `path`, the
-mappings, the timeouts. So a provider serving two capabilities is one `Participant` and two
-`ProviderSchema` rows.
+mappings, the enricher, the timeouts. So a provider serving two capabilities is one `Participant`
+and two `ProviderSchema` rows.
 
 ---
 
@@ -22,11 +22,10 @@ mappings, the timeouts. So a provider serving two capabilities is one `Participa
 
 All five required. Vocabulary only — nothing in the call path reads it.
 
-Two open items: the domain pack is named `MandiPriceObservation` while the network spec's own
-examples say `MandiPrice`, and needs a network-owner ruling; and the packs also sanction
-advertising a capability type (`WeatherObservationCapability`), so a `/discover` filter matching
-only the outcome type makes a conformant provider invisible — that one lands on
-discovery-service.
+One open item: the packs also sanction advertising a *capability* type — `schema/` carries
+`WeatherAdvisoryCapability`, `AgricultureCapability` and `AdvisoryCapability` beside the outcome
+types — so a `/discover` filter matching only the outcome type makes a conformant provider
+invisible. That one lands on discovery-service.
 
 ```jsonc
 { "SchemaRegistry": {
@@ -50,8 +49,8 @@ Three required fields, then **exactly one** of `node` or `upstream` (`oneOf`).
   "name": "OpenAgriNet provider adapter",
   "status": "active",                               // active | inactive
   "node": {                                         // speaks Beckn
-    "subscriberId": "bpp.openagrinet.gov.in",       // context.bppId, and field 1 of the Authorization keyId
-    "subscriberUrl": "https://bpp.openagrinet.gov.in/beckn",   // where Beckn messages go; https only
+    "subscriberId": "provider-network-vistaar.da.gov.in",       // context.bppId, and field 1 of the Authorization keyId
+    "subscriberUrl": "https://provider-network-vistaar.da.gov.in/beckn",   // where Beckn messages go; https only
     "type": "BPP",                                  // BAP = consumer node, BPP = provider node, NETWORK = the network node
     "keys": [ {                                     // 1–8; plural so a rotation can overlap
       "keyId": "k1",                                // field 2 of the Authorization keyId — the sender says which key it used
@@ -102,7 +101,7 @@ becomes a registry write.
 
 ## `ProviderSchema`
 
-Everything but `timeoutMs` and `retryMax` is required.
+Everything but `timeoutMs`, `retryMax` and `enricher` is required.
 
 ```jsonc
 { "ProviderSchema": {
@@ -111,6 +110,7 @@ Everything but `timeoutMs` and `retryMax` is required.
   "capabilityCode": "openagrinet:WeatherObservation",   // must be an active SchemaRegistry
   "method": "GET",                                  // GET | POST
   "path": "/get-daily",                             // appended to that upstream's baseUrl
+  "enricher": { "name": "pointFromIntent" },        // optional; a Go function, named here and implemented in code
   "requestMapping":  "mappings/mausamgram/select.request.jsonata",
   "responseMapping": "mappings/mausamgram/select.response.jsonata",
   "timeoutMs": 30000,                               // optional, 1000–120000, default 15000
@@ -118,15 +118,37 @@ Everything but `timeoutMs` and `retryMax` is required.
   "status": "active"
 } }
 ```
+An enricher that needs a database of its own carries both optional halves:
 
-The two mappings are the only transform the registry describes. Anything else an upstream needs —
-a grid point from a lat/long, a station code, a market code — is adapter-internal, keyed off
-`participantId`, and a **seeding prerequisite**: a binding whose adapter has no such step returns
-nothing useful.
+```jsonc
+{ "ProviderSchema": {
+  "bindingKey": "agmarknet|openagrinet:MandiPrice",
+  "participantId": "agmarknet",
+  "capabilityCode": "openagrinet:MandiPrice",
+  "method": "GET",
+  "path": "/v1/fetch-agmarknet-vistaar-location",
+  "enricher": { "name": "marketAndCommodityCodes",
+                "config":  { "maxDistanceMeters": 50000 },   // free-form; addresses are refused by rule 6
+                "secrets": { "dsn": "env://GEO_DSN" } },     // env:// only — inline: does not validate here
+  "requestMapping":  "mappings/agmarknet/select.request.jsonata",
+  "responseMapping": "mappings/agmarknet/select.response.jsonata",
+  "status": "active"
+} }
+```
+
+**`enricher` runs before `requestMapping`.** It exists because what an upstream needs is often not
+derivable from the Beckn body: `agmarknet` wants a market and commodity code, `imd-city-weather` a
+station id. The enricher produces those into `_local`, and the request mapping reads
+`{ request, _local }`. The registry holds the **name**; Go holds the behaviour — config that tried
+to hold the behaviour would become a programming language.
+
+A binding with no enricher passes the Beckn body straight to the mapping. A binding whose adapter
+has no implementation for the name it declares is a **seeding prerequisite** that returns nothing
+useful, and nothing here catches it: `enricher.name` is a string, not a reference.
 
 ---
 
-## Five rules the schema cannot express
+## Six rules the schema cannot express
 
 JSON Schema cannot compare two fields, and RC enforces no reference between entities. Each of
 these is a record that passes every pattern and still fails weeks later. Checked by
@@ -141,6 +163,9 @@ these is a record that passes every pattern and still fails weeks later. Checked
 5. **`node.keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so
    two entries with the same `keyId` and different material both pass, and a verifier gets
    whichever it found first.
+6. **No `enricher.config` value is an address.** `config` is the only free-form object in all
+   three schemas, so it is the only place a literal DSN can be pasted where an `env://` pointer
+   belongs. Anything containing `://` goes in `enricher.secrets`.
 
 ---
 

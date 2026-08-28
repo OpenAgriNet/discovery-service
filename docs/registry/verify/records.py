@@ -1,7 +1,7 @@
 """The records in examples.md are write bodies, so they must be valid write bodies:
 
   (a) each ```json block that names an entity validates against schemas/<Entity>.json, and
-  (b) the five rules of schemas.md hold across the whole set — the ones draft-07
+  (b) the six rules of schemas.md hold across the whole set — the ones draft-07
       cannot express, which are therefore the ones nothing else checks.
 
 (b) is the point. A record can satisfy every pattern in its schema and still be wrong in a
@@ -35,7 +35,7 @@ def records(schemas):
 
 
 def rules(by_entity, fail):
-    """schemas.md "Five rules the schema cannot express" — what JSON Schema cannot express."""
+    """schemas.md "Six rules the schema cannot express" — what JSON Schema cannot express."""
     participants = {r["participantId"]: r for r in by_entity.get("Participant", [])}
     caps = {r["capabilityCode"]: r for r in by_entity.get("SchemaRegistry", [])}
 
@@ -53,6 +53,15 @@ def rules(by_entity, fail):
                 fail(f'rule 2: {key} names {label} {ref!r}, which is not in {MD}')
             elif row["status"] != "active":
                 fail(f'rule 2: {key} names {label} {ref!r}, which is {row["status"]}')
+
+        # rule 6 — an enricher's config holds no address. config is the one free-form
+        # object in all three schemas, so it is the one place a literal DSN can be pasted
+        # where an env:// pointer belongs. Anything address-shaped goes in secrets.
+        enr = b.get("enricher", {})
+        for name, val in enr.get("config", {}).items():
+            if isinstance(val, str) and "://" in val:
+                fail(f'rule 6: {key} enricher.config.{name} looks like an address '
+                     f'({val.split("://")[0]}://…) — that belongs in enricher.secrets')
 
     for p in by_entity.get("Participant", []):
         auth = p.get("upstream", {}).get("auth", {})
@@ -75,6 +84,8 @@ def rules(by_entity, fail):
             if not ref.startswith("env://"):
                 fail(f'committed docs: {p["participantId"]} secrets.{name} is '
                      f'{ref.split(":")[0]}:… — only env:// belongs in a tracked file')
+    # enricher.secrets is env://-only in the schema itself, so there is nothing to add
+    # here — the pattern refuses inline: at write time, not merely in a tracked file.
 
     for c in by_entity.get("SchemaRegistry", []):
         # rule 4 — version equals the vN.N segment of schemaUrl

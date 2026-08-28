@@ -5,13 +5,20 @@ call each provider.
 
 ## Deployment topology
 
-Three ONIX adapters, one registry, one discovery-service.
+Three ONIX adapters, one registry, one discovery-service, on the **Bharat Vistaar** subnet
+(`networkId: da.gov.in/vistaar`).
 
-| adapter | sits | does |
-|---|---|---|
-| **consumer node** | experience layer, beside the farmer app | signs `discover` / `select`, receives the callbacks |
-| **network node** | network, alongside discovery-service | exposes publish + discover; answers `discover` from published catalogs |
-| **provider node** | provider side | terminates `select`, calls the external provider API, signs `on_select` |
+| adapter | `subscriberId` | sits | does |
+|---|---|---|---|
+| **consumer node** | `seeker-network-vistaar.da.gov.in` | experience layer, beside the farmer app | signs `discover` / `select` |
+| **network node** | `discovery-network-vistaar.da.gov.in` | network, alongside discovery-service | exposes publish + discover; answers `discover` from published catalogs |
+| **provider node** | `provider-network-vistaar.da.gov.in` | provider side | terminates `select`, calls the external provider API, signs `on_select` |
+
+**Every transaction is synchronous** — `on_discover` and `on_select` are response bodies, not
+inbound calls. `beckn.yaml` v2.0.0 still says the outcome MUST arrive by callback and is to be
+amended; until it is, this is a deviation on a MUST.
+[usecases.md](usecases.md#both-hops-are-synchronous--the-spec-has-not-caught-up) states what it
+costs.
 
 Signature verification happens in ONIX, not in discovery-service
 (`AUTH_ENABLE_SIGNATURE_VERIFICATION=false`, and `true` refuses to boot). Discovery-service must

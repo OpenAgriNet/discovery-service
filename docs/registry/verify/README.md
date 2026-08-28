@@ -1,15 +1,17 @@
 # Doc checkers
 
-Run from `docs/registry`. Three need `jsonschema`; `links.py` needs nothing:
+Run from `docs/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`);
+`links.py` needs nothing:
 
 ```
 python3 verify/shape.py         # every record shown in any page here is a real record
-python3 verify/records.py       # the records in examples.md, plus the five rules
+python3 verify/records.py       # the records in examples.md, plus the six rules
 python3 verify/auth_cases.py    # the auth matrix and the material grammar
 python3 verify/links.py         # every `](file.md#anchor)` in this folder resolves
+python3 verify/packs.py         # every resource shown here satisfies its network-specs domain pack
 ```
 
-All four exit non-zero on failure, so they drop into CI unchanged.
+All five exit non-zero on failure, so they drop into CI unchanged.
 
 `shape.py` scans every `.md` here except `README.md`, and treats a `json` block as a record claim
 when its single top-level key is an entity name — so a page can show Beckn payloads and upstream
@@ -21,7 +23,7 @@ both, and a per-block rule would force the docs to document one and stop documen
 and `valuePrefix` exercised, since no v1 record uses either.
 
 `records.py` catches what a schema cannot. Validating the records is the easy half; the half that
-matters is the [five rules](../schemas.md#five-rules-the-schema-cannot-express) — `bindingKey`
+matters is the [six rules](../schemas.md#six-rules-the-schema-cannot-express) — `bindingKey`
 against its own two fields, references that resolve to live records, `paramNames` against
 `secrets`, `version` against `schemaUrl`, `keyId` uniqueness within `node.keys`. Each is a record
 that passes every pattern in its schema and still produces a failed call, or a silently
@@ -55,3 +57,19 @@ why it survives review. The subtlety: GitHub does not collapse consecutive hyphe
 `## Delete — disabled` is `#delete--disabled` and a checker that collapses them reports false
 breakage on every em-dash heading. Both directions mutation-tested. `archive/` is excluded — it is
 another team's set, kept diffable against its source.
+
+`packs.py` is the only checker whose contract lives in another repo. `resourceAttributes` is an
+open container in Beckn, so nothing in [`schemas/`](../schemas) can police what goes inside one —
+the constraint is the domain pack under `network-specs/schema/<Type>/vN.N/attributes.yaml`, and
+its requirements are *conditional*: `WeatherObservation` with `informationMode: OnDemand` requires
+the three `supported*` arrays and forbids `parameters`, while `Direct` requires `parameters`,
+`source`, `location` and `generatedAt`. An advertisement that leaked a value reads perfectly fine.
+Two forms must conform — what a provider **publishes** and what it **returns**. A `select` request
+is neither, and `informationMode` has no legal value for a query, so it sits in `SKIP` with its
+reason; a `SKIP` entry matching no payload is itself a failure, so the list cannot rot. Remote
+`$ref`s (`schema.beckn.io`) are stubbed permissive rather than fetched, and a block that fails to
+parse *and* contains `resourceAttributes` fails loudly instead of being skipped. The pack repo is
+found at `~/Documents/Projects/OpenAgriNet/network-specs` or `$NETWORK_SPECS`; absent, the checker
+prints `SKIPPED` and exits 0, so it does not block someone who only has this repo. Mutation-tested
+in both directions: dropping `supportedParameters` from the advertisement and a `unit` from an
+outcome parameter each produce exactly one failure.

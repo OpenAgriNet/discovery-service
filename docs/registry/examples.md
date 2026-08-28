@@ -51,8 +51,8 @@ demo material.
   "name": "Kisan app consumer adapter",
   "status": "active",
   "node": {
-    "subscriberId": "bap.kisan-app.openagrinet.gov.in",
-    "subscriberUrl": "https://bap.kisan-app.openagrinet.gov.in/beckn",
+    "subscriberId": "seeker-network-vistaar.da.gov.in",
+    "subscriberUrl": "https://seeker-network-vistaar.da.gov.in/beckn",
     "type": "BAP",
     "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
                 "key": "base64:s3Q/53+xYL/BgelYdsKd7DBgYDUFLsXE+GQDLSuPZ4c=",
@@ -64,8 +64,8 @@ demo material.
   "name": "OpenAgriNet network node",
   "status": "active",
   "node": {
-    "subscriberId": "network.openagrinet.gov.in",
-    "subscriberUrl": "https://network.openagrinet.gov.in/beckn",
+    "subscriberId": "discovery-network-vistaar.da.gov.in",
+    "subscriberUrl": "https://discovery-network-vistaar.da.gov.in/beckn",
     "type": "NETWORK",
     "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
                 "key": "base64:q7fEHdFO7wNpYBARwY+qvhGhRzlrlJWRR64NIwQhO2A=",
@@ -77,8 +77,8 @@ demo material.
   "name": "OpenAgriNet provider adapter",
   "status": "active",
   "node": {
-    "subscriberId": "bpp.openagrinet.gov.in",
-    "subscriberUrl": "https://bpp.openagrinet.gov.in/beckn",
+    "subscriberId": "provider-network-vistaar.da.gov.in",
+    "subscriberUrl": "https://provider-network-vistaar.da.gov.in/beckn",
     "type": "BPP",
     "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
                 "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
@@ -170,6 +170,7 @@ Every credential is an `env://` pointer resolved in the adapter's environment. N
   "participantId": "mausamgram",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET", "path": "/get-daily",
+  "enricher": { "name": "pointFromIntent" },
   "requestMapping":  "mappings/mausamgram/select.request.jsonata",
   "responseMapping": "mappings/mausamgram/select.response.jsonata",
   "timeoutMs": 30000, "retryMax": 3, "status": "active" } }
@@ -180,6 +181,8 @@ Every credential is an `env://` pointer resolved in the adapter's environment. N
   "participantId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET", "path": "/api/cityweather_loc.php",
+  "enricher": { "name": "stationFromPoint",
+                "secrets": { "dsn": "env://GEO_DSN" } },
   "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",
   "responseMapping": "mappings/imd-city-weather/select.response.jsonata",
   "timeoutMs": 15000, "status": "active" } }
@@ -190,6 +193,9 @@ Every credential is an `env://` pointer resolved in the adapter's environment. N
   "participantId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPrice",
   "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
+  "enricher": { "name": "marketAndCommodityCodes",
+                "config":  { "maxDistanceMeters": 50000 },
+                "secrets": { "dsn": "env://GEO_DSN" } },
   "requestMapping":  "mappings/agmarknet/select.request.jsonata",
   "responseMapping": "mappings/agmarknet/select.response.jsonata",
   "timeoutMs": 20000, "retryMax": 2, "status": "active" } }
@@ -200,6 +206,7 @@ Every credential is an `env://` pointer resolved in the adapter's environment. N
   "participantId": "hasura-content",
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST", "path": "/v1/graphql",
+  "enricher": { "name": "contentQueryFromIntent" },
   "requestMapping":  "mappings/hasura-content/select.request.jsonata",
   "responseMapping": "mappings/hasura-content/select.response.jsonata",
   "timeoutMs": 15000, "retryMax": 0, "status": "active" } }
@@ -210,6 +217,7 @@ Every credential is an `env://` pointer resolved in the adapter's environment. N
   "participantId": "oan-vector",
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST", "path": "/indexes/oan-index/search",
+  "enricher": { "name": "vectorQueryFromIntent" },
   "requestMapping":  "mappings/oan-vector/select.request.jsonata",
   "responseMapping": "mappings/oan-vector/select.response.jsonata",
   "timeoutMs": 15000, "status": "active" } }
