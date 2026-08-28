@@ -141,8 +141,9 @@ A whole record using `valuePrefix` — the shape a bearer-token upstream API tak
 
 And one using `publicKeys` — a participant that runs its own adapter, terminates Beckn calls and
 signs them. `scheme: "none"` is right here and not an omission: **this participant is not
-authenticated by a shared credential, it is authenticated by its signature**, and the key hash is
-what verifies it. See [Node, or provider inside a catalog?](#node-or-provider-inside-a-catalog).
+authenticated by a shared credential, it is authenticated by its signature.** The hash pins
+*which* key that signature must come from; it is not the key, and it is not what does the
+verifying — see [Where the verifying key comes from](#where-the-verifying-key-comes-from).
 
 ```json
 { "Participant": {
@@ -193,7 +194,7 @@ The second axis is the one that changes how you treat the record, and it is not 
 |---|---|---|
 | speaks Beckn | yes — terminates `/select`, calls back `/on_select` | **no.** Has never heard of Beckn |
 | who reaches it | the network, at its subscriber URI | **our adapter**, over ordinary HTTP |
-| authenticated by | its signature — so `publicKeys` is mandatory | an API key or basic auth in `auth.secrets` |
+| authenticated by | its signature, verified with a key from the [network registry](#where-the-verifying-key-comes-from) | an API key or basic auth in `auth.secrets` |
 | what `baseUrl` means | the Beckn subscriber URI | the upstream API base, used as `baseUrl + path` |
 | appears in `context` as | `bppId` / `bapId` / `receiverId` | `offer.provider.id` |
 
@@ -219,6 +220,39 @@ once; it is now two records, one per column.
 Deciding this properly means new vocabulary — a `participantKind`, or Beckn's own `BAP`/`BPP`
 alongside `roles` — and that decision belongs with the network owners at the point a real node
 onboards, not before. Recorded in [Known gaps](#known-gaps).
+
+### Where the verifying key comes from
+
+If you call a node, **you** sign the payload and **it** verifies — so it needs *your* public key,
+not its own. That holds in both directions, because each hop is signed by whoever sends it:
+
+| hop | signed by | verified by | needs whose key |
+|---|---|---|---|
+| `select` → BPP | the BAP | the BPP | the **BAP's** |
+| `on_select` → BAP | the BPP | the BAP | the **BPP's** |
+
+Beckn resolves this at verification time rather than by exchanging keys in advance. The
+`Authorization` header carries `keyId = subscriber_id|unique_key_id|algorithm`; the verifier takes
+that tuple and looks the signing key up in the **network registry**, where the participant
+published it when it onboarded. `unique_key_id` selects among several, which is what makes
+rotation possible without a flag day.
+
+**That registry is not this one, and `publicKeys` here cannot stand in for it.** `PublicKey` is
+`{keyId, alg, hash}` with `additionalProperties: false`, and `hash` must match `^sha256:` — it is
+a **fingerprint of a key delivered out of band, not the key**. You can check a key you already
+hold against it; you cannot obtain a key from it. There is no `validFrom`/`validUntil` either, so
+it cannot describe a rotation window. Its job is pinning trust in a key, not distributing one.
+`docs/design/discover-and-publish.md` is explicit that *"the key registry is another team's"*, and
+[archive/](archive/02-registry-schema.md) reaches the same split from the other side: Beckn
+subscriber keys are what that design deliberately does not hold.
+
+**Nothing in this service verifies a signature today.**
+`AUTH_ENABLE_SIGNATURE_VERIFICATION` is `false`, and setting it `true` **refuses to boot** — a
+flag named for a security control while silently doing nothing is worse than no flag at all. The
+middleware slot ships; the Ed25519 primitives and the keyring behind them are parked. One
+consequence is already visible in the running service: rate limiting is keyed on the remote
+address rather than on `context.bapId`, because until a signature is verified that field is a
+claim and not an identity.
 
 ### Secrets and key hashes are references, not material
 
@@ -413,7 +447,7 @@ Open items, worst first.
 | **`informationMode` is proposed, not governed** | It appears in no pack schema — only in the *Information Modes* section's examples, marked *Proposed terminology*. It validates because the packs are open at the top level, but no filter can rely on it. |
 | **Two capabilities on one participant collide on mapping filenames** | Paths are `mappings/<participant>/<action>.<…>.jsonata` — no capability segment. A provider serving two capabilities from the same action resolves both to one filename while needing two different output shapes. Nothing rejects it. Worked through in [usecases.md use case 6](usecases.md#6-weather-advisory--not-seeded). The fix is a capability segment in the convention; it is not a schema change. |
 | **Nothing distinguishes a network node from a provider inside a catalog** | `roles` encodes *offers vs consumes*, not *speaks Beckn vs is an upstream API we call*. All five v1 records are the latter, and the schema would accept a record that is incoherently both — signature-authenticated and bearer-token-authenticated at once. Today the distinction is carried by convention and by which fields happen to be set; `publicKeys` present is the closest thing to a discriminator and it is optional. The fix is new vocabulary (`participantKind`, or Beckn's `BAP`/`BPP` alongside `roles`) and it needs a network-owner ruling at the point a real node onboards — deciding earlier means inventing semantics. Worked through in [Node, or provider inside a catalog?](#node-or-provider-inside-a-catalog). |
-| **No participant has a registered key** | `publicKeys` is in the schema and network policy requires it, but none of the five v1 records carries one — they are upstream data APIs our adapter calls directly, not participants that sign anything. Under the distributed topology each runs its own adapter and does sign, at which point the field is mandatory and the seeding path must enforce it. **This is the gap most likely to be read as *done* because the field exists.** |
+| **No participant has a registered key** | `publicKeys` is in the schema and network policy requires it, but none of the five v1 records carries one — they are upstream data APIs our adapter calls directly, not participants that sign anything. Under the distributed topology each runs its own adapter and does sign, at which point the field is mandatory and the seeding path must enforce it. **This is the gap most likely to be read as *done* because the field exists.** A second reason it cannot be read as done: the field holds a `sha256:` fingerprint, so even fully seeded it pins a key rather than distributing one — key distribution is the network registry's, not ours. See [Where the verifying key comes from](#where-the-verifying-key-comes-from). |
 | **Read access is not a distinct role** | `_osConfig.roles` gates the entity, not the verb — [api.md](api.md). |
 | **`privateFields` is unverified** | Whether RC redacts `$.auth.secrets` from `/search` on the pinned build has not been checked — [api.md](api.md#what-is-not-verified). |
 | **Path or subdomain for a second endpoint** | Open, and not decided. A participant with one identity may expose capabilities on different *hosts*, not merely different paths — IMD is `imd.gov.in` but the weather API sits elsewhere. Today one `Participant` is one `baseUrl`, so this is two records sharing an identity prefix, which makes one organisation look like two participants on the wire. The alternatives — a `baseUrl` per binding, or a host override on `ProviderSchema` — are both additive, and choosing before a real case arrives means inventing semantics. |

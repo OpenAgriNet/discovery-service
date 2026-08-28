@@ -114,7 +114,8 @@ Authorization: Bearer <operator-token>
 ```
 
 **Because `PUT` replaces, a field you omit is a field you delete.** `publicKeys` is the dangerous
-one: dropping it turns signature verification off rather than failing loudly.
+one: dropping it removes the pin on which key that participant may sign with, and removes it
+silently rather than loudly.
 
 Rotating an `env://` pointer is a registry write. Rotating the *value behind* the pointer is not —
 that is an environment change in the adapter. Rotating an `inline:` credential is always a
