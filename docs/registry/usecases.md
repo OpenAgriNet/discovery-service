@@ -183,8 +183,8 @@ credentialled call at a host of its choosing.
 An empty result from either read is a hard failure — `BIZ_PROVIDER_NOT_FOUND`, not a fallback.
 
 There is **no `SchemaRegistry` read**: a capability is vocabulary, not part of the call path. And
-in production neither read is a request — all sixteen records load at boot, so resolution is two
-map lookups ([api.md](api.md#the-runtime-does-not-call-these-per-request)).
+in production neither read is a request at all
+([api.md](api.md#the-runtime-does-not-call-these-per-request)).
 
 ### 1.5 Call upstream
 
@@ -335,7 +335,9 @@ Same two hops, same envelope. What differs is the call plan and the upstream's q
 | `hasura-content` | **6** — omits five required fields and uses `knowledgeType` values not in the enum. |
 | `oan-vector` | **6** — the same six. |
 
-These are response-mapping bugs, not registry ones. Seeding is unaffected.
+These are response-mapping bugs, not registry ones, and seeding is unaffected. They were found by
+reading; **nothing validates a mapping's output against the pack it claims to produce**, so the
+counts above are a floor.
 
 ## Errors
 

@@ -94,8 +94,7 @@ Authorization: Bearer <operator-token>
 dangerous one: dropping it removes every key that node may sign with, silently.
 
 Rotating an `env://` pointer is a registry write. Rotating the *value behind* it is not — that is
-an environment change in the adapter. Rotating an `inline:` credential is always a registry
-write, which is one of several reasons not to use `inline:`.
+an environment change in the adapter.
 
 ## Delete — disabled
 
@@ -125,7 +124,5 @@ until that reload.
 | | |
 |---|---|
 | **Response body shapes** | The requests are corroborated. Whether RC returns search rows bare or wrapped is unchecked against the pinned build — treat every response body here as illustrative. |
-| **`privateFields` redaction** | Unchecked. Assume it does not redact. |
-| **Read-only role** | Does not exist. |
 | **`DELETE` being closed** | Policy. That it is closed *at the gateway* is a deployment fact this page cannot assert about your environment — confirm it. |
 | **`schemaUrl` resolvability** | Nothing fetches these URLs, and nothing checks `version` against the URL's `vN.N` segment. Both belong in the seeding path. |

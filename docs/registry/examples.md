@@ -34,7 +34,9 @@ integrity rules need the other two to exist and be `active`.
 ```
 
 `schemaUrl` is pinned to a **version directory**, not a commit: a breaking change is published as
-`v0.2`, so `v0.1` means the same document next week. One record serves both Advisory
+`v0.2`, so `v0.1` means the same document next week. It still points at `main` while the packs
+live on tag `schema-packs-v0.1` — a moving target for a field whose purpose is to name something
+stable, and worth closing before v1 carries traffic. One record serves both Advisory
 categories — Schemes and Crop & Pest are the same outcome type, told apart on the published
 resource by `subjectCategories`.
 
@@ -152,9 +154,10 @@ Five external APIs. None of them has heard of Beckn; each appears on the wire as
 ```
 
 `oan-vector` is a bare IP over plain HTTP, legal only because `scheme: none` — nothing is leaked.
-`mausamgram` and `imd-city-weather` are both IMD on different hosts, so two records: the
-path-or-subdomain [gap](schemas.md#known-gaps), visible as two participants where the network has
-one organisation.
+`mausamgram` and `imd-city-weather` are both IMD on different hosts, so two records — one
+organisation looking like two participants. One `Participant` is one `baseUrl`; whether a second
+endpoint should be a path, a subdomain or a host override on the binding is open, and choosing
+before a real case arrives invents semantics.
 
 Every credential is an `env://` pointer resolved in the adapter's environment. No v1 record uses
 `inline:`.

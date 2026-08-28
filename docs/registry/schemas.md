@@ -22,6 +22,12 @@ mappings, the timeouts. So a provider serving two capabilities is one `Participa
 
 All five required. Vocabulary only — nothing in the call path reads it.
 
+Two open items: the domain pack is named `MandiPriceObservation` while the network spec's own
+examples say `MandiPrice`, and needs a network-owner ruling; and the packs also sanction
+advertising a capability type (`WeatherObservationCapability`), so a `/discover` filter matching
+only the outcome type makes a conformant provider invisible — that one lands on
+discovery-service.
+
 ```jsonc
 { "SchemaRegistry": {
   "capabilityCode": "openagrinet:WeatherObservation",   // the namespace is literal
@@ -138,21 +144,14 @@ these is a record that passes every pattern and still fails weeks later. Checked
 
 ---
 
-## Known gaps
+## About the files
 
-| | |
-|---|---|
-| **Advisory and mandi responses do not conform** | Both `KnowledgeResource` bindings omit five required pack fields and use `knowledgeType` values not in the enum; `agmarknet` omits three. Largest open item — see [usecases.md](usecases.md#conformance). |
-| **`MandiPrice` may not be a real type** | The pack is `MandiPriceObservation`; the network spec's examples say `MandiPrice`. Needs a network-owner ruling. |
-| **`/discover` matches outcome types only** | The packs also sanction advertising a capability type (`WeatherObservationCapability`). Filters that match only the outcome type make conformant providers invisible. Lands on discovery-service, not here. |
-| **`schemaUrl` points at `main`** | The packs live on tag `schema-packs-v0.1`. `main` is a moving target for a field whose purpose is to name something stable. |
-| **Revocation is inert** | The adapter preloads records at boot and never reads the registry per request, so `status: "revoked"` takes effect on the next reload. Needs a refresh path. |
-| **No min/max qualifier on `parameter`** | Every Indian weather upstream reports `tmin`/`tmax`; the pack cannot express *high 39.2, low 32.8*. Mappings emit a private `aggregation`, which validates and means nothing to anyone else. |
-| **Read access is not a distinct role** | `_osConfig.roles` gates the entity, not the verb — [api.md](api.md). |
-| **`privateFields` is unverified** | Whether RC redacts `$.upstream.auth.secrets` from `/search` on the pinned build has not been checked. |
-| **Two capabilities on one participant collide on mapping filenames** | Paths have no capability segment, so one action serving two capabilities resolves to one filename needing two output shapes. Fix is the convention, not the schema. |
-| **Path or subdomain for a second endpoint** | One `Participant` is one `baseUrl`, so IMD is two records. The alternatives are additive; choosing before a real case arrives invents semantics. |
-| **`oan-vector` is on plain HTTP** | Legal because `scheme: none`. Should move behind TLS before v1 carries traffic. Onboarding work. |
-| **The patterns need an ECMA-262 engine** | `baseUrl` and `MappingPath` use negative lookahead. Ajv and Java compile them; **Go's RE2 does not**, so a Go adapter implements those two rules in code. |
-| **Shared definitions are copied** | RC loads each entity schema alone, so `Status`, `ParticipantId`, `CapabilityCode` are duplicated across the three files. A drift is a diff, but nothing fails a build. |
-| **`responseMapping` conformance is unbuilt** | Nothing validates a mapping's output against the pack it claims to produce. |
+Two things about [`schemas/`](schemas) that a record cannot show:
+
+- **`baseUrl` and `MappingPath` use negative lookahead**, to refuse `..`. Ajv and Java compile
+  those patterns; **Go's RE2 does not**, so a Go adapter validating these records locally has to
+  implement those two rules in code. Nothing else in the three files is RE2-hostile, and the
+  length caps are written under RE2's 1000-repeat limit to keep it that way.
+- **Shared definitions are copied, not referenced.** RC loads each entity schema alone, so
+  `Status`, `ParticipantId` and `CapabilityCode` are duplicated verbatim across the three files.
+  Identical names make a drift a diff, but nothing fails a build on it.
