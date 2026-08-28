@@ -142,19 +142,9 @@ Four scalars and one `auth` object. Why: [Appendix A](#provider--rationale).
 |---|---|---|---|
 | `providerId` | string | `ProviderId` — this is the Beckn `provider.id` | ✓ |
 | `name` | string | 1–200 chars, at least one non-space, display only | ✓ |
-| `baseUrl` | string | scheme + host + optional path segments, nothing else. `https` required if any credential is held | ✓ |
+| `baseUrl` | string | scheme + host + optional path segments. No trailing slash, and no `?` `#` `@` whitespace `..`. `https` required if any credential is held | ✓ |
 | `status` | string | `active` \| `inactive` | ✓ |
 | `auth` | object | → `Auth` — the credential for every call to this provider | ✓ |
-
-No trailing slash on `baseUrl`, a leading one on `path` — exactly one `/` between them, so
-nothing normalises. Four more refusals:
-
-| refused in `baseUrl` | because `baseUrl + path` would |
-|---|---|
-| `?` or `#` | `…/v1?tenant=a` + `/get-daily` puts the path **inside the query string** |
-| `@` (userinfo) | `https://user:pass@host` is a credential outside `auth.secrets` — so outside `privateFields`, and into every `/search` response and every log line that prints the URL |
-| whitespace | unusable, and silently mangled differently by every HTTP client |
-| `..` | traversal against the upstream, from a field nobody reads as a path |
 
 **`Auth`** — three fields, four schemes.
 
@@ -577,6 +567,21 @@ and in `schemas/*.json`. This exists so that a later simplification is a decisio
 than an accident.
 
 ### `Provider` — rationale
+
+**Why `baseUrl` refuses those five.** A leading `/` on `path` and none trailing on `baseUrl`
+means exactly one `/` falls between them, so nothing normalises — and each refusal is a URL
+`baseUrl + path` would otherwise have produced that nobody wrote:
+
+| refused | because the concatenation would |
+|---|---|
+| `?` or `#` | `…/v1?tenant=a` + `/get-daily` puts the path **inside the query string** |
+| `@` (userinfo) | `https://user:pass@host` is a credential outside `auth.secrets` — so outside `privateFields`, and into every `/search` response and every log line that prints the URL |
+| whitespace | be unusable, and silently mangled differently by every HTTP client |
+| `..` | traverse against the upstream, from a field nobody reads as a path |
+
+`path` forbids `?` from the other side: a query string belongs to the `requestMapping`, which
+builds it from the request, so no value reaches the wire by being concatenated into a stored
+string.
 
 **One `status` vocabulary across all three entities.** Every read filters
 `status == "active"`; a `Capability` that said `deprecated` instead of `inactive` meant the
