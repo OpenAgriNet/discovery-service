@@ -10,7 +10,7 @@ Nothing else lives here — no catalogs, no resources, no search index.
 
 | | | |
 |---|---|---|
-| 1 | [How it fits](#1-how-it-fits) | Two hops, and which one reads the registry |
+| 1 | [How it fits](#1-how-it-fits) | Two hops, which one reads the registry, and when |
 | 2 | [Three schemas](#2-three-schemas) | What each one answers |
 | 3 | [The schemas](#3-the-schemas) | The contract, field by field |
 | 4 | [Examples](#4-examples) | One record per entity |
@@ -41,10 +41,36 @@ Hop ① returns an **advertisement** — no values in it. Hop ② returns the **
 `@type`, same `@context`; what the caller does with the answer is the only difference, and it
 is why a second call exists.
 
+**Hop ② is exactly two reads**, both single-field exact matches: the `ProviderCapability` by
+`bindingKey`, then the `Provider` by `providerId`. No join, and no `Capability` read —
+`Capability` is vocabulary, not part of the call path. Payloads in [§5](#5-apis).
+
 **Adapter placement.** Either one adapter at the centre, or one adapter per layer
 (experience-layer adapter calls `/discover`, then calls the provider adapter for `select`).
 Hop ② is identical in both. What changes is **who holds the upstream credentials** — with one
 central adapter, it does; with per-layer adapters, each provider adapter holds its own.
+
+### The runtime does not call these per request
+
+```
+13 records — 5 Provider, 3 Capability, 5 ProviderCapability.  A few KB.
+```
+
+Load all three entities **at boot**, index `ProviderCapability` by `bindingKey` and `Provider`
+by `providerId`. Resolution is then two map lookups and the per-request registry cost is zero
+reads. Records change on the order of weeks; refresh is a redeploy or a TTL.
+
+**Preload is right whichever way `/search` lands**, which is why two RC questions can wait for
+first boot rather than blocking the design: whether this deployment's search provider is
+database-backed or needs Elasticsearch, and which read returns every row of an entity for the
+boot load. Thirteen records is a few KB, and an exact-match key lookup has nothing to gain
+from a search engine even when one is available. `indexFields` stays declared because it
+documents what is meant to be queryable, not because anything at runtime depends on it.
+
+Both questions are RC-behaviour questions, and **no deployment manifest in this repo pins
+`RELEASE_VERSION=v2.0.0`** — the version is stated here and nowhere enforced. A reader cannot
+reproduce any RC claim on this page from the repo alone. Every one of them is marked as
+unverified where it appears; the fix is a committed compose file, not more prose.
 
 ---
 
@@ -424,12 +450,9 @@ Sunbird RC generates the REST surface from the three schemas. `<Entity>` is `Pro
 | `PUT /api/v1/<Entity>/{osid}` | `registryOperator` | replace in full |
 | `DELETE /api/v1/<Entity>/{osid}` | `registryOperator` | remove permanently |
 
-All three schemas declare `"roles": ["registryOperator"]`. **Read access is a separate,
-narrower role and is not declared in these files** — RC's `_osConfig.roles` gates the
-entity, not the verb. Until a read-only role exists in the RC deployment's token issuer, any
-token that can read can also write, and the table above describes intent rather than
-enforcement. This is the one gap in this section worth closing before seeding real
-credentials.
+All three schemas declare `"roles": ["registryOperator"]`. RC's `_osConfig.roles` gates the
+entity, not the verb, so the *who* column above is intent, not enforcement — see
+[Known gaps](#known-gaps-for-v1).
 
 `osid` is RC's row id, returned by the create. It is **not** `providerId` and not
 `bindingKey` — so an update has to search first.
@@ -463,9 +486,6 @@ schema's top level requires (`required: ["Provider"]`). The same form validates 
 goes on the wire, so the records in [examples.md](examples.md) are write bodies as they
 stand.
 
-Seed in order: **`Capability` → `Provider` → `ProviderCapability`.** The binding's integrity
-rules need the other two to exist and be `active`.
-
 ### Search
 
 ```http
@@ -491,18 +511,12 @@ Authorization: Bearer <read-token>
 > RC returns the rows bare or wrapped, and what it puts around them, has not been checked
 > against the pinned build. The requests are the part the archive corroborates.
 
-**The adapter needs exactly two reads**, both single-field exact matches — the binding above,
-then `POST /api/v1/Provider/search` with `{"providerId": {"eq": "agmarknet"}}`. No join, and
-no `Capability` read: `Capability` is vocabulary, not part of the call path.
-
 **`search` is not public.** A record may hold an `inline:` credential, so a read of `Provider`
 is a read of live key material.
 
-> `Provider._osConfig.privateFields` lists `$.auth.secrets`, which should mean RC redacts it
-> from this response. That has **not** been verified against the pinned build
-> (`RELEASE_VERSION=v2.0.0`), and the two statements — "`/search` returns secrets, so
-> authenticate it" and "secrets are a private field" — cannot both be the whole truth. One
-> check on first boot resolves it; until then assume the response carries the credential.
+> Assume this response carries the credential. `privateFields` should redact
+> `$.auth.secrets` and that is unverified on the pinned build —
+> [Known gaps](#known-gaps-for-v1).
 
 ### Update
 
@@ -542,28 +556,6 @@ Authorization: Bearer <operator-token>
 takes a provider out of service just as completely and leaves the row where an operator can
 see what was turned off. `DELETE` orphans quietly — removing a `Provider` leaves its bindings
 pointing at nothing, and RC enforces no reference between them.
-
-### The runtime does not call these per request
-
-```
-13 records — 5 Provider, 3 Capability, 5 ProviderCapability.  A few KB.
-```
-
-Load all three entities **at boot**, index `ProviderCapability` by `bindingKey` and `Provider`
-by `providerId`. Resolution is then two map lookups and the per-request registry cost is zero
-reads. Records change on the order of weeks; refresh is a redeploy or a TTL.
-
-**Preload is right whichever way `/search` lands**, which is why two RC questions can wait for
-first boot rather than blocking the design: whether this deployment's search provider is
-database-backed or needs Elasticsearch, and which read returns every row of an entity for the
-boot load. Thirteen records is a few KB, and an exact-match key lookup has nothing to gain
-from a search engine even when one is available. `indexFields` stays declared because it
-documents what is meant to be queryable, not because anything at runtime depends on it.
-
-Both questions are RC-behaviour questions, and **no deployment manifest in this repo pins
-`RELEASE_VERSION=v2.0.0`** — the version is stated here and nowhere enforced. A reader cannot
-reproduce any RC claim on this page from the repo alone. Every one of them is marked as
-unverified where it appears; the fix is a committed compose file, not more prose.
 
 ---
 
