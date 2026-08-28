@@ -1,4 +1,4 @@
-"""Auth cases for schemas/Participant.json.
+"""Auth and material-reference cases for schemas/Participant.json.
 
 Run:  python3 verify/auth_cases.py          (from docs/registry)
 Needs: jsonschema
@@ -6,6 +6,11 @@ Needs: jsonschema
 Each case is (name, auth, want_valid). A case that passes for the wrong reason is
 worse than no case, so the multi-param cases assert both halves: the well-formed
 record is accepted AND every malformed neighbour is refused.
+
+NARROWING pins the second half: `Secret` and `KeyHash` are both `MaterialRef`
+intersected with an allowed-scheme prefix, and the intersection must refuse the
+other site's schemes. Without these, widening MaterialRef to add `vault://` would
+silently make it legal as a public-key hash.
 """
 import json, io, sys
 
@@ -67,16 +72,42 @@ CASES = [
       "paramNames": {"token": "X-Api-Key", "account": "X-Account-Id"}}, False),
 ]
 
+# (definition, value, want_valid) — the shared grammar, narrowed per site
+NARROWING = [
+    ("Secret",  "env://HASURA_TOKEN",   True),
+    ("Secret",  "inline:abc123",        True),
+    ("Secret",  "sha256:" + "a" * 64,   False),   # the other site's scheme
+    ("Secret",  "bare-pasted-key",      False),   # no scheme at all
+    ("Secret",  "env://lowercase",      False),
+    ("KeyHash", "sha256:" + "a" * 64,   True),
+    ("KeyHash", "env://HASURA_TOKEN",   False),   # the other site's scheme
+    ("KeyHash", "inline:" + "a" * 64,   False),
+    ("KeyHash", "sha256:" + "a" * 63,   False),   # 63 hex, not 64
+    ("KeyHash", "sha256:" + "A" * 64,   False),   # uppercase hex
+]
+
+
 def main():
     import jsonschema
-    V = jsonschema.Draft7Validator(json.load(io.open("schemas/Participant.json")))
+    sch = json.load(io.open("schemas/Participant.json"))
+    V = jsonschema.Draft7Validator(sch)
     bad = 0
     for name, auth, want in CASES:
         got = not list(V.iter_errors(rec(auth)))
         hit = got == want
         bad += not hit
         print(f"  {'PASS' if hit else 'FAIL'}  {name:52} valid={str(got):5} want={want}")
-    print(f"\nauth cases: {len(CASES)} run, {bad} failing")
+    print(f"\nauth cases: {len(CASES)} run, {bad} failing\n")
+
+    for defn, value, want in NARROWING:
+        V = jsonschema.Draft7Validator({**sch, "$ref": f"#/definitions/{defn}"})
+        got = not list(V.iter_errors(value))
+        hit = got == want
+        bad += not hit
+        shown = value if len(value) <= 26 else value[:23] + "..."
+        print(f"  {'PASS' if hit else 'FAIL'}  {defn:8} {shown:30} valid={str(got):5} want={want}")
+    print(f"\nnarrowing cases: {len(NARROWING)} run")
+    print(f"total failing: {bad}")
     return 1 if bad else 0
 
 if __name__ == "__main__":

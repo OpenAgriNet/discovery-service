@@ -81,14 +81,22 @@
       "properties": {
         "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
         "alg":   { "type": "string", "enum": ["ed25519", "x25519"] },
-        "hash":  { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        "hash":  { "$ref": "#/definitions/KeyHash" }
       }
     },
 
     "ParamName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
     "ParticipantId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
     "Status": { "type": "string", "enum": ["active", "inactive"] },
-    "Secret": { "type": "string", "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998})$" }
+    "MaterialRef": {
+      "description": "A reference to security material held OUTSIDE the registry, as <scheme>:<locator>. Never the material itself. env:// resolved in the adapter's environment; inline: literal in the record; sha256: the fingerprint of a key delivered out of band. Narrowed per site by Secret and KeyHash — a new scheme is added here plus one allow-list.",
+      "type": "string", "maxLength": 1024,
+      "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998}|sha256:[a-f0-9]{64})$"
+    },
+    "Secret":  { "allOf": [ { "$ref": "#/definitions/MaterialRef" },
+                            { "pattern": "^(env://|inline:)" } ] },
+    "KeyHash": { "allOf": [ { "$ref": "#/definitions/MaterialRef" },
+                            { "pattern": "^sha256:" } ] }
   },
 
   "_osConfig": {

@@ -132,10 +132,28 @@ RC loads each schema alone, so `$ref` across files is unavailable. These three a
 | `ParticipantId` | lowercase, **min length 3** | `Participant`, `ProviderSchema` |
 | `CapabilityCode` | `openagrinet:` + PascalCase, never the two `Agriculture*` base types | `SchemaRegistry`, `ProviderSchema` |
 
-`Secret`, `ParamName` and `PublicKey` live only in `Participant.json`; `Path` and
-`MappingPath` only in `ProviderSchema.json`. None of the five is shared. `Secret` was, until
-the enricher was deferred out of milestone 1 and `ProviderSchema` stopped holding key
-material — see [Deferred](#deferred--out-of-scope).
+`MaterialRef`, `Secret`, `KeyHash`, `ParamName` and `PublicKey` live only in
+`Participant.json`; `Path` and `MappingPath` only in `ProviderSchema.json`. None is shared
+across files. `Secret` was, until the enricher was deferred out of milestone 1 and
+`ProviderSchema` stopped holding key material — see [Deferred](#deferred--out-of-scope).
+
+**One grammar for security material.** `auth.secrets` and `publicKeys[].hash` look like
+unrelated fields, but neither holds material — both hold a *reference* to material held
+outside the registry, in the same `<scheme>:<locator>` form. `MaterialRef` is that grammar;
+`Secret` and `KeyHash` are it intersected with the schemes allowed at each site:
+
+| reference | resolves to | legal in |
+|---|---|---|
+| `env://VAR` | the adapter's own environment | `Secret` |
+| `inline:…` | the record itself — costs an authenticated `/search` | `Secret` |
+| `sha256:<64 hex>` | the fingerprint of a key delivered out of band | `KeyHash` |
+
+The narrowing is the point, not bureaucracy: a new scheme — `vault://`, a JWKS pointer — is
+one edit to `MaterialRef` plus one deliberate entry in whichever site may use it. Widening the
+grammar alone does **not** make `vault://` legal as a public-key hash, and
+`verify/auth_cases.py` fails if it ever does. What the shared grammar deliberately does not do
+is merge the two fields; [§3.1](#31-participant) says why that is unavailable rather than
+merely unattractive.
 
 ### 3.1 `Participant`
 
@@ -155,20 +173,29 @@ Four scalars, a `roles` array, one `auth` object and the participant's public ke
     "scheme":      "apiKeyHeader",             // required · none | apiKeyQuery | apiKeyHeader | basic
     "paramName":   "Authorization",            // per scheme · query-param or header name · no control chars
     "valuePrefix": "Bearer ",                  // optional · apiKeyHeader only · trailing space required
-    "secrets":     { "token": "env://HASURA_TOKEN" }   // per scheme · env://VAR or inline:… only
+    "secrets":     { "token": "env://HASURA_TOKEN" }   // per scheme · a MaterialRef: env:// | inline:
   },
   "publicKeys": [{                             // optional in the schema, required by network policy
     "keyId": "hasura-content.k1",              // required inside publicKeys · lowercase
     "alg":   "ed25519",                        // required · ed25519 (signing) | x25519 (encryption)
     "hash":  "sha256:04df206b469a7fefd868d6bf40bb592b4359cbfc49f51404dfabba25c4a7a5c1"
-  }]                                           // required · sha256: + 64 lowercase hex · the hash, not the key
+  }]                                           // required · a MaterialRef: sha256: only · the hash, not the key
 } }
 ```
 
 **`auth` and `publicKeys` point in opposite directions.** `auth` is the credential *we*
 present when we call *them*; `publicKeys` is what *we* verify when *they* sign something for
 us. Different lifecycle, different owner, different blast radius when wrong — which is why
-they are two fields and not one.
+they are two fields and not one, even though both are `MaterialRef`s ([§3.0](#30-shared-definitions))
+and the resemblance invites merging them.
+
+The reason they cannot merge is `privateFields`, which redacts **by path**. One
+`credentials[]` array would need `$.credentials[*].secrets` — the wildcard we cannot rely on —
+and even resolved, the rule would have to redact the outbound element and not the inbound one.
+RC cannot say that, so a merged array is either fully redacted, making public keys unreadable
+and verification impossible, or not redacted, putting secrets in clear. Both fail silently.
+Cardinality points the same way: `publicKeys` is plural because rotation needs a window where
+the old and new keys are both valid, while a credential rotates by changing one env var.
 
 `publicKeys` is an **array** even though `auth.secrets` deliberately is not. A public key is
 not a secret: it needs no `Secret` pattern and no `privateFields` entry, so it never runs into
@@ -597,12 +624,11 @@ carrying them before they have a user. That is the whole test applied below.
 | `publicKeys[].validFrom` / `validUntil` — key lifetime | the first key rotation that has to overlap, where the old key must stay verifiable while the new one propagates | two fields on `PublicKey` and one cross-field rule (`validUntil` after `validFrom`). Until then a rotation is a `PUT` and the overlap window is however long that takes |
 | `signing` — an algorithm and key-id convention beyond `publicKeys` | a participant signing with something other than ed25519, or a `keyId` the network wants structured (`<participantId>.<n>.<alg>`) | `alg` is already an enum, so a new algorithm is one value; a structured `keyId` is a tighter pattern plus a cross-field rule against `participantId` |
 | `auth.login` / an acquired-token scheme | a provider whose credential is fetched by calling it (login → token → cache for a TTL) | one `Acquire` definition on `Auth`, and `Path` + `MappingPath` become shared into `Participant.json` |
-| a second credential — `extraHeaders`, or `maxProperties > 1` | a provider wanting both an API key and a tenant token | relaxing one `maxProperties`, plus deciding how a second secret is redacted |
+| **more than one auth *scheme* per participant** — not more than one credential, which `paramNames` already carries | a participant that genuinely needs two schemes at once, or a staged rotation across schemes | **fixed slots, never an array.** `$.auth.primary.secrets` and `$.auth.secondary.secrets` are literal paths that `privateFields` can redact; `$.authMethods[*].secrets` is a wildcard we have no evidence RC resolves, and its failure mode is key material stored in clear with no error ([§3.1](#31-participant)) |
 | `encryptedEnvelope` / a body codec | a provider that encrypts request bodies (PM-Kisan's AES envelope) | one plugin reference on the binding — the same mechanism the `enricher` row above describes, so no new concept, but it lands after that one |
 | `steps[]` — 2–6 upstream calls for one Beckn action | one action needing call 2 to read call 1's output (PM-Kisan: verify OTP, then fetch the benefit) | an ordered array whose members are the fields the binding already has, and a `steps.<id>` scope in the JSONata inputs |
 | `sessionGate` / `sessionGrant` | a gated action, where one call proves something a later one requires | **place the grant on the step that earns it**, never on the record — any step failing NACKs the whole action while the upstream has already consumed the OTP |
 | an **action segment** on `bindingKey` | one (participant, capability) pair answering several Beckn actions from different endpoints — `init` and `status` on PM-Kisan, PMFBY or Soil Health Card | this is the **only** entry here that is not free. `bindingKey` is the unique index, so two actions on one pair collide today and the second write **silently overwrites** the first — JSON Schema cannot see a cross-record duplicate. Undoing it means either rewriting every stored key or carrying a dual lookup |
-
 | `baseTypes` — the abstract types a capability composes | a consumer that needs to match on `openagrinet:AgricultureResource` without enumerating its subtypes | nothing here. The type hierarchy lives in `network-specs` and is resolvable from `schemaUrl`; mirroring it into the registry meant a registry write on every specs push, which is what removed it |
 
 **Read that last row before deferring it again.** Everything above it is additive. The key's

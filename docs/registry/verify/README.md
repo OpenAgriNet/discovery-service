@@ -30,6 +30,18 @@ no v1 participant uses either field. They were verified by mutation instead: inj
 violation into a copy of `examples.md` and confirming the checker reports that rule and not
 another.
 
+`records.py` also carries one invariant that is not a §3.4 rule: **no secret in
+`examples.md` may be anything but `env://`.** The schema permits `inline:` on purpose — an
+operator who cannot set an environment variable needs it — but a reviewed file in git is never
+that operator, and the day someone pastes a working key into an example is the day it is in
+every clone. Mutation-tested.
+
+`auth_cases.py` gained the `NARROWING` block when `MaterialRef` was introduced. `Secret` and
+`KeyHash` are that one grammar intersected with the schemes allowed at each site, and the
+cases assert the intersection refuses the *other* site's scheme. Without them, widening
+`MaterialRef` to add `vault://` would quietly make it legal as a public-key hash — the
+generalisation buying reach it was never meant to buy.
+
 `links.py` exists because renaming an entity broke four anchors in this folder and
 nothing failed. GitHub derives an anchor from the heading text, so a renamed heading is a
 broken link at every site that referenced it — and a broken anchor scrolls to the top of the

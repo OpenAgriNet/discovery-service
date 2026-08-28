@@ -67,6 +67,15 @@ def rules(by_entity, fail):
         if len(ids) != len(set(ids)):
             fail(f'rule 5: {p["participantId"]} repeats a keyId in publicKeys')
 
+    # not a §3.4 rule — an invariant of this file being COMMITTED. The schema
+    # permits inline:, because an operator who cannot set an environment needs
+    # it; a reviewed document in git is never that operator.
+    for p in by_entity.get("Participant", []):
+        for name, ref in p.get("auth", {}).get("secrets", {}).items():
+            if not ref.startswith("env://"):
+                fail(f'committed docs: {p["participantId"]} secrets.{name} is '
+                     f'{ref.split(":")[0]}:… — only env:// belongs in a tracked file')
+
     for c in by_entity.get("SchemaRegistry", []):
         # rule 4 — version equals the vN.N segment of schemaUrl
         seg = re.search(r"/(v[0-9]+\.[0-9]+)/", c["schemaUrl"])
