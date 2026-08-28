@@ -124,36 +124,23 @@ RC loads each schema alone, so `$ref` across files is unavailable. These four ar
 Four scalars and one `auth` object. Why: [Appendix A](#provider--rationale).
 
 ```jsonc
-{ "Provider": {                                 // write bodies are wrapped: the key is the entity
-  "providerId": "hasura-content",               // required · Beckn provider.id
-  "name":       "Vistaar Knowledge Content",    // required · display only
-  "baseUrl":    "https://content.internal",     // required · no trailing slash
-  "status":     "active",                       // required · active | inactive
-  "auth": {                                     // required
-    "scheme":      "apiKeyHeader",              // required · none | apiKeyQuery | apiKeyHeader | basic
-    "paramName":   "Authorization",             // required for both apiKey schemes
-    "valuePrefix": "Bearer ",                   // optional · apiKeyHeader only · trailing space required
-    "secrets":     { "token": "env://HASURA_TOKEN" }   // env://VAR or inline:… — nothing else
+{ "Provider": {                              // write bodies are wrapped: the key is the entity
+  "providerId": "hasura-content",            // required · the Beckn provider.id · lowercase, min 3
+  "name":       "Vistaar Knowledge Content", // required · 1–200 chars, not all space · display only
+  "baseUrl":    "https://content.internal",  // required · scheme + host + path segments only:
+                                             //   no trailing slash, no ? # @ whitespace ..
+                                             //   https whenever a credential is held
+  "status":     "active",                    // required · active | inactive
+  "auth": {                                  // required · the credential for every call to this provider
+    "scheme":      "apiKeyHeader",           // required · none | apiKeyQuery | apiKeyHeader | basic
+    "paramName":   "Authorization",          // per scheme · query-param or header name · no control chars
+    "valuePrefix": "Bearer ",                // optional · apiKeyHeader only · trailing space required
+    "secrets":     { "token": "env://HASURA_TOKEN" }   // per scheme · env://VAR or inline:… only
   }
 } }
 ```
 
-| field | type | constraint | req |
-|---|---|---|---|
-| `providerId` | string | `ProviderId` — this is the Beckn `provider.id` | ✓ |
-| `name` | string | 1–200 chars, at least one non-space, display only | ✓ |
-| `baseUrl` | string | scheme + host + optional path segments. No trailing slash, and no `?` `#` `@` whitespace `..`. `https` required if any credential is held | ✓ |
-| `status` | string | `active` \| `inactive` | ✓ |
-| `auth` | object | → `Auth` — the credential for every call to this provider | ✓ |
-
-**`Auth`** — three fields, four schemes.
-
-| field | constraint | req |
-|---|---|---|
-| `scheme` | `none` \| `apiKeyQuery` \| `apiKeyHeader` \| `basic` | ✓ |
-| `paramName` | the query-parameter or header name. No control characters | per scheme |
-| `valuePrefix` | prepended to the credential. **The trailing space is required.** No control characters | optional |
-| `secrets` | every value `Secret` | per scheme |
+`scheme` decides which of the other three may appear at all:
 
 | `scheme` | the adapter does | then requires | and must not carry |
 |---|---|---|---|
@@ -179,20 +166,12 @@ Why: [Appendix A](#capability--rationale).
 ```jsonc
 { "Capability": {
   "capabilityCode": "openagrinet:WeatherObservation",   // required · the outcome @type
-  "name":           "Weather Observation and Forecast", // required · display only
+  "name":           "Weather Observation and Forecast", // required · 1–200 chars · display only
   "schemaUrl":      "https://raw.githubusercontent.com/OpenAgriNet/network-specs/3e593b3627acae6f416382e6d4bd58f641f309e8/schema/WeatherObservation/v0.1/attributes.yaml",
   "status":         "active",                           // required · active | inactive
   "baseTypes":      ["openagrinet:AgricultureResource"] // optional · unique, composed with allOf
 } }
 ```
-
-| field | type | constraint | req |
-|---|---|---|---|
-| `capabilityCode` | string | `CapabilityCode`. **This is the outcome `@type`** | ✓ |
-| `name` | string | `minLength: 1` | ✓ |
-| `schemaUrl` | string | the network-specs pack, **not on a branch** — `refs/heads/…` and `/main/`, `/master/`, `/develop/` are rejected | ✓ |
-| `status` | string | `active` \| `inactive` | ✓ |
-| `baseTypes` | array | `TypeCode`, unique — shared field sets this pack composes with `allOf` | |
 
 > Outcome type or governed capability type is an **open alignment question**, and one seeded
 > record matches neither — [dpg-fit.md](dpg-fit.md).
@@ -207,36 +186,23 @@ A record is **one call** — one shape, no alternatives. Why:
 ```jsonc
 { "ProviderCapability": {
   "bindingKey":      "imd-city-weather|openagrinet:WeatherObservation",  // required · providerId + "|" + capabilityCode
+                                                     //   the unique index, and the adapter's first read
   "providerId":      "imd-city-weather",             // required · must equal segment 1
   "capabilityCode":  "openagrinet:WeatherObservation",  // required · must equal segment 2
   "status":          "active",                       // required · active | inactive
   "method":          "GET",                          // required · GET | POST
-  "path":            "/citywx/city_weather_test.php",   // required · appended to Provider.baseUrl
+  "path":            "/citywx/city_weather_test.php",   // required · appended to Provider.baseUrl · no query string
   "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",   // required
   "responseMapping": "mappings/imd-city-weather/select.response.jsonata",  // required
-  "enricher": {                                      // optional · a Go plugin, run before the request mapping
+  "enricher": {                                      // optional · a Go plugin, run BEFORE the request mapping
     "name":    "nearestStation",                     // required inside enricher
     "config":  { "maxDistanceKm": 50 },              // optional · free-form, passed to the plugin
     "secrets": { "dsn": "env://IMD_DB_DSN" }         // optional · same two forms as Provider.auth
   },
   "timeoutMs": 15000,                                // optional · 1000–120000, default 15000
-  "retryMax":  0                                     // optional · 0–5, default 0
+  "retryMax":  0                                     // optional · 0–5, default 0 · not conditioned on method
 } }
 ```
-
-| field | type | constraint | req |
-|---|---|---|---|
-| `bindingKey` | string | exactly `providerId` + `\|` + `capabilityCode` — **two segments** | ✓ |
-| `providerId` | string | must equal segment 1 | ✓ |
-| `capabilityCode` | string | must equal segment 2 | ✓ |
-| `status` | string | `active` \| `inactive` | ✓ |
-| `method` | string | `GET` \| `POST` | ✓ |
-| `path` | string | `Path` — appended to `Provider.baseUrl`. **No query string** | ✓ |
-| `requestMapping` | string | Beckn request → upstream request | ✓ |
-| `responseMapping` | string | upstream response → Beckn v2 resources | ✓ |
-| `enricher` | object | → `Enricher` — a Go plugin run **before** the request mapping | |
-| `timeoutMs` | integer | 1000–120000, default 15000 | |
-| `retryMax` | integer | 0–5, default 0 | |
 
 **`Enricher`** — `{name, config, secrets}`, always the object form.
 
@@ -625,6 +591,16 @@ commit sha, which is the only genuinely immutable ref — the pattern cannot req
 also excluding hosts that do not expose one.
 
 ### `ProviderCapability` — rationale
+
+**Why `bindingKey` exists when it only repeats two other fields.** It is the row's identity.
+RC's `uniqueIndexFields` takes single fields that are each unique on their own — there is no
+composite unique index, and what support exists varies by release. So "one row per
+(`providerId`, `capabilityCode`)" cannot be expressed without collapsing the pair into one
+field. Without it the duplicate is not an error but an **overwrite**: two records that differ
+in no indexed field both validate, and the second write silently replaces the first. JSON
+Schema cannot detect a duplicate *across* records — it can only forbid the shape that allows
+one, which is why [§3.4](#34-two-rules-the-schema-cannot-express) rule 1 checks the three
+fields agree.
 
 **When something is an enricher and not a mapping.** `Enricher` exists only for what the
 Beckn body cannot express: a private code namespace (Agmarknet's `marketcode`), or a lookup
