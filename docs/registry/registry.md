@@ -106,10 +106,9 @@ a second thing to keep true, and it is the copy that rots.
 
 ### 3.0 Shared definitions
 
-RC loads each entity schema on its own, so `$ref` across files is not available. These four
-are therefore copied **verbatim** into every file that uses them, under the same name —
-edit one, edit all of them. The patterns themselves are in `schemas/*.json`; repeating them
-here is how this table went stale once already.
+RC loads each schema alone, so `$ref` across files is unavailable. These four are copied
+**verbatim** into every file that uses them: edit one, edit all. Patterns live in
+`schemas/*.json`.
 
 | copied into every file that uses it | means | used by |
 |---|---|---|
@@ -122,10 +121,7 @@ here is how this table went stale once already.
 
 ### 3.1 `Provider`
 
-Four scalars and one `auth` object. That is the whole entity. The block below is a **valid
-record**, not a sketch — `shape.py` validates it against `schemas/Provider.json` and fails if
-any field goes unexercised. Constraints are in the tables; the *why* is in
-[Appendix A](#appendix-a--why-the-schema-is-shaped-this-way).
+Four scalars and one `auth` object. Why: [Appendix A](#provider--rationale).
 
 ```jsonc
 { "Provider": {                                 // write bodies are wrapped: the key is the entity
@@ -142,10 +138,6 @@ any field goes unexercised. Constraints are in the tables; the *why* is in
 } }
 ```
 
-`scheme` decides which of the other three may appear at all; the table below is that rule.
-`none` carries none of them, `basic` carries only `secrets` and needs exactly `username` and
-`password`.
-
 | field | type | constraint | req |
 |---|---|---|---|
 | `providerId` | string | `ProviderId` — this is the Beckn `provider.id` | ✓ |
@@ -154,20 +146,15 @@ any field goes unexercised. Constraints are in the tables; the *why* is in
 | `status` | string | `active` \| `inactive` | ✓ |
 | `auth` | object | → `Auth` — the credential for every call to this provider | ✓ |
 
-`baseUrl` forbids a trailing slash, `path` requires a leading one — exactly one `/` falls
-between them, so no code normalises. Four more things `baseUrl` refuses, each because
-`baseUrl + path` would otherwise produce a URL nobody wrote:
+No trailing slash on `baseUrl`, a leading one on `path` — exactly one `/` between them, so
+nothing normalises. Four more refusals:
 
-| refused in `baseUrl` | what the concatenation would have done |
+| refused in `baseUrl` | because `baseUrl + path` would |
 |---|---|
 | `?` or `#` | `…/v1?tenant=a` + `/get-daily` puts the path **inside the query string** |
 | `@` (userinfo) | `https://user:pass@host` is a credential outside `auth.secrets` — so outside `privateFields`, and into every `/search` response and every log line that prints the URL |
 | whitespace | unusable, and silently mangled differently by every HTTP client |
 | `..` | traversal against the upstream, from a field nobody reads as a path |
-
-`path` forbids `?` for the same reason from the other side: a query string belongs to the
-`requestMapping`, which builds it from the request, so a value never reaches the wire by being
-concatenated into a stored string.
 
 **`Auth`** — three fields, four schemes.
 
@@ -185,25 +172,19 @@ concatenated into a stored string.
 | `apiKeyHeader` | sets `<paramName>: <valuePrefix><secret>` | `paramName`, exactly one `secrets` entry | — |
 | `basic` | RFC 7617 from `secrets.username` / `secrets.password` | both keys | `paramName`, `valuePrefix` |
 
-**A secret has exactly two legal forms, and must say which.** A bare pasted key matches neither
-and is rejected at write time. Prefer `env://`; `inline:` costs the three things
-[examples.md](examples.md#providers) lists.
+**`secrets` values take two forms and must say which** — a bare key is rejected at write
+time. Prefer `env://`; the cost of `inline:` is in [examples.md](examples.md#providers).
 
 ```
 "secrets": { "password": "env://MAUSAMGRAM_PASS" }   // pointer — resolved from the adapter's environment
 "secrets": { "token":    "inline:a7f3c9d2e1b8..." }  // the credential itself, stored here
 ```
 
-**A credential implies TLS.** Every scheme except `none` requires `secrets`, so the schema
-forces `baseUrl` to `https` whenever `auth.scheme != "none"`. Plaintext stays legal for
-`scheme: "none"` only.
-
 ---
 
 ### 3.2 `Capability`
 
-Why it holds no provider, and the open `capabilityCode` question:
-[Appendix A](#capability--rationale).
+Why: [Appendix A](#capability--rationale).
 
 ```jsonc
 { "Capability": {
@@ -223,17 +204,14 @@ Why it holds no provider, and the open `capabilityCode` question:
 | `status` | string | `active` \| `inactive` | ✓ |
 | `baseTypes` | array | `TypeCode`, unique — shared field sets this pack composes with `allOf` | |
 
-> Whether `capabilityCode` should carry the **outcome** type (`openagrinet:WeatherObservation`)
-> or the governed **capability** type (`openagrinet:WeatherObservationCapability`) is an open
-> alignment question with the OAN domain packs, and one of the seeded three does not match
-> either. [dpg-fit.md](dpg-fit.md) has the evidence.
+> Outcome type or governed capability type is an **open alignment question**, and one seeded
+> record matches neither — [dpg-fit.md](dpg-fit.md).
 
 ---
 
 ### 3.3 `ProviderCapability`
 
-The entity that does the work. A record is **one call** — one shape, no alternatives.
-Why `GET`/`POST` only, and why timeout and retry are columns:
+A record is **one call** — one shape, no alternatives. Why:
 [Appendix A](#providercapability--rationale).
 
 ```jsonc
@@ -270,15 +248,10 @@ Why `GET`/`POST` only, and why timeout and retry are columns:
 | `timeoutMs` | integer | 1000–120000, default 15000 | |
 | `retryMax` | integer | 0–5, default 0 | |
 
-**`Enricher`** — `{name, config, secrets}`, always the object form. It exists only for what
-the Beckn body cannot express: a private code namespace (Agmarknet's `marketcode`), or a
-lookup against something the adapter owns (`nearestStation`'s Postgres). *If a JSONata
-expression can do it, it is a mapping, not an enricher.*
+**`Enricher`** — `{name, config, secrets}`, always the object form.
 
-**Mappings live in files, not in the row** —
-`mappings/<provider>/<action>.<request|response>.jsonata`. The row stores the path; the file
-is reviewed and diffed like source. The pattern rejects `..` traversal and uppercase — a
-case-only difference resolves on macOS and 404s on a Linux pod.
+**Mappings are file paths**, `mappings/<provider>/<action>.<request|response>.jsonata` —
+lowercase, no `..`.
 
 | mapping | input | output |
 |---|---|---|
@@ -296,10 +269,8 @@ run in the onboarding path and in the conformance suite:
 1. `bindingKey` **must equal** `providerId` + `"|"` + `capabilityCode`.
 2. Both must resolve to **live** records — an `active` `Provider` and an `active` `Capability`.
 
-Two more are known and not yet built: resolving every `enricher.name` against the adapter's
-plugin table at boot and refusing to start if one is missing, and confirming that every
-`responseMapping` emits something the pack in `Capability.schemaUrl` accepts — which
-[dpg-fit.md](dpg-fit.md) shows three of five bindings currently do not.
+Two more are unbuilt — `enricher.name` resolution and `responseMapping` conformance. See
+[Known gaps](#known-gaps-for-v1).
 
 ---
 
@@ -649,6 +620,15 @@ commit sha, which is the only genuinely immutable ref — the pattern cannot req
 also excluding hosts that do not expose one.
 
 ### `ProviderCapability` — rationale
+
+**When something is an enricher and not a mapping.** `Enricher` exists only for what the
+Beckn body cannot express: a private code namespace (Agmarknet's `marketcode`), or a lookup
+against something the adapter owns (`nearestStation`'s Postgres). *If a JSONata expression can
+do it, it is a mapping, not an enricher.*
+
+**Why mappings are files and not rows.** The row stores the path; the file is reviewed and
+diffed like source. The pattern rejects uppercase because a case-only difference resolves on
+macOS and 404s on a Linux pod.
 
 **`GET` and `POST` only.** Every binding here answers a read. A `PUT` or `DELETE` in a
 discovery path is a bug, and an enum is a cheaper place to catch it than a review.
