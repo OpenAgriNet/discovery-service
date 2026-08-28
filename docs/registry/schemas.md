@@ -11,6 +11,11 @@ the reading of them.
 
 Every row carries `status: "active" \| "inactive"`. Every read filters on `active`.
 
+Which row a field goes on: `Participant` holds what is true of a provider whatever you ask it
+for — `baseUrl`, `auth`. `ProviderSchema` holds what varies per capability — `method`, `path`, the
+mappings, the timeouts. So a provider serving two capabilities is one `Participant` and two
+`ProviderSchema` rows.
+
 ---
 
 ## `SchemaRegistry`
