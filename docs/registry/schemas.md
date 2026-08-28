@@ -15,7 +15,7 @@ Every row carries `status: "active" \| "inactive"`. Every read filters on `activ
 
 ## `SchemaRegistry`
 
-All five fields required.
+All five required. Vocabulary only — nothing in the call path reads it.
 
 ```jsonc
 { "SchemaRegistry": {
@@ -27,26 +27,23 @@ All five fields required.
 } }
 ```
 
-Vocabulary only. Nothing in the call path reads it — a capability is a name, not a route.
-
 ---
 
 ## `Participant`
 
-Three required fields, then **exactly one** of `node` or `upstream` (`oneOf`). A node speaks
-Beckn; an upstream is an ordinary HTTP API our adapter calls.
+Three required fields, then **exactly one** of `node` or `upstream` (`oneOf`).
 
 ```jsonc
 { "Participant": {
   "participantId": "oan-provider",                  // stable id
   "name": "OpenAgriNet provider adapter",
   "status": "active",                               // active | inactive
-  "node": {                                         // this one speaks Beckn
+  "node": {                                         // speaks Beckn
     "subscriberId": "bpp.openagrinet.gov.in",       // context.bppId, and field 1 of the Authorization keyId
     "subscriberUrl": "https://bpp.openagrinet.gov.in/beckn",   // where Beckn messages go; https only
-    "type": "BPP",                                  // BAP | BPP | NETWORK
-    "keys": [ {                                     // 1–8 keys; plural for rotation
-      "keyId": "k1",                                // field 2 of the Authorization keyId
+    "type": "BPP",                                  // BAP = consumer node, BPP = provider node, NETWORK = the network node
+    "keys": [ {                                     // 1–8; plural so a rotation can overlap
+      "keyId": "k1",                                // field 2 of the Authorization keyId — the sender says which key it used
       "use": "sign",                                // sign | encrypt
       "alg": "ed25519",                             // fixed by use: sign→ed25519, encrypt→x25519
       "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",   // 44 chars = 32 raw bytes
@@ -60,41 +57,21 @@ Beckn; an upstream is an ordinary HTTP API our adapter calls.
   "participantId": "mausamgram",                    // also the Beckn offer.provider.id
   "name": "IMD Mausamgram NWP",
   "status": "active",
-  "upstream": {                                     // this one does not speak Beckn
-    "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",   // the binding's path is appended to it
+  "upstream": {                                     // does not speak Beckn
+    "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",   // a binding's path is appended; https unless scheme is none
     "auth": {                                       // how WE authenticate TO it
       "scheme": "basic",                            // none | apiKeyQuery | apiKeyHeader | basic
-      "secrets": { "username": "env://MAUSAMGRAM_USER",
-                   "password": "env://MAUSAMGRAM_X_API_KEY" } } } } }
+      "secrets": { "username": "env://MAUSAMGRAM_USER",     // pointers, never material —
+                   "password": "env://MAUSAMGRAM_X_API_KEY" } } } } }   // resolved in the adapter's environment
 ```
 
-That is the whole answer to *what am I looking at*:
+An API and the adapter in front of it are separate deployables, so separate records:
+`mausamgram` is IMD's API, `oan-provider` is the BPP that calls it. Which upstreams a provider
+node fronts is that adapter's config.
 
-| you read | it is |
-|---|---|
-| `upstream` | a data provider — an ordinary HTTP API |
-| `node.type: "BAP"` | a consumer node |
-| `node.type: "BPP"` | a provider node |
-| `node.type: "NETWORK"` | the network node |
+### `auth`
 
-`type` states direction: BAP asks, BPP answers, NETWORK is infrastructure that both sides call
-and that asks nothing of anyone.
-
-The API and the adapter in front of it are separate deployables, so they are separate records —
-`mausamgram` is the IMD API, `oan-provider` is the BPP that calls it. Which upstreams a provider
-node fronts is that adapter's own config, not a registry field.
-
-`keys` is plural because rotation needs an overlap: the old key stays `active` with a
-`validUntil` while the new one is already valid. The sender names which one it used, so the
-verifier does not guess. The material is held here, not a fingerprint of it — a public key is
-public, and a fingerprint can pin a key without being able to distribute one.
-
-`baseUrl` must be `https` unless `auth.scheme` is `none`. A credential over plaintext is a leaked
-credential.
-
-### `auth` — the four schemes
-
-This one stays a table, because what matters is which combinations are *refused*.
+A legal example cannot show an illegal combination, so:
 
 | `scheme` | needs | forbids |
 |---|---|---|
@@ -103,19 +80,12 @@ This one stays a table, because what matters is which combinations are *refused*
 | `apiKeyHeader` | `secrets` + `paramName` (one secret) or `paramNames` | `paramNames` excludes `valuePrefix` |
 | `basic` | `secrets` with `username` and `password` | |
 
-The header *name* goes in `paramName`. `valuePrefix` keeps its trailing space — `"Bearer "`. Both
-forms are shown in [examples.md](examples.md#forms-no-seeded-record-uses).
+`paramName` holds the header *name*; `valuePrefix` keeps its trailing space — `"Bearer "`. Both in
+[examples.md](examples.md#forms-no-seeded-record-uses).
 
-### `secrets` are pointers, never material
-
-`env://MAUSAMGRAM_USER` resolves in the adapter's own environment. `inline:` also validates, for
-operators who cannot set that environment, and it costs three things: `/search` must be
-authenticated, the database holds live key material, and rotation becomes a registry write.
-
-The prefix is load-bearing: a bare pasted key fails the pattern, so storing a credential is
-deliberate — and *which participants hold real key material* is one query over the table.
-
-`_osConfig.privateFields` is `["$.upstream.auth.secrets"]`.
+`inline:` secrets also validate, for an operator who cannot set an environment variable. It costs
+three things: `/search` must be authenticated, the database holds live key material, and rotation
+becomes a registry write.
 
 ---
 
@@ -126,7 +96,7 @@ Everything but `timeoutMs` and `retryMax` is required.
 ```jsonc
 { "ProviderSchema": {
   "bindingKey": "mausamgram|openagrinet:WeatherObservation",   // <participantId>|<capabilityCode>
-  "participantId": "mausamgram",                    // must be an active upstream Participant
+  "participantId": "mausamgram",                    // an active upstream Participant — read from HERE, never from the request
   "capabilityCode": "openagrinet:WeatherObservation",   // must be an active SchemaRegistry
   "method": "GET",                                  // GET | POST
   "path": "/get-daily",                             // appended to that upstream's baseUrl
@@ -138,13 +108,10 @@ Everything but `timeoutMs` and `retryMax` is required.
 } }
 ```
 
-Resolving a `select` is two reads: this row by `bindingKey`, then its `Participant` by the
-`participantId` **found in this row** — never the one in the request.
-
-The two mappings are the only transform the registry describes. Anything else an upstream
-needs — a grid point from a lat/long, a station code, a market code — is adapter-internal, keyed
-off `participantId`. **It is a seeding prerequisite:** a binding whose adapter has no such step
-returns nothing useful.
+The two mappings are the only transform the registry describes. Anything else an upstream needs —
+a grid point from a lat/long, a station code, a market code — is adapter-internal, keyed off
+`participantId`, and a **seeding prerequisite**: a binding whose adapter has no such step returns
+nothing useful.
 
 ---
 
