@@ -254,6 +254,29 @@ consequence is already visible in the running service: rate limiting is keyed on
 address rather than on `context.bapId`, because until a signature is verified that field is a
 claim and not an identity.
 
+### Where a consumer's key gets registered
+
+**Not here, and not in discovery-service.** Verification is the **ONIX adapter's** job: it
+terminates Beckn in front of this service and already owns the registry plugin that resolves a
+`keyId` to a key. A consumer node registers by onboarding to the **network registry** — publishing
+its signing key and being whitelisted by the network operator — and ONIX looks it up from there at
+verification time. None of that flow passes through this registry.
+
+The [archive set](archive/02-registry-schema.md) drew the same line before the decision was taken,
+which is why its `Auth` block is annotated *"Not Beckn signing; ONIX already does that."*
+
+Two things follow, and both are load-bearing:
+
+**On this split, `AUTH_ENABLE_SIGNATURE_VERIFICATION` is not deferred — it is never
+discovery-service's job.** That is a stronger statement than "Phase 2", and it points at different
+work: retiring a flag rather than eventually implementing behind it.
+
+**And discovery-service must not be reachable except through ONIX.** Once ONIX is the verifier,
+`context.bapId` is trustworthy only to something downstream of it. Anything that can reach
+discovery-service directly can set `bapId` to whatever it likes — so moving the rate-limit key
+from remote address to subscriber id is safe *only* behind that guarantee, and the guarantee is a
+deployment fact (no route to this port from outside), not something the code can check.
+
 ### Secrets and key hashes are references, not material
 
 Neither `auth.secrets` nor `publicKeys[].hash` holds security material. Both hold a **reference**
@@ -447,7 +470,7 @@ Open items, worst first.
 | **`informationMode` is proposed, not governed** | It appears in no pack schema — only in the *Information Modes* section's examples, marked *Proposed terminology*. It validates because the packs are open at the top level, but no filter can rely on it. |
 | **Two capabilities on one participant collide on mapping filenames** | Paths are `mappings/<participant>/<action>.<…>.jsonata` — no capability segment. A provider serving two capabilities from the same action resolves both to one filename while needing two different output shapes. Nothing rejects it. Worked through in [usecases.md use case 6](usecases.md#6-weather-advisory--not-seeded). The fix is a capability segment in the convention; it is not a schema change. |
 | **Nothing distinguishes a network node from a provider inside a catalog** | `roles` encodes *offers vs consumes*, not *speaks Beckn vs is an upstream API we call*. All five v1 records are the latter, and the schema would accept a record that is incoherently both — signature-authenticated and bearer-token-authenticated at once. Today the distinction is carried by convention and by which fields happen to be set; `publicKeys` present is the closest thing to a discriminator and it is optional. The fix is new vocabulary (`participantKind`, or Beckn's `BAP`/`BPP` alongside `roles`) and it needs a network-owner ruling at the point a real node onboards — deciding earlier means inventing semantics. Worked through in [Node, or provider inside a catalog?](#node-or-provider-inside-a-catalog). |
-| **No participant has a registered key** | `publicKeys` is in the schema and network policy requires it, but none of the five v1 records carries one — they are upstream data APIs our adapter calls directly, not participants that sign anything. Under the distributed topology each runs its own adapter and does sign, at which point the field is mandatory and the seeding path must enforce it. **This is the gap most likely to be read as *done* because the field exists.** A second reason it cannot be read as done: the field holds a `sha256:` fingerprint, so even fully seeded it pins a key rather than distributing one — key distribution is the network registry's, not ours. See [Where the verifying key comes from](#where-the-verifying-key-comes-from). |
+| **No participant has a registered key** | `publicKeys` is in the schema and network policy requires it, but none of the five v1 records carries one — they are upstream data APIs our adapter calls directly, not participants that sign anything. Under the distributed topology each runs its own adapter and does sign, at which point the field is mandatory and the seeding path must enforce it. **This is the gap most likely to be read as *done* because the field exists.** A second reason it cannot be read as done: the field holds a `sha256:` fingerprint, so even fully seeded it pins a key rather than distributing one — key distribution is the network registry's, not ours. **And with verification placed in ONIX, it is now unclear that `publicKeys` has any reader at all:** ONIX resolves keys from the network registry, so a fingerprint held here is a pin nothing checks. Either name what consumes it or drop it — a security field with no reader is read as protection that exists. See [Where the verifying key comes from](#where-the-verifying-key-comes-from). |
 | **Read access is not a distinct role** | `_osConfig.roles` gates the entity, not the verb — [api.md](api.md). |
 | **`privateFields` is unverified** | Whether RC redacts `$.auth.secrets` from `/search` on the pinned build has not been checked — [api.md](api.md#what-is-not-verified). |
 | **Path or subdomain for a second endpoint** | Open, and not decided. A participant with one identity may expose capabilities on different *hosts*, not merely different paths — IMD is `imd.gov.in` but the weather API sits elsewhere. Today one `Participant` is one `baseUrl`, so this is two records sharing an identity prefix, which makes one organisation look like two participants on the wire. The alternatives — a `baseUrl` per binding, or a host override on `ProviderSchema` — are both additive, and choosing before a real case arrives means inventing semantics. |
