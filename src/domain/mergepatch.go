@@ -290,3 +290,35 @@ func uniqueSorted(ids []string) []string {
 	slices.Sort(ids)
 	return slices.Compact(ids)
 }
+
+// TouchedSet answers "was this resource in the patch" without a scan.
+//
+// `touched` crosses DeriveFunc and the repository as a SLICE, and stays one:
+// two of its consumers send it whole as a PostgreSQL array — the geometry clear
+// and PropagateGate — and both depend on it being a list. Every other consumer
+// asks only for membership, once per resource in the merged catalog, which
+// against a slice is quadratic in the size of a catalog. A full-mode publish
+// touches every resource, so a 500-resource catalog costs ~250k string
+// comparisons per pass, and derive, coverGeometries and writeResources each
+// make a pass.
+//
+// A named type rather than a bare map so the call sites read as the question
+// they are asking, and so the empty case cannot be confused with a nil catalog:
+// NewTouchedSet(nil).Has(id) is false, which is the right answer for a patch
+// that touched nothing.
+type TouchedSet map[string]struct{}
+
+// NewTouchedSet indexes a touched list for membership.
+func NewTouchedSet(touched []string) TouchedSet {
+	members := make(TouchedSet, len(touched))
+	for _, resourceID := range touched {
+		members[resourceID] = struct{}{}
+	}
+	return members
+}
+
+// Has reports whether the patch touched this resource.
+func (s TouchedSet) Has(resourceID string) bool {
+	_, ok := s[resourceID]
+	return ok
+}

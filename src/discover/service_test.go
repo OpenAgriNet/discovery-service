@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -321,6 +323,41 @@ func TestABackendErrorIsNotAnEmptyPage(t *testing.T) {
 		t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"},
 		discover.Page{}); err == nil {
 		t.Fatal("a failed search answered 200 with nothing; want an error")
+	}
+}
+
+// ...but a page past the retrieval depth is NOT one of those errors. It is the
+// caller's mistake, not the backend's, and the plan (L2336) makes the mapper the
+// owner of that refusal — so the two must agree on the answer rather than only
+// on the fact that something went wrong.
+//
+// Unreachable over HTTP today, because MapIntent refuses the same page first
+// against the same config.Search. That is exactly why it is pinned here: the
+// guard behind the guard is the one nothing else exercises, and a 500 is what it
+// currently answers with.
+func TestAPagePastTheRetrievalDepthIsTheCallersFaultNotAFiveHundred(t *testing.T) {
+	repo := &stubRepo{
+		capabilities: everything(),
+		err: fmt.Errorf("%w: offset 500 plus limit 20 passes the 500 ids a mode retrieves",
+			domain.ErrRetrievalDepth),
+	}
+
+	_, _, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	if err == nil {
+		t.Fatal("a page past the retrieval depth answered 200; want a refusal naming the boundary")
+	}
+
+	if got := codeOf(t, err); got != beckn.CodeSchemaInvalidFormat {
+		t.Errorf("code = %q, want SCH_INVALID_FORMAT — the same code MapIntent mints for "+
+			"the same page, because a caller must not get two different answers "+
+			"depending on which guard caught them", got)
+	}
+
+	fault := apperrors.FromError(err)
+	if fault.Status() != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: the request is unanswerable, the service is not broken",
+			fault.Status())
 	}
 }
 

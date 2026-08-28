@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -397,8 +396,9 @@ func (r *CatalogRepository) coverGeometries(
 	// with themselves. An offer geometry cannot go stale on an untouched
 	// resource, because `touched` follows offers: patching the offer that
 	// carries the shape touches every resource it covers.
+	inPatch := domain.NewTouchedSet(touched)
 	for _, resource := range merged.Resources {
-		if slices.Contains(touched, resource.ID) {
+		if inPatch.Has(resource.ID) {
 			add(resource.ID, resource.Geometries)
 		}
 	}
@@ -454,9 +454,10 @@ func runBatch(results batchResults) error {
 // what is stored, and rewriting it would burn a row version, a WAL record and
 // an embedding for nothing.
 func writeResources(ctx context.Context, queries *gen.Queries, merged domain.Catalog, touched []string) error {
+	inPatch := domain.NewTouchedSet(touched)
 	upserts := make([]gen.UpsertResourceParams, 0, len(touched))
 	for _, resource := range merged.Resources {
-		if !slices.Contains(touched, resource.ID) {
+		if !inPatch.Has(resource.ID) {
 			continue
 		}
 		upserts = append(upserts, resourceParams(merged.ID, resource))

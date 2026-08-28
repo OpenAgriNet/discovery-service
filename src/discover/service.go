@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -65,6 +66,23 @@ func (s *Service) Discover(
 
 	result, err := s.repo.Search(ctx, query, modes)
 	if err != nil {
+		// A page past the retrieval depth is the CALLER's mistake, and it has
+		// an answer of its own: MapIntent refuses the same bound against the
+		// same config.Search and mints SCH_INVALID_FORMAT at $['offset'], so a
+		// backend raising it must not turn the same request into a 500. Which
+		// of the two guards caught it is this service's business, not the
+		// caller's, and a 500 would also invite a retry of a request that
+		// cannot succeed.
+		//
+		// Matched here rather than left to the mapper alone because the mapper
+		// is the guard in FRONT: this is what answers when a caller reaches the
+		// repository by another route.
+		if errors.Is(err, domain.ErrRetrievalDepth) {
+			return nil, nil, apperrors.
+				Schema(beckn.CodeSchemaInvalidFormat, err.Error()).
+				At(jsonpath.Dot("$['offset']"))
+		}
+
 		logger.FromContext(ctx).Error("searching the catalogue failed", zap.Error(err))
 
 		// Not an empty page. A dead backend and a query that matched nothing

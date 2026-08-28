@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,17 +12,6 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
-
-// ErrRetrievalDepth reports a page that lies past what the retrievers reached.
-//
-// A sentinel, because the caller has to tell this apart from a query that
-// legitimately ran out of results: the fused list holds at most
-// MaxCandidatesPerMode ids, so an offset beyond it can only slice past the end.
-// Answering with the empty slice would give a caller walking pages a full page
-// 25 and an empty page 26 indistinguishable from the end of the results — and
-// since A19 removed the count, this refusal is the ONLY thing that tells them
-// apart.
-var ErrRetrievalDepth = errors.New("the requested page is past the retrieval depth")
 
 // SearchRepository is the read half of the PostgreSQL adapter: the modes, the
 // fusion over them, and the hydration of what the fusion decided.
@@ -74,7 +62,7 @@ func NewSearchRepository(
 			domain.CapabilityLexical: lexical,
 			domain.CapabilityFuzzy:   NewFuzzyRetriever(pool, search.MaxCandidatesPerMode),
 		},
-		hydrator:   NewHydrator(pool, embedder),
+		hydrator:   NewHydrator(pool),
 		search:     search,
 		semantic:   embedder != nil,
 		candidates: lexical,
@@ -171,7 +159,7 @@ func (s *SearchRepository) withinRetrievalDepth(query domain.SearchQuery) error 
 	if query.Offset+query.Limit > s.search.MaxCandidatesPerMode {
 		return fmt.Errorf(
 			"%w: offset %d plus limit %d passes the %d ids a mode retrieves",
-			ErrRetrievalDepth, query.Offset, query.Limit, s.search.MaxCandidatesPerMode)
+			domain.ErrRetrievalDepth, query.Offset, query.Limit, s.search.MaxCandidatesPerMode)
 	}
 	return nil
 }

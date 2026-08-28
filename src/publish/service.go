@@ -249,8 +249,9 @@ func (s *Service) derive(ctx context.Context, catalogIndex int) domain.DeriveFun
 		found, faults := ExtractGeometries(catalogIndex, *merged)
 		assignGeometries(merged, found)
 
+		inPatch := domain.NewTouchedSet(touched)
 		for index := range merged.Resources {
-			if !slices.Contains(touched, merged.Resources[index].ID) {
+			if !inPatch.Has(merged.Resources[index].ID) {
 				continue
 			}
 			faults = append(faults, s.deriveResource(ctx, &merged.Resources[index], catalogIndex, index)...)
@@ -271,6 +272,19 @@ func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 		merged.Resources[index].Geometries = nil
 	}
 
+	// Walk each geometry's OWNERS and look the resource up, rather than walking
+	// every resource and scanning the owners. The two read alike and cost
+	// differently: a catalog's resources outnumber one shape's owners by orders
+	// of magnitude, so the scan is geometries x resources where this is
+	// geometries x owners. A resource id an owner names but the catalog does
+	// not hold is skipped — ExtractGeometries takes owners from the resources
+	// it walked and from offer.ResourceIDs, and only the second can name a
+	// resource that is not there.
+	at := make(map[string]int, len(merged.Resources))
+	for index := range merged.Resources {
+		at[merged.Resources[index].ID] = index
+	}
+
 	for _, geometry := range found {
 		// Empty Owners is CATALOG-WIDE — the shape is shared by every resource
 		// rather than owned by none.
@@ -278,10 +292,21 @@ func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 			merged.Geometries = append(merged.Geometries, geometry)
 			continue
 		}
-		for index := range merged.Resources {
-			if slices.Contains(geometry.Owners, merged.Resources[index].ID) {
-				merged.Resources[index].Geometries = append(merged.Resources[index].Geometries, geometry)
+		for position, owner := range geometry.Owners {
+			// Owners come from offer.ResourceIDs, which is publisher-supplied
+			// and may name the same resource twice. Scanning the resources and
+			// testing membership — which this replaced — appended once per
+			// RESOURCE and so absorbed the duplicate silently; walking the
+			// owners does not, and a shape stored twice against one resource is
+			// a duplicate row in the geometry table.
+			if slices.Contains(geometry.Owners[:position], owner) {
+				continue
 			}
+			index, ok := at[owner]
+			if !ok {
+				continue
+			}
+			merged.Resources[index].Geometries = append(merged.Resources[index].Geometries, geometry)
 		}
 	}
 }

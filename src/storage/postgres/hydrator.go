@@ -7,31 +7,31 @@ import (
 	"slices"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
-	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 )
 
 // Hydrator turns a decided page of ids into the catalogs a response renders
-// from, and answers the count.
+// from.
 //
 // Every query it runs is keyed by the page — twenty resources and their
 // catalogs, never the whole match — which is what lets the scope gate be
-// re-applied here at no cost. Count is the exception and is deliberately
-// unbounded; see below.
+// re-applied here at no cost. There is no unbounded query left in this type:
+// A19 removed the count, which was the one exception.
+//
+// It holds no embedder. It used to, so that the count's text clause could name
+// the vector the semantic retriever searched with, and when the count went the
+// field stayed — written by the constructor, read by nothing. A dependency
+// nothing reads still says in the constructor signature that this type needs
+// one, which is the part that misleads.
 type Hydrator struct {
 	queries *gen.Queries
-
-	// embedder is the query-side vectoriser, held only so that Count's text
-	// clause can name the same vector the semantic retriever searched with. Nil
-	// when this deployment has no semantic mode.
-	embedder embeddings.Embedder
 }
 
 var _ domain.Hydrator = (*Hydrator)(nil)
 
 // NewHydrator builds the hydrator over a store.
-func NewHydrator(store gen.DBTX, embedder embeddings.Embedder) *Hydrator {
-	return &Hydrator{queries: gen.New(store), embedder: embedder}
+func NewHydrator(store gen.DBTX) *Hydrator {
+	return &Hydrator{queries: gen.New(store)}
 }
 
 // ScopeFilter narrows a set of ids to the ones the scope admits.
