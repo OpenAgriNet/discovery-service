@@ -15,13 +15,17 @@ Every row carries `status: "active" \| "inactive"`. Every read filters on `activ
 
 ## `SchemaRegistry`
 
-| field | | |
-|---|---|---|
-| `capabilityCode` | req | `openagrinet:WeatherObservation` — the namespace is literal |
-| `name` | req | human label |
-| `version` | req | `v0.1` |
-| `schemaUrl` | req | resolves to the attribute file in `OpenAgriNet/network-specs` |
-| `status` | req | |
+All five fields required.
+
+```jsonc
+{ "SchemaRegistry": {
+  "capabilityCode": "openagrinet:WeatherObservation",   // the namespace is literal
+  "name": "Weather Observation and Forecast",           // human label
+  "version": "v0.1",                                    // must match the vN.N in schemaUrl
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherObservation/v0.1/attributes.yaml",
+  "status": "active"
+} }
+```
 
 Vocabulary only. Nothing in the call path reads it — a capability is a name, not a route.
 
@@ -29,15 +33,40 @@ Vocabulary only. Nothing in the call path reads it — a capability is a name, n
 
 ## `Participant`
 
-Three required fields, then **exactly one** of `node` or `upstream` (`oneOf`).
+Three required fields, then **exactly one** of `node` or `upstream` (`oneOf`). A node speaks
+Beckn; an upstream is an ordinary HTTP API our adapter calls.
 
-| field | | |
-|---|---|---|
-| `participantId` | req | stable id. For an upstream it is the Beckn `offer.provider.id` |
-| `name` | req | human label |
-| `status` | req | |
-| `node` | one of | it speaks Beckn |
-| `upstream` | one of | it is an API our adapter calls |
+```jsonc
+{ "Participant": {
+  "participantId": "oan-provider",                  // stable id
+  "name": "OpenAgriNet provider adapter",
+  "status": "active",                               // active | inactive
+  "node": {                                         // this one speaks Beckn
+    "subscriberId": "bpp.openagrinet.gov.in",       // context.bppId, and field 1 of the Authorization keyId
+    "subscriberUrl": "https://bpp.openagrinet.gov.in/beckn",   // where Beckn messages go; https only
+    "type": "BPP",                                  // BAP | BPP | NETWORK
+    "keys": [ {                                     // 1–8 keys; plural for rotation
+      "keyId": "k1",                                // field 2 of the Authorization keyId
+      "use": "sign",                                // sign | encrypt
+      "alg": "ed25519",                             // fixed by use: sign→ed25519, encrypt→x25519
+      "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",   // 44 chars = 32 raw bytes
+      "validFrom": "2026-08-01T00:00:00Z",
+      "validUntil": "2026-11-01T00:00:00Z",         // optional; absent = open-ended
+      "status": "active"                            // active | revoked
+    } ] } } }
+```
+```jsonc
+{ "Participant": {
+  "participantId": "mausamgram",                    // also the Beckn offer.provider.id
+  "name": "IMD Mausamgram NWP",
+  "status": "active",
+  "upstream": {                                     // this one does not speak Beckn
+    "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",   // the binding's path is appended to it
+    "auth": {                                       // how WE authenticate TO it
+      "scheme": "basic",                            // none | apiKeyQuery | apiKeyHeader | basic
+      "secrets": { "username": "env://MAUSAMGRAM_USER",
+                   "password": "env://MAUSAMGRAM_X_API_KEY" } } } } }
+```
 
 That is the whole answer to *what am I looking at*:
 
@@ -48,53 +77,24 @@ That is the whole answer to *what am I looking at*:
 | `node.type: "BPP"` | a provider node |
 | `node.type: "NETWORK"` | the network node |
 
+`type` states direction: BAP asks, BPP answers, NETWORK is infrastructure that both sides call
+and that asks nothing of anyone.
+
 The API and the adapter in front of it are separate deployables, so they are separate records —
 `mausamgram` is the IMD API, `oan-provider` is the BPP that calls it. Which upstreams a provider
 node fronts is that adapter's own config, not a registry field.
 
-### `node`
-
-| field | | |
-|---|---|---|
-| `subscriberId` | req | network identity. Appears as `context.bapId` / `context.bppId` and as the first field of the `Authorization` `keyId` |
-| `subscriberUrl` | req | where Beckn messages go. `https` only |
-| `type` | req | `BAP` \| `BPP` \| `NETWORK` |
-| `keys` | req | 1–8 `PublicKey` |
-
-`type` states direction: BAP asks, BPP answers, NETWORK is infrastructure that both sides call
-and that asks nothing of anyone.
-
-### `PublicKey`
-
-| field | | |
-|---|---|---|
-| `keyId` | req | second field of the `Authorization` `keyId`, so a sender can say which key it signed with |
-| `use` | req | `sign` \| `encrypt` |
-| `alg` | req | fixed by `use`: `sign`→`ed25519`, `encrypt`→`x25519` |
-| `key` | req | `base64:` + 44 chars. Both curves are 32 raw bytes, so a truncated key is rejected at write time |
-| `validFrom` | req | |
-| `validUntil` | | absent means open-ended |
-| `status` | req | `active` \| `revoked` |
-
-Plural because rotation needs an overlap: the old key stays `active` with a `validUntil` while
-the new one is already valid. The sender names which one it used, so the verifier does not guess.
-
-The key material is held here, not a fingerprint of it — a public key is public, and a
-fingerprint pins a key without being able to distribute one.
-
-### `upstream`
-
-| field | | |
-|---|---|---|
-| `baseUrl` | req | the binding's `path` is appended to it |
-| `auth` | req | how our adapter authenticates *to* it |
+`keys` is plural because rotation needs an overlap: the old key stays `active` with a
+`validUntil` while the new one is already valid. The sender names which one it used, so the
+verifier does not guess. The material is held here, not a fingerprint of it — a public key is
+public, and a fingerprint can pin a key without being able to distribute one.
 
 `baseUrl` must be `https` unless `auth.scheme` is `none`. A credential over plaintext is a leaked
 credential.
 
-### `auth`
+### `auth` — the four schemes
 
-Not Beckn signing. Four schemes:
+This one stays a table, because what matters is which combinations are *refused*.
 
 | `scheme` | needs | forbids |
 |---|---|---|
@@ -103,7 +103,8 @@ Not Beckn signing. Four schemes:
 | `apiKeyHeader` | `secrets` + `paramName` (one secret) or `paramNames` | `paramNames` excludes `valuePrefix` |
 | `basic` | `secrets` with `username` and `password` | |
 
-The header *name* goes in `paramName`. `valuePrefix` keeps its trailing space — `"Bearer "`.
+The header *name* goes in `paramName`. `valuePrefix` keeps its trailing space — `"Bearer "`. Both
+forms are shown in [examples.md](examples.md#forms-no-seeded-record-uses).
 
 ### `secrets` are pointers, never material
 
@@ -120,17 +121,22 @@ deliberate — and *which participants hold real key material* is one query over
 
 ## `ProviderSchema`
 
-| field | | |
-|---|---|---|
-| `bindingKey` | req | `<participantId>\|<capabilityCode>` |
-| `participantId` | req | must be an `active` upstream `Participant` |
-| `capabilityCode` | req | must be an `active` `SchemaRegistry` |
-| `method` | req | `GET` \| `POST` |
-| `path` | req | appended to the participant's `upstream.baseUrl` |
-| `requestMapping` | req | `mappings/<participant>/select.request.jsonata` |
-| `responseMapping` | req | the reverse |
-| `timeoutMs` | | 1000–120000, default 15000 |
-| `retryMax` | | 0–5, default 0 |
+Everything but `timeoutMs` and `retryMax` is required.
+
+```jsonc
+{ "ProviderSchema": {
+  "bindingKey": "mausamgram|openagrinet:WeatherObservation",   // <participantId>|<capabilityCode>
+  "participantId": "mausamgram",                    // must be an active upstream Participant
+  "capabilityCode": "openagrinet:WeatherObservation",   // must be an active SchemaRegistry
+  "method": "GET",                                  // GET | POST
+  "path": "/get-daily",                             // appended to that upstream's baseUrl
+  "requestMapping":  "mappings/mausamgram/select.request.jsonata",
+  "responseMapping": "mappings/mausamgram/select.response.jsonata",
+  "timeoutMs": 30000,                               // optional, 1000–120000, default 15000
+  "retryMax": 3,                                    // optional, 0–5, default 0
+  "status": "active"
+} }
+```
 
 Resolving a `select` is two reads: this row by `bindingKey`, then its `Participant` by the
 `participantId` **found in this row** — never the one in the request.
