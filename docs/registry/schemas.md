@@ -122,21 +122,37 @@ conditionals in the schema:
                                   "password": "env://EXAMPLE_PASS" } }
 ```
 
-A whole record using the optional fields — `valuePrefix` and `publicKeys`, which is the shape a
-Bearer-token upstream that also signs its callbacks takes:
+A whole record using `valuePrefix` — the shape a bearer-token upstream API takes. It holds no
+`publicKeys`, because it signs nothing:
 
 ```json
 { "Participant": {
-  "participantId": "example-participant",
-  "name": "A provider behind a bearer token",
-  "roles": ["provider", "consumer"],
+  "participantId": "example-upstream-api",
+  "name": "An upstream data API behind a bearer token",
+  "roles": ["provider"],
   "baseUrl": "https://api.example.gov.in/v2",
   "status": "active",
   "auth": { "scheme": "apiKeyHeader",
             "paramName": "Authorization",
             "valuePrefix": "Bearer ",
-            "secrets": { "token": "env://EXAMPLE_TOKEN" } },
-  "publicKeys": [ { "keyId": "example-participant.k1", "alg": "ed25519",
+            "secrets": { "token": "env://EXAMPLE_TOKEN" } }
+} }
+```
+
+And one using `publicKeys` — a participant that runs its own adapter, terminates Beckn calls and
+signs them. `scheme: "none"` is right here and not an omission: **this participant is not
+authenticated by a shared credential, it is authenticated by its signature**, and the key hash is
+what verifies it. See [Node, or provider inside a catalog?](#node-or-provider-inside-a-catalog).
+
+```json
+{ "Participant": {
+  "participantId": "example-network-node",
+  "name": "A participant that runs its own adapter",
+  "roles": ["provider", "consumer"],
+  "baseUrl": "https://beckn.example.gov.in",
+  "status": "active",
+  "auth": { "scheme": "none" },
+  "publicKeys": [ { "keyId": "example-network-node.k1", "alg": "ed25519",
                     "hash": "sha256:04df206b469a7fefd868d6bf40bb592b4359cbfc49f51404dfabba25c4a7a5c1" } ]
 } }
 ```
@@ -157,9 +173,52 @@ And `paramNames`, for an upstream that wants two headers. Note there is no `para
 } }
 ```
 
-No v1 participant uses `paramNames`, `valuePrefix` or `publicKeys`. These two blocks exist so
+No v1 participant uses `paramNames`, `valuePrefix` or `publicKeys`. These three blocks exist so
 those fields stay exercised and documented rather than becoming the parts of the schema nobody
 has ever written.
+
+### Node, or provider inside a catalog?
+
+**The record does not tell you, and `roles` is not the field that would.** Two independent
+questions are being asked of one field:
+
+| | question | what encodes it |
+|---|---|---|
+| **What it does** | offers capabilities, or consumes them? | `roles` — `provider`, `consumer`, or both |
+| **What it *is*** | does it speak Beckn, or is it an upstream API we call? | **nothing** |
+
+The second axis is the one that changes how you treat the record, and it is not stored:
+
+| | a **network node** (BAP / BPP) | a **provider inside a catalog** |
+|---|---|---|
+| speaks Beckn | yes — terminates `/select`, calls back `/on_select` | **no.** Has never heard of Beckn |
+| who reaches it | the network, at its subscriber URI | **our adapter**, over ordinary HTTP |
+| authenticated by | its signature — so `publicKeys` is mandatory | an API key or basic auth in `auth.secrets` |
+| what `baseUrl` means | the Beckn subscriber URI | the upstream API base, used as `baseUrl + path` |
+| appears in `context` as | `bppId` / `bapId` / `receiverId` | `offer.provider.id` |
+
+**All five v1 records are the right-hand column.** IMD, Agmarknet, a Hasura instance and a vector
+index are upstream data APIs; our adapter is the only BPP on the network, and it reaches them
+directly. That is why `participantId` is defined as the Beckn `provider.id` — catalog
+granularity, not node granularity — and why
+[`context.bppId` and `context.receiverId` are read and discarded](#what-select-must-supply).
+
+Three fields *hint* at which column a record is in, and none of them is a rule:
+
+- **`publicKeys` present** → it signs → it is a node. But the field is optional, so absence
+  proves nothing, and none of the five v1 records carries one.
+- **`auth.scheme` is not `none`** → it is reached with a shared credential → it is an upstream
+  API. A node is not reached that way.
+- **`baseUrl`** is semantically overloaded between the two columns and looks identical in both.
+
+So a record combining `publicKeys` with `apiKeyHeader` describes something that cannot exist —
+signature-authenticated *and* bearer-token-authenticated, node *and* upstream API. The schema
+accepts it. **This page shipped exactly that record**, written to exercise two optional fields at
+once; it is now two records, one per column.
+
+Deciding this properly means new vocabulary — a `participantKind`, or Beckn's own `BAP`/`BPP`
+alongside `roles` — and that decision belongs with the network owners at the point a real node
+onboards, not before. Recorded in [Known gaps](#known-gaps).
 
 ### Secrets and key hashes are references, not material
 
@@ -353,6 +412,7 @@ Open items, worst first.
 | **No min/max qualifier on `parameter`** | `WeatherObservation.parameters` items require `{parameter, value, unit}` and are not closed, so *tomorrow's high is 39.2, low 32.8* is inexpressible — and every Indian weather upstream reports `tmin`/`tmax`. Mappings emit a private `aggregation`, which validates while meaning nothing to anyone else. |
 | **`informationMode` is proposed, not governed** | It appears in no pack schema — only in the *Information Modes* section's examples, marked *Proposed terminology*. It validates because the packs are open at the top level, but no filter can rely on it. |
 | **Two capabilities on one participant collide on mapping filenames** | Paths are `mappings/<participant>/<action>.<…>.jsonata` — no capability segment. A provider serving two capabilities from the same action resolves both to one filename while needing two different output shapes. Nothing rejects it. Worked through in [usecases.md use case 6](usecases.md#6-weather-advisory--not-seeded). The fix is a capability segment in the convention; it is not a schema change. |
+| **Nothing distinguishes a network node from a provider inside a catalog** | `roles` encodes *offers vs consumes*, not *speaks Beckn vs is an upstream API we call*. All five v1 records are the latter, and the schema would accept a record that is incoherently both — signature-authenticated and bearer-token-authenticated at once. Today the distinction is carried by convention and by which fields happen to be set; `publicKeys` present is the closest thing to a discriminator and it is optional. The fix is new vocabulary (`participantKind`, or Beckn's `BAP`/`BPP` alongside `roles`) and it needs a network-owner ruling at the point a real node onboards — deciding earlier means inventing semantics. Worked through in [Node, or provider inside a catalog?](#node-or-provider-inside-a-catalog). |
 | **No participant has a registered key** | `publicKeys` is in the schema and network policy requires it, but none of the five v1 records carries one — they are upstream data APIs our adapter calls directly, not participants that sign anything. Under the distributed topology each runs its own adapter and does sign, at which point the field is mandatory and the seeding path must enforce it. **This is the gap most likely to be read as *done* because the field exists.** |
 | **Read access is not a distinct role** | `_osConfig.roles` gates the entity, not the verb — [api.md](api.md). |
 | **`privateFields` is unverified** | Whether RC redacts `$.auth.secrets` from `/search` on the pinned build has not been checked — [api.md](api.md#what-is-not-verified). |
