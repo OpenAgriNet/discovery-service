@@ -1,18 +1,12 @@
-# Registry records — what we store
+# Records
 
-The thirteen records that seed the v1 registry — 3 `SchemaRegistry`, 5 `Participant`,
-5 `ProviderSchema` — in Sunbird RC write form.
+The sixteen records that seed v1 — 3 `SchemaRegistry`, 8 `Participant`, 5 `ProviderSchema` — in
+Sunbird RC write form. Fields: [schemas.md](schemas.md). Write endpoints: [api.md](api.md).
 
-Schema: [schemas.md](schemas.md) ·
-[`schemas/`](schemas/). Write endpoints: [api.md](api.md).
+Seed in order: `SchemaRegistry`, then `Participant`, then `ProviderSchema` — a binding's
+integrity rules need the other two to exist and be `active`.
 
-> `schemaUrl` points at [`OpenAgriNet/network-specs`](https://github.com/OpenAgriNet/network-specs),
-> pinned to a **version directory** — `v0.1` here — and not to a commit. The version segment
-> is what makes the contract stable: a breaking change is published as `v0.2`, so `v0.1` on
-> `main` means the same document next week. Pinning a sha instead would make these three
-> records a mirror of the specs repo, rewritten on every push there.
-
-### Schemas
+## Schemas
 
 ```json
 { "SchemaRegistry": {
@@ -20,235 +14,251 @@ Schema: [schemas.md](schemas.md) ·
   "name": "Weather Observation and Forecast",
   "version": "v0.1",
   "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherObservation/v0.1/attributes.yaml",
-  "status": "active"
-} }
+  "status": "active" } }
 ```
-
 ```json
 { "SchemaRegistry": {
   "capabilityCode": "openagrinet:MandiPrice",
   "name": "Mandi Price",
   "version": "v0.1",
   "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/MandiPrice/v0.1/attributes.yaml",
-  "status": "active"
-} }
+  "status": "active" } }
 ```
-
 ```json
 { "SchemaRegistry": {
   "capabilityCode": "openagrinet:KnowledgeResource",
   "name": "Knowledge Resource",
   "version": "v0.1",
   "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/KnowledgeResource/v0.1/attributes.yaml",
-  "status": "active"
-} }
+  "status": "active" } }
 ```
 
-One `SchemaRegistry` record serves both Advisory categories. Schemes and Crop & Pest are the
-same outcome type; they are told apart on the published resource by `subjectCategories`
-(`Scheme` vs `Crop`), not by the registry. See [use case execution](usecases.md).
+`schemaUrl` is pinned to a **version directory**, not a commit: a breaking change is published as
+`v0.2`, so `v0.1` means the same document next week. One record serves both Advisory
+categories — Schemes and Crop & Pest are the same outcome type, told apart on the published
+resource by `subjectCategories`.
 
-### Participants
+## Nodes
 
-All five are `roles: ["provider"]` — each has declared a capability, none consumes one. A
-consumer-side participant is the same record with `roles: ["consumer"]` and, typically, no
-`auth`: there is nothing of theirs for us to call.
+The three adapters of the [deployment topology](README.md#deployment-topology). Keys below are
+demo material.
 
-**No v1 participant carries a `publicKeys` entry.** All five are upstream data APIs that our
-own adapter calls directly, so nothing of theirs is signed and there is no signature to
-verify. Under the distributed topology each runs its own adapter and does sign — at which
-point the field is mandatory network policy and the seeding path has to enforce it. See
-[schemas.md § Five rules](schemas.md#five-rules-the-schema-cannot-express).
+```json
+{ "Participant": {
+  "participantId": "oan-consumer",
+  "name": "Kisan app consumer adapter",
+  "status": "active",
+  "node": {
+    "subscriberId": "bap.kisan-app.openagrinet.gov.in",
+    "subscriberUrl": "https://bap.kisan-app.openagrinet.gov.in/beckn",
+    "type": "BAP",
+    "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
+                "key": "base64:s3Q/53+xYL/BgelYdsKd7DBgYDUFLsXE+GQDLSuPZ4c=",
+                "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } } }
+```
+```json
+{ "Participant": {
+  "participantId": "oan-network",
+  "name": "OpenAgriNet network node",
+  "status": "active",
+  "node": {
+    "subscriberId": "network.openagrinet.gov.in",
+    "subscriberUrl": "https://network.openagrinet.gov.in/beckn",
+    "type": "NETWORK",
+    "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
+                "key": "base64:q7fEHdFO7wNpYBARwY+qvhGhRzlrlJWRR64NIwQhO2A=",
+                "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } } }
+```
+```json
+{ "Participant": {
+  "participantId": "oan-provider",
+  "name": "OpenAgriNet provider adapter",
+  "status": "active",
+  "node": {
+    "subscriberId": "bpp.openagrinet.gov.in",
+    "subscriberUrl": "https://bpp.openagrinet.gov.in/beckn",
+    "type": "BPP",
+    "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
+                "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
+                "validFrom": "2026-08-01T00:00:00Z",
+                "validUntil": "2026-11-01T00:00:00Z", "status": "active" },
+              { "keyId": "k2", "use": "sign", "alg": "ed25519",
+                "key": "base64:1s/FVTLnowPxttooNqWzGCqMZqUrypASpL4jC9NWUA8=",
+                "validFrom": "2026-10-01T00:00:00Z", "status": "active" },
+              { "keyId": "e1", "use": "encrypt", "alg": "x25519",
+                "key": "base64:SzmOZUXmi7jIzJQItBpX/vQA9O3IvEnzZUkc1J/iK7M=",
+                "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } } }
+```
 
-**No v1 participant carries an `inline:` secret.** Every credential below is an `env://`
-pointer resolved in the adapter's own environment. The `inline:` form is in the schema
-([schemas.md](schemas.md#secrets-and-key-hashes-are-references-not-material)) for operators who cannot set that environment, and it
-costs three things: `/search` must be authenticated, the database holds live key material,
-and rotation becomes a registry write.
+`oan-provider` shows a rotation: `k1` expires 1 Nov, `k2` is valid from 1 Oct, and the October
+overlap is the window in which either signature verifies. The sender names the key it used in the
+`Authorization` header, so nothing has to guess.
 
-The prefix is not decoration: a bare pasted key fails the pattern and is rejected at write
-time, so storing a credential has to be deliberate — and because the prefix is literal,
-*which participants hold a real key* is one query over the table.
+One provider node fronts all five upstreams below. Which ones is that adapter's config.
+
+## Upstreams
+
+Five external APIs. None of them has heard of Beckn; each appears on the wire as
+`offer.provider.id`.
 
 ```json
 { "Participant": {
   "participantId": "mausamgram",
   "name": "IMD Mausamgram NWP",
-  "roles": ["provider"],
-  "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",
   "status": "active",
-  "auth": { "scheme": "basic",
-            "secrets": { "username": "env://MAUSAMGRAM_USER",
-                         "password": "env://MAUSAMGRAM_X_API_KEY" } }
-} }
+  "upstream": {
+    "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",
+    "auth": { "scheme": "basic",
+              "secrets": { "username": "env://MAUSAMGRAM_USER",
+                           "password": "env://MAUSAMGRAM_X_API_KEY" } } } } }
 ```
-
 ```json
 { "Participant": {
   "participantId": "imd-city-weather",
   "name": "IMD City Weather",
-  "roles": ["provider"],
-  "baseUrl": "https://city.imd.gov.in",
   "status": "active",
-  "auth": { "scheme": "none" }
-} }
+  "upstream": { "baseUrl": "https://city.imd.gov.in",
+                "auth": { "scheme": "none" } } } }
 ```
-
 ```json
 { "Participant": {
   "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
-  "roles": ["provider"],
-  "baseUrl": "https://api.agmarknet.gov.in",
   "status": "active",
-  "auth": { "scheme": "apiKeyQuery",
-            "paramName": "token",
-            "secrets": { "token": "env://MANDI_TOKEN" } }
-} }
+  "upstream": {
+    "baseUrl": "https://api.agmarknet.gov.in",
+    "auth": { "scheme": "apiKeyQuery",
+              "paramName": "token",
+              "secrets": { "token": "env://MANDI_TOKEN" } } } } }
 ```
-
 ```json
 { "Participant": {
   "participantId": "hasura-content",
   "name": "Vistaar Knowledge Content (Hasura)",
-  "roles": ["provider"],
-  "baseUrl": "https://content.internal",
   "status": "active",
-  "auth": { "scheme": "apiKeyHeader",
-            "paramName": "x-hasura-admin-secret",
-            "secrets": { "adminSecret": "env://HASURA_GRAPHQL_ADMIN_SECRET" } }
-} }
+  "upstream": {
+    "baseUrl": "https://content.internal",
+    "auth": { "scheme": "apiKeyHeader",
+              "paramName": "x-hasura-admin-secret",
+              "secrets": { "adminSecret": "env://HASURA_GRAPHQL_ADMIN_SECRET" } } } } }
 ```
-
 ```json
 { "Participant": {
   "participantId": "oan-vector",
   "name": "OAN Vector Index",
-  "roles": ["provider"],
-  "baseUrl": "http://3.6.146.174:8882",
   "status": "active",
-  "auth": { "scheme": "none" }
-} }
+  "upstream": { "baseUrl": "http://3.6.146.174:8882",
+                "auth": { "scheme": "none" } } } }
 ```
 
-> `oan-vector` is a bare IP over plain HTTP. It is legal only because `scheme: none` —
-> nothing is leaked by it. Moving it behind TLS with a real hostname is onboarding work,
-> not a schema change, and should happen before v1 carries real traffic.
+`oan-vector` is a bare IP over plain HTTP, legal only because `scheme: none` — nothing is leaked.
+`mausamgram` and `imd-city-weather` are both IMD on different hosts, so two records: the
+path-or-subdomain [gap](schemas.md#known-gaps), visible as two participants where the network has
+one organisation.
 
-> `mausamgram` and `imd-city-weather` are both IMD, on different hosts, so they are two
-> records. That is the open path-or-subdomain question in
-> [schemas.md Known gaps](schemas.md#known-gaps), visible here as two participants
-> where the network has one organisation.
+Every credential is an `env://` pointer resolved in the adapter's environment. No v1 record uses
+`inline:`.
 
-### Bindings
+## Bindings
 
 ```json
 { "ProviderSchema": {
   "bindingKey": "mausamgram|openagrinet:WeatherObservation",
   "participantId": "mausamgram",
   "capabilityCode": "openagrinet:WeatherObservation",
-  "method": "GET",
-  "path": "/get-daily",
+  "method": "GET", "path": "/get-daily",
   "requestMapping":  "mappings/mausamgram/select.request.jsonata",
   "responseMapping": "mappings/mausamgram/select.response.jsonata",
-  "timeoutMs": 30000,
-  "retryMax": 3,
-  "status": "active"
-} }
+  "timeoutMs": 30000, "retryMax": 3, "status": "active" } }
 ```
-
 ```json
 { "ProviderSchema": {
   "bindingKey": "imd-city-weather|openagrinet:WeatherObservation",
   "participantId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
-  "method": "GET",
-  "path": "/api/cityweather_loc.php",
+  "method": "GET", "path": "/api/cityweather_loc.php",
   "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",
   "responseMapping": "mappings/imd-city-weather/select.response.jsonata",
-  "timeoutMs": 15000,
-  "status": "active"
-} }
+  "timeoutMs": 15000, "status": "active" } }
 ```
-
-> `imd-city-weather`'s `path` was `/citywx/city_weather_test.php` until the captured payload in
-> `Network Information.xlsx` showed the live endpoint is `/api/cityweather_loc.php`, taking
-> `?id=<station code>`. Its response is also an **array**, not an object, and carries `"NIL"`
-> sentinels and `null`s — see [usecases.md use case 2](usecases.md#25-call-upstream).
-
 ```json
 { "ProviderSchema": {
   "bindingKey": "agmarknet|openagrinet:MandiPrice",
   "participantId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPrice",
-  "method": "GET",
-  "path": "/v1/fetch-agmarknet-vistaar-location",
+  "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
   "requestMapping":  "mappings/agmarknet/select.request.jsonata",
   "responseMapping": "mappings/agmarknet/select.response.jsonata",
-  "timeoutMs": 20000,
-  "retryMax": 2,
-  "status": "active"
-} }
+  "timeoutMs": 20000, "retryMax": 2, "status": "active" } }
 ```
-
 ```json
 { "ProviderSchema": {
   "bindingKey": "hasura-content|openagrinet:KnowledgeResource",
   "participantId": "hasura-content",
   "capabilityCode": "openagrinet:KnowledgeResource",
-  "method": "POST",
-  "path": "/v1/graphql",
+  "method": "POST", "path": "/v1/graphql",
   "requestMapping":  "mappings/hasura-content/select.request.jsonata",
   "responseMapping": "mappings/hasura-content/select.response.jsonata",
-  "timeoutMs": 15000,
-  "retryMax": 0,
-  "status": "active"
-} }
+  "timeoutMs": 15000, "retryMax": 0, "status": "active" } }
 ```
-
 ```json
 { "ProviderSchema": {
   "bindingKey": "oan-vector|openagrinet:KnowledgeResource",
   "participantId": "oan-vector",
   "capabilityCode": "openagrinet:KnowledgeResource",
-  "method": "POST",
-  "path": "/indexes/oan-index/search",
+  "method": "POST", "path": "/indexes/oan-index/search",
   "requestMapping":  "mappings/oan-vector/select.request.jsonata",
   "responseMapping": "mappings/oan-vector/select.response.jsonata",
-  "timeoutMs": 15000,
-  "status": "active"
-} }
+  "timeoutMs": 15000, "status": "active" } }
 ```
 
-**Four of the five need a step no field here names.** `mausamgram` needs a point derived from
-the intent; `imd-city-weather` needs the nearest station, from a table the adapter owns;
-`agmarknet` needs market and commodity codes in its own namespace; both `KnowledgeResource`
-bindings need query parameters built. That step used to be a named `enricher` on the binding
-and is now adapter-internal, keyed off `participantId` — see
-[schemas.md](schemas.md#mappings-are-the-only-transform-the-registry-describes). **It is a seeding prerequisite, not an
-optional extra:** a binding whose adapter has no such step returns nothing useful.
+`imd-city-weather`'s `path` is `/api/cityweather_loc.php` and not the documented
+`/citywx/city_weather_test.php`; it takes `?id=<station code>` and returns an **array** with
+`"NIL"` sentinels — [usecases.md](usecases.md#the-other-five).
 
-### Before seeding
+**Four of the five need a step no field here names.** `mausamgram` a grid point,
+`imd-city-weather` the nearest station, `agmarknet` market and commodity codes, both
+`KnowledgeResource` bindings their query parameters. Adapter-internal, keyed off
+`participantId`, and a seeding prerequisite.
 
-- **Reads are authenticated.** Seeding needs the Operator token; the adapter needs a
-  read-only one. `/search` is not open — see
-  [api.md](api.md).
-- Seed in order: `SchemaRegistry`, then `Participant`, then `ProviderSchema`. The binding's
-  two integrity rules require the other two to exist and be `active`.
-- **Check `version` against `schemaUrl` before writing.** Rule 4 in
-  [schemas.md](schemas.md#five-rules-the-schema-cannot-express) — the schema cannot compare
-  them, so a record advertising `v0.1` while resolving `v0.2` validates.
-- `agmarknet`'s `select.request.jsonata` must emit `lat`, `long`, `commodity_id` and a
-  single `date`. The location endpoint above takes those; the older four-code endpoint the
-  mapping was written for is not what production calls.
-- Both `KnowledgeResource` bindings need the same query-parameter step but *not* the same
-  request mapping — one shapes a Hasura GraphQL `variables` block, the other a vector search
-  body.
-- The **read-only role does not exist yet.** RC's `_osConfig.roles` gates the entity, not the
-  verb, so on the pinned build any token that can read these records can also write them.
-  Close that before seeding a credential of any kind.
-- **There is no delete.** Correcting a mistake after seeding is a `PUT` of the whole record,
-  or `status: "inactive"` — [api.md](api.md#delete--disabled).
-- Three of the five bindings emit responses the OAN domain packs reject — both
-  `KnowledgeResource` ones and `agmarknet`. Seeding is unaffected; the response mappings are
-  not. Each violation is in [usecases.md](usecases.md), under the use case it belongs to.
+## Forms no seeded record uses
+
+Two probe records, kept so the schema's remaining branches stay exercised by `verify/shape.py`
+rather than only claimed.
+
+```json
+{ "Participant": {
+  "participantId": "probe-multi-secret",
+  "name": "Upstream wanting two named credentials",
+  "status": "active",
+  "upstream": {
+    "baseUrl": "https://probe.example/v1",
+    "auth": { "scheme": "apiKeyHeader",
+              "paramNames": { "client": "x-client-id", "key": "x-api-key" },
+              "secrets":    { "client": "env://PROBE_CLIENT_ID",
+                              "key":    "env://PROBE_API_KEY" } } } } }
+```
+```json
+{ "Participant": {
+  "participantId": "probe-bearer",
+  "name": "Upstream wanting a bearer token",
+  "status": "active",
+  "upstream": {
+    "baseUrl": "https://probe.example/v2",
+    "auth": { "scheme": "apiKeyHeader",
+              "paramName": "Authorization",
+              "valuePrefix": "Bearer ",
+              "secrets": { "token": "env://PROBE_BEARER_TOKEN" } } } } }
+```
+
+## Before seeding
+
+- **Reads are authenticated.** Seeding needs the operator token, the adapter a read-only one.
+- **The read-only role does not exist yet** — any token that can read these can also write them.
+  Close that before seeding a credential.
+- **Check `version` against `schemaUrl`.** Rule 4; the schema cannot compare them.
+- **There is no delete.** A correction is a full `PUT`, or `status: "inactive"`.
+- `agmarknet`'s request mapping must emit `lat`, `long`, `commodity_id` and a single `date` — the
+  older four-code endpoint is not what production calls.
+- Three bindings emit responses the domain packs reject. Seeding is unaffected; the mappings are
+  not — [usecases.md](usecases.md#conformance).

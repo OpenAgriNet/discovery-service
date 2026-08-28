@@ -55,23 +55,23 @@ def rules(by_entity, fail):
                 fail(f'rule 2: {key} names {label} {ref!r}, which is {row["status"]}')
 
     for p in by_entity.get("Participant", []):
-        auth = p.get("auth", {})
+        auth = p.get("upstream", {}).get("auth", {})
         # rule 3 — paramNames keys are exactly the secrets keys
         if "paramNames" in auth:
             if set(auth["paramNames"]) != set(auth.get("secrets", {})):
                 fail(f'rule 3: {p["participantId"]} paramNames keys '
                      f'{sorted(auth["paramNames"])} != secrets keys '
                      f'{sorted(auth.get("secrets", {}))}')
-        # rule 5 — keyId unique within publicKeys
-        ids = [k["keyId"] for k in p.get("publicKeys", [])]
+        # rule 5 — keyId unique within node.keys
+        ids = [k["keyId"] for k in p.get("node", {}).get("keys", [])]
         if len(ids) != len(set(ids)):
-            fail(f'rule 5: {p["participantId"]} repeats a keyId in publicKeys')
+            fail(f'rule 5: {p["participantId"]} repeats a keyId in node.keys')
 
     # not a §3.4 rule — an invariant of this file being COMMITTED. The schema
     # permits inline:, because an operator who cannot set an environment needs
     # it; a reviewed document in git is never that operator.
     for p in by_entity.get("Participant", []):
-        for name, ref in p.get("auth", {}).get("secrets", {}).items():
+        for name, ref in p.get("upstream", {}).get("auth", {}).get("secrets", {}).items():
             if not ref.startswith("env://"):
                 fail(f'committed docs: {p["participantId"]} secrets.{name} is '
                      f'{ref.split(":")[0]}:… — only env:// belongs in a tracked file')

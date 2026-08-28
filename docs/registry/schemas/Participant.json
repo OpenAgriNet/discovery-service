@@ -2,108 +2,501 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Participant",
   "type": "object",
-  "required": ["Participant"],
-  "properties": { "Participant": { "$ref": "#/definitions/Participant" } },
-
-  "definitions": {
-
+  "required": [
+    "Participant"
+  ],
+  "properties": {
     "Participant": {
+      "$ref": "#/definitions/Participant"
+    }
+  },
+  "definitions": {
+    "Participant": {
+      "description": "Someone on the network. Exactly one of node or upstream: a node speaks Beckn, an upstream is an API our adapter calls.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["participantId", "name", "roles", "baseUrl", "status", "auth"],
+      "required": [
+        "participantId",
+        "name",
+        "status"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "node"
+          ]
+        },
+        {
+          "required": [
+            "upstream"
+          ]
+        }
+      ],
       "properties": {
-        "participantId": { "$ref": "#/definitions/ParticipantId" },
-        "name":       { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
-        "roles":      { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
-                        "items": { "type": "string", "enum": ["provider", "consumer"] } },
-        "baseUrl":    { "type": "string", "maxLength": 2000, "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$" },
-        "status":     { "$ref": "#/definitions/Status" },
-        "auth":       { "$ref": "#/definitions/Auth" },
-        "publicKeys": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
-                        "items": { "$ref": "#/definitions/PublicKey" } }
+        "participantId": {
+          "$ref": "#/definitions/ParticipantId"
+        },
+        "name": {
+          "description": "Human label.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "\\S"
+        },
+        "status": {
+          "$ref": "#/definitions/Status"
+        },
+        "node": {
+          "$ref": "#/definitions/Node"
+        },
+        "upstream": {
+          "$ref": "#/definitions/Upstream"
+        }
+      }
+    },
+    "Node": {
+      "description": "A participant that speaks Beckn: it signs what it sends, and we send Beckn to its subscriberUrl.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subscriberId",
+        "subscriberUrl",
+        "type",
+        "keys"
+      ],
+      "properties": {
+        "subscriberId": {
+          "description": "Network identity. Appears as context.bapId / context.bppId and as the first field of the Authorization keyId.",
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+        },
+        "subscriberUrl": {
+          "description": "Where Beckn messages go. https only.",
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+        },
+        "type": {
+          "description": "BAP asks. BPP answers. NETWORK exposes publish and discover, answering discover from published catalogs.",
+          "type": "string",
+          "enum": [
+            "BAP",
+            "BPP",
+            "NETWORK"
+          ]
+        },
+        "keys": {
+          "description": "Plural for rotation: an overlap where old and new are both valid. The sender names which it used in the Authorization keyId.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/PublicKey"
+          }
+        }
+      }
+    },
+    "Upstream": {
+      "description": "An API our adapter calls over ordinary HTTP. Does not speak Beckn.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseUrl",
+        "auth"
+      ],
+      "properties": {
+        "baseUrl": {
+          "description": "API base. A binding's path is appended to it.",
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+        },
+        "auth": {
+          "$ref": "#/definitions/Auth"
+        }
+      },
+      "allOf": [
+        {
+          "description": "A credential over plaintext http is a leaked credential.",
+          "if": {
+            "properties": {
+              "auth": {
+                "required": [
+                  "scheme"
+                ],
+                "properties": {
+                  "scheme": {
+                    "not": {
+                      "const": "none"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "baseUrl": {
+                "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PublicKey": {
+      "description": "A public key, held as material: it is public, so there is nothing to protect. Contrast Secret, always a pointer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyId",
+        "use",
+        "alg",
+        "key",
+        "validFrom",
+        "status"
+      ],
+      "properties": {
+        "keyId": {
+          "description": "Second field of the Authorization keyId, so a sender can say which key it signed with.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "use": {
+          "description": "sign verifies signatures; encrypt is for encrypted payloads.",
+          "type": "string",
+          "enum": [
+            "sign",
+            "encrypt"
+          ]
+        },
+        "alg": {
+          "description": "Fixed by use. Both curves are 32-byte keys.",
+          "type": "string",
+          "enum": [
+            "ed25519",
+            "x25519"
+          ]
+        },
+        "key": {
+          "description": "base64 of the 32 raw bytes: 44 chars, one trailing '='. A truncated or wrong-curve key fails at write time.",
+          "type": "string",
+          "pattern": "^base64:[A-Za-z0-9+/]{43}=$"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validUntil": {
+          "description": "Absent means open-ended. Overlap with the next key's validFrom is the rotation window.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "description": "revoked withdraws the key early. Effective only once the reader refreshes.",
+          "type": "string",
+          "enum": [
+            "active",
+            "revoked"
+          ]
+        }
       },
       "allOf": [
         {
           "if": {
-            "required": ["auth"],
-            "properties": { "auth": { "required": ["scheme"],
-                                      "properties": { "scheme": { "not": { "const": "none" } } } } }
+            "properties": {
+              "use": {
+                "const": "sign"
+              }
+            }
           },
-          "then": { "properties": { "baseUrl": { "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$" } } }
+          "then": {
+            "properties": {
+              "alg": {
+                "const": "ed25519"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "use": {
+                "const": "encrypt"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "alg": {
+                "const": "x25519"
+              }
+            }
+          }
         }
       ]
     },
-
     "Auth": {
+      "description": "How our adapter authenticates TO an upstream. Not Beckn signing — that uses Node.keys.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["scheme"],
+      "required": [
+        "scheme"
+      ],
       "properties": {
-        "scheme":      { "type": "string",
-                         "enum": ["none", "apiKeyQuery", "apiKeyHeader", "basic"] },
-        "paramName":   { "$ref": "#/definitions/ParamName" },
-        "valuePrefix": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,30} $" },
-        "paramNames":  { "type": "object", "minProperties": 1,
-                         "additionalProperties": { "$ref": "#/definitions/ParamName" } },
-        "secrets":     { "type": "object", "minProperties": 1,
-                         "additionalProperties": { "$ref": "#/definitions/Secret" } }
+        "scheme": {
+          "type": "string",
+          "enum": [
+            "none",
+            "apiKeyQuery",
+            "apiKeyHeader",
+            "basic"
+          ]
+        },
+        "paramName": {
+          "description": "The single query-parameter or header name the credential goes in.",
+          "$ref": "#/definitions/ParamName"
+        },
+        "valuePrefix": {
+          "description": "Prepended to the credential, trailing space included — 'Bearer '. Header schemes only.",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,30} $"
+        },
+        "paramNames": {
+          "description": "For an upstream wanting several named credentials. Keys must match `secrets` exactly.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/definitions/ParamName"
+          }
+        },
+        "secrets": {
+          "description": "Pointers to credentials held outside the registry. Redacted from /search by _osConfig.privateFields.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/definitions/Secret"
+          }
+        }
       },
       "allOf": [
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "none" } } },
-          "then": { "allOf": [ { "not": { "required": ["secrets"] } },
-                               { "not": { "required": ["paramName"] } },
-                               { "not": { "required": ["paramNames"] } },
-                               { "not": { "required": ["valuePrefix"] } } ] } },
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "enum": ["apiKeyQuery", "apiKeyHeader"] } } },
-          "then": { "required": ["secrets"],
-                    "oneOf": [
-                      { "required": ["paramName"],
-                        "not": { "required": ["paramNames"] },
-                        "properties": { "secrets": { "maxProperties": 1 } } },
-                      { "required": ["paramNames"],
-                        "allOf": [ { "not": { "required": ["paramName"] } },
-                                   { "not": { "required": ["valuePrefix"] } } ] } ] } },
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "apiKeyQuery" } } },
-          "then": { "not": { "required": ["valuePrefix"] } } },
-        { "if":   { "required": ["scheme"], "properties": { "scheme": { "const": "basic" } } },
-          "then": { "required": ["secrets"],
-                    "properties": { "secrets": { "required": ["username", "password"] } },
-                    "allOf": [ { "not": { "required": ["paramName"] } },
-                               { "not": { "required": ["paramNames"] } },
-                               { "not": { "required": ["valuePrefix"] } } ] } }
+        {
+          "if": {
+            "required": [
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "const": "none"
+              }
+            }
+          },
+          "then": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "secrets"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "paramName"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "paramNames"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "valuePrefix"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "enum": [
+                  "apiKeyQuery",
+                  "apiKeyHeader"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "secrets"
+            ],
+            "oneOf": [
+              {
+                "required": [
+                  "paramName"
+                ],
+                "not": {
+                  "required": [
+                    "paramNames"
+                  ]
+                },
+                "properties": {
+                  "secrets": {
+                    "maxProperties": 1
+                  }
+                }
+              },
+              {
+                "required": [
+                  "paramNames"
+                ],
+                "allOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "paramName"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "valuePrefix"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "const": "apiKeyQuery"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "valuePrefix"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "scheme"
+            ],
+            "properties": {
+              "scheme": {
+                "const": "basic"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "secrets"
+            ],
+            "properties": {
+              "secrets": {
+                "required": [
+                  "username",
+                  "password"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "paramName"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "paramNames"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "valuePrefix"
+                  ]
+                }
+              }
+            ]
+          }
+        }
       ]
     },
-
-    "PublicKey": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["keyId", "alg", "hash"],
-      "properties": {
-        "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
-        "alg":   { "type": "string", "enum": ["ed25519", "x25519"] },
-        "hash":  { "$ref": "#/definitions/KeyHash" }
-      }
+    "ParamName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
     },
-
-    "ParamName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
-    "ParticipantId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
-    "Status": { "type": "string", "enum": ["active", "inactive"] },
+    "ParticipantId": {
+      "description": "Stable id. For an upstream this is the Beckn offer.provider.id. Node identity is node.subscriberId.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$"
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "inactive"
+      ]
+    },
     "MaterialRef": {
-      "description": "A reference to security material held OUTSIDE the registry, as <scheme>:<locator>. Never the material itself. env:// resolved in the adapter's environment; inline: literal in the record; sha256: the fingerprint of a key delivered out of band. Narrowed per site by Secret and KeyHash — a new scheme is added here plus one allow-list.",
-      "type": "string", "maxLength": 1024,
-      "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998}|sha256:[a-f0-9]{64})$"
+      "description": "A pointer to SECRET material held outside the registry, <scheme>:<locator>. Never the material. Public keys are not MaterialRefs: PublicKey.key holds the bytes.",
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998})$"
     },
-    "Secret":  { "allOf": [ { "$ref": "#/definitions/MaterialRef" },
-                            { "pattern": "^(env://|inline:)" } ] },
-    "KeyHash": { "allOf": [ { "$ref": "#/definitions/MaterialRef" },
-                            { "pattern": "^sha256:" } ] }
+    "Secret": {
+      "$ref": "#/definitions/MaterialRef"
+    }
   },
-
   "_osConfig": {
-    "uniqueIndexFields": ["participantId"],
-    "indexFields":       ["status"],
-    "privateFields":     ["$.auth.secrets"],
-    "roles":             ["registryOperator"],
-    "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
+    "uniqueIndexFields": [
+      "participantId"
+    ],
+    "indexFields": [
+      "status"
+    ],
+    "privateFields": [
+      "$.upstream.auth.secrets"
+    ],
+    "roles": [
+      "registryOperator"
+    ],
+    "systemFields": [
+      "osCreatedAt",
+      "osUpdatedAt",
+      "osCreatedBy",
+      "osUpdatedBy"
+    ]
   }
 }

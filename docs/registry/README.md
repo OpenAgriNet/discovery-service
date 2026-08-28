@@ -1,33 +1,58 @@
 # OpenAgriNet registry
 
-The registry stores **participants, the capabilities they can answer, and the binding between
-them**. The binding is the call plan: given a provider and a capability, how do you reach them.
+Three tables that tell an adapter who is on the network, what data types exist, and how to
+call each provider.
 
-Nothing else lives here — no catalogs, no resources, no search index.
+## Deployment topology
 
-**Who reads it:** the adapter. **Who does not:** discovery-service, which answers `/discover`
-from its own catalog store.
+Three ONIX adapters, one registry, one discovery-service.
 
-**Everyone on the network is a participant.** One that has declared capabilities is a provider;
-one that only consumes them is a consumer. That is a `roles` value, not a different entity.
+| adapter | sits | does |
+|---|---|---|
+| **consumer node** | experience layer, beside the farmer app | signs `discover` / `select`, receives the callbacks |
+| **network node** | network, alongside discovery-service | exposes publish + discover; answers `discover` from published catalogs |
+| **provider node** | provider side | terminates `select`, calls the external provider API, signs `on_select` |
 
-## The four documents
+Signature verification happens in ONIX, not in discovery-service
+(`AUTH_ENABLE_SIGNATURE_VERIFICATION=false`, and `true` refuses to boot). Discovery-service must
+therefore have no route from outside — `context.bapId` is only trustworthy downstream of the
+verifier.
+
+## One flow — weather forecast
+
+```
+  farmer
+    │
+    ▼
+┌──────────────┐   discover   ┌──────────────┐
+│ consumer     │─────────────▶│ network node │──▶ discovery-service
+│ node   (BAP) │◀─────────────│  (NETWORK)   │    answers from the published catalog
+└──────────────┘  on_discover └──────────────┘
+    │
+    │  select   provider = mausamgram
+    ▼
+┌──────────────┐
+│ provider     │   GET https://mausamgram.imd.gov.in/nwpapi/get-daily
+│ node   (BPP) │──────────────────────────────────▶  IMD Mausamgram NWP
+└──────────────┘                                     (an ordinary HTTP API)
+    │
+    │  on_select   the typed forecast
+    ▼
+  consumer node
+```
+
+Four registry records carry that flow: the three nodes, plus `mausamgram` as an upstream and its
+binding to `openagrinet:WeatherObservation`.
+
+## Documents
 
 | | |
 |---|---|
-| **[usecases.md](usecases.md)** | **Start here.** Six farmer questions traced end to end — the records you need, every call on the wire, and the real payloads. |
-| **[schemas.md](schemas.md)** | The three entities field by field, the five rules JSON Schema cannot express, what a `select` must supply, and the [known gaps](schemas.md#known-gaps). |
-| **[api.md](api.md)** | The registry's own REST API — create, search, update, and why there is no delete. |
-| **[examples.md](examples.md)** | The thirteen records to seed, as write bodies. Copy-paste ready. |
+| [schemas.md](schemas.md) | the three entities, field by field |
+| [examples.md](examples.md) | every record to seed |
+| [api.md](api.md) | the registry's own REST surface |
+| [usecases.md](usecases.md) | six farmer questions, and the weather one in full |
 
-[`schemas/`](schemas) holds the machine-readable draft-07 files, which are the contract.
-[`verify/`](verify) holds the checkers that keep these documents true.
-
-## Also here
-
-`archive/` is the BV Beckn adapter's own design set — a **different system**, copied verbatim
-for interop context and kept diffable against its source. Nothing in it is binding on anything
-in this folder.
-
-`docs/design/discover-and-publish.md` is the binding plan for the discovery service and wins over
-anything written here.
+[`schemas/`](schemas) holds the draft-07 files — **those are the contract**, this folder
+describes them. [`verify/`](verify) keeps these pages true. [`archive/`](archive) is the BV Beckn
+adapter's design set, a different system, kept verbatim for interop context.
