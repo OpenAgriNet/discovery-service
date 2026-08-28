@@ -19,6 +19,8 @@ Nothing else lives here — no catalogs, no resources, no search index.
 | → | [usecases.md](usecases.md) | Each use case end to end |
 | → | [dpg-fit.md](dpg-fit.md) | Whether those use cases conform to the OAN domain packs |
 | → | [Deferred](#deferred--out-of-scope) | What is deliberately absent, and what brings it back |
+| A | [Why the schema is shaped this way](#appendix-a--why-the-schema-is-shaped-this-way) | Rationale, moved out of §3 so §3 stays reviewable |
+| B | [What the adapter must do](#appendix-b--what-the-schema-cannot-reach-so-the-adapter-must) | Three checks no pattern can express |
 
 ---
 
@@ -124,11 +126,10 @@ same thing to the reader and a different string to the filter.
 
 ### 3.1 `Provider`
 
-Four scalars and one `auth` object. That is the whole entity.
-
-Every field, in the shape RC receives it. This is a **valid record** — the checker below
-validates it against `schemas/Provider.json` and fails if any field goes unexercised — but
-the constraints are in the table above, not here.
+Four scalars and one `auth` object. That is the whole entity. The block below is a **valid
+record**, not a sketch — `shape.py` validates it against `schemas/Provider.json` and fails if
+any field goes unexercised. Constraints are in the tables; the *why* is in
+[Appendix A](#appendix-a--why-the-schema-is-shaped-this-way).
 
 ```jsonc
 { "Provider": {                                 // write bodies are wrapped: the key is the entity
@@ -157,23 +158,9 @@ the constraints are in the table above, not here.
 | `status` | string | `active` \| `inactive` | ✓ |
 | `auth` | object | → `Auth` — the credential for every call to this provider | ✓ |
 
-**Auth is on `Provider`, not on the binding.** One credential opens all of that provider's
-endpoints — true for all five. On `ProviderCapability` it would be copied into every binding
-row, and a rotation would touch N rows instead of one.
-
-`Provider.baseUrl` is **where** the provider is; `method` + `path` on the binding is **which
-endpoint** answers a capability. They are split because one provider serves several
-capabilities from different paths — put `path` on `Provider` and each needs a duplicate
-record, which means a duplicate credential.
-
-```
-https://mausamgram.imd.gov.in/nwpapi  +  /get-daily
-└────────── Provider.baseUrl ───────┘     └─ ProviderCapability.path ─┘
-```
-
 `baseUrl` forbids a trailing slash, `path` requires a leading one — exactly one `/` falls
-between them, so no code normalises. Four more things `baseUrl` refuses, each because the
-concatenation above would otherwise produce a URL nobody wrote:
+between them, so no code normalises. Four more things `baseUrl` refuses, each because
+`baseUrl + path` would otherwise produce a URL nobody wrote:
 
 | refused in `baseUrl` | what the concatenation would have done |
 |---|---|
@@ -202,52 +189,14 @@ concatenated into a stored string.
 | `apiKeyHeader` | sets `<paramName>: <valuePrefix><secret>` | `paramName`, exactly one `secrets` entry | — |
 | `basic` | RFC 7617 from `secrets.username` / `secrets.password` | both keys | `paramName`, `valuePrefix` |
 
-**There is no `bearer` scheme, because `valuePrefix` is one.** `Authorization: Bearer <token>`
-is `apiKeyHeader` with `paramName: "Authorization"` and `valuePrefix: "Bearer "` — and the same
-field also expresses `Token `, `ApiKey `, or whatever the next upstream invents. A scheme per
-prefix would be an enum that grows once per provider.
-
-**`valuePrefix` requires its own trailing space**, which looks fussy and is not. Without it,
-whether the adapter inserts a separator is a convention living in code, and the first provider
-that wants `Bearer<token>` with no space cannot be expressed at all. Writing the separator
-into the value makes the wire format visible in the record.
-
-**Three patterns exist to stop header injection**, and they do not reach far enough on their
-own. `paramName`, `valuePrefix` and an `inline:` secret are written into an HTTP header
-verbatim, so a `\r\n` in any of them appends attacker-chosen headers; none of the three admits
-a control character. That is the only reason they are constrained more tightly than "a
-non-empty string".
-
-**What the schema cannot cover, and the adapter therefore must.** An `env://` secret's *value*
-never passes through this schema — it arrives from the environment at call time. So the
-control-character check has to be repeated on the **resolved** credential, or it protects only
-the `inline:` half. Two more belong to the adapter for the same reason: percent-encoding the
-credential before it goes in a query string (`apiKeyQuery` with a secret containing `&` would
-otherwise append a parameter), and whatever allowlist decides that a `baseUrl` may not be
-`localhost` or `169.254.169.254` — the pattern cannot tell a metadata endpoint from a
-hostname, and the adapter attaches a credential to whatever it is given.
-
-**One credential per API-key scheme**, enforced by `maxProperties: 1`. A provider needing both
-an API key and a tenant token is a real thing and is not v1's; see
-[Deferred](#deferred--out-of-scope). Capping it now means the second credential arrives as a
-reviewed schema change rather than as an extra map entry nobody notices.
-
-**A secret has exactly two legal forms, and must say which:**
+**A secret has exactly two legal forms, and must say which.** A bare pasted key matches neither
+and is rejected at write time. Prefer `env://`; `inline:` costs the three things
+[examples.md](examples.md#providers) lists.
 
 ```
 "secrets": { "password": "env://MAUSAMGRAM_PASS" }   // pointer — resolved from the adapter's environment
 "secrets": { "token":    "inline:a7f3c9d2e1b8..." }  // the credential itself, stored here
 ```
-
-A bare pasted key matches neither and is rejected at write time. An `inline:` value is
-printable ASCII, 1–999 characters, no leading space, so no carriage return or tab reaches the
-header it is written into. One caveat measured rather than assumed: a *trailing* newline is
-refused by ECMA-262 and by Java's `matches()`, and accepted by Python's `re`, where `$` also
-matches before a final newline — so the guarantee is the validator's, not the pattern's. **Prefer `env://`** — the
-registry then holds no credential at all. `inline:` exists for operators who cannot set the
-adapter's environment, and it costs three things: `/search` is authenticated
-([§5](#5-apis)), the database holds live key material, and rotation becomes a registry write.
-Because the prefix is literal, *which providers hold a real key* is one query over the table.
 
 **A credential implies TLS.** Every scheme except `none` requires `secrets`, so the schema
 forces `baseUrl` to `https` whenever `auth.scheme != "none"`. Plaintext stays legal for
@@ -256,6 +205,9 @@ forces `baseUrl` to `https` whenever `auth.scheme != "none"`. Plaintext stays le
 ---
 
 ### 3.2 `Capability`
+
+Why it holds no provider, and the open `capabilityCode` question:
+[Appendix A](#capability--rationale).
 
 ```jsonc
 { "Capability": {
@@ -275,12 +227,6 @@ forces `baseUrl` to `https` whenever `auth.scheme != "none"`. Plaintext stays le
 | `status` | string | `active` \| `inactive` | ✓ |
 | `baseTypes` | array | `TypeCode`, unique — shared field sets this pack composes with `allOf` | |
 
-**Nothing names a provider here.** A capability is network vocabulary; the binding attaches it
-to a provider. The branch rejection matters because a capability pinned to `main` validates
-against a different contract each week, silently. The seeded records go further and pin a full
-commit sha, which is the only genuinely immutable ref — the pattern cannot require it without
-also excluding hosts that do not expose one.
-
 > Whether `capabilityCode` should carry the **outcome** type (`openagrinet:WeatherObservation`)
 > or the governed **capability** type (`openagrinet:WeatherObservationCapability`) is an open
 > alignment question with the OAN domain packs, and one of the seeded three does not match
@@ -291,6 +237,8 @@ also excluding hosts that do not expose one.
 ### 3.3 `ProviderCapability`
 
 The entity that does the work. A record is **one call** — one shape, no alternatives.
+Why `GET`/`POST` only, and why timeout and retry are columns:
+[Appendix A](#providercapability--rationale).
 
 ```jsonc
 { "ProviderCapability": {
@@ -325,17 +273,6 @@ The entity that does the work. A record is **one call** — one shape, no altern
 | `enricher` | object | → `Enricher` — a Go plugin run **before** the request mapping | |
 | `timeoutMs` | integer | 1000–120000, default 15000 | |
 | `retryMax` | integer | 0–5, default 0 | |
-
-**`GET` and `POST` only.** Every binding here answers a read. A `PUT` or `DELETE` in a
-discovery path is a bug, and an enum is a cheaper place to catch it than a review.
-
-**Timeout and retry are registry columns, not constants in a service class.** IMD gets 30 s
-and 3 retries; Hasura gets 15 s and none. Those are properties of the upstream, changed by an
-operator.
-
-> `retryMax` is not conditioned on `method`, deliberately. The obvious rule — *no retries on
-> `POST`* — would forbid retrying a GraphQL **read**, which is the single most common POST in
-> this network. The judgement stays with whoever writes the record.
 
 **`Enricher`** — `{name, config, secrets}`, always the object form. It exists only for what
 the Beckn body cannot express: a private code namespace (Agmarknet's `marketcode`), or a
@@ -663,3 +600,77 @@ example that violated it.
 | The patterns need an ECMA-262 engine | Three of them use negative lookahead — `baseUrl` and `Capability.schemaUrl` to refuse `..` and a branch ref, `MappingPath` to refuse traversal. Ajv and Java both compile them; **Go's RE2 does not**, so a Go adapter validating these records locally has to implement those three rules in code rather than reuse the pattern. Nothing else in the three files is RE2-hostile — the length caps are written under RE2's 1000-repeat limit precisely so this stays a one-reason problem. |
 | The evidence is not committed | Every rejection claimed in [§6](#6-do-todays-providers-fit) was produced by throwaway scripts in a scratchpad, and the `discover` dialect in [usecases.md](usecases.md) by a hand-run query against the dev database. Nothing re-runs them. A schema whose security controls are verified once, by hand, is a schema whose next edit is unchecked — this is the one gap on this page that will cost the most the soonest. |
 | Shared definitions are copied, not referenced | RC loads each entity schema alone, so `Status`, `ProviderId`, `CapabilityCode` and `Secret` are duplicated verbatim across files ([§3.0](#30-shared-definitions)). Identical names make a drift a diff, but nothing yet fails a build on it. |
+
+---
+
+## Appendix A — Why the schema is shaped this way
+
+Rationale only. Nothing here is a constraint; every constraint is in [§3](#3-the-schemas)
+and in `schemas/*.json`. This exists so that a later simplification is a decision rather
+than an accident.
+
+### `Provider` — rationale
+
+**Auth is on `Provider`, not on the binding.** One credential opens all of that provider's
+endpoints — true for all five. On `ProviderCapability` it would be copied into every binding
+row, and a rotation would touch N rows instead of one.
+
+`Provider.baseUrl` is **where** the provider is; `method` + `path` on the binding is **which
+endpoint** answers a capability. They are split because one provider serves several
+capabilities from different paths — put `path` on `Provider` and each needs a duplicate
+record, which means a duplicate credential.
+
+```
+https://mausamgram.imd.gov.in/nwpapi  +  /get-daily
+└────────── Provider.baseUrl ───────┘     └─ ProviderCapability.path ─┘
+```
+
+**There is no `bearer` scheme, because `valuePrefix` is one.** `Authorization: Bearer <token>`
+is `apiKeyHeader` with `paramName: "Authorization"`, `valuePrefix: "Bearer "` — and the same
+field expresses `Token `, `ApiKey `, or whatever the next upstream invents. The trailing space
+is part of the value so that the wire format is visible in the record rather than being a
+separator convention living in adapter code.
+
+**The three tight patterns are anti-header-injection, and that is their only purpose.**
+`paramName`, `valuePrefix` and an `inline:` secret are written into an HTTP header verbatim, so
+a `\r\n` in any of them appends attacker-chosen headers. None admits a control character.
+Relaxing any of the three to "a non-empty string" reopens that.
+
+**One credential per API-key scheme**, via `maxProperties: 1`. A provider needing both an API
+key and a tenant token then arrives as a reviewed schema change, not an extra map entry — see
+[Deferred](#deferred--out-of-scope).
+
+### `Capability` — rationale
+
+**Nothing names a provider here.** A capability is network vocabulary; the binding attaches it
+to a provider. The branch rejection matters because a capability pinned to `main` validates
+against a different contract each week, silently. The seeded records go further and pin a full
+commit sha, which is the only genuinely immutable ref — the pattern cannot require it without
+also excluding hosts that do not expose one.
+
+### `ProviderCapability` — rationale
+
+**`GET` and `POST` only.** Every binding here answers a read. A `PUT` or `DELETE` in a
+discovery path is a bug, and an enum is a cheaper place to catch it than a review.
+
+**Timeout and retry are registry columns, not constants in a service class.** IMD gets 30 s
+and 3 retries; Hasura gets 15 s and none. Those are properties of the upstream, changed by an
+operator.
+
+> `retryMax` is not conditioned on `method`, deliberately. The obvious rule — *no retries on
+> `POST`* — would forbid retrying a GraphQL **read**, which is the single most common POST in
+> this network. The judgement stays with whoever writes the record.
+
+---
+
+## Appendix B — What the schema cannot reach, so the adapter must
+
+**Three things the schema cannot reach, so the adapter must.** An `env://` secret's *value*
+never passes through this schema — it arrives from the environment at call time — which is why
+the first row is not optional:
+
+| the adapter must | or else |
+|---|---|
+| re-check the **resolved** credential for control characters | the injection guard above covers only the `inline:` half |
+| percent-encode the credential before it enters a query string | `apiKeyQuery` with a secret containing `&` appends a parameter |
+| allowlist what a `baseUrl` may resolve to | the pattern cannot tell `169.254.169.254` from a hostname, and the adapter attaches a credential to whatever it is given |
