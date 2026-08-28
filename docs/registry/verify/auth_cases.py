@@ -1,4 +1,4 @@
-"""Auth cases for schemas/Provider.json.
+"""Auth cases for schemas/Participant.json.
 
 Run:  python3 verify/auth_cases.py          (from docs/registry)
 Needs: jsonschema
@@ -10,8 +10,9 @@ record is accepted AND every malformed neighbour is refused.
 import json, io, sys
 
 def rec(auth):
-    return {"Provider": {"providerId": "probe-x", "name": "Probe",
-                         "baseUrl": "https://a.example/v1", "status": "active", "auth": auth}}
+    return {"Participant": {"participantId": "probe-x", "name": "Probe",
+                            "roles": ["provider"], "baseUrl": "https://a.example/v1",
+                            "status": "active", "auth": auth}}
 
 CASES = [
     # --- the four schemes, minimal legal form (regression) ---
@@ -68,7 +69,7 @@ CASES = [
 
 def main():
     import jsonschema
-    V = jsonschema.Draft7Validator(json.load(io.open("schemas/Provider.json")))
+    V = jsonschema.Draft7Validator(json.load(io.open("schemas/Participant.json")))
     bad = 0
     for name, auth, want in CASES:
         got = not list(V.iter_errors(rec(auth)))

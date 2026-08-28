@@ -1,16 +1,16 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ProviderCapability",
+  "title": "ProviderSchema",
   "type": "object",
-  "required": ["ProviderCapability"],
-  "properties": { "ProviderCapability": { "$ref": "#/definitions/ProviderCapability" } },
+  "required": ["ProviderSchema"],
+  "properties": { "ProviderSchema": { "$ref": "#/definitions/ProviderSchema" } },
 
   "definitions": {
 
-    "ProviderCapability": {
+    "ProviderSchema": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bindingKey", "providerId", "capabilityCode", "status",
+      "required": ["bindingKey", "participantId", "capabilityCode", "status",
                    "method", "path", "requestMapping", "responseMapping"],
       "properties": {
         "bindingKey": {
@@ -18,7 +18,7 @@
           "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}\\|openagrinet:[A-Z][A-Za-z0-9]*$",
           "not": { "pattern": "\\|openagrinet:Agriculture(Capability|Resource)$" }
         },
-        "providerId":     { "$ref": "#/definitions/ProviderId" },
+        "participantId":  { "$ref": "#/definitions/ParticipantId" },
         "capabilityCode": { "$ref": "#/definitions/CapabilityCode" },
         "status":         { "$ref": "#/definitions/Status" },
 
@@ -27,40 +27,25 @@
         "requestMapping":  { "$ref": "#/definitions/MappingPath" },
         "responseMapping": { "$ref": "#/definitions/MappingPath" },
 
-        "enricher":  { "$ref": "#/definitions/Enricher" },
         "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 15000 },
         "retryMax":  { "type": "integer", "minimum": 0, "maximum": 5, "default": 0 }
-      }
-    },
-
-    "Enricher": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name"],
-      "properties": {
-        "name":    { "type": "string", "pattern": "^[a-z][a-zA-Z0-9]*$" },
-        "config":  { "type": "object" },
-        "secrets": { "type": "object", "minProperties": 1,
-                     "additionalProperties": { "$ref": "#/definitions/Secret" } }
       }
     },
 
     "MappingPath": { "type": "string", "maxLength": 256,
                      "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.jsonata$" },
 
-    "ProviderId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
+    "ParticipantId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
     "CapabilityCode": { "type": "string",
                         "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$",
                         "not": { "pattern": "^openagrinet:Agriculture(Capability|Resource)$" } },
     "Status": { "type": "string", "enum": ["active", "inactive"] },
-    "Path": { "type": "string", "maxLength": 512, "pattern": "^/[A-Za-z0-9._~%/-]*$" },
-    "Secret": { "type": "string", "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998})$" }
+    "Path": { "type": "string", "maxLength": 512, "pattern": "^/[A-Za-z0-9._~%/-]*$" }
   },
 
   "_osConfig": {
     "uniqueIndexFields": ["bindingKey"],
-    "indexFields":       ["providerId", "capabilityCode", "status"],
-    "privateFields":     ["$.enricher.secrets"],
+    "indexFields":       ["participantId", "capabilityCode", "status"],
     "roles":             ["registryOperator"],
     "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
   }

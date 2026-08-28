@@ -149,7 +149,7 @@ rely on it.
 |---|---|---|
 | 1 | `prices` array → object, add `arrivalDate`, `currency`, `market.marketName` | `mappings/agmarknet/select.response.jsonata` |
 | 2 | Advisory: emit `content[]`, `provenance`, `languages`, `knowledgeType: Guide`/`Reference` | `mappings/{hasura-content,oan-vector}/select.response.jsonata` |
-| 3 | Rule on `MandiPrice` vs `MandiPriceObservation`, then rename in 1 `Capability`, 1 binding, every filter | network owners, then registry |
+| 3 | Rule on `MandiPrice` vs `MandiPriceObservation`, then rename in 1 `SchemaRegistry`, 1 binding, every filter | network owners, then registry |
 | 4 | Match **capability** types as well as outcome types in `/discover` | discovery-service |
 | 5 | Source `version` + `lifecycleStatus`, or record the constants as a known fiction | Hasura table, vector index |
 | 6 | `aggregation` — take the min/max gap to the network | network-specs |

@@ -13,11 +13,11 @@ self-contained — it does not depend on anything under `archive/`.
 > and six respectively, each one listed with its fix in [dpg-fit.md](dpg-fit.md). They are
 > shown here unaltered so the gap is visible against the real upstream response.
 
-| | Use case | Capability | Provider | Shape of the call |
+| | Use case | SchemaRegistry | Participant | Shape of the call |
 |---|---|---|---|---|
-| [1](#use-case-1--weather-point-forecast-mausamgram) | Weather — point forecast | `WeatherObservation` | `mausamgram` | `GET`, HTTP Basic, enricher reads the point off the intent |
-| [2](#use-case-2--weather-citystation-imd-city-weather) | Weather — city/station | `WeatherObservation` | `imd-city-weather` | `GET`, no auth, enricher does a Postgres proximity lookup |
-| [3](#use-case-3--mandi-price-agmarknet) | Mandi price | `MandiPrice` | `agmarknet` | `GET`, API key in the query, enricher maps a commodity name to a code |
+| [1](#use-case-1--weather-point-forecast-mausamgram) | Weather — point forecast | `WeatherObservation` | `mausamgram` | `GET`, HTTP Basic, the adapter reads the point off the intent |
+| [2](#use-case-2--weather-citystation-imd-city-weather) | Weather — city/station | `WeatherObservation` | `imd-city-weather` | `GET`, no auth, the adapter does a Postgres proximity lookup |
+| [3](#use-case-3--mandi-price-agmarknet) | Mandi price | `MandiPrice` | `agmarknet` | `GET`, API key in the query, the adapter maps a commodity name to a code |
 | [4](#use-case-4--scheme-information-hasura-content) | Scheme information | `KnowledgeResource` | `hasura-content` | `POST` GraphQL, admin secret header |
 | [5](#use-case-5--crop--pest-advisory-oan-vector) | Crop & pest advisory | `KnowledgeResource` | `oan-vector` | `POST` vector search, no auth |
 
@@ -39,6 +39,12 @@ Between them the adopter has a `provider.id` and an `@type` and nothing else it 
 That pair *is* the `bindingKey`, which is why hop ② can resolve a call plan without a
 lookup table of its own.
 
+Step ⑤ below has two halves, and only one of them is in the registry. The **mappings** are
+registry fields; the **enrich** half is adapter-internal, because a transform named in a
+shared registry claims every adapter can run it — see
+[registry.md §3.3](registry.md#33-providerschema). Each use case names its enrich step so the
+walkthrough is followable; none of those names is a stored value.
+
 Every use case below runs the same six steps:
 
 ```
@@ -46,7 +52,7 @@ Every use case below runs the same six steps:
 ②  discover              who can answer this?                    → provider ids
 ③  select                that provider, this data                → adapter
 ④  resolve               bindingKey → call plan + auth           ← registry
-⑤  enrich · map · call   run the enricher, build the request, authenticate, call upstream
+⑤  enrich · map · call   the adapter's own step, then build, authenticate, call upstream
 ⑥  map the response      upstream's native shape → Beckn v2 resources
 ```
 
@@ -130,18 +136,17 @@ two to exist and be `active` first.
 
 | # | entity | key | the part that matters here |
 |---|---|---|---|
-| 1 | `Capability` | `openagrinet:WeatherObservation` | `schemaUrl` → the `WeatherObservation/v0.1` pack, sha-pinned |
-| 2 | `Provider` | `mausamgram` | `baseUrl` `https://mausamgram.imd.gov.in/nwpapi` · `auth.scheme: basic` |
-| 3 | `ProviderCapability` | `mausamgram\|openagrinet:WeatherObservation` | `GET /get-daily` · `enricher: pointFromIntent` |
+| 1 | `SchemaRegistry` | `openagrinet:WeatherObservation` | `version: v0.1` · `schemaUrl` → the `WeatherObservation/v0.1` pack |
+| 2 | `Participant` | `mausamgram` | `baseUrl` `https://mausamgram.imd.gov.in/nwpapi` · `auth.scheme: basic` |
+| 3 | `ProviderSchema` | `mausamgram\|openagrinet:WeatherObservation` | `GET /get-daily` · the adapter derives the point |
 
 ```json
-{ "ProviderCapability": {
+{ "ProviderSchema": {
   "bindingKey": "mausamgram|openagrinet:WeatherObservation",
-  "providerId": "mausamgram",
+  "participantId": "mausamgram",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
   "path": "/get-daily",
-  "enricher": { "name": "pointFromIntent" },
   "requestMapping":  "mappings/mausamgram/select.request.jsonata",
   "responseMapping": "mappings/mausamgram/select.response.jsonata",
   "timeoutMs": 30000,
@@ -233,7 +238,7 @@ join.** Shown here in full; use cases 2–5 show the same two calls in short for
 **Read 1 — the call plan.**
 
 ```http
-POST /api/v1/ProviderCapability/search
+POST /api/v1/ProviderSchema/search
 Authorization: Bearer <read-token>
 Content-Type: application/json
 ```
@@ -245,43 +250,44 @@ Content-Type: application/json
 200 OK
 [ { "osid": "1-4c7d5e91-2a08-4f6b-8d13-77e0c9a4b521",
     "bindingKey": "mausamgram|openagrinet:WeatherObservation",
-    "providerId": "mausamgram", "capabilityCode": "openagrinet:WeatherObservation",
+    "participantId": "mausamgram", "capabilityCode": "openagrinet:WeatherObservation",
     "method": "GET", "path": "/get-daily",
-    "enricher": { "name": "pointFromIntent" },
     "requestMapping":  "mappings/mausamgram/select.request.jsonata",
     "responseMapping": "mappings/mausamgram/select.response.jsonata",
     "timeoutMs": 30000, "retryMax": 3, "status": "active" } ]
 ```
 
-**Read 2 — where it is, and how to authenticate.** `providerId` comes off the row just read.
+**Read 2 — where it is, and how to authenticate.** `participantId` comes off the row just read.
 
 ```http
-POST /api/v1/Provider/search
+POST /api/v1/Participant/search
 Authorization: Bearer <read-token>
 ```
 ```json
-{ "filters": { "providerId": { "eq": "mausamgram" },
+{ "filters": { "participantId": { "eq": "mausamgram" },
                "status":     { "eq": "active" } } }
 ```
 ```json
 200 OK
 [ { "osid": "1-8f2c4e7a-3b91-4d0e-9c55-2a1f6b8e0d34",
-    "providerId": "mausamgram", "name": "IMD Mausamgram NWP",
+    "participantId": "mausamgram", "name": "IMD Mausamgram NWP",
+    "roles": ["provider"],
     "baseUrl": "https://mausamgram.imd.gov.in/nwpapi", "status": "active",
     "auth": { "scheme": "basic",
               "secrets": { "username": "env://MAUSAMGRAM_USER",
                            "password": "env://MAUSAMGRAM_X_API_KEY" } } } ]
 ```
 
-Those two rows carry everything step ⑤ needs: `baseUrl + path`, the method, both mapping
-paths, the enricher name, the timeout and retry budget, and the credential to resolve.
-**No `Capability` read** — a capability is vocabulary, not part of the call path.
+Those two rows carry everything step ⑤ needs from the registry: `baseUrl + path`, the
+method, both mapping paths, the timeout and retry budget, and the credential to resolve. What
+they do **not** carry is the enrich step — the adapter selects that on `participantId`.
+**No `SchemaRegistry` read** — a capability is vocabulary, not part of the call path.
 
 An empty result from either read is a hard failure, not a fallback: an inactive binding or
 an inactive provider means this provider cannot answer, and `on_select` returns an error.
 
 **In production these two calls do not happen per request.** All 13 records are loaded at
-boot and indexed by `bindingKey` and `providerId`, so resolution is two map lookups —
+boot and indexed by `bindingKey` and `participantId`, so resolution is two map lookups —
 [registry.md §5](registry.md#the-runtime-does-not-call-these-per-request).
 
 ### ⑤ Enrich, map, authenticate, call
@@ -299,7 +305,7 @@ Authorization: Basic <resolved from env://MAUSAMGRAM_USER + env://MAUSAMGRAM_X_A
 timeout 30000ms   retries 3
 ```
 
-Provider answers in its native shape:
+Participant answers in its native shape:
 
 ```json
 { "location": { "lat": 19.9975, "lon": 73.7898 },
@@ -349,20 +355,17 @@ carries a station id.
 
 | # | entity | key | the part that matters here |
 |---|---|---|---|
-| 1 | `Capability` | `openagrinet:WeatherObservation` | **already seeded by use case 1** — capabilities are provider-independent |
-| 2 | `Provider` | `imd-city-weather` | `baseUrl` `https://city.imd.gov.in` · `auth.scheme: none` |
-| 3 | `ProviderCapability` | `imd-city-weather\|openagrinet:WeatherObservation` | `GET /citywx/city_weather_test.php` · enricher with `config` **and** `secrets` |
+| 1 | `SchemaRegistry` | `openagrinet:WeatherObservation` | **already seeded by use case 1** — capabilities are provider-independent |
+| 2 | `Participant` | `imd-city-weather` | `baseUrl` `https://city.imd.gov.in` · `auth.scheme: none` |
+| 3 | `ProviderSchema` | `imd-city-weather\|openagrinet:WeatherObservation` | `GET /citywx/city_weather_test.php` · the adapter resolves the nearest station |
 
 ```json
-{ "ProviderCapability": {
+{ "ProviderSchema": {
   "bindingKey": "imd-city-weather|openagrinet:WeatherObservation",
-  "providerId": "imd-city-weather",
+  "participantId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
   "path": "/citywx/city_weather_test.php",
-  "enricher": { "name": "nearestStation",
-                "config": { "maxDistanceKm": 50, "maxStationAttempts": 5 },
-                "secrets": { "dsn": "env://IMD_DB_DSN" } },
   "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",
   "responseMapping": "mappings/imd-city-weather/select.response.jsonata",
   "timeoutMs": 15000,
@@ -370,14 +373,19 @@ carries a station id.
 } }
 ```
 
-**This is what an enricher is for.** Turning `[73.7898, 19.9975]` into a station id is a
-proximity query against a Postgres table the adapter owns. No JSONata expression can do it —
-which is the bar. The registry *names and bounds* the plugin (`maxDistanceKm`,
-`maxStationAttempts`) and does not implement it; the DSN is an `env://` pointer resolved at
-call time, never stored.
+**This is the clearest case for a transform the registry does not describe.** Turning
+`[73.7898, 19.9975]` into a station id is a proximity query against a Postgres table the
+adapter owns. No JSONata expression can do it — which is the bar for it not being a mapping.
 
-**One `Capability`, two `Provider`s, two bindings.** Adding this provider adds exactly one
-`Provider` row and one `ProviderCapability` row. Nothing about `openagrinet:WeatherObservation`
+An earlier draft put it on the binding as `enricher: {name: nearestStation, config:
+{maxDistanceKm: 50}, secrets: {dsn: env://IMD_DB_DSN}}`, and that is what a plugin reference
+in a *shared* registry costs: the name asserts any adapter can run `nearestStation`, the
+config asserts they all take the same knobs, and the DSN asserts they all reach the same
+database. None of the three is true of anyone but us. The bound, the DSN and the station table
+are ours; they belong in our configuration, not in a record every participant reads.
+
+**One `SchemaRegistry`, two `Participant`s, two bindings.** Adding this participant adds exactly one
+`Participant` row and one `ProviderSchema` row. Nothing about `openagrinet:WeatherObservation`
 changes, and nothing about `mausamgram` changes.
 
 ### ① – ② Same intent, same filter
@@ -411,22 +419,22 @@ Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausam
 only the two filter values change.
 
 ```http
-POST /api/v1/ProviderCapability/search
+POST /api/v1/ProviderSchema/search
 ```
 ```json
 { "filters": { "bindingKey": { "eq": "imd-city-weather|openagrinet:WeatherObservation" },
                "status":     { "eq": "active" } } }
 ```
 ```http
-POST /api/v1/Provider/search
+POST /api/v1/Participant/search
 ```
 ```json
-{ "filters": { "providerId": { "eq": "imd-city-weather" },
+{ "filters": { "participantId": { "eq": "imd-city-weather" },
                "status":     { "eq": "active" } } }
 ```
 
 Together they give `GET https://city.imd.gov.in/citywx/city_weather_test.php`,
-`auth.scheme: none`, and `enricher: nearestStation`.
+and `auth.scheme: none`.
 
 Same `@type`, different `provider.id` — a different row, a different call plan, no branching
 in the adapter.
@@ -497,14 +505,15 @@ requires and what a consumer can compute with.
 
 | # | entity | key | the part that matters here |
 |---|---|---|---|
-| 1 | `Capability` | `openagrinet:MandiPrice` | `schemaUrl` → the `MandiPrice/v0.1` pack |
-| 2 | `Provider` | `agmarknet` | `auth.scheme: apiKeyQuery` · `paramName: token` |
-| 3 | `ProviderCapability` | `agmarknet\|openagrinet:MandiPrice` | `GET /v1/fetch-agmarknet-vistaar-location` |
+| 1 | `SchemaRegistry` | `openagrinet:MandiPrice` | `schemaUrl` → the `MandiPrice/v0.1` pack |
+| 2 | `Participant` | `agmarknet` | `auth.scheme: apiKeyQuery` · `paramName: token` |
+| 3 | `ProviderSchema` | `agmarknet\|openagrinet:MandiPrice` | `GET /v1/fetch-agmarknet-vistaar-location` |
 
 ```json
-{ "Provider": {
-  "providerId": "agmarknet",
+{ "Participant": {
+  "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
+  "roles": ["provider"],
   "baseUrl": "https://api.agmarknet.gov.in",
   "status": "active",
   "auth": { "scheme": "apiKeyQuery",
@@ -514,13 +523,12 @@ requires and what a consumer can compute with.
 ```
 
 ```json
-{ "ProviderCapability": {
+{ "ProviderSchema": {
   "bindingKey": "agmarknet|openagrinet:MandiPrice",
-  "providerId": "agmarknet",
+  "participantId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPrice",
   "method": "GET",
   "path": "/v1/fetch-agmarknet-vistaar-location",
-  "enricher": { "name": "marketAndCommodityCodes" },
   "requestMapping":  "mappings/agmarknet/select.request.jsonata",
   "responseMapping": "mappings/agmarknet/select.response.jsonata",
   "timeoutMs": 20000,
@@ -530,7 +538,7 @@ requires and what a consumer can compute with.
 ```
 
 `apiKeyQuery` is the one scheme that puts a credential in the URL. The **credential-implies-TLS
-clause** in [§3.1](registry.md#31-provider) is what stops
+clause** in [§3.1](registry.md#31-participant) is what stops
 that URL being built over plaintext — the record would be rejected at write time.
 
 ### ① Resolve meaning
@@ -578,23 +586,22 @@ Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausam
 only the two filter values change.
 
 ```http
-POST /api/v1/ProviderCapability/search
+POST /api/v1/ProviderSchema/search
 ```
 ```json
 { "filters": { "bindingKey": { "eq": "agmarknet|openagrinet:MandiPrice" },
                "status":     { "eq": "active" } } }
 ```
 ```http
-POST /api/v1/Provider/search
+POST /api/v1/Participant/search
 ```
 ```json
-{ "filters": { "providerId": { "eq": "agmarknet" },
+{ "filters": { "participantId": { "eq": "agmarknet" },
                "status":     { "eq": "active" } } }
 ```
 
 Together they give `GET https://api.agmarknet.gov.in/v1/fetch-agmarknet-vistaar-location`,
-`auth.scheme: apiKeyQuery` with `paramName: token`, and
-`enricher: marketAndCommodityCodes`.
+and `auth.scheme: apiKeyQuery` with `paramName: token`.
 
 ### ⑤ Enrich, map, call
 
@@ -603,8 +610,8 @@ marketAndCommodityCodes:  "Soybean" → _local = { commodityId: 1 }
 ```
 
 Agmarknet's commodity ids are a **private namespace** — nothing in the Beckn body carries
-one, and no expression can derive one from the name. That is the second legitimate reason
-for an enricher.
+one, and no expression can derive one from the name. That is the second legitimate reason for
+a transform outside the mappings, and the second one the registry does not name.
 
 ```
 GET https://api.agmarknet.gov.in/v1/fetch-agmarknet-vistaar-location
@@ -656,18 +663,17 @@ a transaction: nothing is being applied for, and no farmer identity is sent.
 
 | # | entity | key | the part that matters here |
 |---|---|---|---|
-| 1 | `Capability` | `openagrinet:KnowledgeResource` | `schemaUrl` → the `KnowledgeResource/v0.1` pack |
-| 2 | `Provider` | `hasura-content` | `auth.scheme: apiKeyHeader` · `paramName: x-hasura-admin-secret` |
-| 3 | `ProviderCapability` | `hasura-content\|openagrinet:KnowledgeResource` | `POST /v1/graphql` |
+| 1 | `SchemaRegistry` | `openagrinet:KnowledgeResource` | `schemaUrl` → the `KnowledgeResource/v0.1` pack |
+| 2 | `Participant` | `hasura-content` | `auth.scheme: apiKeyHeader` · `paramName: x-hasura-admin-secret` |
+| 3 | `ProviderSchema` | `hasura-content\|openagrinet:KnowledgeResource` | `POST /v1/graphql` |
 
 ```json
-{ "ProviderCapability": {
+{ "ProviderSchema": {
   "bindingKey": "hasura-content|openagrinet:KnowledgeResource",
-  "providerId": "hasura-content",
+  "participantId": "hasura-content",
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST",
   "path": "/v1/graphql",
-  "enricher": { "name": "knowledgeQueryParams" },
   "requestMapping":  "mappings/hasura-content/select.request.jsonata",
   "responseMapping": "mappings/hasura-content/select.response.jsonata",
   "timeoutMs": 15000,
@@ -678,7 +684,7 @@ a transaction: nothing is being applied for, and no farmer identity is sent.
 
 **GraphQL needs nothing new in the schema.** It is `POST` to one path with the query in a
 body the `requestMapping` builds — which is why
-[§3.3](registry.md#33-providercapability) carries no transport discriminator.
+[§3.3](registry.md#33-providerschema) carries no transport discriminator.
 
 **The query is built with GraphQL *variables*, not string concatenation.** The
 `requestMapping` emits `{query, variables}` with the filter values in `variables`; nothing
@@ -727,23 +733,22 @@ Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausam
 only the two filter values change.
 
 ```http
-POST /api/v1/ProviderCapability/search
+POST /api/v1/ProviderSchema/search
 ```
 ```json
 { "filters": { "bindingKey": { "eq": "hasura-content|openagrinet:KnowledgeResource" },
                "status":     { "eq": "active" } } }
 ```
 ```http
-POST /api/v1/Provider/search
+POST /api/v1/Participant/search
 ```
 ```json
-{ "filters": { "providerId": { "eq": "hasura-content" },
+{ "filters": { "participantId": { "eq": "hasura-content" },
                "status":     { "eq": "active" } } }
 ```
 
 Together they give `POST https://content.internal/v1/graphql`,
-`auth.scheme: apiKeyHeader` with `paramName: x-hasura-admin-secret`, and
-`enricher: knowledgeQueryParams`.
+and `auth.scheme: apiKeyHeader` with `paramName: x-hasura-admin-secret`.
 
 ### ⑤ Enrich, map, call
 
@@ -806,18 +811,17 @@ timeout 15000ms   no retry
 
 | # | entity | key | the part that matters here |
 |---|---|---|---|
-| 1 | `Capability` | `openagrinet:KnowledgeResource` | **already seeded by use case 4** — same outcome type |
-| 2 | `Provider` | `oan-vector` | `baseUrl` `http://3.6.146.174:8882` · `auth.scheme: none` |
-| 3 | `ProviderCapability` | `oan-vector\|openagrinet:KnowledgeResource` | `POST /indexes/oan-index/search` |
+| 1 | `SchemaRegistry` | `openagrinet:KnowledgeResource` | **already seeded by use case 4** — same outcome type |
+| 2 | `Participant` | `oan-vector` | `baseUrl` `http://3.6.146.174:8882` · `auth.scheme: none` |
+| 3 | `ProviderSchema` | `oan-vector\|openagrinet:KnowledgeResource` | `POST /indexes/oan-index/search` |
 
 ```json
-{ "ProviderCapability": {
+{ "ProviderSchema": {
   "bindingKey": "oan-vector|openagrinet:KnowledgeResource",
-  "providerId": "oan-vector",
+  "participantId": "oan-vector",
   "capabilityCode": "openagrinet:KnowledgeResource",
   "method": "POST",
   "path": "/indexes/oan-index/search",
-  "enricher": { "name": "knowledgeQueryParams" },
   "requestMapping":  "mappings/oan-vector/select.request.jsonata",
   "responseMapping": "mappings/oan-vector/select.response.jsonata",
   "timeoutMs": 15000,
@@ -831,9 +835,11 @@ timeout 15000ms   no retry
 > Moving it behind TLS with a real hostname is onboarding work, not a schema change, and
 > should happen before v1 carries real traffic.
 
-**Both `KnowledgeResource` bindings name the same enricher, `knowledgeQueryParams`.** Their
-*request mappings* do not: one shapes a GraphQL `variables` block, the other a vector-search
-body. The enricher extracts the query intent; the mapping shapes it for one upstream.
+**Both `KnowledgeResource` bindings need the same query-parameter step.** Their *request
+mappings* do not: one shapes a GraphQL `variables` block, the other a vector-search body. The
+shared step extracts the query intent; the mapping shapes it for one upstream. Neither the
+step nor the fact that it is shared is stored — two bindings wanting the same adapter code is
+not something a registry can assert.
 
 ### ② `discover` — same type, different category
 
@@ -875,24 +881,24 @@ Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausam
 only the two filter values change.
 
 ```http
-POST /api/v1/ProviderCapability/search
+POST /api/v1/ProviderSchema/search
 ```
 ```json
 { "filters": { "bindingKey": { "eq": "oan-vector|openagrinet:KnowledgeResource" },
                "status":     { "eq": "active" } } }
 ```
 ```http
-POST /api/v1/Provider/search
+POST /api/v1/Participant/search
 ```
 ```json
-{ "filters": { "providerId": { "eq": "oan-vector" },
+{ "filters": { "participantId": { "eq": "oan-vector" },
                "status":     { "eq": "active" } } }
 ```
 
 Together they give `POST http://3.6.146.174:8882/indexes/oan-index/search`,
-`auth.scheme: none`, and `enricher: knowledgeQueryParams`.
+and `auth.scheme: none`.
 
-Same `capabilityCode` as use case 4, different `providerId` — a different row. This is the
+Same `capabilityCode` as use case 4, different `participantId` — a different row. This is the
 whole point of a two-segment key: the pair is the identity.
 
 ### ⑤ Enrich, map, call
@@ -961,9 +967,9 @@ Use cases 4 and 5 are **one `capabilityCode` served by two providers**, and use 
 
 | | how many |
 |---|---|
-| `Capability` records | 3 — `WeatherObservation`, `MandiPrice`, `KnowledgeResource` |
-| `Provider` records | 5 |
-| `ProviderCapability` records | 5 — one per (provider, capability) pair actually served |
+| `SchemaRegistry` records | 3 — `WeatherObservation`, `MandiPrice`, `KnowledgeResource` |
+| `Participant` records | 5 |
+| `ProviderSchema` records | 5 — one per (participant, capability) pair actually served |
 
 `capabilityCode` is the **outcome type**: what the caller gets back. Schemes and crop
 advisory both come back as a `KnowledgeResource`; they are told apart by

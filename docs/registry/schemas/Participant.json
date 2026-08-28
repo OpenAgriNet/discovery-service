@@ -1,22 +1,26 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Provider",
+  "title": "Participant",
   "type": "object",
-  "required": ["Provider"],
-  "properties": { "Provider": { "$ref": "#/definitions/Provider" } },
+  "required": ["Participant"],
+  "properties": { "Participant": { "$ref": "#/definitions/Participant" } },
 
   "definitions": {
 
-    "Provider": {
+    "Participant": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["providerId", "name", "baseUrl", "status", "auth"],
+      "required": ["participantId", "name", "roles", "baseUrl", "status", "auth"],
       "properties": {
-        "providerId": { "$ref": "#/definitions/ProviderId" },
+        "participantId": { "$ref": "#/definitions/ParticipantId" },
         "name":       { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "roles":      { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
+                        "items": { "type": "string", "enum": ["provider", "consumer"] } },
         "baseUrl":    { "type": "string", "maxLength": 2000, "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$" },
         "status":     { "$ref": "#/definitions/Status" },
-        "auth":       { "$ref": "#/definitions/Auth" }
+        "auth":       { "$ref": "#/definitions/Auth" },
+        "publicKeys": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+                        "items": { "$ref": "#/definitions/PublicKey" } }
       },
       "allOf": [
         {
@@ -70,14 +74,25 @@
       ]
     },
 
+    "PublicKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keyId", "alg", "hash"],
+      "properties": {
+        "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+        "alg":   { "type": "string", "enum": ["ed25519", "x25519"] },
+        "hash":  { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+
     "ParamName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
-    "ProviderId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
+    "ParticipantId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
     "Status": { "type": "string", "enum": ["active", "inactive"] },
     "Secret": { "type": "string", "pattern": "^(env://[A-Z][A-Z0-9_]{0,63}|inline:[!-~][ -~]{0,998})$" }
   },
 
   "_osConfig": {
-    "uniqueIndexFields": ["providerId"],
+    "uniqueIndexFields": ["participantId"],
     "indexFields":       ["status"],
     "privateFields":     ["$.auth.secrets"],
     "roles":             ["registryOperator"],
