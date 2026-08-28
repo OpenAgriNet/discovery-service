@@ -1,40 +1,33 @@
 # OpenAgriNet registry
 
-The registry stores **participants, the schemas that describe a capability, and the binding
-between them** — the call plan for reaching a participant, plus how to authenticate to it.
+The registry stores **participants, the capabilities they can answer, and the binding between
+them**. The binding is the call plan: given a provider and a capability, how do you reach them.
 
-Everyone on the network is a participant; one that has declared capabilities is a provider.
-That is a `roles` value, not a different entity.
+Nothing else lives here — no catalogs, no resources, no search index.
 
-Nothing else. No catalogs, no resources, no search index.
+**Who reads it:** the adapter. **Who does not:** discovery-service, which answers `/discover`
+from its own catalog store.
 
-**Who reads it:** the adapter, or the adopter's experience layer.
-**Who does not:** discovery-service — it answers `/discover` from its own catalog store.
+**Everyone on the network is a participant.** One that has declared capabilities is a provider;
+one that only consumes them is a consumer. That is a `roles` value, not a different entity.
 
-## Read these three, in order
+## The four documents
 
-| | Read | For |
-|---|---|---|
-| 1 | **[registry.md](registry.md)** | How it fits, the three schemas field by field, examples, and the create / search / update APIs — there is no delete |
-| 2 | **[examples.md](examples.md)** | The thirteen records to seed |
-| 3 | **[usecases.md](usecases.md)** | The four v1 categories end to end, with payloads |
+| | |
+|---|---|
+| **[usecases.md](usecases.md)** | **Start here.** Six farmer questions traced end to end — the records you need, every call on the wire, and the real payloads. |
+| **[schemas.md](schemas.md)** | The three entities field by field, the five rules JSON Schema cannot express, what a `select` must supply, and the [known gaps](schemas.md#known-gaps). |
+| **[api.md](api.md)** | The registry's own REST API — create, search, update, and why there is no delete. |
+| **[examples.md](examples.md)** | The thirteen records to seed, as write bodies. Copy-paste ready. |
 
-Machine-readable schemas, which are the contract: [`schemas/`](schemas/) —
-`Participant.json`, `SchemaRegistry.json`, `ProviderSchema.json` (draft-07, with RC
-`_osConfig`). `registry.md` describes them; it deliberately keeps no second copy.
-[`verify/`](verify/README.md) re-runs the claims those pages make.
+[`schemas/`](schemas) holds the machine-readable draft-07 files, which are the contract.
+[`verify/`](verify) holds the checkers that keep these documents true.
 
-Then **[dpg-fit.md](dpg-fit.md)** — whether the responses those bindings produce satisfy the
-OAN domain packs. Three of five do not, and that is the largest open item in this folder.
+## Also here
 
-Those four pages are self-contained. A reviewer needs no other file.
+`archive/` is the BV Beckn adapter's own design set — a **different system**, copied verbatim
+for interop context and kept diffable against its source. Nothing in it is binding on anything
+in this folder.
 
-## Not part of the review
-
-[`archive/`](archive/README.md) is another team's design documents — the **BV Beckn
-adapter** — kept verbatim for provenance. It describes a **different system** and is binding
-on nothing here.
-
-Where any of this disagrees with
-[`docs/design/discover-and-publish.md`](../design/discover-and-publish.md), that plan wins —
-as does `beckn.yaml` over all of it.
+`docs/design/discover-and-publish.md` is the binding plan for the discovery service and wins over
+anything written here.

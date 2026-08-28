@@ -3,7 +3,7 @@
 Run from `docs/registry`. Three need `jsonschema`; `links.py` needs nothing:
 
 ```
-python3 verify/shape.py         # the ```jsonc shape blocks in registry.md are real records
+python3 verify/shape.py         # every record shown in any page here is a real record
 python3 verify/records.py       # the 13 records in examples.md, plus the §3.4 rules
 python3 verify/auth_cases.py    # the per-scheme auth matrix in schemas/Participant.json
 python3 verify/links.py         # every `](file.md#anchor)` in this folder resolves
@@ -11,15 +11,22 @@ python3 verify/links.py         # every `](file.md#anchor)` in this folder resol
 
 All four exit non-zero on failure, so they drop into CI unchanged.
 
-`shape.py` asserts two things about every shape block: it strips to valid JSON and
-validates against its entity's schema, and — unioned across an entity's blocks —
-every declared property is exercised. The union matters: `auth.paramName` and
-`auth.paramNames` are mutually exclusive, so no single record can cover both, and a
-per-block rule would force the doc to choose one and stop documenting the other.
+`shape.py` scans every `.md` in this folder except `README.md`, and treats a `json` block as a
+record claim when its single top-level key is an entity name — so a page can show Beckn payloads
+and upstream responses freely without tripping it. Each record must validate against its entity's
+schema, and — unioned across an entity's blocks — every declared property must be exercised. The
+union matters: `auth.paramName` and `auth.paramNames` are mutually exclusive, so no single record
+can cover both, and a per-block rule would force the docs to choose one and stop documenting the
+other. `schemas.md` carries two examples that exist only to keep `paramNames`, `valuePrefix` and
+`publicKeys` exercised, since no v1 record uses them.
+
+It used to read one file, `registry.md`, and only its annotated `jsonc` blocks. Widening it to
+the whole folder is why a record pasted into a use case is now checked too — three of the ones
+in `usecases.md` were invented before this ran over them.
 
 `records.py` is the one that catches what a schema cannot. Validating the thirteen records
-is the easy half; the half that matters is the five rules of
-[registry.md §3.4](../registry.md#34-five-rules-the-schema-cannot-express) — `bindingKey`
+is the easy half; the half that matters is the [five rules
+schemas.md](../schemas.md#five-rules-the-schema-cannot-express) names — `bindingKey`
 against its own two fields, references that resolve to live records, `paramNames` against
 `secrets`, `version` against `schemaUrl`, `keyId` uniqueness. Each of those is a record that
 passes every pattern in its schema and still produces a failed call, or a silently

@@ -3,8 +3,8 @@
 The thirteen records that seed the v1 registry — 3 `SchemaRegistry`, 5 `Participant`,
 5 `ProviderSchema` — in Sunbird RC write form.
 
-Schema: [registry.md §3](registry.md#3-the-schemas) ·
-[`schemas/`](schemas/). Write endpoints: [§5](registry.md#5-apis).
+Schema: [schemas.md](schemas.md) ·
+[`schemas/`](schemas/). Write endpoints: [api.md](api.md).
 
 > `schemaUrl` points at [`OpenAgriNet/network-specs`](https://github.com/OpenAgriNet/network-specs),
 > pinned to a **version directory** — `v0.1` here — and not to a commit. The version segment
@@ -58,11 +58,11 @@ consumer-side participant is the same record with `roles: ["consumer"]` and, typ
 own adapter calls directly, so nothing of theirs is signed and there is no signature to
 verify. Under the distributed topology each runs its own adapter and does sign — at which
 point the field is mandatory network policy and the seeding path has to enforce it. See
-[registry.md §3.4](registry.md#34-five-rules-the-schema-cannot-express).
+[schemas.md § Five rules](schemas.md#five-rules-the-schema-cannot-express).
 
 **No v1 participant carries an `inline:` secret.** Every credential below is an `env://`
 pointer resolved in the adapter's own environment. The `inline:` form is in the schema
-([§3.1](registry.md#31-participant)) for operators who cannot set that environment, and it
+([schemas.md](schemas.md#secrets-and-key-hashes-are-references-not-material)) for operators who cannot set that environment, and it
 costs three things: `/search` must be authenticated, the database holds live key material,
 and rotation becomes a registry write.
 
@@ -137,7 +137,7 @@ time, so storing a credential has to be deliberate — and because the prefix is
 
 > `mausamgram` and `imd-city-weather` are both IMD, on different hosts, so they are two
 > records. That is the open path-or-subdomain question in
-> [registry.md Known gaps](registry.md#known-gaps-for-v1), visible here as two participants
+> [schemas.md Known gaps](schemas.md#known-gaps), visible here as two participants
 > where the network has one organisation.
 
 ### Bindings
@@ -163,13 +163,18 @@ time, so storing a credential has to be deliberate — and because the prefix is
   "participantId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
-  "path": "/citywx/city_weather_test.php",
+  "path": "/api/cityweather_loc.php",
   "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",
   "responseMapping": "mappings/imd-city-weather/select.response.jsonata",
   "timeoutMs": 15000,
   "status": "active"
 } }
 ```
+
+> `imd-city-weather`'s `path` was `/citywx/city_weather_test.php` until the captured payload in
+> `Network Information.xlsx` showed the live endpoint is `/api/cityweather_loc.php`, taking
+> `?id=<station code>`. Its response is also an **array**, not an object, and carries `"NIL"`
+> sentinels and `null`s — see [usecases.md use case 2](usecases.md#25-call-upstream).
 
 ```json
 { "ProviderSchema": {
@@ -220,18 +225,18 @@ the intent; `imd-city-weather` needs the nearest station, from a table the adapt
 `agmarknet` needs market and commodity codes in its own namespace; both `KnowledgeResource`
 bindings need query parameters built. That step used to be a named `enricher` on the binding
 and is now adapter-internal, keyed off `participantId` — see
-[registry.md §3.3](registry.md#33-providerschema). **It is a seeding prerequisite, not an
+[schemas.md](schemas.md#mappings-are-the-only-transform-the-registry-describes). **It is a seeding prerequisite, not an
 optional extra:** a binding whose adapter has no such step returns nothing useful.
 
 ### Before seeding
 
 - **Reads are authenticated.** Seeding needs the Operator token; the adapter needs a
   read-only one. `/search` is not open — see
-  [registry.md §5](registry.md#5-apis).
+  [api.md](api.md).
 - Seed in order: `SchemaRegistry`, then `Participant`, then `ProviderSchema`. The binding's
   two integrity rules require the other two to exist and be `active`.
 - **Check `version` against `schemaUrl` before writing.** Rule 4 in
-  [§3.4](registry.md#34-five-rules-the-schema-cannot-express) — the schema cannot compare
+  [schemas.md](schemas.md#five-rules-the-schema-cannot-express) — the schema cannot compare
   them, so a record advertising `v0.1` while resolving `v0.2` validates.
 - `agmarknet`'s `select.request.jsonata` must emit `lat`, `long`, `commodity_id` and a
   single `date`. The location endpoint above takes those; the older four-code endpoint the
@@ -243,7 +248,7 @@ optional extra:** a binding whose adapter has no such step returns nothing usefu
   verb, so on the pinned build any token that can read these records can also write them.
   Close that before seeding a credential of any kind.
 - **There is no delete.** Correcting a mistake after seeding is a `PUT` of the whole record,
-  or `status: "inactive"` — [registry.md §5](registry.md#delete--disabled).
+  or `status: "inactive"` — [api.md](api.md#delete--disabled).
 - Three of the five bindings emit responses the OAN domain packs reject — both
   `KnowledgeResource` ones and `agmarknet`. Seeding is unaffected; the response mappings are
-  not. Each violation is in [dpg-fit.md](dpg-fit.md).
+  not. Each violation is in [usecases.md](usecases.md), under the use case it belongs to.

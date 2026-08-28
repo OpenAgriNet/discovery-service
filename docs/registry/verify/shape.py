@@ -1,7 +1,11 @@
-"""Every ```jsonc shape block in registry.md must be a real record, not a sketch:
+"""Every record shown anywhere in this folder must be a real record, not a sketch:
 
-  (a) it strips to valid JSON and validates against its entity's schema, and
+  (a) it validates against its entity's schema, and
   (b) across all blocks for an entity, EVERY declared property is exercised.
+
+A block counts as a record if its single top-level key is an entity name. Every other
+```json block in these pages is a Beckn payload or an upstream response and is skipped,
+so a page can show whatever it needs without tripping this.
 
 Coverage is a union across blocks, not per block — `auth.paramName` and
 `auth.paramNames` are mutually exclusive, so no single record can exercise both.
@@ -71,35 +75,42 @@ def covered(inst, node, sch, where="", depth=0):
 def main():
     schemas = {f.split("/")[-1][:-5]: json.load(io.open(f, encoding="utf-8"))
                for f in glob.glob("schemas/*.json")}
-    md = io.open("registry.md", encoding="utf-8").read()
-    blocks = re.findall(r"```jsonc\n(.*?)```", md, re.S)
-    print(f"jsonc shape blocks found: {len(blocks)}")
+    pages = sorted(f for f in glob.glob("*.md") if f != "README.md")
+    blocks = []
+    for page in pages:
+        md = io.open(page, encoding="utf-8").read()
+        for b in re.findall(r"```jsonc?\n(.*?)```", md, re.S):
+            blocks.append((page, b))
+    print(f"pages scanned: {', '.join(pages)}")
 
-    fail, seen = 0, {}
-    for b in blocks:
+    fail, seen, checked = 0, {}, 0
+    for page, b in blocks:
         try:
             rec = json.loads(strip_comments(b))
-        except Exception as e:
-            print(f"  PARSE FAIL: {e}"); fail += 1; continue
+        except Exception:
+            continue                      # not JSON, or a fragment — not a record claim
+        if not isinstance(rec, dict) or len(rec) != 1:
+            continue
         entity = list(rec)[0]
         if entity not in schemas:
-            print(f"  UNKNOWN ENTITY {entity}"); fail += 1; continue
+            continue                      # a Beckn payload or an upstream response
+        checked += 1
         sch = schemas[entity]
         errs = sorted(Draft7Validator(sch).iter_errors(rec), key=lambda x: list(x.path))
         if errs:
             fail += 1
-            print(f"  INVALID  {entity}: {len(errs)} error(s)")
+            print(f"  INVALID  {page}  {entity}: {len(errs)} error(s)")
             for e in errs[:5]:
                 print(f"      {'.'.join(map(str, e.path)) or '(root)'}: {e.message[:100]}")
         else:
-            print(f"  valid    {entity}")
+            print(f"  valid    {page}  {entity}")
         s = seen.setdefault(entity, set())
         s |= covered(rec[entity], sch["definitions"][entity], sch)
 
-    print()
+    print(f"\nrecord blocks checked: {checked}\n")
     for entity, sch in sorted(schemas.items()):
         if entity not in seen:
-            print(f"  NO SHAPE BLOCK for {entity}"); fail += 1; continue
+            print(f"  NO RECORD BLOCK for {entity}"); fail += 1; continue
         want = declared(sch["definitions"][entity], sch)
         gap = sorted(want - seen[entity])
         if gap:

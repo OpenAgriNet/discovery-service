@@ -1,7 +1,7 @@
 """The records in examples.md are write bodies, so they must be valid write bodies:
 
   (a) each ```json block that names an entity validates against schemas/<Entity>.json, and
-  (b) the five rules of registry.md §3.4 hold across the whole set — the ones draft-07
+  (b) the five rules of schemas.md hold across the whole set — the ones draft-07
       cannot express, which are therefore the ones nothing else checks.
 
 (b) is the point. A record can satisfy every pattern in its schema and still be wrong in a
@@ -35,7 +35,7 @@ def records(schemas):
 
 
 def rules(by_entity, fail):
-    """registry.md §3.4 — what JSON Schema cannot express."""
+    """schemas.md "Five rules the schema cannot express" — what JSON Schema cannot express."""
     participants = {r["participantId"]: r for r in by_entity.get("Participant", [])}
     caps = {r["capabilityCode"]: r for r in by_entity.get("SchemaRegistry", [])}
 

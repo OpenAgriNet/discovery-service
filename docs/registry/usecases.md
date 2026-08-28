@@ -1,211 +1,135 @@
-# Use case execution
+# Use cases
 
-**The four v1 categories across five providers, each traced end to end.** For every one: the
-records that must be in the registry, the API calls the adopter makes, and the payload at each
-hop. Use case 6 is a sixth category that is **not** seeded, worked through end to end anyway
-because adding a capability is the operation this page is most often opened to answer.
+Six farmer questions, traced from the question to the answer. For each one: the registry records
+you need, the calls in order, the real payloads, and what to watch out for.
 
-The schema these records satisfy is [registry.md §3](registry.md#3-the-schemas); the
-records themselves, in write form, are [examples.md](examples.md). This page is
-self-contained — it does not depend on anything under `archive/`.
+| | Question | Capability | Provider |
+|---|---|---|---|
+| [1](#1-weather-forecast-for-a-point--mausamgram) | Will it rain in the next five days? | `WeatherObservation` | `mausamgram` |
+| [2](#2-weather-forecast-for-a-city--imd-city-weather) | Same question, city station | `WeatherObservation` | `imd-city-weather` |
+| [3](#3-mandi-price--agmarknet) | What is tomato selling for? | `MandiPrice` | `agmarknet` |
+| [4](#4-scheme-information--hasura-content) | What subsidy can I get for drip? | `KnowledgeResource` | `hasura-content` |
+| [5](#5-crop--pest-advisory--oan-vector) | Yellow spots on my cotton leaves | `KnowledgeResource` | `oan-vector` |
+| [6](#6-weather-advisory--not-seeded) | Should I spray tomorrow? | `WeatherAdvisory` | *not seeded — worked through anyway* |
 
-> **The `on_select` payloads below are what the mappings emit today, not what the OAN domain
-> packs accept.** Weather conforms. Mandi and both Advisory cases do not — three violations
-> and six respectively, each one listed with its fix in [dpg-fit.md](dpg-fit.md). They are
-> shown here unaltered so the gap is visible against the real upstream response.
+Use case 1 shows every envelope in full. Use cases 2–6 show only what differs.
 
-| | Use case | SchemaRegistry | Participant | Shape of the call |
-|---|---|---|---|---|
-| [1](#use-case-1--weather-point-forecast-mausamgram) | Weather — point forecast | `WeatherObservation` | `mausamgram` | `GET`, HTTP Basic, the adapter reads the point off the intent |
-| [2](#use-case-2--weather-citystation-imd-city-weather) | Weather — city/station | `WeatherObservation` | `imd-city-weather` | `GET`, no auth, the adapter does a Postgres proximity lookup |
-| [3](#use-case-3--mandi-price-agmarknet) | Mandi price | `MandiPrice` | `agmarknet` | `GET`, API key in the query, the adapter maps a commodity name to a code |
-| [4](#use-case-4--scheme-information-hasura-content) | Scheme information | `KnowledgeResource` | `hasura-content` | `POST` GraphQL, admin secret header |
-| [5](#use-case-5--crop--pest-advisory-oan-vector) | Crop & pest advisory | `KnowledgeResource` | `oan-vector` | `POST` vector search, no auth |
-| [6](#use-case-6--weather-advisory-mausamgram--not-seeded) | Weather advisory — **not seeded** | `WeatherAdvisory` | `mausamgram` | `GET`, HTTP Basic — the same endpoint as use case 1, a different outcome |
-
-Use cases 4 and 5 share one `capabilityCode`. That is not an oversight — see
-[§ Two capabilities, five bindings](#two-capabilities-five-bindings) below.
+Related: [examples.md](examples.md) has the records ready to POST · [schemas.md](schemas.md) is
+the field-by-field contract · [api.md](api.md) is the registry's own API.
 
 ---
 
-## How every use case executes
+## How a call flows
 
-Two network calls, and only the second one touches the registry.
-
-| hop | the adopter calls | answered by | registry read? |
-|---|---|---|---|
-| ① | `POST /discover` | **discovery service**, from its indexed catalog | **no** |
-| ② | `POST /select` | **the adapter**, which then calls the provider | **yes** — two lookups |
-
-Between them the adopter has a `provider.id` and an `@type` and nothing else it needs.
-That pair *is* the `bindingKey`, which is why hop ② can resolve a call plan without a
-lookup table of its own.
-
-Step ⑤ below has two halves, and only one of them is in the registry. The **mappings** are
-registry fields; the **enrich** half is adapter-internal, because a transform named in a
-shared registry claims every adapter can run it — see
-[registry.md §3.3](registry.md#33-providerschema). Each use case names its enrich step so the
-walkthrough is followable; none of those names is a stored value.
-
-Every use case below runs the same six steps:
+**Two hops, and only the second one touches the registry.** Every use case below is broken into
+the same steps, numbered `<use case>.<step>`:
 
 ```
-①  resolve meaning       experience layer turns a question into an intent
-②  discover              who can answer this?                    → provider ids
-③  select                that provider, this data                → adapter
-④  resolve               bindingKey → call plan + auth           ← registry
-⑤  enrich · map · call   the adapter's own step, then build, authenticate, call upstream
-⑥  map the response      upstream's native shape → Beckn v2 resources
+.0  the records the registry must hold
+
+.1  POST /discover     who can answer this?           answered from the catalog — no registry read
+.2  POST /on_discover  the provider list, as a callback
+
+.3  POST /select       that provider, this data
+.4  resolve            bindingKey → call plan + credential      ← the two registry reads
+.5  call upstream      map the request, authenticate, call
+.6  POST /on_select     the typed answer, as a callback
+
+.7  does it conform to the OAN domain pack?
 ```
+
+Between `.2` and `.3` the adopter has a `provider.id` and an `@type`. That pair *is* the registry
+key:
+
+```
+bindingKey = "mausamgram" + "|" + "openagrinet:WeatherObservation"
+```
+
+So `.4` is **two reads and no join** — the binding by `bindingKey`, then the participant by the
+`participantId` on the row you just read.
+
+### Both hops are asynchronous
+
+`/discover` and `/select` do **not** return the data. They return an acknowledgement, and the
+answer arrives later as a separate call to your `/on_discover` or `/on_select` endpoint.
+
+```json
+200 OK
+{ "message": { "status": "ACK", "messageId": "1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905" } }
+```
+
+`messageId` echoes the request's — it is how you match the callback to the call.
+`transactionId` stays the same across both hops, tying them to one farmer question.
+
+If the request is rejected you get the same envelope with `NACK` and an error:
+
+```json
+400 Bad Request
+{ "message": {
+  "status": "NACK",
+  "messageId": "1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905",
+  "error": { "code": "BIZ_PROVIDER_NOT_FOUND",
+             "message": "no active binding for mausamgram|openagrinet:WeatherAdvisory" } } }
+```
+
+| code | means | who fixes it |
+|---|---|---|
+| `SCH_REQUIRED_FIELD_MISSING` | no `offer.provider`, or no `@type` | the caller |
+| `CTX_ACTION_MISMATCH` | `context.action` is not `select` | the caller |
+| `SCH_INVALID_JSONPATH` | the filter expression is the wrong dialect | the caller |
+| `BIZ_PROVIDER_NOT_FOUND` | no `active` binding, or the participant is inactive | the operator |
+| `BIZ_NO_RESULTS_FOUND` | upstream answered and had nothing | nobody — a real empty |
+| `NET_TIMEOUT` / `NET_DOWNSTREAM_UNAVAILABLE` | upstream is slow or down | nobody — retry |
+
+Full rules for what the adapter reads off a `select`, and why it validates before building the
+key, are in [schemas.md § What select must supply](schemas.md#what-select-must-supply).
 
 ### Writing the `discover` filter
 
-**Use PostgreSQL SQL/JSON path.** `beckn.yaml` says RFC 9535 and its own example uses the
-Goessner form, but a discovery service on Postgres executes the expression with `@?`, which
-takes a different grammar. `filters.expression` is declared `type: string`, so a wrong
-dialect is schema-valid and fails only at query time — and a filter that matches nothing is
-indistinguishable from an honest empty result.
+Use **PostgreSQL SQL/JSON path**, not RFC 9535. The field is typed `string`, so the wrong
+dialect is accepted and silently matches nothing.
 
-| | RFC 9535 (the spec's example) | SQL/JSON path (what runs) |
+| | RFC 9535 | what actually runs |
 |---|---|---|
 | filter | `$.catalogs[?(...)]` | `$.catalogs[*] ? (...)` |
-| quoting | `['@type']`, `'literal'` | `."@type"`, `"literal"` — double quotes |
-| membership | `anyof [a, b]` | no such operator — expand to `a \|\| b` |
+| quoting | `['@type']`, `'x'` | `."@type"`, `"x"` — double quotes |
+| membership | `anyof [a, b]` | expand to `a \|\| b` |
 
-**Select the node that owns the attribute, which is the resource and not the catalog.** The
-expression runs against `resources.filter_doc`, a composite rooted at `$.catalogs` and
-holding exactly one resource beside its catalog and its offers, so `resourceAttributes` is
-reachable only at `$.catalogs[*].resources[*]`. Every filter below therefore reads
-`$.catalogs[*].resources[*] ? (…)`.
+Root at the **resource**, not the catalog — `resourceAttributes` only exists at
+`$.catalogs[*].resources[*]`. Rooting one level up passes validation and returns nothing.
 
-Getting that wrong costs a whole page and reports nothing. `$.catalogs[*] ? (@.resourceAttributes… )`
-has the right root and a real predicate, so `jsonpath.Accept` passes it and PostgreSQL
-evaluates it without error — against a node that has no `resourceAttributes`. `@?` yields no
-item, the row is excluded, and the caller gets `200` with an empty list. A filter starting
-`$[?(...)]` is refused outright, which is the kinder failure.
+Spatial `targets` is compared as text, not evaluated, so it must start `$['catalogs'][*]`:
 
-Each expression below was checked twice: through `jsonpath.Accept`, and with `@?` against a
-representative `filter_doc` on the running PostgreSQL — matching where it should and, for the
-category filters, not matching the other category.
+| `targets` | matches |
+|---|---|
+| `$['provider']['availableAt'][*]['geo']` | **no** — missing root |
+| `$['catalogs'][*]['provider']['availableAt'][*]['geo']` | yes |
+| `$.catalogs[*].provider.availableAt[*].geo` | yes — normalises to the above |
 
-**`spatial.targets` is a different grammar again, and roots at the same place.** It is not
-evaluated as a path at all — publish stores the path it found each geometry at, discover
-canonicalises the caller's `targets` and compares the two as bytes
-(`target_path = ANY($targets)`). So dot and bracket spellings are interchangeable, both
-normalise to `$['catalogs'][*][…]`, and a `targets` that omits `catalogs[*]` matches no
-stored path. That failure is silent too: the spatial constraint excludes every row, and the
-caller gets `200` and an empty list.
+### Where these payloads come from
 
-| `targets` | canonicalises to | matches a stored `target_path` |
-|---|---|---|
-| `$['provider']['availableAt'][*]['geo']` | itself | **no** — the root is missing |
-| `$['catalogs'][*]['provider']['availableAt'][*]['geo']` | itself | yes |
-| `$.catalogs[*].provider.availableAt[*].geo` | the bracket form above | yes |
-
-Checked through `jsonpath.Canonicalise` against the `target_path` the publish walker writes.
-
-### What `Intent` cannot carry, and why `select` exists
-
-`Intent` is `additionalProperties: false` over `{textSearch, filters, spatial, mediaSearch}`.
-So at hop ① the farmer's location has to travel as a **spatial constraint on the provider's
-service area**, and there is no field at all for a validity window. `resourceAttributes` at
-hop ② is an open container, and that is where the actual parameters of the invocation go.
-
-### `@context` and `@type` do not change between hops
-
-Advertisement, request and result all name the same pack. Only `informationMode` moves —
-`OnDemand` on the advertisement, `Direct` on the result. If you find a trace where the
-*context* changes between hops, it predates the pack index and describes a model that was
-dropped.
-
-**The `select` request's `resourceAttributes` is not a pack instance and is not validated as
-one.** network-specs declares each pack's placement as *provider catalog*, *discovery
-result* or *provider response*; a request is none of those. Beckn types the field as
-`Attributes` — open, requiring only `@context` and `@type` — so what travels there is the
-resource's identity plus the parameters of the invocation.
-
-### Which keys the adapter reads from `select`
-
-Four values, and nothing else. Two build the key, one carries the parameters of the
-invocation, one is checked and discarded.
-
-| what | path on the request | used for |
-|---|---|---|
-| provider id | `message.contract.commitments[0].offer.provider.id` | segment 1 of `bindingKey` |
-| capability | `message.contract.commitments[0].resources[0].resourceAttributes."@type"` | segment 2 of `bindingKey` |
-| invocation parameters | the rest of that same `resourceAttributes` — `location`, `validity`, … | `_local`, then the request mapping |
-| action | `context.action` | must be `select`; not part of the key |
-
-```
-bindingKey = <provider id> + "|" + <capability>
-```
-
-**Nothing else on the request is read, and two fields are deliberately ignored.**
-`context.bppId` and `context.receiverId` name a network *node*; in v1's central topology the
-adapter is the only BPP, so they discriminate nothing. `offer.provider.id` names a provider
-*inside* that node's catalog, which is the granularity a binding has — and
-[registry.md §3.1](registry.md#31-participant) defines `participantId` as the Beckn
-`provider.id` for exactly that reason. Under the distributed topology, where each participant
-runs its own adapter, `receiverId` becomes the natural routing field and this paragraph needs
-revisiting.
-
-**`participantId` is never read from the request.** It comes off the `ProviderSchema` row
-returned by read 1. A request that could name the participant directly could point a
-credentialled call at a host of its choosing — the same rule, and the same reason, as
-`EXT_ALLOW_NETWORK_FETCH=false`.
-
-#### The paths are not guaranteed to exist, so the adapter validates before it concatenates
-
-Checked against `tests/testdata/beckn-v2.0.0.yaml`, which is `openapi: 3.1.1` — so JSON Schema
-2020-12 semantics, and a `$ref` with sibling keywords is honoured rather than ignored:
-
-| node | declaration | consequence |
-|---|---|---|
-| `Contract.required` | `["commitments"]`, `minItems: 1` | at least one commitment — **guaranteed** |
-| `Commitment.required` | `["status","resources","offer"]` | `offer` present — **guaranteed** |
-| `Commitment.offer` | `$ref: Offer` + `required: ["id","resourceIds"]` | offer has an id — **guaranteed** |
-| `Offer.required` | `["id"]` | **`provider` is optional** |
-| `Commitment.resources` | no `minItems` | **`resources: []` is valid** |
-| `Resource.required` | `["id"]` | **`resourceAttributes` is optional** |
-| `Context.required` | *none* | **`action` and `version` may be absent** (C6) |
-
-So the containers are mandatory and both halves of the key are not. L1 validation passes a
-request from which no `bindingKey` can be built, by three independent routes: a missing
-`provider`, an empty `resources`, or a resource with no `resourceAttributes`.
-
-Two rules close it, and both belong in the envelope layer rather than in the mapping:
-
-1. **Arity — exactly one.** Reject `commitments.length != 1` or `resources.length != 1`.
-   Silently taking `[0]` answers one commitment and drops the rest with a `200`, which is the
-   partial handling Phase 1 refuses everywhere else. A batch is a later feature, not a
-   tolerated shape.
-2. **Presence — a distinct error.** A missing `offer.provider` or a missing
-   `resourceAttributes."@type"` is `NackBadRequest`, and it must **not** share an error code
-   with *no such binding*. Concatenating blindly yields `bindingKey` of `"|"` or
-   `"mausamgram|"`, neither of which resolves — so the caller is told *this provider cannot
-   answer this capability* and the operator is sent to audit the registry, when the fault was
-   in the request and the registry is correct.
-
-`context.action` is checked for the same reason `version` is: the constant exists to catch the
-envelope that omits the field entirely, which C6 permits.
+| | provenance |
+|---|---|
+| `mausamgram`, `imd-city-weather`, `agmarknet` responses | **captured** from `Network Information.xlsx` |
+| Hasura and vector-search responses | **illustrative** — these providers are in no workbook row |
+| Beckn envelopes | shaped against `tests/testdata/beckn-v2.0.0.yaml` |
+| registry request bodies | corroborated; **response bodies are illustrative** ([api.md](api.md#what-is-not-verified)) |
 
 ---
 
-## Use case 1 — Weather, point forecast (`mausamgram`)
+## 1. Weather forecast for a point — `mausamgram`
 
-*"पुढच्या पाच दिवसांत पाऊस पडेल का?"* — will it rain in the next five days? Device location
-Nashik, `[73.7898, 19.9975]`.
+*"पुढच्या पाच दिवसांत पाऊस पडेल का?"* Device location Nashik, `[73.7898, 19.9975]`.
 
-### What must be in the registry
+### 1.0 Records you need
 
-Three records. Seed them in this order — the binding's two integrity rules require the other
-two to exist and be `active` first.
+Seed in this order — the binding requires the other two to exist and be `active`.
 
-| # | entity | key | the part that matters here |
+| # | entity | key | the part that matters |
 |---|---|---|---|
-| 1 | `SchemaRegistry` | `openagrinet:WeatherObservation` | `version: v0.1` · `schemaUrl` → the `WeatherObservation/v0.1` pack |
-| 2 | `Participant` | `mausamgram` | `baseUrl` `https://mausamgram.imd.gov.in/nwpapi` · `auth.scheme: basic` |
-| 3 | `ProviderSchema` | `mausamgram\|openagrinet:WeatherObservation` | `GET /get-daily` · the adapter derives the point |
+| 1 | `SchemaRegistry` | `openagrinet:WeatherObservation` | `version: v0.1`, pointing at the pack |
+| 2 | `Participant` | `mausamgram` | `https://mausamgram.imd.gov.in/nwpapi`, HTTP Basic |
+| 3 | `ProviderSchema` | `mausamgram\|openagrinet:WeatherObservation` | `GET /get-daily` |
 
 ```json
 { "ProviderSchema": {
@@ -222,22 +146,19 @@ two to exist and be `active` first.
 } }
 ```
 
-`timeoutMs` and `retryMax` are registry columns, not constants in a service class: IMD is
-slow and flaky, and 30 s with 3 retries is a property of *this provider*, changed by an
-operator without a deploy.
+`timeoutMs` and `retryMax` are per-provider registry fields, not service constants — IMD is slow,
+and an operator changes this without a deploy.
 
-### ① Resolve meaning
-
-The experience layer turns the question into an intent: weather, next five days, near
-Nashik.
-
-### ② `discover` — who can answer
+### 1.1 `discover` — who can answer
 
 ```json
+POST /discover
 {
   "context": { "version": "2.0.0", "action": "discover",
+    "bapId": "vistaar.gov.in", "bapUri": "https://vistaar.gov.in/beckn",
     "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
-    "messageId": "1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905" },
+    "messageId": "1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905",
+    "timestamp": "2026-08-26T06:11:58.004Z" },
   "message": { "intent": {
     "textSearch": "weather forecast rain next five days",
     "filters": {
@@ -254,20 +175,90 @@ Nashik.
 }
 ```
 
-`on_discover` names the providers that advertise this type in that area — `mausamgram` and
-`imd-city-weather` both match. **No registry was read to answer this.**
+```json
+200 OK
+{ "message": { "status": "ACK", "messageId": "1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905" } }
+```
 
-### ③ `select` — name that provider, ask for the data
+### 1.2 `on_discover` — the answer, as a callback
+
+`Catalog` requires `id`, `descriptor` and `provider`, and allows nothing else.
 
 ```json
+POST https://vistaar.gov.in/beckn/on_discover
+{
+  "context": { "version": "2.0.0", "action": "on_discover",
+    "bppId": "oan-adapter.gov.in", "bppUri": "https://oan-adapter.gov.in/beckn",
+    "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
+    "messageId": "1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905",
+    "timestamp": "2026-08-26T06:11:58.612Z" },
+  "message": { "catalogs": [
+    {
+      "id": "cat:mausamgram:weather",
+      "descriptor": { "code": "IMD-NWP-01", "name": "IMD Mausamgram NWP" },
+      "provider": {
+        "id": "mausamgram",
+        "descriptor": { "code": "IMD-NWP-01", "name": "IMD Mausamgram NWP" },
+        "availableAt": [{ "geo": { "type": "Polygon", "coordinates": [[[68.1,8.0],[97.4,8.0],[97.4,37.1],[68.1,37.1],[68.1,8.0]]] } }]
+      },
+      "resources": [{
+        "id": "res:mausamgram:point-forecast",
+        "descriptor": { "name": "Five-day point forecast" },
+        "resourceAttributes": {
+          "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
+          "@type": "openagrinet:WeatherObservation",
+          "informationMode": "OnDemand",
+          "observationType": "Forecast",
+          "subjectCategories": ["Weather"]
+        }
+      }],
+      "offers": [{ "id": "offer:mausamgram:open-data",
+                   "resourceIds": ["res:mausamgram:point-forecast"] }]
+    },
+    {
+      "id": "cat:imd-city-weather:weather",
+      "descriptor": { "code": "IMD-CITY-01", "name": "IMD City Weather" },
+      "provider": {
+        "id": "imd-city-weather",
+        "descriptor": { "code": "IMD-CITY-01", "name": "IMD City Weather" },
+        "availableAt": [{ "geo": { "type": "Polygon", "coordinates": [[[68.1,8.0],[97.4,8.0],[97.4,37.1],[68.1,37.1],[68.1,8.0]]] } }]
+      },
+      "resources": [{
+        "id": "res:imd-city-weather:station-forecast",
+        "descriptor": { "name": "Station forecast" },
+        "resourceAttributes": {
+          "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
+          "@type": "openagrinet:WeatherObservation",
+          "informationMode": "OnDemand",
+          "observationType": "Forecast",
+          "subjectCategories": ["Weather"]
+        }
+      }],
+      "offers": [{ "id": "offer:imd-city-weather:open-data",
+                   "resourceIds": ["res:imd-city-weather:station-forecast"] }]
+    }
+  ] }
+}
+```
+
+Two providers, **no registry read**, and `informationMode: OnDemand` with no values — that is the
+difference between the hops. Which of the two to pick is the app's call, not the registry's.
+
+### 1.3 `select` — that provider, this data
+
+```json
+POST /select
 {
   "context": { "version": "2.0.0", "action": "select",
-    "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44" },
+    "bapId": "vistaar.gov.in", "bapUri": "https://vistaar.gov.in/beckn",
+    "bppId": "oan-adapter.gov.in", "bppUri": "https://oan-adapter.gov.in/beckn",
+    "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
+    "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
+    "timestamp": "2026-08-26T06:12:01.330Z" },
   "message": { "contract": { "commitments": [{
     "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
     "resources": [{
       "id": "res:mausamgram:point-forecast",
-      "quantity": 1,
       "resourceAttributes": {
         "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
         "@type": "openagrinet:WeatherObservation",
@@ -285,57 +276,48 @@ Nashik.
 }
 ```
 
-`status: DRAFT`, no price. Nothing is being committed — for an open-data provider the quote
-is zero-cost and the payload *is* the data.
+```json
+200 OK
+{ "message": { "status": "ACK", "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22" } }
+```
 
-### ④ Resolve — build the key, read the plan
+`DRAFT` and no price: nothing is being committed. For an open-data provider the quote is
+zero-cost and the payload *is* the data. New `messageId`, same `transactionId`.
 
-Everything needed is already on the request body:
+### 1.4 Resolve — two registry reads
 
 ```
 offer.provider.id            → "mausamgram"
 resourceAttributes["@type"]  → "openagrinet:WeatherObservation"
-
-bindingKey = "mausamgram|openagrinet:WeatherObservation"
+bindingKey                   = "mausamgram|openagrinet:WeatherObservation"
 ```
-
-Two values joined by a `|`, and no action. That key is the entire lookup — **two reads, no
-join.** Shown here in full; use cases 2–5 show the same two calls in short form.
 
 **Read 1 — the call plan.**
 
-```http
-POST /api/v1/ProviderSchema/search
-Authorization: Bearer <read-token>
-Content-Type: application/json
-```
 ```json
+POST /api/v1/ProviderSchema/search
 { "filters": { "bindingKey": { "eq": "mausamgram|openagrinet:WeatherObservation" },
                "status":     { "eq": "active" } } }
 ```
 ```json
-200 OK
 [ { "osid": "1-4c7d5e91-2a08-4f6b-8d13-77e0c9a4b521",
     "bindingKey": "mausamgram|openagrinet:WeatherObservation",
-    "participantId": "mausamgram", "capabilityCode": "openagrinet:WeatherObservation",
+    "participantId": "mausamgram",
     "method": "GET", "path": "/get-daily",
     "requestMapping":  "mappings/mausamgram/select.request.jsonata",
     "responseMapping": "mappings/mausamgram/select.response.jsonata",
     "timeoutMs": 30000, "retryMax": 3, "status": "active" } ]
 ```
 
-**Read 2 — where it is, and how to authenticate.** `participantId` comes off the row just read.
+**Read 2 — where it is and how to authenticate.** `participantId` comes off the row above,
+**never off the request** — a request that could name the participant could point a credentialled
+call at a host of its choosing.
 
-```http
+```json
 POST /api/v1/Participant/search
-Authorization: Bearer <read-token>
+{ "filters": { "participantId": { "eq": "mausamgram" }, "status": { "eq": "active" } } }
 ```
 ```json
-{ "filters": { "participantId": { "eq": "mausamgram" },
-               "status":     { "eq": "active" } } }
-```
-```json
-200 OK
 [ { "osid": "1-8f2c4e7a-3b91-4d0e-9c55-2a1f6b8e0d34",
     "participantId": "mausamgram", "name": "IMD Mausamgram NWP",
     "roles": ["provider"],
@@ -345,26 +327,17 @@ Authorization: Bearer <read-token>
                            "password": "env://MAUSAMGRAM_X_API_KEY" } } } ]
 ```
 
-Those two rows carry everything step ⑤ needs from the registry: `baseUrl + path`, the
-method, both mapping paths, the timeout and retry budget, and the credential to resolve. What
-they do **not** carry is the enrich step — the adapter selects that on `participantId`.
-**No `SchemaRegistry` read** — a capability is vocabulary, not part of the call path.
+An empty result from either read is a hard failure — `BIZ_PROVIDER_NOT_FOUND`, not a fallback.
 
-An empty result from either read is a hard failure, not a fallback: an inactive binding or
-an inactive provider means this provider cannot answer, and `on_select` returns an error.
+There is **no `SchemaRegistry` read**: a capability is vocabulary, not part of the call path.
+And in production these two searches don't happen per request — all 13 records load at boot, so
+resolution is two map lookups ([api.md](api.md#the-runtime-does-not-call-these-per-request)).
 
-**In production these two calls do not happen per request.** All 13 records are loaded at
-boot and indexed by `bindingKey` and `participantId`, so resolution is two map lookups —
-[registry.md §1](registry.md#the-runtime-does-not-call-these-per-request).
+### 1.5 Call upstream
 
-### ⑤ Enrich, map, authenticate, call
-
-```
-pointFromIntent:  resourceAttributes.location.coordinates → _local = {lat: 19.9975, lon: 73.7898}
-```
-
-`requestMapping` runs over `{beckn, _local}`; each `env://` pointer is resolved from the
-adapter's own environment and applied per `scheme`:
+The adapter reads the point off the request. **GeoJSON is `[longitude, latitude]`** and
+mausamgram wants `lat`/`lon`, so the mapping swaps them — getting it backwards returns a forecast
+for the Arabian Sea with no error.
 
 ```
 GET https://mausamgram.imd.gov.in/nwpapi/get-daily?lat=19.9975&lon=73.7898
@@ -372,59 +345,147 @@ Authorization: Basic <resolved from env://MAUSAMGRAM_USER + env://MAUSAMGRAM_X_A
 timeout 30000ms   retries 3
 ```
 
-Participant answers in its native shape:
-
-```json
-{ "location": { "lat": 19.9975, "lon": 73.7898 },
-  "fcstday1": { "date": "2026-08-26", "rain": 12.4, "tmin": 22.1, "tmax": 30.6,
-                "wspd": 4.2, "weather_warning": "Heavy rainfall warning" } }
-```
-
-### ⑥ Map the response, send it back
-
-`responseMapping` runs over `{beckn, _local, response}` — `_local` stays in scope so the
-resolved point reaches the output. Five forecast days become five typed resources:
+**Captured response**, two of its five day-blocks, values re-pointed to Nashik:
 
 ```json
 {
-  "id": "res:mausamgram:forecast:2026-08-26",
-  "resourceAttributes": {
-    "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
-    "@type": "openagrinet:WeatherObservation",
-    "informationMode": "Direct",
-    "observationType": "Forecast",
-    "subjectCategories": ["Weather"],
-    "source": { "sourceId": "mausamgram", "sourceName": "IMD Mausamgram NWP" },
-    "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
-    "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-26T23:59:59Z" },
-    "generatedAt": "2026-08-26T06:12:04.201Z",
-    "parameters": [
-      { "parameter": "Rainfall",    "aggregation": "Total",   "unit": "mm",  "value": 12.4 },
-      { "parameter": "Temperature", "aggregation": "Minimum", "unit": "Cel", "value": 22.1 },
-      { "parameter": "Temperature", "aggregation": "Maximum", "unit": "Cel", "value": 30.6 }
-    ]
+  "lat_r": 19.875,
+  "lon_r": 73.875,
+  "fcstday1": {
+    "date": "2026-08-26", "rain": 0.84, "tmax": 39.24, "tmin": 32.8,
+    "wdir": 273.39, "wind": ["W", "Westerly"], "wspd": 2.83, "cloud": 74.44,
+    "rhmax": 58.67, "rhmin": 40.81, "tmax_raw": 37.13, "tmin_raw": 32.92,
+    "rain_message": "Light Rain", "cloud_message": "Generraly Cloudy Sky",
+    "weather_warning": "Generally Cloudy Sky"
+  },
+  "fcstday2": {
+    "date": "2026-08-27", "rain": 0.84, "tmax": 40.04, "tmin": 31.5,
+    "wdir": 265.61, "wind": ["W", "Westerly"], "wspd": 3.27, "cloud": 29,
+    "rhmax": 58.23, "rhmin": 37.86, "tmax_raw": 38.3, "tmin_raw": 31.63,
+    "rain_message": "Light Rain", "cloud_message": "Mainly Clear Sky",
+    "weather_warning": "Partly Cloudy Sky"
+  },
+  "location": { "lat": 19.9975, "lon": 73.7898 },
+  "abbreviation": {
+    "rain": "Rainfall (mm)",
+    "tmax": "Maximum Temperatue (Celsius) - Real Time Bias Corrected",
+    "tmin": "Minimum Temperatue (Celsius) - Real Time Bias Corrected",
+    "wdir": "Wind Direction (degree)", "wspd": "Wind Speed (m/s)",
+    "cloud": "Total Cloud Cover (%)",
+    "rhmax": "Maximum Relative Humidity (%)", "rhmin": "Minimum Relative Humidity (%)"
   }
 }
 ```
 
-`@type` is a **single string**. Beckn core declares it `type: string`; the two-element array
-form some examples show fails validation.
+**Watch out:**
+
+- **`lat_r`/`lon_r` is not `location`.** `lat_r`/`lon_r` is the model grid point the forecast was
+  computed at; `location` echoes what you asked for. They differ — about 9 km in the captured
+  sample. This walkthrough publishes the **requested** point and keeps the grid point as
+  provenance. That is a decision, not a fact.
+- **`abbreviation` is the only source of units.** The pack requires a `unit` on every parameter
+  and the values carry none. Read them from here; don't guess.
+- **`tmax` is bias-corrected, `tmax_raw` is not.** Use `tmax`.
+- **`cloud_message` is misspelled upstream** (`"Generraly"`). Match on the numbers, not the text.
+
+### 1.6 `on_select` — the typed answer
+
+`on_select` requires a `contract`, so resources travel inside a commitment. Two of five days:
+
+```json
+POST https://vistaar.gov.in/beckn/on_select
+{
+  "context": { "version": "2.0.0", "action": "on_select",
+    "bapId": "vistaar.gov.in", "bapUri": "https://vistaar.gov.in/beckn",
+    "bppId": "oan-adapter.gov.in", "bppUri": "https://oan-adapter.gov.in/beckn",
+    "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
+    "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
+    "timestamp": "2026-08-26T06:12:04.918Z" },
+  "message": { "contract": { "commitments": [{
+    "status": { "descriptor": { "code": "QUOTED", "name": "Quoted" } },
+    "offer": {
+      "id": "offer:mausamgram:open-data",
+      "resourceIds": ["res:mausamgram:forecast:2026-08-26", "res:mausamgram:forecast:2026-08-27"],
+      "provider": { "id": "mausamgram",
+                    "descriptor": { "code": "IMD-NWP-01", "name": "IMD Mausamgram NWP" } }
+    },
+    "resources": [
+      {
+        "id": "res:mausamgram:forecast:2026-08-26",
+        "resourceAttributes": {
+          "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
+          "@type": "openagrinet:WeatherObservation",
+          "informationMode": "Direct",
+          "observationType": "Forecast",
+          "subjectCategories": ["Weather"],
+          "source": { "sourceId": "mausamgram", "sourceName": "IMD Mausamgram NWP" },
+          "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+          "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-26T23:59:59Z" },
+          "generatedAt": "2026-08-26T06:12:04.201Z",
+          "parameters": [
+            { "parameter": "Rainfall",      "aggregation": "Total",   "unit": "mm",  "value": 0.84 },
+            { "parameter": "Temperature",   "aggregation": "Maximum", "unit": "Cel", "value": 39.24 },
+            { "parameter": "Temperature",   "aggregation": "Minimum", "unit": "Cel", "value": 32.8 },
+            { "parameter": "Humidity",      "aggregation": "Maximum", "unit": "%",   "value": 58.67 },
+            { "parameter": "Humidity",      "aggregation": "Minimum", "unit": "%",   "value": 40.81 },
+            { "parameter": "WindSpeed",     "aggregation": "Mean",    "unit": "m/s", "value": 2.83 },
+            { "parameter": "WindDirection", "aggregation": "Mean",    "unit": "deg", "value": 273.39 }
+          ]
+        }
+      },
+      {
+        "id": "res:mausamgram:forecast:2026-08-27",
+        "resourceAttributes": {
+          "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
+          "@type": "openagrinet:WeatherObservation",
+          "informationMode": "Direct",
+          "observationType": "Forecast",
+          "subjectCategories": ["Weather"],
+          "source": { "sourceId": "mausamgram", "sourceName": "IMD Mausamgram NWP" },
+          "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+          "validity": { "startsAt": "2026-08-27T00:00:00Z", "endsAt": "2026-08-27T23:59:59Z" },
+          "generatedAt": "2026-08-26T06:12:04.201Z",
+          "parameters": [
+            { "parameter": "Rainfall",    "aggregation": "Total",   "unit": "mm",  "value": 0.84 },
+            { "parameter": "Temperature", "aggregation": "Maximum", "unit": "Cel", "value": 40.04 },
+            { "parameter": "Temperature", "aggregation": "Minimum", "unit": "Cel", "value": 31.5 }
+          ]
+        }
+      }
+    ]
+  }] } }
+}
+```
+
+Only `informationMode` changed between the hops — `OnDemand` → `Direct`. `@context` and `@type`
+are the same. `@type` is a **single string**; the two-element array form some examples show fails
+validation.
+
+### 1.7 Conformance — 0 violations
+
+`WeatherObservation` requires `observationType`, `source`, `location`, `generatedAt`,
+`parameters`; each parameter requires `parameter`, `value`, `unit`. All present, and every
+`parameter` name is in the governed enum.
+
+One caveat: **`aggregation` is ours, not the pack's.** The parameter object is open so it
+validates, but it means nothing to another participant — which leaves *"tomorrow's high is 39.24
+and low is 32.8"* with no conformant expression. Every Indian weather API reports tmin/tmax, so
+this needs fixing at pack level ([schemas.md § Known gaps](schemas.md#known-gaps)).
 
 ---
 
-## Use case 2 — Weather, city/station (`imd-city-weather`)
+## 2. Weather forecast for a city — `imd-city-weather`
 
-Same question, same capability, a **different provider with a different call plan**. IMD's
-city service is keyed by station id, not by coordinates — and nothing in the Beckn body
-carries a station id.
+Same question, same capability, **a different call plan**. IMD's city service is keyed by station
+id, and nothing in the Beckn body carries one.
 
-### What must be in the registry
+### 2.0 Records you need
 
-| # | entity | key | the part that matters here |
+| # | entity | key | note |
 |---|---|---|---|
-| 1 | `SchemaRegistry` | `openagrinet:WeatherObservation` | **already seeded by use case 1** — capabilities are provider-independent |
-| 2 | `Participant` | `imd-city-weather` | `baseUrl` `https://city.imd.gov.in` · `auth.scheme: none` |
-| 3 | `ProviderSchema` | `imd-city-weather\|openagrinet:WeatherObservation` | `GET /citywx/city_weather_test.php` · the adapter resolves the nearest station |
+| 1 | `SchemaRegistry` | `openagrinet:WeatherObservation` | **already seeded by use case 1** |
+| 2 | `Participant` | `imd-city-weather` | `https://city.imd.gov.in` |
+| 3 | `ProviderSchema` | `imd-city-weather\|openagrinet:WeatherObservation` | `GET /api/cityweather_loc.php` |
 
 ```json
 { "ProviderSchema": {
@@ -432,7 +493,7 @@ carries a station id.
   "participantId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
   "method": "GET",
-  "path": "/citywx/city_weather_test.php",
+  "path": "/api/cityweather_loc.php",
   "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",
   "responseMapping": "mappings/imd-city-weather/select.response.jsonata",
   "timeoutMs": 15000,
@@ -440,98 +501,107 @@ carries a station id.
 } }
 ```
 
-**This is the clearest case for a transform the registry does not describe.** Turning
-`[73.7898, 19.9975]` into a station id is a proximity query against a Postgres table the
-adapter owns. No JSONata expression can do it — which is the bar for it not being a mapping.
+**One capability, two participants, two bindings.** Adding this provider added one `Participant`
+row and one `ProviderSchema` row. Nothing about the capability changed, and nothing about
+`mausamgram` changed.
 
-An earlier draft put it on the binding as `enricher: {name: nearestStation, config:
-{maxDistanceKm: 50}, secrets: {dsn: env://IMD_DB_DSN}}`, and that is what a plugin reference
-in a *shared* registry costs: the name asserts any adapter can run `nearestStation`, the
-config asserts they all take the same knobs, and the DSN asserts they all reach the same
-database. None of the three is true of anyone but us. The bound, the DSN and the station table
-are ours; they belong in our configuration, not in a record every participant reads.
+### 2.1–2.3 Same intent, same filter
 
-**One `SchemaRegistry`, two `Participant`s, two bindings.** Adding this participant adds exactly one
-`Participant` row and one `ProviderSchema` row. Nothing about `openagrinet:WeatherObservation`
-changes, and nothing about `mausamgram` changes.
-
-### ① – ② Same intent, same filter
-
-```
-$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:WeatherObservation")
-```
-
-`on_discover` returns **both** weather providers. Choosing between them is the experience
-layer's call — a station-based service is better for a named city, a point forecast for
-arbitrary coordinates — and the registry has no opinion.
-
-### ③ `select`
-
-Identical to use case 1 except for the provider:
+`on_discover` returns **both** weather providers — that payload is [above](#12-on_discover--the-answer-as-a-callback),
+second catalog. The `select` is [use case 1's](#13-select--that-provider-this-data) with two values
+changed:
 
 ```json
+"resources": [{
+  "id": "res:imd-city-weather:station-forecast",
+  "resourceAttributes": {
+    "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
+    "@type": "openagrinet:WeatherObservation",
+    "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+    "validity": { "startsAt": "2026-08-26", "endsAt": "2026-08-30" }
+  }
+}],
 "offer": { "id": "offer:imd-city-weather:open-data",
            "resourceIds": ["res:imd-city-weather:station-forecast"],
            "provider": { "id": "imd-city-weather",
                          "descriptor": { "code": "IMD-CITY-01", "name": "IMD City Weather" } } }
 ```
 
-### ④ Resolve
+### 2.4 Resolve
 
 ```
 bindingKey = "imd-city-weather|openagrinet:WeatherObservation"
 ```
 
-Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausamgram) —
-only the two filter values change.
+Same two reads, different filter values → `GET https://city.imd.gov.in/api/cityweather_loc.php`.
+Same `@type`, different `provider.id`, different row, and **no branching in the adapter.**
 
-```http
-POST /api/v1/ProviderSchema/search
-```
-```json
-{ "filters": { "bindingKey": { "eq": "imd-city-weather|openagrinet:WeatherObservation" },
-               "status":     { "eq": "active" } } }
-```
-```http
-POST /api/v1/Participant/search
-```
-```json
-{ "filters": { "participantId": { "eq": "imd-city-weather" },
-               "status":     { "eq": "active" } } }
-```
+### 2.5 Call upstream
 
-Together they give `GET https://city.imd.gov.in/citywx/city_weather_test.php`,
-and `auth.scheme: none`.
-
-Same `@type`, different `provider.id` — a different row, a different call plan, no branching
-in the adapter.
-
-### ⑤ Enrich, map, call
+First the adapter turns coordinates into a station id — a proximity query against a Postgres
+table it owns:
 
 ```
-nearestStation:  SELECT * FROM find_nearby_stations(19.9975, 73.7898, 5) ORDER BY distance_km
-                 → _local = { stationId: "42403", stationName: "Nashik",
-                              district: "Nashik", state: "Maharashtra", distanceKm: 4.1 }
+nearestStation(19.9975, 73.7898) → { stationId: "42403", stationName: "Nashik", distanceKm: 4.1 }
 ```
 
-Stations are tried in order of proximity, up to `maxStationAttempts`, so a station in the
-table with no IMD data behind it does not fail the request.
+**This transform is not in the registry, on purpose.** No JSONata expression can do a spatial
+join, which is the bar for it not being a mapping. Putting it on the binding as a named plugin
+would assert that every adapter on the network can run `nearestStation`, takes the same config,
+and reaches the same database. None of the three is true of anyone but us.
+
+Stations are tried in proximity order, so one with no IMD data behind it doesn't fail the request.
 
 ```
-GET https://city.imd.gov.in/citywx/city_weather_test.php?id=42403
-timeout 15000ms   no retry   no credential
+GET https://city.imd.gov.in/api/cityweather_loc.php?id=42403
+timeout 15000ms   no retry
 ```
+
+**Captured response** — note the outer array:
 
 ```json
-{ "Station_Code": "42403", "Station_Name": "Nashik",
-  "Past_24_hrs_Rainfall": "11.2",
-  "Today_Min_temp": "22.4", "Today_Max_temp": "30.1",
-  "Relative_Humidity_at_0830": "88", "Relative_Humidity_at_1730": "61",
-  "Todays_Forecast": "Generally cloudy sky with moderate rain",
-  "Day_2_Min_temp": "22.8", "Day_2_Max_Temp": "29.6" }
+[
+  {
+    "Date": "2026-08-26",
+    "Latitude": "19.997500000", "Longitude": "73.789800000",
+    "Station_Code": "42403", "Station_Name": "Nashik",
+    "Sunrise_time": "06:18", "Sunset_time": "18:52",
+    "Todays_Forecast": "Generally cloudy sky with one or two spells of rain or thundershowers",
+    "Todays_Forecast_Max_Temp": "30.0", "Todays_Forecast_Min_temp": "22.0",
+    "Today_Max_temp": null, "Today_Min_temp": "22.4",
+    "Past_24_hrs_Rainfall": "NIL",
+    "Previous_Day_Max_temp": "29.6",
+    "Relative_Humidity_at_0830": "88", "Relative_Humidity_at_1730": null,
+    "Today_Max_Departure_from_Normal": null, "Today_Min_Departure_from_Normal": "0.8",
+    "Day_2_Forecast": "Generally cloudy sky with a few spells of rain",
+    "Day_2_Max_Temp": "29.6", "Day_2_Min_temp": "22.8",
+    "Day_3_Forecast": "Thunderstorm with rain",
+    "Day_3_Max_Temp": "31.0", "Day_3_Min_temp": "23.0",
+    "Day_7_Forecast": "Thunderstorm with rain",
+    "Day_7_Max_Temp": "32.0", "Day_7_Min_temp": "26.0"
+  }
+]
 ```
 
-### ⑥ `on_select`
+**Watch out — this payload is a minefield and the pack has no tolerance for any of it:**
+
+- **Numbers arrive as strings.** `"22.4"`, `"88"`. The pack requires `value` to be a number.
+  Cast in the mapping.
+- **`"NIL"` is a sentinel.** `Past_24_hrs_Rainfall: "NIL"` means no rain → `value: 0`. A naive
+  cast gives `null` or `NaN`. This is the likeliest silent failure in this binding.
+- **`null` is a real value.** `Today_Max_temp` and `Relative_Humidity_at_1730` are `null` here.
+  **Omit** the parameter — `value: null` fails the type, and `0` is a lie about the weather.
+- **Today's max is a forecast, not an observation.** `Today_Max_temp` stays `null` until the day
+  is over; `Todays_Forecast_Max_Temp` is the number a farmer wants at 6 a.m. Different
+  `observationType`.
+- **Key casing is inconsistent upstream.** `Day_2_Max_Temp` but `Day_2_Min_temp`. JSONata is
+  case-sensitive, so each day-block must be spelled out, not generated from an index.
+- **Seven days, not five.** Use case 1 gives five. Nothing in the registry or the pack states a
+  horizon.
+
+### 2.6 `on_select`
+
+Same envelope as [use case 1](#16-on_select--the-typed-answer); one resource of the seven:
 
 ```json
 {
@@ -547,33 +617,34 @@ timeout 15000ms   no retry   no credential
     "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-26T23:59:59Z" },
     "generatedAt": "2026-08-26T06:14:55.010Z",
     "parameters": [
-      { "parameter": "Rainfall",    "aggregation": "Total",   "unit": "mm",  "value": 11.2 },
-      { "parameter": "Temperature", "aggregation": "Minimum", "unit": "Cel", "value": 22.4 },
-      { "parameter": "Temperature", "aggregation": "Maximum", "unit": "Cel", "value": 30.1 },
-      { "parameter": "Humidity",    "aggregation": "Minimum", "unit": "%",   "value": 61 },
+      { "parameter": "Rainfall",    "aggregation": "Total",   "unit": "mm",  "value": 0 },
+      { "parameter": "Temperature", "aggregation": "Maximum", "unit": "Cel", "value": 30.0 },
+      { "parameter": "Temperature", "aggregation": "Minimum", "unit": "Cel", "value": 22.0 },
       { "parameter": "Humidity",    "aggregation": "Maximum", "unit": "%",   "value": 88 }
     ]
   }
 }
 ```
 
-The upstream concatenates units into the value (`"28 °C"`). The `responseMapping` splits
-them back out — `value` is a number and `unit` is a UCUM code, because that is what the pack
-requires and what a consumer can compute with.
+`Rainfall: 0` is the mapped `"NIL"`. `Humidity` appears once, not twice — the 17:30 reading was
+`null` and is omitted rather than invented.
+
+### 2.7 Conformance — 0 violations
+
+Same as use case 1, and the same `aggregation` caveat.
 
 ---
 
-## Use case 3 — Mandi price (`agmarknet`)
+## 3. Mandi price — `agmarknet`
 
-*"आज सोयाबीनचा भाव काय आहे?"* — what is soybean selling for today? Device location
-`[70.458, 21.522]`.
+*"आज टमाटर का भाव क्या है?"* Tomato, markets near Nashik.
 
-### What must be in the registry
+### 3.0 Records you need
 
-| # | entity | key | the part that matters here |
+| # | entity | key | note |
 |---|---|---|---|
-| 1 | `SchemaRegistry` | `openagrinet:MandiPrice` | `schemaUrl` → the `MandiPrice/v0.1` pack |
-| 2 | `Participant` | `agmarknet` | `auth.scheme: apiKeyQuery` · `paramName: token` |
+| 1 | `SchemaRegistry` | `openagrinet:MandiPrice` | **new capability** |
+| 2 | `Participant` | `agmarknet` | API key in the query string |
 | 3 | `ProviderSchema` | `agmarknet\|openagrinet:MandiPrice` | `GET /v1/fetch-agmarknet-vistaar-location` |
 
 ```json
@@ -589,476 +660,429 @@ requires and what a consumer can compute with.
 } }
 ```
 
-```json
-{ "ProviderSchema": {
-  "bindingKey": "agmarknet|openagrinet:MandiPrice",
-  "participantId": "agmarknet",
-  "capabilityCode": "openagrinet:MandiPrice",
-  "method": "GET",
-  "path": "/v1/fetch-agmarknet-vistaar-location",
-  "requestMapping":  "mappings/agmarknet/select.request.jsonata",
-  "responseMapping": "mappings/agmarknet/select.response.jsonata",
-  "timeoutMs": 20000,
-  "retryMax": 2,
-  "status": "active"
-} }
+`apiKeyQuery` is the one scheme where the credential ends up in a URL, so that URL must never
+be logged. `paramName` is a registry field because `token`, `api-key` and `key` are all real in
+Indian government APIs and none of them is guessable. The schema forbids `valuePrefix` here — a
+`Bearer ` prefix in a query string is meaningless.
+
+### 3.1–3.2 `discover`
+
+```
+$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:MandiPrice")
 ```
 
-`apiKeyQuery` is the one scheme that puts a credential in the URL. The **credential-implies-TLS
-clause** in [§3.1](registry.md#31-participant) is what stops
-that URL being built over plaintext — the record would be rejected at write time.
+Same spatial constraint as use case 1. `on_discover` returns `agmarknet` only — no weather
+provider advertises this type.
 
-### ① Resolve meaning
+### 3.3 `select`
 
-Commodity: soybean. Date: today. Location: the device's point.
-
-### ② `discover`
-
-```json
-"filters": {
-  "type": "jsonpath",
-  "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:MandiPrice\")"
-}
-```
-
-with the same `S_DWITHIN` spatial constraint on the provider's service area.
-
-### ③ `select`
+The [use case 1 envelope](#13-select--that-provider-this-data); this `resources` and `offer`:
 
 ```json
 "resources": [{
-  "id": "res:agmarknet:price",
-  "quantity": 1,
+  "id": "res:agmarknet:mandi-prices",
   "resourceAttributes": {
-    "@context": "https://schemas.openagrinet.global/schema/MandiPrice/v0.1/context.jsonld",
+    "@context": "https://schemas.openagrinet.global/schema/MandiPriceObservation/v0.1/context.jsonld",
     "@type": "openagrinet:MandiPrice",
-    "commodity": { "name": "Soybean" },
-    "location": { "type": "Point", "coordinates": [70.458, 21.522] },
+    "commodity": { "name": "Tomato" },
+    "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
     "validity": { "startsAt": "2026-08-26", "endsAt": "2026-08-26" }
   }
 }],
 "offer": { "id": "offer:agmarknet:open-data",
-           "resourceIds": ["res:agmarknet:price"],
+           "resourceIds": ["res:agmarknet:mandi-prices"],
            "provider": { "id": "agmarknet",
-                         "descriptor": { "code": "AGMK-01", "name": "Agmarknet Vistaar" } } }
+                         "descriptor": { "code": "AGMK-01", "name": "Agmarknet" } } }
 ```
 
-### ④ Resolve
+`commodity.name` is a farmer-facing string, not a code. The mapping to Agmarknet's numeric
+`commodity_id` is the adapter's problem.
+
+### 3.4 Resolve
 
 ```
 bindingKey = "agmarknet|openagrinet:MandiPrice"
 ```
 
-Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausamgram) —
-only the two filter values change.
-
-```http
-POST /api/v1/ProviderSchema/search
-```
-```json
-{ "filters": { "bindingKey": { "eq": "agmarknet|openagrinet:MandiPrice" },
-               "status":     { "eq": "active" } } }
-```
-```http
-POST /api/v1/Participant/search
-```
-```json
-{ "filters": { "participantId": { "eq": "agmarknet" },
-               "status":     { "eq": "active" } } }
-```
-
-Together they give `GET https://api.agmarknet.gov.in/v1/fetch-agmarknet-vistaar-location`,
-and `auth.scheme: apiKeyQuery` with `paramName: token`.
-
-### ⑤ Enrich, map, call
+### 3.5 Call upstream
 
 ```
-marketAndCommodityCodes:  "Soybean" → _local = { commodityId: 1 }
-```
+commodityCode:  "Tomato" → 101   (adapter-owned lookup table)
 
-Agmarknet's commodity ids are a **private namespace** — nothing in the Beckn body carries
-one, and no expression can derive one from the name. That is the second legitimate reason for
-a transform outside the mappings, and the second one the registry does not name.
-
-```
 GET https://api.agmarknet.gov.in/v1/fetch-agmarknet-vistaar-location
-    ?commodity_id=1&date=26-08-2026&lat=21.522&long=70.458&token=<resolved from env://MANDI_TOKEN>
+      ?commodity_id=101&lat=19.9975&long=73.7898&date=2026-08-26&token=<env://MANDI_TOKEN>
 timeout 20000ms   retries 2
 ```
 
-One `date`, not a range — the location endpoint takes a single day.
+The request mapping must emit `lat`, `long`, `commodity_id` and a single `date`. An older
+four-code endpoint takes market and state codes instead; that is not what production calls.
 
-```json
-[ { "market": "Gondal", "commodity": "Soybean", "variety": "Yellow",
-    "min_price": "4200", "max_price": "4850", "modal_price": "4600",
-    "arrival_date": "26-08-2026", "district": "Rajkot", "state": "Gujarat" } ]
-```
-
-### ⑥ `on_select`
+**Captured response**, one market of several:
 
 ```json
 {
-  "id": "res:agmarknet:price:gondal:soybean:2026-08-26",
+  "records": [
+    {
+      "State": "Maharashtra",
+      "District": "Nashik",
+      "Market": "Nashik",
+      "Commodity": "Tomato",
+      "Variety": "Local",
+      "Arrival Date": "15-07-2026",
+      "Min Price": "800",
+      "Max Price": "1600",
+      "Modal Price": "1200",
+      "Price Unit": "Rs./Qtl"
+    }
+  ]
+}
+```
+
+**Watch out:**
+
+- **The keys are Title Case with spaces.** `"Max Price"`, not `max_price`. A mapping written
+  against snake_case returns nothing at all — no error, just an empty result. This page used to
+  document the snake_case form; it was wrong.
+- **`"Rs./Qtl"` is two fields in one string.** The pack requires `currency` as an ISO 4217 code
+  and `unit` separately: `"Rs./Qtl"` → `currency: "INR"`, `unit: "QUINTAL"`.
+- **`"Arrival Date"` is `DD-MM-YYYY`.** The pack wants a date. `15-07-2026` parsed as ISO is
+  either an error or, worse, a valid wrong date.
+- **Prices are strings.** Cast them.
+
+### 3.6 `on_select`
+
+```json
+{
+  "id": "res:agmarknet:price:nashik:tomato:2026-07-15",
   "resourceAttributes": {
-    "@context": "https://schemas.openagrinet.global/schema/MandiPrice/v0.1/context.jsonld",
+    "@context": "https://schemas.openagrinet.global/schema/MandiPriceObservation/v0.1/context.jsonld",
     "@type": "openagrinet:MandiPrice",
     "informationMode": "Direct",
-    "subjectCategories": ["Market"],
-    "source": { "sourceId": "agmarknet", "sourceName": "Agmarknet Vistaar" },
-    "market": { "name": "Gondal", "district": "Rajkot", "state": "Gujarat" },
-    "commodity": { "name": "Soybean", "variety": "Yellow" },
-    "location": { "type": "Point", "coordinates": [70.458, 21.522] },
-    "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-26T23:59:59Z" },
-    "generatedAt": "2026-08-26T09:30:12.774Z",
-    "prices": [
-      { "priceType": "Minimum", "unit": "INR/QUINTAL", "value": 4200 },
-      { "priceType": "Maximum", "unit": "INR/QUINTAL", "value": 4850 },
-      { "priceType": "Modal",   "unit": "INR/QUINTAL", "value": 4600 }
-    ]
+    "source": { "sourceId": "agmarknet", "sourceName": "Agmarknet" },
+    "commodity": { "name": "Tomato", "variety": "Local" },
+    "market": { "marketName": "Nashik", "district": "Nashik", "state": "Maharashtra" },
+    "arrivalDate": "2026-07-15",
+    "prices": { "minimum": 800, "maximum": 1600, "modal": 1200,
+                "currency": "INR", "unit": "QUINTAL" },
+    "generatedAt": "2026-08-26T07:02:11.884Z",
+    "location": { "type": "Point", "coordinates": [73.7898, 19.9975] }
   }
 }
 ```
 
+### 3.7 Conformance — 3 violations to fix
+
+`MandiPriceObservation` requires `source`, `commodity`, `market`, `arrivalDate`, `prices`,
+`generatedAt`. The resource above satisfies all six. What does **not** conform is the shape this
+page and the seeded records carried before:
+
+| # | was | pack requires |
+|---|---|---|
+| 1 | `arrivalDate` absent | required |
+| 2 | `market` a bare string | an object with `marketName` |
+| 3 | `prices` an array of `{type, value}` | an object `{minimum, maximum, modal, currency, unit}` with `currency` as `^[A-Z]{3}$` |
+
+There is also an unresolved naming conflict: the capability code is `openagrinet:MandiPrice` but
+the pack directory is `MandiPriceObservation`, and the network spec contradicts itself. Needs a
+network-owner ruling ([schemas.md § Known gaps](schemas.md#known-gaps)).
+
 ---
 
-## Use case 4 — Scheme information (`hasura-content`)
+## 4. Scheme information — `hasura-content`
 
-*"PM-Kisan साठी मी पात्र आहे का?"* — am I eligible for PM-Kisan? A **content** question, not
-a transaction: nothing is being applied for, and no farmer identity is sent.
+*"ठिबक सिंचनासाठी काय अनुदान मिळेल?"* What subsidy is available for drip irrigation?
 
-### What must be in the registry
+### 4.0 Records you need
 
-| # | entity | key | the part that matters here |
+| # | entity | key | note |
 |---|---|---|---|
-| 1 | `SchemaRegistry` | `openagrinet:KnowledgeResource` | `schemaUrl` → the `KnowledgeResource/v0.1` pack |
-| 2 | `Participant` | `hasura-content` | `auth.scheme: apiKeyHeader` · `paramName: x-hasura-admin-secret` |
+| 1 | `SchemaRegistry` | `openagrinet:KnowledgeResource` | **new capability** |
+| 2 | `Participant` | `hasura-content` | `apiKeyHeader` — admin secret in a header |
 | 3 | `ProviderSchema` | `hasura-content\|openagrinet:KnowledgeResource` | `POST /v1/graphql` |
 
 ```json
-{ "ProviderSchema": {
-  "bindingKey": "hasura-content|openagrinet:KnowledgeResource",
+{ "Participant": {
   "participantId": "hasura-content",
-  "capabilityCode": "openagrinet:KnowledgeResource",
-  "method": "POST",
-  "path": "/v1/graphql",
-  "requestMapping":  "mappings/hasura-content/select.request.jsonata",
-  "responseMapping": "mappings/hasura-content/select.response.jsonata",
-  "timeoutMs": 15000,
-  "retryMax": 0,
-  "status": "active"
+  "name": "Vistaar Knowledge Content (Hasura)",
+  "roles": ["provider"],
+  "baseUrl": "https://content.internal",
+  "status": "active",
+  "auth": { "scheme": "apiKeyHeader",
+            "paramName": "x-hasura-admin-secret",
+            "secrets": { "adminSecret": "env://HASURA_GRAPHQL_ADMIN_SECRET" } }
 } }
 ```
 
-**GraphQL needs nothing new in the schema.** It is `POST` to one path with the query in a
-body the `requestMapping` builds — which is why
-[§3.3](registry.md#33-providerschema) carries no transport discriminator.
-
-**The query is built with GraphQL *variables*, not string concatenation.** The
-`requestMapping` emits `{query, variables}` with the filter values in `variables`; nothing
-from the network is interpolated into the query text. Interpolating it is a live injection
-path, and it is the reason this is stated here rather than left to the mapping author.
-
-### ② `discover` — the filter that separates the two Advisory categories
+### 4.1–4.2 `discover`
 
 ```
-$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource"
-                            && @.resourceAttributes.subjectCategories[*] == "Scheme")
+$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource")
 ```
 
-`subjectCategories` is a **required** enum on the shared `AgricultureResource` field set —
-`Crop` `Livestock` `Weather` `Market` `Scheme` `Knowledge`. It is a property of the
-**published resource**, so the discovery service answers *who serves schemes* from its
-catalog. The registry never has to.
+Returns **both** `hasura-content` and `oan-vector` — see [use case 5](#5-crop--pest-advisory--oan-vector).
 
-### ③ `select`
+### 4.3 `select`
 
 ```json
 "resources": [{
-  "id": "res:hasura-content:scheme",
-  "quantity": 1,
+  "id": "res:hasura-content:schemes",
   "resourceAttributes": {
     "@context": "https://schemas.openagrinet.global/schema/KnowledgeResource/v0.1/context.jsonld",
     "@type": "openagrinet:KnowledgeResource",
-    "subjectCategories": ["Scheme"],
-    "query": "PM-Kisan eligibility",
-    "language": "mr"
+    "knowledgeType": "Guide",
+    "topics": ["Irrigation", "Subsidy"],
+    "languages": ["mr"],
+    "query": "drip irrigation subsidy"
   }
 }],
-"offer": { "id": "offer:hasura-content:content",
-           "resourceIds": ["res:hasura-content:scheme"],
+"offer": { "id": "offer:hasura-content:open",
+           "resourceIds": ["res:hasura-content:schemes"],
            "provider": { "id": "hasura-content",
-                         "descriptor": { "code": "VSTR-CNT-01", "name": "Vistaar Knowledge Content" } } }
+                         "descriptor": { "code": "OAN-CONTENT-01", "name": "OAN Content Store" } } }
 ```
 
-### ④ Resolve
+### 4.4 Resolve
 
 ```
 bindingKey = "hasura-content|openagrinet:KnowledgeResource"
 ```
 
-Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausamgram) —
-only the two filter values change.
+### 4.5 Call upstream
 
-```http
-POST /api/v1/ProviderSchema/search
-```
-```json
-{ "filters": { "bindingKey": { "eq": "hasura-content|openagrinet:KnowledgeResource" },
-               "status":     { "eq": "active" } } }
-```
-```http
-POST /api/v1/Participant/search
-```
-```json
-{ "filters": { "participantId": { "eq": "hasura-content" },
-               "status":     { "eq": "active" } } }
-```
-
-Together they give `POST https://content.internal/v1/graphql`,
-and `auth.scheme: apiKeyHeader` with `paramName: x-hasura-admin-secret`.
-
-### ⑤ Enrich, map, call
-
-```
-knowledgeQueryParams:  → _local = { usecase: "schemes-agri", schemeId: "pm-kisan", language: "mr", limit: 5 }
-```
+**`POST` with a body**, unlike use cases 1–3. The request mapping builds the GraphQL document
+and its variables:
 
 ```
 POST https://content.internal/v1/graphql
-x-hasura-admin-secret: <resolved from env://HASURA_GRAPHQL_ADMIN_SECRET>
-timeout 15000ms   no retry
-```
-```json
-{ "query": "query Content($usecase: String!, $schemeId: String!, $limit: Int!) { Content(where: {usecase: {_ilike: $usecase}, scheme_id: {_ilike: $schemeId}}, limit: $limit) { content_id title description url language scheme_intro scheme_benefits scheme_eligibility scheme_application publisher } }",
-  "variables": { "usecase": "schemes-agri", "schemeId": "pm-kisan", "limit": 5 } }
+x-hasura-admin-secret: <env://HASURA_GRAPHQL_ADMIN_SECRET>
 ```
 
+`paramName` carries the header name and `secrets` its value — the schema has one `apiKeyHeader`
+scheme, not a separate `header` one, and it allows exactly one secret when `paramName` is used.
 ```json
-{ "data": { "Content": [ {
-  "content_id": "sch-pmkisan-001",
-  "title": "PM-Kisan Samman Nidhi",
-  "description": "Income support of ₹6,000 per year to eligible landholding farmer families.",
-  "url": "https://vistaar.gov.in/schemes/pm-kisan",
-  "language": "mr",
-  "scheme_eligibility": "All landholding farmer families, subject to exclusion criteria.",
-  "scheme_application": "Apply at a CSC or on the PM-Kisan portal with Aadhaar and land records.",
-  "publisher": "Ministry of Agriculture & Farmers Welfare"
-} ] } }
+{
+  "query": "query Schemes($q: String!, $lang: String!) { schemes(where: {_and: [{title: {_ilike: $q}}, {language: {_eq: $lang}}]}) { id title summary language url published_at department } }",
+  "variables": { "q": "%drip irrigation subsidy%", "lang": "mr" }
+}
 ```
 
-### ⑥ `on_select`
+The query string is a constant inside the mapping; only `variables` is built from the request.
+Building the query text itself from user input would be GraphQL injection.
+
+**Illustrative response** — this provider is in no workbook row:
+
+```json
+{ "data": { "schemes": [
+  { "id": "PMKSY-DRIP-2026",
+    "title": "प्रधानमंत्री कृषी सिंचन योजना — ठिबक सिंचन अनुदान",
+    "summary": "अल्प व अत्यल्प भूधारक शेतकऱ्यांना ५५% अनुदान; इतर शेतकऱ्यांना ४५%.",
+    "language": "mr",
+    "url": "https://content.internal/schemes/pmksy-drip-2026",
+    "published_at": "2026-04-01T00:00:00Z",
+    "department": "Department of Agriculture, Govt. of Maharashtra" }
+] } }
+```
+
+**Watch out:**
+
+- **GraphQL returns `200` with an `errors` array.** A transport-level check on the status code
+  will treat a failed query as success and map an empty result. Check `data` and `errors`.
+- **`_ilike` needs the `%` wildcards added by the mapping.** Without them the query is an exact
+  match and finds nothing.
+
+### 4.6 `on_select`
 
 ```json
 {
-  "id": "res:hasura-content:sch-pmkisan-001",
+  "id": "res:hasura-content:scheme:PMKSY-DRIP-2026",
   "resourceAttributes": {
     "@context": "https://schemas.openagrinet.global/schema/KnowledgeResource/v0.1/context.jsonld",
     "@type": "openagrinet:KnowledgeResource",
     "informationMode": "Direct",
-    "knowledgeType": "SchemeInformation",
-    "subjectCategories": ["Scheme"],
-    "source": { "sourceId": "hasura-content", "sourceName": "Vistaar Knowledge Content" },
-    "title": "PM-Kisan Samman Nidhi",
-    "summary": "Income support of ₹6,000 per year to eligible landholding farmer families.",
-    "language": "mr",
-    "url": "https://vistaar.gov.in/schemes/pm-kisan",
-    "publisher": "Ministry of Agriculture & Farmers Welfare",
-    "generatedAt": "2026-08-26T09:41:02.118Z"
+    "knowledgeType": "Guide",
+    "topics": ["Irrigation", "Subsidy"],
+    "languages": ["mr"],
+    "version": "2026.1",
+    "lifecycleStatus": "Published",
+    "content": [{
+      "mediaType": "text/html",
+      "contentUri": "https://content.internal/schemes/pmksy-drip-2026",
+      "language": "mr"
+    }],
+    "provenance": {
+      "source": "Department of Agriculture, Govt. of Maharashtra",
+      "publishedAt": "2026-04-01T00:00:00Z"
+    }
   }
 }
 ```
 
+### 4.7 Conformance — 6 violations to fix
+
+`KnowledgeResource` requires `knowledgeType`, `languages`, `version`, `lifecycleStatus`,
+`content`, `provenance`. The resource above satisfies all six; the seeded records satisfy none of
+the last five, and use `knowledgeType: "SchemeInformation"`, which is not in the enum
+(`Article`, `FAQ`, `Guide`, `Dataset`, `TrainingMaterial`, `Reference`) — `Guide` is the right
+value.
+
+`version` and `lifecycleStatus` have **no upstream source**. Hasura carries neither, so they are
+either synthesised by the mapping or added to the content store's own schema. The second is the
+honest fix.
+
 ---
 
-## Use case 5 — Crop & pest advisory (`oan-vector`)
+## 5. Crop & pest advisory — `oan-vector`
 
-*"माझ्या कापसाच्या पिकावर पांढरी माशी आहे, काय करू?"* — whitefly on my cotton, what do I do?
+*"माझ्या कापसाच्या पानांवर पिवळे डाग आहेत"* — yellow spots on my cotton leaves. A free-text
+symptom description, not a keyword.
 
-### What must be in the registry
+### 5.0 Records you need
 
-| # | entity | key | the part that matters here |
+| # | entity | key | note |
 |---|---|---|---|
-| 1 | `SchemaRegistry` | `openagrinet:KnowledgeResource` | **already seeded by use case 4** — same outcome type |
-| 2 | `Participant` | `oan-vector` | `baseUrl` `http://3.6.146.174:8882` · `auth.scheme: none` |
+| 1 | `SchemaRegistry` | `openagrinet:KnowledgeResource` | **already seeded by use case 4** |
+| 2 | `Participant` | `oan-vector` | no auth |
 | 3 | `ProviderSchema` | `oan-vector\|openagrinet:KnowledgeResource` | `POST /indexes/oan-index/search` |
 
 ```json
-{ "ProviderSchema": {
-  "bindingKey": "oan-vector|openagrinet:KnowledgeResource",
+{ "Participant": {
   "participantId": "oan-vector",
-  "capabilityCode": "openagrinet:KnowledgeResource",
-  "method": "POST",
-  "path": "/indexes/oan-index/search",
-  "requestMapping":  "mappings/oan-vector/select.request.jsonata",
-  "responseMapping": "mappings/oan-vector/select.response.jsonata",
-  "timeoutMs": 15000,
-  "status": "active"
+  "name": "OAN Vector Index",
+  "roles": ["provider"],
+  "baseUrl": "http://3.6.146.174:8882",
+  "status": "active",
+  "auth": { "scheme": "none" }
 } }
 ```
 
-> **`oan-vector` is a bare IP over plain HTTP.** That is legal *only* because
-> `auth.scheme: "none"` — no secret is leaked by it. The schema decides the part about
-> secrets; it does not claim an unauthenticated internal service on a routable IP is good.
-> Moving it behind TLS with a real hostname is onboarding work, not a schema change, and
-> should happen before v1 carries real traffic.
+`scheme: "none"` is a deliberate value, not a missing field — `auth` is required, so an
+unauthenticated provider has to say so. It is also the only reason this record validates: the
+schema requires `https` for every other scheme, and this is a bare IP over plain HTTP. Nothing is
+leaked because there is no credential, but it should be behind TLS before v1 carries real
+traffic.
 
-**Both `KnowledgeResource` bindings need the same query-parameter step.** Their *request
-mappings* do not: one shapes a GraphQL `variables` block, the other a vector-search body. The
-shared step extracts the query intent; the mapping shapes it for one upstream. Neither the
-step nor the fact that it is shared is stored — two bindings wanting the same adapter code is
-not something a registry can assert.
+### 5.1–5.3 Same capability as use case 4
 
-### ② `discover` — same type, different category
-
-```
-$.catalogs[*].resources[*] ? (@.resourceAttributes."@type" == "openagrinet:KnowledgeResource"
-                            && @.resourceAttributes.subjectCategories[*] == "Crop")
-```
-
-Narrow further with `agricultureSubjects[].subjectType` ∈ `{Pest, Disease}` when the
-question is specifically about a pest.
-
-### ③ `select`
+Same filter, same `on_discover` (both knowledge providers). The `select` differs only in the
+provider and in what goes into `resourceAttributes`:
 
 ```json
 "resources": [{
   "id": "res:oan-vector:advisory",
-  "quantity": 1,
   "resourceAttributes": {
     "@context": "https://schemas.openagrinet.global/schema/KnowledgeResource/v0.1/context.jsonld",
     "@type": "openagrinet:KnowledgeResource",
-    "subjectCategories": ["Crop"],
-    "query": "whitefly management in cotton",
-    "language": "mr"
+    "knowledgeType": "Reference",
+    "topics": ["PestManagement"],
+    "languages": ["mr"],
+    "query": "माझ्या कापसाच्या पानांवर पिवळे डाग आहेत"
   }
 }],
-"offer": { "id": "offer:oan-vector:index",
+"offer": { "id": "offer:oan-vector:open",
            "resourceIds": ["res:oan-vector:advisory"],
            "provider": { "id": "oan-vector",
-                         "descriptor": { "code": "OAN-VEC-01", "name": "OAN Vector Index" } } }
+                         "descriptor": { "code": "OAN-VEC-01", "name": "OAN Advisory Vector Search" } } }
 ```
 
-### ④ Resolve
+**Two providers, one capability, and the app chooses on the shape of the question.** Use case 4's
+question is a keyword lookup; this one is a similarity search. The registry does not encode that
+difference — both bindings advertise `KnowledgeResource` and both are equally valid answers to
+hop ①.
+
+### 5.4 Resolve
 
 ```
 bindingKey = "oan-vector|openagrinet:KnowledgeResource"
 ```
 
-Two reads, same shape as [use case 1](#use-case-1--weather-point-forecast-mausamgram) —
-only the two filter values change.
-
-```http
-POST /api/v1/ProviderSchema/search
-```
-```json
-{ "filters": { "bindingKey": { "eq": "oan-vector|openagrinet:KnowledgeResource" },
-               "status":     { "eq": "active" } } }
-```
-```http
-POST /api/v1/Participant/search
-```
-```json
-{ "filters": { "participantId": { "eq": "oan-vector" },
-               "status":     { "eq": "active" } } }
-```
-
-Together they give `POST http://3.6.146.174:8882/indexes/oan-index/search`,
-and `auth.scheme: none`.
-
-Same `capabilityCode` as use case 4, different `participantId` — a different row. This is the
-whole point of a two-segment key: the pair is the identity.
-
-### ⑤ Enrich, map, call
-
-```
-knowledgeQueryParams:  → _local = { q: "whitefly management in cotton", limit: 5, language: "mr" }
-```
+### 5.5 Call upstream
 
 ```
 POST http://3.6.146.174:8882/indexes/oan-index/search
-timeout 15000ms   no retry   no credential
 ```
 ```json
-{ "q": "whitefly management in cotton",
-  "limit": 5,
-  "filter": "type:document",
-  "searchMethod": "HYBRID",
-  "hybridParameters": { "retrievalMethod": "disjunction", "rankingMethod": "rrf",
-                        "alpha": 0.5, "rrfK": 60 } }
+{ "query": "माझ्या कापसाच्या पानांवर पिवळे डाग आहेत",
+  "language": "mr", "topK": 5, "minScore": 0.72 }
 ```
 
-The tuning block is a **constant in the request mapping, not a caller-supplied value.**
-Exposing `alpha` and `rrfK` to the network lets a caller change what the network means by
-relevance, which is not theirs to set.
+`topK` and `minScore` are constants in the request mapping, not registry fields — they are
+retrieval tuning, and changing them changes the answer's quality, not the call's target.
+
+**Illustrative response** — this provider is in no workbook row:
 
 ```json
-{ "hits": [ {
-  "_id": "icar-cotton-whitefly-01",
-  "title": "Integrated management of whitefly in cotton",
-  "content": "Install yellow sticky traps at 12 per acre. Spray neem oil 1500 ppm at 5 ml/l...",
-  "source": "ICAR-CICR", "language": "mr",
-  "url": "https://vistaar.gov.in/advisory/cotton-whitefly",
-  "_score": 0.8123 } ] }
+{ "results": [
+  { "id": "ADV-COTTON-YELLOW-001",
+    "score": 0.89,
+    "title": "कापसावरील पिवळा मोझॅक — ओळख व उपाय",
+    "body": "पिवळे डाग व शिरांमधील पिवळेपणा हे पिवळ्या मोझॅक विषाणूचे लक्षण असू शकते...",
+    "language": "mr",
+    "crop": "Cotton",
+    "topic": "PestManagement",
+    "updated_at": "2026-06-18T00:00:00Z",
+    "source": "ICAR — Central Institute for Cotton Research" }
+] }
 ```
 
-### ⑥ `on_select`
+**Watch out:**
+
+- **`score` has nowhere to go in the pack.** `KnowledgeResource` has no relevance field. Dropping
+  it loses the ranking; inventing a field means only we can read it. For now the mapping preserves
+  the array order and drops the number.
+- **`minScore` can return zero results legitimately.** That is `BIZ_NO_RESULTS_FOUND`, not an
+  error. A vector search that finds nothing above threshold is working correctly.
+
+### 5.6 `on_select`
 
 ```json
 {
-  "id": "res:oan-vector:icar-cotton-whitefly-01",
+  "id": "res:oan-vector:advisory:ADV-COTTON-YELLOW-001",
   "resourceAttributes": {
     "@context": "https://schemas.openagrinet.global/schema/KnowledgeResource/v0.1/context.jsonld",
     "@type": "openagrinet:KnowledgeResource",
     "informationMode": "Direct",
-    "knowledgeType": "Advisory",
-    "subjectCategories": ["Crop"],
-    "agricultureSubjects": [{ "subjectType": "Pest", "subjectName": "Whitefly" },
-                            { "subjectType": "Crop", "subjectName": "Cotton" }],
-    "source": { "sourceId": "oan-vector", "sourceName": "OAN Vector Index" },
-    "title": "Integrated management of whitefly in cotton",
-    "summary": "Install yellow sticky traps at 12 per acre. Spray neem oil 1500 ppm at 5 ml/l...",
-    "language": "mr",
-    "url": "https://vistaar.gov.in/advisory/cotton-whitefly",
-    "publisher": "ICAR-CICR",
-    "generatedAt": "2026-08-26T10:02:47.633Z"
+    "knowledgeType": "Reference",
+    "topics": ["PestManagement"],
+    "languages": ["mr"],
+    "version": "2026.2",
+    "lifecycleStatus": "Published",
+    "content": [{
+      "mediaType": "text/plain",
+      "inlineContent": "पिवळे डाग व शिरांमधील पिवळेपणा हे पिवळ्या मोझॅक विषाणूचे लक्षण असू शकते...",
+      "language": "mr"
+    }],
+    "provenance": {
+      "source": "ICAR — Central Institute for Cotton Research",
+      "publishedAt": "2026-06-18T00:00:00Z"
+    }
   }
 }
 ```
 
+`content` items require `mediaType` plus exactly one of `contentUri` or `inlineContent`. Use case
+4 has a URL, so it uses `contentUri`; this one has the text, so it uses `inlineContent`. Both is
+invalid.
+
+### 5.7 Conformance — 6 violations to fix
+
+The same six as use case 4, on the same records, for the same reason — and `knowledgeType` was
+`CropAdvisory`, also not in the enum. `Reference` is the right value.
+
 ---
 
-## Use case 6 — Weather advisory (`mausamgram`) — **not seeded**
+## 6. Weather advisory — *not seeded*
 
-*"आज पाणी द्यावं का?"* — should I irrigate today? Same device location as use case 1, Nashik
-`[73.7898, 19.9975]`, and the same provider.
+*"उद्या फवारणी करावी का?"* Should I spray tomorrow? This case is here because **adding a
+capability is the operation this page gets opened for** — and because working it through is the
+argument for *not* adding this one.
 
-**This is the sixth category, not a sixth binding.** Nothing below is in the registry: there
-are 13 records and this would be the 14th and 15th. It is here because it is the shortest
-honest answer to *how do I add a capability*, and because working it through end to end
-surfaces two things the other five do not — a mapping-path collision, and a pack whose
-required fields the upstream cannot fill.
+### What it would look like
 
-### What must be in the registry
-
-**Two new records, not three.** `mausamgram` is already a `Participant` and is reused
-unchanged — a second capability on a provider you already have never touches its identity,
-its `baseUrl` or its credential.
-
-| # | entity | key | new? |
-|---|---|---|---|
-| 1 | `SchemaRegistry` | `openagrinet:WeatherAdvisory` | **new** |
-| 2 | `Participant` | `mausamgram` | reused as-is |
-| 3 | `ProviderSchema` | `mausamgram\|openagrinet:WeatherAdvisory` | **new** |
-
-```json
-{ "SchemaRegistry": {
-  "capabilityCode": "openagrinet:WeatherAdvisory",
-  "name": "Weather Advisory",
-  "version": "v0.1",
-  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherAdvisory/v0.1/attributes.yaml",
-  "status": "active"
-} }
-```
+| # | entity | key |
+|---|---|---|
+| 1 | `SchemaRegistry` | `openagrinet:WeatherAdvisory` |
+| 2 | `Participant` | `mausamgram` — **already exists** |
+| 3 | `ProviderSchema` | `mausamgram\|openagrinet:WeatherAdvisory` |
 
 ```json
 { "ProviderSchema": {
@@ -1067,273 +1091,100 @@ its `baseUrl` or its credential.
   "capabilityCode": "openagrinet:WeatherAdvisory",
   "method": "GET",
   "path": "/get-daily",
-  "requestMapping":  "mappings/mausamgram/weatheradvisory.select.request.jsonata",
-  "responseMapping": "mappings/mausamgram/weatheradvisory.select.response.jsonata",
-  "timeoutMs": 30000,
-  "retryMax": 3,
+  "requestMapping":  "mappings/mausamgram/select.request.jsonata",
+  "responseMapping": "mappings/mausamgram/select.response.jsonata",
   "status": "active"
 } }
 ```
 
-**`method` and `path` are identical to use case 1.** Same endpoint, same upstream bytes; only
-`responseMapping` differs. That is `capabilityCode` doing its job — it names **what the caller
-gets back**, not which URL was called. Two capabilities can share a transport entirely.
+`method` and `path` are **identical to use case 1** on purpose: two capabilities can share a
+transport completely and differ only in `responseMapping`. `capabilityCode` names the outcome,
+not the URL.
 
-**The mapping paths above do not follow the documented convention, because the convention
-cannot express this case.** [registry.md §3.3](registry.md#33-providerschema) defines mapping
-paths as `mappings/<participant>/<action>.<request|response>.jsonata` — participant and
-action, no capability segment. Both of mausamgram's bindings are the `select` action, so both
-resolve to `mappings/mausamgram/select.response.jsonata` while needing completely different
-output shapes. A capability segment is prepended here to break the tie. Nothing rejects the
-collision: `MappingPath` is a pattern over a string, and
-[§6](registry.md#6-do-todays-participants-fit)'s matrix accepts *1 participant serving 2
-capabilities* — it validated the records, not the filenames. Tracked in
-[registry.md § Known gaps](registry.md#known-gaps-for-v1).
+The `discover` filter would be the same shape with `openagrinet:WeatherAdvisory` — **not
+verified**, unlike use cases 1–5. Nothing of this type is published to test it against.
 
-The segment has to be lowercased. `MappingPath` is
-`^mappings/(?!.*\.\.)[a-z0-9][a-z0-9._/-]*\.jsonata$`, so `weatheradvisory.` validates and
-`WeatherAdvisory.` does not — the capability code cannot be pasted in as it appears in
-`bindingKey`.
+### Why it should not be seeded
 
-### ① Resolve meaning
-
-The experience layer turns the question into an intent: irrigation guidance, today, near
-Nashik. Note what changed from use case 1 — the farmer wants **advice**, not values. Same
-place, same provider, different outcome type, therefore a different `bindingKey`.
-
-### ② `discover` — who can answer
+`WeatherAdvisory` requires `topics`, `location`, `issuedAt`, `validity`, `recommendations`,
+`source`. Three of those have **no upstream source at all** — `issuedAt`, `source`, and honest
+`recommendations`. The nearest field mausamgram offers is:
 
 ```json
-{
-  "context": { "version": "2.0.0", "action": "discover",
-    "transactionId": "a41f7c02-59db-4e88-b6a3-0d5e2f918cc7",
-    "messageId": "6b83e0d1-274a-4c5f-9e01-8fa7c3b0e412" },
-  "message": { "intent": {
-    "textSearch": "irrigation advisory today rainfall",
-    "filters": {
-      "type": "jsonpath",
-      "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:WeatherAdvisory\")"
-    },
-    "spatial": [{
-      "op": "S_DWITHIN",
-      "targets": "$['catalogs'][*]['provider']['availableAt'][*]['geo']",
-      "geometry": { "type": "Point", "coordinates": [73.7898, 19.9975] },
-      "distanceMeters": 250000, "quantifier": "ANY"
-    }]
-  } }
-}
+"weather_warning": "Generally Cloudy Sky"
 ```
 
-> **This expression has not been run.** The preamble's claim that every filter was checked
-> twice — through `jsonpath.Accept` and with `@?` against a real `filter_doc` — covers use
-> cases 1–5. This one follows the same form and the same root, but no resource of this type is
-> published, so there is nothing to match it against. `on_discover` returns an empty list
-> today, and that is an honest result rather than a bug.
+That is a description of the sky. It validates as a `recommendations[].message` and it lies about
+what it is: nothing in it advises anyone to do anything, and a farmer reading it under the
+heading *advisory* is being misled by a conformant record.
 
-### ③ `select` — name that provider, ask for the advice
+**mausamgram is an observation provider, and `WeatherObservation` is its correct capability.** A
+real advisory needs an Agromet bulletin as its source, and no such provider appears in the
+network information workbook.
 
-```json
-{
-  "context": { "version": "2.0.0", "action": "select",
-    "transactionId": "a41f7c02-59db-4e88-b6a3-0d5e2f918cc7" },
-  "message": { "contract": { "commitments": [{
-    "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
-    "resources": [{
-      "id": "res:mausamgram:advisory",
-      "quantity": 1,
-      "resourceAttributes": {
-        "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisory/v0.1/context.jsonld",
-        "@type": "openagrinet:WeatherAdvisory",
-        "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
-        "validity": { "startsAt": "2026-08-26", "endsAt": "2026-08-30" }
-      }
-    }],
-    "offer": {
-      "id": "offer:mausamgram:open-data",
-      "resourceIds": ["res:mausamgram:advisory"],
-      "provider": { "id": "mausamgram",
-                    "descriptor": { "code": "IMD-NWP-01", "name": "IMD Mausamgram NWP" } }
-    }
-  }] } }
-}
-```
+**The general rule this case exists to show:** a `capabilityCode` is a promise about the outcome,
+and no schema can check a pack's required fields against a provider's actual payload. Nothing in
+the registry would have refused the record above.
 
-Byte-for-byte the same envelope as use case 1 except for two strings — the `@context` and the
-`@type`. Those two strings are what select a different row and therefore a different call
-plan.
+### And the mapping-path convention cannot express it
 
-### ④ Resolve — build the key, read the plan
+Mapping paths are `mappings/<participant>/<action>.<request|response>.jsonata` — there is **no
+capability segment**. Both of mausamgram's bindings are the `select` action, so both resolve to
+the same two filenames while needing different output shapes.
 
-```
-offer.provider.id            → "mausamgram"
-resourceAttributes["@type"]  → "openagrinet:WeatherAdvisory"
-
-bindingKey = "mausamgram|openagrinet:WeatherAdvisory"
-```
-
-Read 1 returns the `ProviderSchema` row above. Read 2 returns the **same** `Participant` row
-use case 1 read — one identity, one `baseUrl`, one credential, serving two capabilities. Full
-request and response shapes for both reads are in
-[use case 1](#use-case-1--weather-point-forecast-mausamgram), step ④.
-
-### ⑤ Enrich, map, authenticate, call
-
-```
-pointFromIntent:  resourceAttributes.location.coordinates → _local = {lat: 19.9975, lon: 73.7898}
-```
-
-**GeoJSON is `[longitude, latitude]`** — the pack says so explicitly — and mausamgram's
-parameters are `lat` and `lon`. The request mapping swaps them. Getting this backwards returns
-a forecast for a point in the Arabian Sea with no error anywhere.
-
-```
-GET https://mausamgram.imd.gov.in/nwpapi/get-daily?lat=19.9975&lon=73.7898
-Authorization: Basic <resolved from env://MAUSAMGRAM_USER + env://MAUSAMGRAM_X_API_KEY>
-timeout 30000ms   retries 3
-```
-
-The upstream's real reply, abridged to two of its five day-blocks:
-
-```json
-{
-  "lat_r": 19.9975,
-  "lon_r": 73.7898,
-  "fcstday1": {
-    "date": "2026-08-26", "rain": 0.84, "tmax": 39.24, "tmin": 32.8,
-    "rhmax": 58.67, "rhmin": 40.81, "wspd": 2.83, "wdir": 273.39,
-    "wind": ["W", "Westerly"],
-    "rain_message": "Light Rain", "cloud_message": "Generally Cloudy Sky",
-    "weather_warning": "Generally Cloudy Sky"
-  },
-  "fcstday2": {
-    "date": "2026-08-27", "rain": 1.48, "tmax": 38.6, "tmin": 32.2,
-    "rhmax": 59.42, "rhmin": 37.93, "wspd": 4.12, "wdir": 266.39,
-    "wind": ["W", "Westerly"],
-    "rain_message": "Light Rain", "cloud_message": "Mainly Clear Sky",
-    "weather_warning": "Partly Cloudy Sky with possibility of Light Rainfall or Thunderstorm"
-  }
-}
-```
-
-### ⑥ Map the response, send it back
-
-`WeatherAdvisory` requires `subjectCategories` (inherited from `AgricultureResource`) plus
-`topics`, `location`, `issuedAt`, `validity`, `recommendations` and `source`. Where each one
-comes from:
-
-| required field | source | |
-|---|---|---|
-| `subjectCategories` | constant `["Weather"]` | in the mapping |
-| `location` | `[lon_r, lat_r]` — swapped back to GeoJSON order | from the response |
-| `validity` | `fcstday1.date` → last block's `date` + 1 day | from the response |
-| `topics` | **synthesised** — the upstream names no topic | adapter constant |
-| `issuedAt` | **synthesised** — the payload carries no issue or model-run time | adapter clock |
-| `source` | **synthesised** — the payload names no source | adapter constant |
-| `recommendations` | `weather_warning` as the `message` | see the warning below |
-
-```json
-{
-  "id": "res:mausamgram:advisory:2026-08-26",
-  "resourceAttributes": {
-    "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisory/v0.1/context.jsonld",
-    "@type": "openagrinet:WeatherAdvisory",
-    "informationMode": "Direct",
-    "subjectCategories": ["Weather"],
-    "languages": ["en"],
-    "topics": ["Rainfall"],
-    "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
-    "issuedAt": "2026-08-26T06:12:04.201Z",
-    "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-28T00:00:00Z" },
-    "recommendations": [
-      { "topic": "Rainfall",
-        "message": "Generally Cloudy Sky with possibility of Light Rainfall or Thunderstorm",
-        "language": "en",
-        "priority": "Information" }
-    ],
-    "weatherBasis": {
-      "parameters": ["Rainfall", "Temperature", "Humidity", "WindSpeed", "WindDirection"]
-    },
-    "source": { "sourceId": "mausamgram", "sourceName": "IMD Mausamgram NWP" }
-  }
-}
-```
-
-`priority` is a closed enum — `Information | Watch | Warning | Critical` — so mapping it from
-`rain_message` or `weather_warning` needs an explicit table, not a passthrough. An unmapped
-upstream phrase must fall back to `Information`, never to the empty string, which fails the
-enum and takes the whole response with it.
-
-**`weatherBasis.supportingResourceIds` is the field that should link this advisory to the
-`WeatherObservation` resources of use case 1** — same provider, same point, same days. It is
-omitted here because it holds *Beckn Resource identifiers*, and those ids only exist once the
-observations have been published and are addressable. Two capabilities on one provider is what
-makes the link possible; nothing yet makes it resolvable.
-
-### Why this use case is not seeded
-
-**`weather_warning` is a description of the sky, not agricultural advice.** *"Generally Cloudy
-Sky"* mapped into a `recommendations[].message` produces a resource that validates against the
-pack and lies about what it is: the network promises weather-informed **guidance** and delivers
-a weather report. A farmer asking *should I irrigate today* gets back *it is cloudy*.
-
-Three of the seven required fields are synthesised rather than mapped, and that is the
-diagnosis rather than the problem — `issuedAt`, `source` and honest `recommendations` are all
-absent because **mausamgram is an observation provider.** Its correct capability is
-`openagrinet:WeatherObservation`, which is exactly what use case 1 seeds.
-
-A real `WeatherAdvisory` binding needs an upstream that issues agronomic guidance — an Agromet
-Advisory Service bulletin, the kind KVKs publish twice weekly, where `recommendations`,
-`issuedAt` and `reviewedBy` are fields the source already has. **No such provider appears in
-the network information workbook.** Until one is onboarded, this page carries the walkthrough
-and the registry carries nothing.
-
-That is the general rule this use case exists to demonstrate: **a capability code is a promise
-about the outcome.** The registry will happily store a binding whose upstream cannot keep it,
-because no schema can compare a pack's required fields against a provider's payload. The
-records validate; only a reader of the response finds out.
+Nothing rejects this: the path is validated as a string pattern, and the records are valid. The
+segment must also be lowercase, so `mappings/mausamgram/weatheradvisory.response.jsonata` is
+legal and `WeatherAdvisory.response.jsonata` is not. Recorded in
+[schemas.md § Known gaps](schemas.md#known-gaps).
 
 ---
 
-## Two capabilities, five bindings
+## One capability, many providers
 
-Use cases 4 and 5 are **one `capabilityCode` served by two providers**, and use cases 1 and
-2 are the same. That is the design working, not a shortcut.
+Six use cases, **four capabilities**, six bindings:
 
-| | how many |
-|---|---|
-| `SchemaRegistry` records | 3 — `WeatherObservation`, `MandiPrice`, `KnowledgeResource` |
-| `Participant` records | 5 |
-| `ProviderSchema` records | 5 — one per (participant, capability) pair actually served |
+| capability | providers | what changes between them |
+|---|---|---|
+| `WeatherObservation` | `mausamgram`, `imd-city-weather` | the whole call plan — point vs station id, 5 days vs 7 |
+| `MandiPrice` | `agmarknet` | — |
+| `KnowledgeResource` | `hasura-content`, `oan-vector` | keyword `GET`-style lookup vs vector similarity |
+| `WeatherAdvisory` | *none* | — |
 
-Seeding [use case 6](#use-case-6--weather-advisory-mausamgram--not-seeded) would make that
-4 · 5 · 6 — one more capability, no new participant, one more binding. It is counted nowhere
-above because it is not seeded.
+**Adding a provider to an existing capability costs one `Participant` row and one
+`ProviderSchema` row.** Nothing about the capability changes, nothing about the existing
+providers changes, and no code is deployed. That is the whole point of splitting the three
+entities the way [schemas.md](schemas.md) does.
 
-`capabilityCode` is the **outcome type**: what the caller gets back. Schemes and crop
-advisory both come back as a `KnowledgeResource`; they are told apart by
-`subjectCategories`, which is a property of the **published resource**. Splitting the
-capability so the registry could answer *who serves schemes* would break the one rule
-holding this vocabulary together — and the registry never needs to answer it, because
-`/discover` already did, from the catalog.
+**The capability does not tell you which provider to pick.** Both weather bindings answer the
+same `@type`; so do both knowledge bindings. Choosing is the app's job at hop ①, and it has the
+`descriptor` and the service area to choose on.
 
-## Three things true across all five
+## Three things true in every use case
 
-**No filter constrains `informationMode`, deliberately.** Both modes are publishable — an
-`OnDemand` advertisement and a `Direct` resource published straight to discovery are both
-honest answers to *who can tell me about rain*. Filtering to `OnDemand` would hide data
-already in the catalog; filtering to `Direct` would hide every provider that answers on
-invocation. Add the constraint only when the caller genuinely wants one or the other, and
-note the experience layer must branch on it either way: `OnDemand` means a second call,
-`Direct` means it already has the answer.
+1. **Hop ① never reads the registry.** Discovery is answered from the published catalog. If your
+   trace shows a registry read before `select`, it is wrong.
+2. **`participantId` is never taken from the request.** It comes off the `ProviderSchema` row.
+   A request that could name the participant could aim a credentialled call at any host.
+3. **The enrich step is never in the registry.** Nearest-station lookup, commodity-code lookup,
+   GraphQL query construction — all adapter-internal. Only the two JSONata mappings are registry
+   fields. A named plugin in a shared registry is a claim about every other adapter on the
+   network.
 
-**Timeout and retry are per binding, and are registry columns.** IMD gets 30 s and 3
-retries; Hasura gets 15 s and none. Those are properties of the upstream, changed by an
-operator, not constants compiled into a service class.
+## What the captured payloads changed
 
-**`aggregation` is not a governed field.** The `WeatherObservation` pack's `parameters` item
-declares `required: [parameter, value, unit]` without closing the object, so a private
-qualifier validates and means nothing to any other participant. **There is no conformant way
-to say *tomorrow's high is 30.6 and low is 22.1*** — and every Indian weather upstream
-reports `tmin`/`tmax`. This is a real gap in the network vocabulary, it lands on Weather
-which is a v1 category, and it is tracked in
-[registry.md § Known gaps](registry.md#known-gaps-for-v1).
+This page was revised against real payloads from `Network Information.xlsx`. Two providers
+disagreed with what it used to say:
+
+| | was documented | actually returns |
+|---|---|---|
+| `agmarknet` | `min_price`, `max_price`, `modal_price`, `arrival_date` | `"Min Price"`, `"Max Price"`, `"Modal Price"`, `"Arrival Date"` — Title Case with spaces. **A mapping written against the old keys returns nothing.** |
+| `imd-city-weather` | path `/citywx/city_weather_test.php`; hazard given as "units concatenated into the value" | path `/api/cityweather_loc.php`; an **array**; `"NIL"` sentinels, `null`s, numbers as strings. The documented hazard does not exist; three real ones went unmentioned. |
+| `mausamgram` | response `location: {lat, lon}` | **both** `lat_r`/`lon_r` (the model grid point) and `location` (the requested point), and they differ. The old shape was incomplete, not wrong — but which one to publish is a real decision the page never stated. |
+| `mausamgram` | units not addressed | an `abbreviation` block that is the authoritative unit source |
+
+Two providers, `hasura-content` and `oan-vector`, appear in **no** workbook row. Their payloads
+here are illustrative and marked as such at each site.
+
+One disagreement is left unresolved: the workbook records 'API Key' as the auth for both
+`imd-city-weather` and `mausamgram`, while the registry records `none` and `basic`. The registry
+values are what the seeded records use.
