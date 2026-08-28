@@ -106,23 +106,19 @@ a second thing to keep true, and it is the copy that rots.
 
 ### 3.0 Shared definitions
 
-RC loads each entity schema on its own, so a `$ref` across files is not available. Four
-building blocks are therefore repeated **verbatim** in every file that uses them, under the
-same name — so a mismatch is a diff, not a judgement call.
+RC loads each entity schema on its own, so `$ref` across files is not available. These four
+are therefore copied **verbatim** into every file that uses them, under the same name —
+edit one, edit all of them. The patterns themselves are in `schemas/*.json`; repeating them
+here is how this table went stale once already.
 
-| definition | value | used by |
+| copied into every file that uses it | means | used by |
 |---|---|---|
 | `Status` | `active` \| `inactive` | all three |
-| `ProviderId` | `^[a-z0-9][a-z0-9._:-]{2,63}$` — one char, then 2–63 more, so **min length 3** | `Provider`, `ProviderCapability` |
-| `CapabilityCode` | `^openagrinet:[A-Z][A-Za-z0-9]*$`, and not `AgricultureResource`/`AgricultureCapability` | `Capability`, `ProviderCapability` |
-| `Secret` | `^(env://[A-Z][A-Z0-9_]{0,63}\|inline:[!-~][ -~]{0,998})$` — two legal forms and nothing else | `Provider.auth`, `Enricher` |
+| `ProviderId` | lowercase, **min length 3** | `Provider`, `ProviderCapability` |
+| `CapabilityCode` | `openagrinet:` + PascalCase, never the two `Agriculture*` base types | `Capability`, `ProviderCapability` |
+| `Secret` | `env://VAR` or `inline:…`, nothing else | `Provider.auth`, `Enricher` |
 
-Four more are local to one file and are **not** shared: `ParamName` (`Provider`), `TypeCode`
-(`Capability`), `Path` and `MappingPath` (`ProviderCapability`).
-
-One `status` vocabulary across all three entities is deliberate. Every read filters
-`status == "active"`; a `Capability` that said `deprecated` instead of `inactive` meant the
-same thing to the reader and a different string to the filter.
+`ParamName`, `TypeCode`, `Path` and `MappingPath` each live in one file and are **not** shared.
 
 ### 3.1 `Provider`
 
@@ -178,8 +174,8 @@ concatenated into a stored string.
 | field | constraint | req |
 |---|---|---|
 | `scheme` | `none` \| `apiKeyQuery` \| `apiKeyHeader` \| `basic` | ✓ |
-| `paramName` | `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` — the query-parameter or header name | per scheme |
-| `valuePrefix` | `^[A-Za-z][A-Za-z0-9._-]{0,30} $` — prepended to the credential. **The trailing space is required** | optional |
+| `paramName` | the query-parameter or header name. No control characters | per scheme |
+| `valuePrefix` | prepended to the credential. **The trailing space is required.** No control characters | optional |
 | `secrets` | every value `Secret` | per scheme |
 
 | `scheme` | the adapter does | then requires | and must not carry |
@@ -610,6 +606,10 @@ and in `schemas/*.json`. This exists so that a later simplification is a decisio
 than an accident.
 
 ### `Provider` — rationale
+
+**One `status` vocabulary across all three entities.** Every read filters
+`status == "active"`; a `Capability` that said `deprecated` instead of `inactive` meant the
+same thing to the reader and a different string to the filter.
 
 **Auth is on `Provider`, not on the binding.** One credential opens all of that provider's
 endpoints — true for all five. On `ProviderCapability` it would be copied into every binding
