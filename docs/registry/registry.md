@@ -140,6 +140,30 @@ Four scalars and one `auth` object. Why: [Appendix A](#provider--rationale).
 } }
 ```
 
+One credential is the common case, and `paramName` names where it goes. An upstream needing
+**two** — a key plus an account id — swaps `paramName` for `paramNames`, which maps each
+secret to its own header or query parameter:
+
+```jsonc
+{ "Provider": {
+  "providerId": "two-header-upstream",
+  "name":       "An upstream wanting a key and an account id",
+  "baseUrl":    "https://api.example.gov.in/v1",
+  "status":     "active",
+  "auth": {
+    "scheme":     "apiKeyHeader",
+    "secrets":    { "token": "env://UPSTREAM_TOKEN", "account": "env://UPSTREAM_ACCOUNT" },
+    "paramNames": { "token": "X-Api-Key",            "account": "X-Account-Id" }
+                              // one entry per secret, keyed by the same name
+  }
+} }
+```
+
+Exactly one of `paramName` or `paramNames` — never both, never neither. `paramNames` takes no
+`valuePrefix`; an upstream needing a prefix on one of several values is the case this does not
+cover. `secrets` stays a flat object at a fixed path either way, which is what lets
+`privateFields: ["$.auth.secrets"]` encrypt one credential or five without change.
+
 `scheme` decides which of the other three may appear at all:
 
 | `scheme` | the adapter does | then requires | and must not carry |
@@ -217,13 +241,16 @@ lowercase, no `..`.
 
 ---
 
-### 3.4 Two rules the schema cannot express
+### 3.4 Three rules the schema cannot express
 
 JSON Schema cannot compare two fields, and RC enforces no reference between entities. These
 run in the onboarding path and in the conformance suite:
 
 1. `bindingKey` **must equal** `providerId` + `"|"` + `capabilityCode`.
 2. Both must resolve to **live** records — an `active` `Provider` and an `active` `Capability`.
+3. Where `auth.paramNames` is used, its keys **must be exactly** the keys of `auth.secrets`.
+   Draft-07 cannot reference a sibling field, and both mismatches fail quietly: a name with no
+   secret sends a header with no value, a secret with no name is never sent at all.
 
 Two more are unbuilt — `enricher.name` resolution and `responseMapping` conformance. See
 [Known gaps](#known-gaps-for-v1).
@@ -472,9 +499,9 @@ What it still accepts, checked and left accepted on purpose:
 | `baseUrl` of `https://localhost:8080/v1` or `https://169.254.169.254/…` | a regex cannot tell a metadata endpoint from a hostname, and `localhost` is what a developer's own deployment uses. An allowlist in the adapter can; see [§3.1](#31-provider) |
 | an `apiKeyQuery` secret containing `&` or `#` | fixed by percent-encoding at call time. Banning the characters would reject a legitimate key instead |
 | `path` of exactly `/` | a provider that answers at its root is not a mistake |
-| a `providerId` that disagrees with its own `bindingKey` | JSON Schema cannot compare two fields — [§3.4](#34-two-rules-the-schema-cannot-express) rule 1 |
+| a `providerId` that disagrees with its own `bindingKey` | JSON Schema cannot compare two fields — [§3.4](#34-three-rules-the-schema-cannot-express) rule 1 |
 
-What the schema **cannot** catch is in [§3.4](#34-two-rules-the-schema-cannot-express), and
+What the schema **cannot** catch is in [§3.4](#34-three-rules-the-schema-cannot-express), and
 whether the resulting responses satisfy the OAN domain packs is in [dpg-fit.md](dpg-fit.md) —
 where three of five bindings currently fail.
 
@@ -617,7 +644,7 @@ composite unique index, and what support exists varies by release. So "one row p
 field. Without it the duplicate is not an error but an **overwrite**: two records that differ
 in no indexed field both validate, and the second write silently replaces the first. JSON
 Schema cannot detect a duplicate *across* records — it can only forbid the shape that allows
-one, which is why [§3.4](#34-two-rules-the-schema-cannot-express) rule 1 checks the three
+one, which is why [§3.4](#34-three-rules-the-schema-cannot-express) rule 1 checks the three
 fields agree.
 
 **When something is an enricher and not a mapping.** `Enricher` exists only for what the
@@ -639,6 +666,52 @@ operator.
 > `retryMax` is not conditioned on `method`, deliberately. The obvious rule — *no retries on
 > `POST`* — would forbid retrying a GraphQL **read**, which is the single most common POST in
 > this network. The judgement stays with whoever writes the record.
+
+---
+
+## Appendix C — Adding an auth scheme
+
+`scheme` is a closed enum, and deliberately: the set of methods the registry can express
+should equal the set the adapter can perform. Expressible-but-not-performable is a runtime
+failure against a live upstream; performable-but-not-expressible is dead code. So a new
+method is a reviewed change in two places, and this is the order.
+
+1. **Add the enum value** to `Auth.properties.scheme`.
+2. **Give it a nested config object**, not new top-level fields on `auth` — `"oauth2": { … }`
+   with `additionalProperties: false`. Then two conditional branches: one requiring the object
+   for that scheme and forbidding the fields it does not use, one forbidding the object for
+   every other scheme. Without the second branch `auth` becomes a junk drawer where every
+   scheme carries every other scheme's fields.
+3. **Reference `#/definitions/Secret`** for anything holding key material, and **add the
+   `privateFields` path** — `$.auth.<scheme>.secrets`. Keep secrets in a flat object at a
+   fixed path; an array needs a JSONPath wildcard and there is no evidence RC resolves one,
+   so the failure mode is key material silently stored in clear.
+4. **Write the adapter handler.** This is the real cost and no schema shape avoids it.
+
+Measured on `oauth2ClientCredentials` as a prototype: 94 lines added to a 274-line file, all
+five seeded `Provider` records still valid, **no migration**. The extension is purely
+additive — nothing existing is edited. The guard rails came free: a bare pasted
+`clientSecret` was refused without a new rule, because `Secret` was referenced rather than
+copied.
+
+**What does not belong here.** A per-request *computation* — HMAC or any request signing —
+cannot be expressed declaratively at any level of generality, because the value depends on
+the final method, path, body and timestamp. Note it also cannot live in an enricher: those
+run on the intent, before the mapping builds the request, so there are no final bytes to
+sign. Signing belongs in the adapter's HTTP layer, selected by `scheme`, with only the
+genuinely varying parameters in the record.
+
+**A second URL** (an OAuth2 `tokenUrl`) belongs in the scheme's config object, not beside
+`baseUrl`. `baseUrl` is the capability endpoint's host and the binding's `path` is resolved
+against it; a token endpoint is neither.
+
+And the case this shape does not cover, restated because it is the one most likely to be
+mistaken for an oversight: **one host needing different credentials per capability.**
+`Provider.auth` is one credential for every call to that provider. Model it as two
+`Provider` records sharing a `baseUrl` — the cost is a duplicated host, paid on the rare
+path rather than the routine one. If it ever becomes routine, the additive fix is an optional
+`authOverride` on `ProviderCapability` with `Provider.auth` as the default: one more
+`privateFields` path and a precedence rule in the adapter. Nothing needs it today.
 
 ---
 
