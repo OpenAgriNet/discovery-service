@@ -582,6 +582,24 @@ Relaxing any of the three to "a non-empty string" reopens that.
 key and a tenant token then arrives as a reviewed schema change, not an extra map entry — see
 [Deferred](#deferred--out-of-scope).
 
+**Why `auth` is on `Provider` and not on `Capability` or the binding.** A credential
+authenticates you to a *host*, and this is the only record that names one — splitting
+`baseUrl` from `auth` would mean two records must both be right for one call to work.
+`Capability` names a data type, not an endpoint: `openagrinet:WeatherObservation` is served
+by `mausamgram` (`basic`) and `imd-city-weather` (`none`), so one `auth` there would have to
+be both at once. It is also network-governed and carries no secrets, so auth would put key
+material on the most widely read entity. On `ProviderCapability` it would validate, but a
+provider authenticates the same way for everything it serves, so the credential would be
+duplicated across that provider's bindings and rotation would become an N-row write — the
+row you miss is an outage with a stale credential. The test to apply to any future proposal:
+*what changes when the upstream rotates the key?* Here, one row.
+
+One host that needs different keys per endpoint — separately subscribed products on a shared
+platform — is the case this shape does not cover. No v1 provider is like that, and it needs
+no schema change when one appears: two `Provider` rows sharing a `baseUrl`. Since
+`providerId` **is** the Beckn `provider.id`, separately credentialed products appearing as
+separate providers on the wire is the more faithful representation anyway.
+
 ### `Capability` — rationale
 
 **Nothing names a provider here.** A capability is network vocabulary; the binding attaches it
