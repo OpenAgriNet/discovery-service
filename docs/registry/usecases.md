@@ -2,7 +2,8 @@
 
 **The four v1 categories across five providers, each traced end to end.** For every one: the
 records that must be in the registry, the API calls the adopter makes, and the payload at each
-hop.
+hop. Use case 6 is a sixth category that is **not** seeded, worked through end to end anyway
+because adding a capability is the operation this page is most often opened to answer.
 
 The schema these records satisfy is [registry.md §3](registry.md#3-the-schemas); the
 records themselves, in write form, are [examples.md](examples.md). This page is
@@ -20,6 +21,7 @@ self-contained — it does not depend on anything under `archive/`.
 | [3](#use-case-3--mandi-price-agmarknet) | Mandi price | `MandiPrice` | `agmarknet` | `GET`, API key in the query, the adapter maps a commodity name to a code |
 | [4](#use-case-4--scheme-information-hasura-content) | Scheme information | `KnowledgeResource` | `hasura-content` | `POST` GraphQL, admin secret header |
 | [5](#use-case-5--crop--pest-advisory-oan-vector) | Crop & pest advisory | `KnowledgeResource` | `oan-vector` | `POST` vector search, no auth |
+| [6](#use-case-6--weather-advisory-mausamgram--not-seeded) | Weather advisory — **not seeded** | `WeatherAdvisory` | `mausamgram` | `GET`, HTTP Basic — the same endpoint as use case 1, a different outcome |
 
 Use cases 4 and 5 share one `capabilityCode`. That is not an oversight — see
 [§ Two capabilities, five bindings](#two-capabilities-five-bindings) below.
@@ -121,6 +123,71 @@ one.** network-specs declares each pack's placement as *provider catalog*, *disc
 result* or *provider response*; a request is none of those. Beckn types the field as
 `Attributes` — open, requiring only `@context` and `@type` — so what travels there is the
 resource's identity plus the parameters of the invocation.
+
+### Which keys the adapter reads from `select`
+
+Four values, and nothing else. Two build the key, one carries the parameters of the
+invocation, one is checked and discarded.
+
+| what | path on the request | used for |
+|---|---|---|
+| provider id | `message.contract.commitments[0].offer.provider.id` | segment 1 of `bindingKey` |
+| capability | `message.contract.commitments[0].resources[0].resourceAttributes."@type"` | segment 2 of `bindingKey` |
+| invocation parameters | the rest of that same `resourceAttributes` — `location`, `validity`, … | `_local`, then the request mapping |
+| action | `context.action` | must be `select`; not part of the key |
+
+```
+bindingKey = <provider id> + "|" + <capability>
+```
+
+**Nothing else on the request is read, and two fields are deliberately ignored.**
+`context.bppId` and `context.receiverId` name a network *node*; in v1's central topology the
+adapter is the only BPP, so they discriminate nothing. `offer.provider.id` names a provider
+*inside* that node's catalog, which is the granularity a binding has — and
+[registry.md §3.1](registry.md#31-participant) defines `participantId` as the Beckn
+`provider.id` for exactly that reason. Under the distributed topology, where each participant
+runs its own adapter, `receiverId` becomes the natural routing field and this paragraph needs
+revisiting.
+
+**`participantId` is never read from the request.** It comes off the `ProviderSchema` row
+returned by read 1. A request that could name the participant directly could point a
+credentialled call at a host of its choosing — the same rule, and the same reason, as
+`EXT_ALLOW_NETWORK_FETCH=false`.
+
+#### The paths are not guaranteed to exist, so the adapter validates before it concatenates
+
+Checked against `tests/testdata/beckn-v2.0.0.yaml`, which is `openapi: 3.1.1` — so JSON Schema
+2020-12 semantics, and a `$ref` with sibling keywords is honoured rather than ignored:
+
+| node | declaration | consequence |
+|---|---|---|
+| `Contract.required` | `["commitments"]`, `minItems: 1` | at least one commitment — **guaranteed** |
+| `Commitment.required` | `["status","resources","offer"]` | `offer` present — **guaranteed** |
+| `Commitment.offer` | `$ref: Offer` + `required: ["id","resourceIds"]` | offer has an id — **guaranteed** |
+| `Offer.required` | `["id"]` | **`provider` is optional** |
+| `Commitment.resources` | no `minItems` | **`resources: []` is valid** |
+| `Resource.required` | `["id"]` | **`resourceAttributes` is optional** |
+| `Context.required` | *none* | **`action` and `version` may be absent** (C6) |
+
+So the containers are mandatory and both halves of the key are not. L1 validation passes a
+request from which no `bindingKey` can be built, by three independent routes: a missing
+`provider`, an empty `resources`, or a resource with no `resourceAttributes`.
+
+Two rules close it, and both belong in the envelope layer rather than in the mapping:
+
+1. **Arity — exactly one.** Reject `commitments.length != 1` or `resources.length != 1`.
+   Silently taking `[0]` answers one commitment and drops the rest with a `200`, which is the
+   partial handling Phase 1 refuses everywhere else. A batch is a later feature, not a
+   tolerated shape.
+2. **Presence — a distinct error.** A missing `offer.provider` or a missing
+   `resourceAttributes."@type"` is `NackBadRequest`, and it must **not** share an error code
+   with *no such binding*. Concatenating blindly yields `bindingKey` of `"|"` or
+   `"mausamgram|"`, neither of which resolves — so the caller is told *this provider cannot
+   answer this capability* and the operator is sent to audit the registry, when the fault was
+   in the request and the registry is correct.
+
+`context.action` is checked for the same reason `version` is: the constant exists to catch the
+envelope that omits the field entirely, which C6 permits.
 
 ---
 
@@ -288,7 +355,7 @@ an inactive provider means this provider cannot answer, and `on_select` returns 
 
 **In production these two calls do not happen per request.** All 13 records are loaded at
 boot and indexed by `bindingKey` and `participantId`, so resolution is two map lookups —
-[registry.md §5](registry.md#the-runtime-does-not-call-these-per-request).
+[registry.md §1](registry.md#the-runtime-does-not-call-these-per-request).
 
 ### ⑤ Enrich, map, authenticate, call
 
@@ -960,6 +1027,273 @@ relevance, which is not theirs to set.
 
 ---
 
+## Use case 6 — Weather advisory (`mausamgram`) — **not seeded**
+
+*"आज पाणी द्यावं का?"* — should I irrigate today? Same device location as use case 1, Nashik
+`[73.7898, 19.9975]`, and the same provider.
+
+**This is the sixth category, not a sixth binding.** Nothing below is in the registry: there
+are 13 records and this would be the 14th and 15th. It is here because it is the shortest
+honest answer to *how do I add a capability*, and because working it through end to end
+surfaces two things the other five do not — a mapping-path collision, and a pack whose
+required fields the upstream cannot fill.
+
+### What must be in the registry
+
+**Two new records, not three.** `mausamgram` is already a `Participant` and is reused
+unchanged — a second capability on a provider you already have never touches its identity,
+its `baseUrl` or its credential.
+
+| # | entity | key | new? |
+|---|---|---|---|
+| 1 | `SchemaRegistry` | `openagrinet:WeatherAdvisory` | **new** |
+| 2 | `Participant` | `mausamgram` | reused as-is |
+| 3 | `ProviderSchema` | `mausamgram\|openagrinet:WeatherAdvisory` | **new** |
+
+```json
+{ "SchemaRegistry": {
+  "capabilityCode": "openagrinet:WeatherAdvisory",
+  "name": "Weather Advisory",
+  "version": "v0.1",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherAdvisory/v0.1/attributes.yaml",
+  "status": "active"
+} }
+```
+
+```json
+{ "ProviderSchema": {
+  "bindingKey": "mausamgram|openagrinet:WeatherAdvisory",
+  "participantId": "mausamgram",
+  "capabilityCode": "openagrinet:WeatherAdvisory",
+  "method": "GET",
+  "path": "/get-daily",
+  "requestMapping":  "mappings/mausamgram/weatheradvisory.select.request.jsonata",
+  "responseMapping": "mappings/mausamgram/weatheradvisory.select.response.jsonata",
+  "timeoutMs": 30000,
+  "retryMax": 3,
+  "status": "active"
+} }
+```
+
+**`method` and `path` are identical to use case 1.** Same endpoint, same upstream bytes; only
+`responseMapping` differs. That is `capabilityCode` doing its job — it names **what the caller
+gets back**, not which URL was called. Two capabilities can share a transport entirely.
+
+**The mapping paths above do not follow the documented convention, because the convention
+cannot express this case.** [registry.md §3.3](registry.md#33-providerschema) defines mapping
+paths as `mappings/<participant>/<action>.<request|response>.jsonata` — participant and
+action, no capability segment. Both of mausamgram's bindings are the `select` action, so both
+resolve to `mappings/mausamgram/select.response.jsonata` while needing completely different
+output shapes. A capability segment is prepended here to break the tie. Nothing rejects the
+collision: `MappingPath` is a pattern over a string, and
+[§6](registry.md#6-do-todays-participants-fit)'s matrix accepts *1 participant serving 2
+capabilities* — it validated the records, not the filenames. Tracked in
+[registry.md § Known gaps](registry.md#known-gaps-for-v1).
+
+The segment has to be lowercased. `MappingPath` is
+`^mappings/(?!.*\.\.)[a-z0-9][a-z0-9._/-]*\.jsonata$`, so `weatheradvisory.` validates and
+`WeatherAdvisory.` does not — the capability code cannot be pasted in as it appears in
+`bindingKey`.
+
+### ① Resolve meaning
+
+The experience layer turns the question into an intent: irrigation guidance, today, near
+Nashik. Note what changed from use case 1 — the farmer wants **advice**, not values. Same
+place, same provider, different outcome type, therefore a different `bindingKey`.
+
+### ② `discover` — who can answer
+
+```json
+{
+  "context": { "version": "2.0.0", "action": "discover",
+    "transactionId": "a41f7c02-59db-4e88-b6a3-0d5e2f918cc7",
+    "messageId": "6b83e0d1-274a-4c5f-9e01-8fa7c3b0e412" },
+  "message": { "intent": {
+    "textSearch": "irrigation advisory today rainfall",
+    "filters": {
+      "type": "jsonpath",
+      "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.\"@type\" == \"openagrinet:WeatherAdvisory\")"
+    },
+    "spatial": [{
+      "op": "S_DWITHIN",
+      "targets": "$['catalogs'][*]['provider']['availableAt'][*]['geo']",
+      "geometry": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+      "distanceMeters": 250000, "quantifier": "ANY"
+    }]
+  } }
+}
+```
+
+> **This expression has not been run.** The preamble's claim that every filter was checked
+> twice — through `jsonpath.Accept` and with `@?` against a real `filter_doc` — covers use
+> cases 1–5. This one follows the same form and the same root, but no resource of this type is
+> published, so there is nothing to match it against. `on_discover` returns an empty list
+> today, and that is an honest result rather than a bug.
+
+### ③ `select` — name that provider, ask for the advice
+
+```json
+{
+  "context": { "version": "2.0.0", "action": "select",
+    "transactionId": "a41f7c02-59db-4e88-b6a3-0d5e2f918cc7" },
+  "message": { "contract": { "commitments": [{
+    "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+    "resources": [{
+      "id": "res:mausamgram:advisory",
+      "quantity": 1,
+      "resourceAttributes": {
+        "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisory/v0.1/context.jsonld",
+        "@type": "openagrinet:WeatherAdvisory",
+        "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+        "validity": { "startsAt": "2026-08-26", "endsAt": "2026-08-30" }
+      }
+    }],
+    "offer": {
+      "id": "offer:mausamgram:open-data",
+      "resourceIds": ["res:mausamgram:advisory"],
+      "provider": { "id": "mausamgram",
+                    "descriptor": { "code": "IMD-NWP-01", "name": "IMD Mausamgram NWP" } }
+    }
+  }] } }
+}
+```
+
+Byte-for-byte the same envelope as use case 1 except for two strings — the `@context` and the
+`@type`. Those two strings are what select a different row and therefore a different call
+plan.
+
+### ④ Resolve — build the key, read the plan
+
+```
+offer.provider.id            → "mausamgram"
+resourceAttributes["@type"]  → "openagrinet:WeatherAdvisory"
+
+bindingKey = "mausamgram|openagrinet:WeatherAdvisory"
+```
+
+Read 1 returns the `ProviderSchema` row above. Read 2 returns the **same** `Participant` row
+use case 1 read — one identity, one `baseUrl`, one credential, serving two capabilities. Full
+request and response shapes for both reads are in
+[use case 1](#use-case-1--weather-point-forecast-mausamgram), step ④.
+
+### ⑤ Enrich, map, authenticate, call
+
+```
+pointFromIntent:  resourceAttributes.location.coordinates → _local = {lat: 19.9975, lon: 73.7898}
+```
+
+**GeoJSON is `[longitude, latitude]`** — the pack says so explicitly — and mausamgram's
+parameters are `lat` and `lon`. The request mapping swaps them. Getting this backwards returns
+a forecast for a point in the Arabian Sea with no error anywhere.
+
+```
+GET https://mausamgram.imd.gov.in/nwpapi/get-daily?lat=19.9975&lon=73.7898
+Authorization: Basic <resolved from env://MAUSAMGRAM_USER + env://MAUSAMGRAM_X_API_KEY>
+timeout 30000ms   retries 3
+```
+
+The upstream's real reply, abridged to two of its five day-blocks:
+
+```json
+{
+  "lat_r": 19.9975,
+  "lon_r": 73.7898,
+  "fcstday1": {
+    "date": "2026-08-26", "rain": 0.84, "tmax": 39.24, "tmin": 32.8,
+    "rhmax": 58.67, "rhmin": 40.81, "wspd": 2.83, "wdir": 273.39,
+    "wind": ["W", "Westerly"],
+    "rain_message": "Light Rain", "cloud_message": "Generally Cloudy Sky",
+    "weather_warning": "Generally Cloudy Sky"
+  },
+  "fcstday2": {
+    "date": "2026-08-27", "rain": 1.48, "tmax": 38.6, "tmin": 32.2,
+    "rhmax": 59.42, "rhmin": 37.93, "wspd": 4.12, "wdir": 266.39,
+    "wind": ["W", "Westerly"],
+    "rain_message": "Light Rain", "cloud_message": "Mainly Clear Sky",
+    "weather_warning": "Partly Cloudy Sky with possibility of Light Rainfall or Thunderstorm"
+  }
+}
+```
+
+### ⑥ Map the response, send it back
+
+`WeatherAdvisory` requires `subjectCategories` (inherited from `AgricultureResource`) plus
+`topics`, `location`, `issuedAt`, `validity`, `recommendations` and `source`. Where each one
+comes from:
+
+| required field | source | |
+|---|---|---|
+| `subjectCategories` | constant `["Weather"]` | in the mapping |
+| `location` | `[lon_r, lat_r]` — swapped back to GeoJSON order | from the response |
+| `validity` | `fcstday1.date` → last block's `date` + 1 day | from the response |
+| `topics` | **synthesised** — the upstream names no topic | adapter constant |
+| `issuedAt` | **synthesised** — the payload carries no issue or model-run time | adapter clock |
+| `source` | **synthesised** — the payload names no source | adapter constant |
+| `recommendations` | `weather_warning` as the `message` | see the warning below |
+
+```json
+{
+  "id": "res:mausamgram:advisory:2026-08-26",
+  "resourceAttributes": {
+    "@context": "https://schemas.openagrinet.global/schema/WeatherAdvisory/v0.1/context.jsonld",
+    "@type": "openagrinet:WeatherAdvisory",
+    "informationMode": "Direct",
+    "subjectCategories": ["Weather"],
+    "languages": ["en"],
+    "topics": ["Rainfall"],
+    "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+    "issuedAt": "2026-08-26T06:12:04.201Z",
+    "validity": { "startsAt": "2026-08-26T00:00:00Z", "endsAt": "2026-08-28T00:00:00Z" },
+    "recommendations": [
+      { "topic": "Rainfall",
+        "message": "Generally Cloudy Sky with possibility of Light Rainfall or Thunderstorm",
+        "language": "en",
+        "priority": "Information" }
+    ],
+    "weatherBasis": {
+      "parameters": ["Rainfall", "Temperature", "Humidity", "WindSpeed", "WindDirection"]
+    },
+    "source": { "sourceId": "mausamgram", "sourceName": "IMD Mausamgram NWP" }
+  }
+}
+```
+
+`priority` is a closed enum — `Information | Watch | Warning | Critical` — so mapping it from
+`rain_message` or `weather_warning` needs an explicit table, not a passthrough. An unmapped
+upstream phrase must fall back to `Information`, never to the empty string, which fails the
+enum and takes the whole response with it.
+
+**`weatherBasis.supportingResourceIds` is the field that should link this advisory to the
+`WeatherObservation` resources of use case 1** — same provider, same point, same days. It is
+omitted here because it holds *Beckn Resource identifiers*, and those ids only exist once the
+observations have been published and are addressable. Two capabilities on one provider is what
+makes the link possible; nothing yet makes it resolvable.
+
+### Why this use case is not seeded
+
+**`weather_warning` is a description of the sky, not agricultural advice.** *"Generally Cloudy
+Sky"* mapped into a `recommendations[].message` produces a resource that validates against the
+pack and lies about what it is: the network promises weather-informed **guidance** and delivers
+a weather report. A farmer asking *should I irrigate today* gets back *it is cloudy*.
+
+Three of the seven required fields are synthesised rather than mapped, and that is the
+diagnosis rather than the problem — `issuedAt`, `source` and honest `recommendations` are all
+absent because **mausamgram is an observation provider.** Its correct capability is
+`openagrinet:WeatherObservation`, which is exactly what use case 1 seeds.
+
+A real `WeatherAdvisory` binding needs an upstream that issues agronomic guidance — an Agromet
+Advisory Service bulletin, the kind KVKs publish twice weekly, where `recommendations`,
+`issuedAt` and `reviewedBy` are fields the source already has. **No such provider appears in
+the network information workbook.** Until one is onboarded, this page carries the walkthrough
+and the registry carries nothing.
+
+That is the general rule this use case exists to demonstrate: **a capability code is a promise
+about the outcome.** The registry will happily store a binding whose upstream cannot keep it,
+because no schema can compare a pack's required fields against a provider's payload. The
+records validate; only a reader of the response finds out.
+
+---
+
 ## Two capabilities, five bindings
 
 Use cases 4 and 5 are **one `capabilityCode` served by two providers**, and use cases 1 and
@@ -970,6 +1304,10 @@ Use cases 4 and 5 are **one `capabilityCode` served by two providers**, and use 
 | `SchemaRegistry` records | 3 — `WeatherObservation`, `MandiPrice`, `KnowledgeResource` |
 | `Participant` records | 5 |
 | `ProviderSchema` records | 5 — one per (participant, capability) pair actually served |
+
+Seeding [use case 6](#use-case-6--weather-advisory-mausamgram--not-seeded) would make that
+4 · 5 · 6 — one more capability, no new participant, one more binding. It is counted nowhere
+above because it is not seeded.
 
 `capabilityCode` is the **outcome type**: what the caller gets back. Schemes and crop
 advisory both come back as a `KnowledgeResource`; they are told apart by
