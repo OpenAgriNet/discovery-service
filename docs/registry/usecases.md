@@ -50,7 +50,7 @@ providers. `select` goes from the consumer node **straight to the provider node*
 
 ## The three adapters, in Bharat Vistaar
 
-| adapter | `subscriberId` | role |
+| adapter | `participantId` | role |
 |---|---|---|
 | consumer node | `seeker-network-vistaar.da.gov.in` | BAP — signs `discover` and `select` |
 | network node | `discovery-network-vistaar.da.gov.in` | NETWORK — **proposed**; BV has no third subscriber today |
@@ -283,7 +283,9 @@ constants — IMD is slow, and an operator changes this without a deploy.
 
 **Read 2** — where it is and how to authenticate: `Participant` by the `participantId` **from row
 1, never from the request**. A request that could name the participant could point a
-credentialled call at a host of its choosing.
+credentialled call at a host of its choosing. That row is `type: "upstream"`, so it carries a
+`baseUrl` and an `auth`; a binding naming a node instead would resolve to a call that cannot be
+made, which is why rule 2 refuses one at seeding time.
 
 An empty result from either read is a hard failure — `BIZ_PROVIDER_NOT_FOUND`, not a fallback.
 

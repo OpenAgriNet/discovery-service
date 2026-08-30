@@ -1,4 +1,4 @@
-"""Auth and material-reference cases for schemas/Participant.json.
+"""Shape, auth and material-reference cases for schemas/Participant.json.
 
 Run:  python3 verify/auth_cases.py          (from docs/registry)
 Needs: jsonschema
@@ -10,12 +10,17 @@ record is accepted AND every malformed neighbour is refused.
 NARROWING pins the second half: `Secret` is `MaterialRef` and must stay a
 pointer. Without these, widening MaterialRef to add `vault://` would silently
 make a bare pasted credential legal.
+
+SHAPE pins the third: `type` is a discriminator, and every branch it decides is a
+rule no record in examples.md can demonstrate, because a valid record cannot show
+an illegal combination. Half of these guard against a revert — the wrapper objects
+coming back, `subscriberId` reappearing, `role` sliding back to `type`.
 """
 import json, io, sys
 
 def rec(auth):
-    return {"Participant": {"participantId": "probe-x", "name": "Probe", "status": "active",
-                            "upstream": {"baseUrl": "https://a.example/v1", "auth": auth}}}
+    return {"Participant": {"participantId": "probe-x", "name": "Probe", "type": "upstream",
+                            "status": "active", "baseUrl": "https://a.example/v1", "auth": auth}}
 
 CASES = [
     # --- the four schemes, minimal legal form (regression) ---
@@ -88,17 +93,74 @@ NARROWING = [
 ]
 
 
+# --- shape: what `type` decides. Each false case is a record that a reader would
+# --- call plausible and the schema must refuse.
+NODE = {"participantId": "provider-network-vistaar.da.gov.in", "name": "P",
+        "type": "node", "status": "active",
+        "baseUrl": "https://provider-network-vistaar.da.gov.in/beckn", "role": "BPP",
+        "keys": [{"keyId": "k1", "use": "sign", "alg": "ed25519",
+                  "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
+                  "validFrom": "2026-08-01T00:00:00Z", "status": "active"}]}
+UP = {"participantId": "mausamgram", "name": "U", "type": "upstream", "status": "active",
+      "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",
+      "auth": {"scheme": "basic", "secrets": {"username": "env://U", "password": "env://P"}}}
+
+
+def var(base, **kw):
+    """A copy of base with kw applied; a None value deletes the field."""
+    r = json.loads(json.dumps(base))
+    for k, v in kw.items():
+        r.pop(k, None) if v is None else r.__setitem__(k, v)
+    return r
+
+
+SHAPE = [
+    ("node, hostname id over https",        NODE, True),
+    ("upstream, credential over https",     UP, True),
+    ("upstream, scheme none over http",     var(UP, participantId="oan-vector",
+                                                baseUrl="http://3.6.146.174:8882",
+                                                auth={"scheme": "none"}), True),
+    # a node's id IS its wire identity, so it must be a hostname
+    ("node id that is not a hostname",      var(NODE, participantId="oan-provider"), False),
+    # each half refuses the other's fields
+    ("node carrying auth",                  var(NODE, auth={"scheme": "none"}), False),
+    ("node without role",                   var(NODE, role=None), False),
+    ("node without keys",                   var(NODE, keys=None), False),
+    ("upstream carrying role",              var(UP, role="BPP"), False),
+    ("upstream carrying keys",              var(UP, keys=NODE["keys"]), False),
+    ("upstream without auth",               var(UP, auth=None), False),
+    # transport
+    ("node over plaintext http",            var(NODE, baseUrl="http://p.da.gov.in/beckn"), False),
+    ("credential over plaintext http",      var(UP, baseUrl="http://mausamgram.imd.gov.in/x"), False),
+    # the discriminator itself
+    ("no type at all",                      var(UP, type=None), False),
+    ("a type value nobody defined",         var(NODE, type="external"), False),
+    ("no baseUrl",                          var(UP, baseUrl=None), False),
+    # guards against a revert to the nested shape
+    ("subscriberId resurrected",            var(NODE, subscriberId="x.da.gov.in"), False),
+    ("node wrapper resurrected",            var(NODE, node={"role": "BPP"}), False),
+    ("upstream wrapper resurrected",        var(UP, upstream={"baseUrl": "https://a.b/c"}), False),
+]
+
+
 def main():
     import jsonschema
     sch = json.load(io.open("schemas/Participant.json"))
     V = jsonschema.Draft7Validator(sch)
     bad = 0
+    for name, inst, want in SHAPE:
+        got = not list(V.iter_errors({"Participant": inst}))
+        hit = got == want
+        bad += not hit
+        print(f"  {'PASS' if hit else 'FAIL'}  {name:52} valid={str(got):5} want={want}")
+    print(f"\nshape cases: {len(SHAPE)} run, {bad} failing\n")
+
     for name, auth, want in CASES:
         got = not list(V.iter_errors(rec(auth)))
         hit = got == want
         bad += not hit
         print(f"  {'PASS' if hit else 'FAIL'}  {name:52} valid={str(got):5} want={want}")
-    print(f"\nauth cases: {len(CASES)} run, {bad} failing\n")
+    print(f"\nauth cases: {len(CASES)} run\n")
 
     for defn, value, want in NARROWING:
         V = jsonschema.Draft7Validator({**sch, "$ref": f"#/definitions/{defn}"})

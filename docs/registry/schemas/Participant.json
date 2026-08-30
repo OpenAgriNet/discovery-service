@@ -12,25 +12,15 @@
   },
   "definitions": {
     "Participant": {
-      "description": "Someone on the network. Exactly one of node or upstream: a node speaks Beckn, an upstream is an API our adapter calls.",
+      "description": "Someone the network deals with. `type` says which kind, and decides which of the remaining fields apply: a node speaks Beckn and is addressed by its participantId; an upstream is an ordinary API our adapter calls.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "participantId",
         "name",
-        "status"
-      ],
-      "oneOf": [
-        {
-          "required": [
-            "node"
-          ]
-        },
-        {
-          "required": [
-            "upstream"
-          ]
-        }
+        "type",
+        "status",
+        "baseUrl"
       ],
       "properties": {
         "participantId": {
@@ -43,42 +33,20 @@
           "maxLength": 200,
           "pattern": "\\S"
         },
+        "type": {
+          "$ref": "#/definitions/ParticipantType"
+        },
         "status": {
           "$ref": "#/definitions/Status"
         },
-        "node": {
-          "$ref": "#/definitions/Node"
-        },
-        "upstream": {
-          "$ref": "#/definitions/Upstream"
-        }
-      }
-    },
-    "Node": {
-      "description": "A participant that speaks Beckn: it signs what it sends, and we send Beckn to its subscriberUrl.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "subscriberId",
-        "subscriberUrl",
-        "type",
-        "keys"
-      ],
-      "properties": {
-        "subscriberId": {
-          "description": "Network identity. Appears as context.bapId / context.bppId and as the first field of the Authorization keyId.",
-          "type": "string",
-          "maxLength": 253,
-          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
-        },
-        "subscriberUrl": {
-          "description": "Where Beckn messages go. https only.",
+        "baseUrl": {
+          "description": "The base something is appended to: a Beckn action for a node, a binding's path for an upstream. https, except that an upstream with auth.scheme 'none' may be plaintext.",
           "type": "string",
           "maxLength": 2000,
-          "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+          "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
         },
-        "type": {
-          "description": "BAP asks. BPP answers. NETWORK exposes publish and discover, answering discover from published catalogs.",
+        "role": {
+          "description": "What this node does on the network. BAP asks. BPP answers. NETWORK exposes publish and discover, answering discover from published catalogs.",
           "type": "string",
           "enum": [
             "BAP",
@@ -95,29 +63,81 @@
           "items": {
             "$ref": "#/definitions/PublicKey"
           }
-        }
-      }
-    },
-    "Upstream": {
-      "description": "An API our adapter calls over ordinary HTTP. Does not speak Beckn.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "baseUrl",
-        "auth"
-      ],
-      "properties": {
-        "baseUrl": {
-          "description": "API base. A binding's path is appended to it.",
-          "type": "string",
-          "maxLength": 2000,
-          "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
         },
         "auth": {
           "$ref": "#/definitions/Auth"
         }
       },
       "allOf": [
+        {
+          "description": "A node speaks Beckn: it needs a role and keys, has no credential of ours to present, and its id is its wire identity so it must be a hostname.",
+          "if": {
+            "properties": {
+              "type": {
+                "const": "node"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "role",
+              "keys"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "auth"
+                  ]
+                }
+              ]
+            },
+            "properties": {
+              "participantId": {
+                "maxLength": 253,
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+              },
+              "baseUrl": {
+                "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+              }
+            }
+          }
+        },
+        {
+          "description": "An upstream does not speak Beckn: it has no role on the network and no keys we verify, only a credential we present.",
+          "if": {
+            "properties": {
+              "type": {
+                "const": "upstream"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "auth"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "role"
+                  ]
+                },
+                {
+                  "required": [
+                    "keys"
+                  ]
+                }
+              ]
+            }
+          }
+        },
         {
           "description": "A credential over plaintext http is a leaked credential.",
           "if": {
@@ -134,7 +154,10 @@
                   }
                 }
               }
-            }
+            },
+            "required": [
+              "auth"
+            ]
           },
           "then": {
             "properties": {
@@ -458,9 +481,10 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
     },
     "ParticipantId": {
-      "description": "Stable id. For an upstream this is the Beckn offer.provider.id. Node identity is node.subscriberId.",
+      "description": "Stable id, and the only id. For a node this is its network identity (context.bapId / context.bppId); for an upstream it is the Beckn offer.provider.id.",
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$"
+      "maxLength": 253,
+      "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$"
     },
     "Status": {
       "type": "string",
@@ -477,6 +501,14 @@
     },
     "Secret": {
       "$ref": "#/definitions/MaterialRef"
+    },
+    "ParticipantType": {
+      "description": "node speaks Beckn. upstream is an API we call over ordinary HTTP and does not.",
+      "type": "string",
+      "enum": [
+        "node",
+        "upstream"
+      ]
     }
   },
   "_osConfig": {

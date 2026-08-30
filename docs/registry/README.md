@@ -8,7 +8,7 @@ call each provider.
 Three ONIX adapters, one registry, one discovery-service, on the **Bharat Vistaar** subnet
 (`networkId: da.gov.in/vistaar`).
 
-| adapter | `subscriberId` | sits | does |
+| adapter | `participantId` | sits | does |
 |---|---|---|---|
 | **consumer node** | `seeker-network-vistaar.da.gov.in` | experience layer, beside the farmer app | signs `discover` / `select` |
 | **network node** | `discovery-network-vistaar.da.gov.in` | network, alongside discovery-service | exposes publish + discover; answers `discover` from published catalogs |

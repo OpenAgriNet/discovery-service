@@ -6,7 +6,7 @@ the reading of them.
 | entity | one row is | unique on |
 |---|---|---|
 | [`SchemaRegistry`](#schemaregistry) | a data type the network recognises | `capabilityCode` |
-| [`Participant`](#participant) | someone on the network | `participantId` |
+| [`Participant`](#participant) | someone the network deals with | `participantId` |
 | [`ProviderSchema`](#providerschema) | how to call one provider for one capability | `bindingKey` |
 
 Every row carries `status: "active" \| "inactive"`. Every read filters on `active`.
@@ -41,43 +41,72 @@ invisible. That one lands on discovery-service.
 
 ## `Participant`
 
-Three required fields, then **exactly one** of `node` or `upstream` (`oneOf`).
+Five fields always, then `type` decides the rest. One level, no wrapper object:
+
+| | always | `node` | `upstream` |
+|---|---|---|---|
+| required | `participantId`, `name`, `type`, `status`, `baseUrl` | `role`, `keys` | `auth` |
+| refused | | `auth` | `role`, `keys` |
+
+A **node** speaks Beckn. Its `participantId` *is* its network identity — what goes on the wire as
+`context.bapId` / `context.bppId`, and field 1 of the `Authorization` keyId. There is no second id
+field, because a node id that is also a hostname is one name for one thing; the schema enforces the
+hostname shape when `type` is `node`, so `oan-provider` is refused there and
+`provider-network-vistaar.da.gov.in` is not.
+
+An **upstream** is an ordinary API. It has not heard of Beckn, so it has no role and no keys, and
+its `participantId` is the `offer.provider.id` the farmer sees.
+
+`baseUrl` is one field because it was always one idea: the base something is appended to — a Beckn
+action for a node, a binding's `path` for an upstream. It is `https` in every case but one, an
+upstream whose `auth.scheme` is `none`, where there is no credential to leak.
+
+**`keys` and `auth` are not the same thing and must not be merged.** `keys` is *their* public
+material, which we use to verify what they sent; `auth` is *our* credential, which we present to
+them. Opposite directions, and opposite handling — `keys` is publishable and sits in
+[examples.md](examples.md) in full, `auth.secrets` holds `env://` pointers and must never be
+logged. One field holding both is the field somebody eventually logs whole.
+
+Why a discriminator rather than a `oneOf` over two wrapper objects: `if/then` tells a reader
+"`role` is a required property", where `oneOf` says "is not valid under any of the given schemas"
+and leaves them to work out which half they were in. It also makes `type` a real field — so rule 2
+can refuse a binding that points at a node, and RC's `/search`, which indexes top-level fields
+only, can filter on `baseUrl` and `type` at all.
 
 ```jsonc
 { "Participant": {
-  "participantId": "oan-provider",                  // stable id
+  "participantId": "provider-network-vistaar.da.gov.in",   // the only id — and this IS context.bppId
   "name": "OpenAgriNet provider adapter",
+  "type": "node",                                   // node | upstream
   "status": "active",                               // active | inactive
-  "node": {                                         // speaks Beckn
-    "subscriberId": "provider-network-vistaar.da.gov.in",       // context.bppId, and field 1 of the Authorization keyId
-    "subscriberUrl": "https://provider-network-vistaar.da.gov.in/beckn",   // where Beckn messages go; https only
-    "type": "BPP",                                  // BAP = consumer node, BPP = provider node, NETWORK = the network node
-    "keys": [ {                                     // 1–8; plural so a rotation can overlap
-      "keyId": "k1",                                // field 2 of the Authorization keyId — the sender says which key it used
-      "use": "sign",                                // sign | encrypt
-      "alg": "ed25519",                             // fixed by use: sign→ed25519, encrypt→x25519
-      "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",   // 44 chars = 32 raw bytes
-      "validFrom": "2026-08-01T00:00:00Z",
-      "validUntil": "2026-11-01T00:00:00Z",         // optional; absent = open-ended
-      "status": "active"                            // active | revoked
-    } ] } } }
+  "baseUrl": "https://provider-network-vistaar.da.gov.in/beckn",   // where Beckn messages go; https only
+  "role": "BPP",                                  // BAP = consumer node, BPP = provider node, NETWORK = the network node
+  "keys": [ {                                     // 1–8; plural so a rotation can overlap
+    "keyId": "k1",                                // field 2 of the Authorization keyId — the sender says which key it used
+    "use": "sign",                                // sign | encrypt
+    "alg": "ed25519",                             // fixed by use: sign→ed25519, encrypt→x25519
+    "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",   // 44 chars = 32 raw bytes
+    "validFrom": "2026-08-01T00:00:00Z",
+    "validUntil": "2026-11-01T00:00:00Z",         // optional; absent = open-ended
+    "status": "active"                            // active | revoked
+  } ] } }
 ```
 ```jsonc
 { "Participant": {
   "participantId": "mausamgram",                    // also the Beckn offer.provider.id
   "name": "IMD Mausamgram NWP",
+  "type": "upstream",                               // does not speak Beckn: no role, no keys
   "status": "active",
-  "upstream": {                                     // does not speak Beckn
-    "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",   // a binding's path is appended; https unless scheme is none
-    "auth": {                                       // how WE authenticate TO it
-      "scheme": "basic",                            // none | apiKeyQuery | apiKeyHeader | basic
-      "secrets": { "username": "env://MAUSAMGRAM_USER",     // pointers, never material —
-                   "password": "env://MAUSAMGRAM_X_API_KEY" } } } } }   // resolved in the adapter's environment
+  "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",   // a binding's path is appended; https unless scheme is none
+  "auth": {                                       // how WE authenticate TO it
+    "scheme": "basic",                            // none | apiKeyQuery | apiKeyHeader | basic
+    "secrets": { "username": "env://MAUSAMGRAM_USER",     // pointers, never material —
+                 "password": "env://MAUSAMGRAM_X_API_KEY" } } } }   // resolved in the adapter's environment
 ```
 
 An API and the adapter in front of it are separate deployables, so separate records:
-`mausamgram` is IMD's API, `oan-provider` is the BPP that calls it. Which upstreams a provider
-node fronts is that adapter's config.
+`mausamgram` is IMD's API, `provider-network-vistaar.da.gov.in` is the BPP that calls it. Which
+upstreams a provider node fronts is that adapter's config.
 
 ### `auth`
 
@@ -155,12 +184,13 @@ these is a record that passes every pattern and still fails weeks later. Checked
 `verify/records.py`.
 
 1. **`bindingKey` equals `participantId` + `"|"` + `capabilityCode`.**
-2. **Both halves resolve to `active` records.**
+2. **Both halves resolve to `active` records, and the Participant is an `upstream`.** A
+   binding says how to call an API; a node is not one, and has no `baseUrl` to call.
 3. **Where `auth.paramNames` is used, its keys are exactly the keys of `auth.secrets`.** A name
    with no secret sends an empty header; a secret with no name is never sent.
 4. **`version` equals the `vN.N` segment of `schemaUrl`.** Otherwise a record advertises `v0.1`
    and resolves `v0.2`.
-5. **`node.keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so
+5. **`keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so
    two entries with the same `keyId` and different material both pass, and a verifier gets
    whichever it found first.
 6. **No `enricher.config` value is an address.** `config` is the only free-form object in all

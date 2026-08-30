@@ -30,12 +30,12 @@ Content-Type: application/json
 { "Participant": {
   "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
+  "type": "upstream",
   "status": "active",
-  "upstream": {
-    "baseUrl": "https://api.agmarknet.gov.in",
-    "auth": { "scheme": "apiKeyQuery",
-              "paramName": "token",
-              "secrets": { "token": "env://MANDI_TOKEN" } } } } }
+  "baseUrl": "https://api.agmarknet.gov.in",
+  "auth": { "scheme": "apiKeyQuery",
+            "paramName": "token",
+            "secrets": { "token": "env://MANDI_TOKEN" } } } }
 ```
 ```json
 200 OK
@@ -60,12 +60,16 @@ Only indexed fields can be filtered:
 | entity | unique | also indexed |
 |---|---|---|
 | `SchemaRegistry` | `capabilityCode` | `status` |
-| `Participant` | `participantId` | `status` |
+| `Participant` | `participantId` | `status`, `type`, `baseUrl` |
 | `ProviderSchema` | `bindingKey` | `participantId`, `capabilityCode`, `status` |
 
 **`search` is not public.** A record may hold an `inline:` credential, so a read of `Participant`
-can be a read of live key material. `privateFields` *should* redact
-`$.upstream.auth.secrets`; that is unverified on the pinned build, so assume it does not.
+can be a read of live key material. `privateFields` *should* redact `$.auth.secrets`; that is
+unverified on the pinned build, so assume it does not.
+
+`type` and `baseUrl` are indexed because flattening made them indexable — RC filters on top-level
+fields only, so `upstream.baseUrl` could not be searched at all. `type` is the useful one: it
+separates the nodes from the upstreams in one `eq`.
 
 **The unique index is a single field, so a duplicate is a silent overwrite, not an error.**
 
@@ -82,12 +86,12 @@ Authorization: Bearer <operator-token>
 { "Participant": {
   "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
+  "type": "upstream",
   "status": "inactive",
-  "upstream": {
-    "baseUrl": "https://api.agmarknet.gov.in",
-    "auth": { "scheme": "apiKeyQuery",
-              "paramName": "token",
-              "secrets": { "token": "env://MANDI_TOKEN_2026" } } } } }
+  "baseUrl": "https://api.agmarknet.gov.in",
+  "auth": { "scheme": "apiKeyQuery",
+            "paramName": "token",
+            "secrets": { "token": "env://MANDI_TOKEN_2026" } } } }
 ```
 
 **Because `PUT` replaces, a field you omit is a field you delete.** On a node record `keys` is the

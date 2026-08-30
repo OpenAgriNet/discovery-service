@@ -6,7 +6,7 @@ Run from `docs/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`
 ```
 python3 verify/shape.py         # every record shown in any page here is a real record
 python3 verify/records.py       # the records in examples.md, plus the six rules
-python3 verify/auth_cases.py    # the auth matrix and the material grammar
+python3 verify/auth_cases.py    # what `type` decides, the auth matrix, the material grammar
 python3 verify/links.py         # every `](file.md#anchor)` in this folder resolves
 python3 verify/packs.py         # every resource shown here satisfies its network-specs domain pack
 ```
@@ -25,7 +25,7 @@ and `valuePrefix` exercised, since no v1 record uses either.
 `records.py` catches what a schema cannot. Validating the records is the easy half; the half that
 matters is the [six rules](../schemas.md#six-rules-the-schema-cannot-express) — `bindingKey`
 against its own two fields, references that resolve to live records, `paramNames` against
-`secrets`, `version` against `schemaUrl`, `keyId` uniqueness within `node.keys`. Each is a record
+`secrets`, `version` against `schemaUrl`, `keyId` uniqueness within `keys`. Each is a record
 that passes every pattern in its schema and still produces a failed call, or a silently
 unverifiable signature, weeks later.
 
@@ -43,6 +43,14 @@ Mutation-tested.
 reason is worse than no case — before `paramNames` existed, every `paramNames` negative passed
 because `additionalProperties: false` refused the field outright. They are kept so the same cases
 now fail for the intended reason.
+
+Its `SHAPE` block pins what `type` decides. None of it can be shown by a record in `examples.md`,
+because a valid record cannot demonstrate an illegal combination — a node carrying `auth`, an
+upstream carrying `keys`, a node id that is not a hostname, a credential over plaintext http. Half
+the cases guard a revert rather than a bug: `subscriberId` reappearing, the `node` / `upstream`
+wrapper objects coming back, `role` sliding back to `type`. Mutation-tested against the schema
+itself — deleting the two `if/then` branches fails 8 of the 18, and relaxing
+`additionalProperties` fails the 3 revert guards.
 
 Its `NARROWING` block pins the material grammar in both directions: a **secret is always a
 pointer** (`env://`, or `inline:` under protest) and a **public key is always material**

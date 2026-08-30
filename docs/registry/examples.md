@@ -42,57 +42,55 @@ resource by `subjectCategories`.
 
 ## Nodes
 
-The three adapters of the [deployment topology](README.md#deployment-topology). Keys below are
-demo material.
+The three adapters of the [deployment topology](README.md#deployment-topology). A node's
+`participantId` is its wire identity, so these read as hostnames and are what `context.bapId` and
+`context.bppId` carry. Keys below are demo material.
 
 ```json
 { "Participant": {
-  "participantId": "oan-consumer",
+  "participantId": "seeker-network-vistaar.da.gov.in",
   "name": "Kisan app consumer adapter",
+  "type": "node",
   "status": "active",
-  "node": {
-    "subscriberId": "seeker-network-vistaar.da.gov.in",
-    "subscriberUrl": "https://seeker-network-vistaar.da.gov.in/beckn",
-    "type": "BAP",
-    "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
-                "key": "base64:s3Q/53+xYL/BgelYdsKd7DBgYDUFLsXE+GQDLSuPZ4c=",
-                "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } } }
+  "baseUrl": "https://seeker-network-vistaar.da.gov.in/beckn",
+  "role": "BAP",
+  "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
+              "key": "base64:s3Q/53+xYL/BgelYdsKd7DBgYDUFLsXE+GQDLSuPZ4c=",
+              "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } }
 ```
 ```json
 { "Participant": {
-  "participantId": "oan-network",
+  "participantId": "discovery-network-vistaar.da.gov.in",
   "name": "OpenAgriNet network node",
+  "type": "node",
   "status": "active",
-  "node": {
-    "subscriberId": "discovery-network-vistaar.da.gov.in",
-    "subscriberUrl": "https://discovery-network-vistaar.da.gov.in/beckn",
-    "type": "NETWORK",
-    "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
-                "key": "base64:q7fEHdFO7wNpYBARwY+qvhGhRzlrlJWRR64NIwQhO2A=",
-                "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } } }
+  "baseUrl": "https://discovery-network-vistaar.da.gov.in/beckn",
+  "role": "NETWORK",
+  "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
+              "key": "base64:q7fEHdFO7wNpYBARwY+qvhGhRzlrlJWRR64NIwQhO2A=",
+              "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } }
 ```
 ```json
 { "Participant": {
-  "participantId": "oan-provider",
+  "participantId": "provider-network-vistaar.da.gov.in",
   "name": "OpenAgriNet provider adapter",
+  "type": "node",
   "status": "active",
-  "node": {
-    "subscriberId": "provider-network-vistaar.da.gov.in",
-    "subscriberUrl": "https://provider-network-vistaar.da.gov.in/beckn",
-    "type": "BPP",
-    "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
-                "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
-                "validFrom": "2026-08-01T00:00:00Z",
-                "validUntil": "2026-11-01T00:00:00Z", "status": "active" },
-              { "keyId": "k2", "use": "sign", "alg": "ed25519",
-                "key": "base64:1s/FVTLnowPxttooNqWzGCqMZqUrypASpL4jC9NWUA8=",
-                "validFrom": "2026-10-01T00:00:00Z", "status": "active" },
-              { "keyId": "e1", "use": "encrypt", "alg": "x25519",
-                "key": "base64:SzmOZUXmi7jIzJQItBpX/vQA9O3IvEnzZUkc1J/iK7M=",
-                "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } } }
+  "baseUrl": "https://provider-network-vistaar.da.gov.in/beckn",
+  "role": "BPP",
+  "keys": [ { "keyId": "k1", "use": "sign", "alg": "ed25519",
+              "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
+              "validFrom": "2026-08-01T00:00:00Z",
+              "validUntil": "2026-11-01T00:00:00Z", "status": "active" },
+            { "keyId": "k2", "use": "sign", "alg": "ed25519",
+              "key": "base64:1s/FVTLnowPxttooNqWzGCqMZqUrypASpL4jC9NWUA8=",
+              "validFrom": "2026-10-01T00:00:00Z", "status": "active" },
+            { "keyId": "e1", "use": "encrypt", "alg": "x25519",
+              "key": "base64:SzmOZUXmi7jIzJQItBpX/vQA9O3IvEnzZUkc1J/iK7M=",
+              "validFrom": "2026-08-01T00:00:00Z", "status": "active" } ] } }
 ```
 
-`oan-provider` shows a rotation: `k1` expires 1 Nov, `k2` is valid from 1 Oct, and the October
+The provider node shows a rotation: `k1` expires 1 Nov, `k2` is valid from 1 Oct, and the October
 overlap is the window in which either signature verifies. The sender names the key it used in the
 `Authorization` header, so nothing has to guess.
 
@@ -107,50 +105,52 @@ Five external APIs. None of them has heard of Beckn; each appears on the wire as
 { "Participant": {
   "participantId": "mausamgram",
   "name": "IMD Mausamgram NWP",
+  "type": "upstream",
   "status": "active",
-  "upstream": {
-    "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",
-    "auth": { "scheme": "basic",
-              "secrets": { "username": "env://MAUSAMGRAM_USER",
-                           "password": "env://MAUSAMGRAM_X_API_KEY" } } } } }
+  "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",
+  "auth": { "scheme": "basic",
+            "secrets": { "username": "env://MAUSAMGRAM_USER",
+                         "password": "env://MAUSAMGRAM_X_API_KEY" } } } }
 ```
 ```json
 { "Participant": {
   "participantId": "imd-city-weather",
   "name": "IMD City Weather",
+  "type": "upstream",
   "status": "active",
-  "upstream": { "baseUrl": "https://city.imd.gov.in",
-                "auth": { "scheme": "none" } } } }
+  "baseUrl": "https://city.imd.gov.in",
+  "auth": { "scheme": "none" } } }
 ```
 ```json
 { "Participant": {
   "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
+  "type": "upstream",
   "status": "active",
-  "upstream": {
-    "baseUrl": "https://api.agmarknet.gov.in",
-    "auth": { "scheme": "apiKeyQuery",
-              "paramName": "token",
-              "secrets": { "token": "env://MANDI_TOKEN" } } } } }
+  "baseUrl": "https://api.agmarknet.gov.in",
+  "auth": { "scheme": "apiKeyQuery",
+            "paramName": "token",
+            "secrets": { "token": "env://MANDI_TOKEN" } } } }
 ```
 ```json
 { "Participant": {
   "participantId": "hasura-content",
   "name": "Vistaar Knowledge Content (Hasura)",
+  "type": "upstream",
   "status": "active",
-  "upstream": {
-    "baseUrl": "https://content.internal",
-    "auth": { "scheme": "apiKeyHeader",
-              "paramName": "x-hasura-admin-secret",
-              "secrets": { "adminSecret": "env://HASURA_GRAPHQL_ADMIN_SECRET" } } } } }
+  "baseUrl": "https://content.internal",
+  "auth": { "scheme": "apiKeyHeader",
+            "paramName": "x-hasura-admin-secret",
+            "secrets": { "adminSecret": "env://HASURA_GRAPHQL_ADMIN_SECRET" } } } }
 ```
 ```json
 { "Participant": {
   "participantId": "oan-vector",
   "name": "OAN Vector Index",
+  "type": "upstream",
   "status": "active",
-  "upstream": { "baseUrl": "http://3.6.146.174:8882",
-                "auth": { "scheme": "none" } } } }
+  "baseUrl": "http://3.6.146.174:8882",
+  "auth": { "scheme": "none" } } }
 ```
 
 `oan-vector` is a bare IP over plain HTTP, legal only because `scheme: none` — nothing is leaked.
@@ -241,25 +241,25 @@ rather than only claimed.
 { "Participant": {
   "participantId": "probe-multi-secret",
   "name": "Upstream wanting two named credentials",
+  "type": "upstream",
   "status": "active",
-  "upstream": {
-    "baseUrl": "https://probe.example/v1",
-    "auth": { "scheme": "apiKeyHeader",
-              "paramNames": { "client": "x-client-id", "key": "x-api-key" },
-              "secrets":    { "client": "env://PROBE_CLIENT_ID",
-                              "key":    "env://PROBE_API_KEY" } } } } }
+  "baseUrl": "https://probe.example/v1",
+  "auth": { "scheme": "apiKeyHeader",
+            "paramNames": { "client": "x-client-id", "key": "x-api-key" },
+            "secrets":    { "client": "env://PROBE_CLIENT_ID",
+                            "key":    "env://PROBE_API_KEY" } } } }
 ```
 ```json
 { "Participant": {
   "participantId": "probe-bearer",
   "name": "Upstream wanting a bearer token",
+  "type": "upstream",
   "status": "active",
-  "upstream": {
-    "baseUrl": "https://probe.example/v2",
-    "auth": { "scheme": "apiKeyHeader",
-              "paramName": "Authorization",
-              "valuePrefix": "Bearer ",
-              "secrets": { "token": "env://PROBE_BEARER_TOKEN" } } } } }
+  "baseUrl": "https://probe.example/v2",
+  "auth": { "scheme": "apiKeyHeader",
+            "paramName": "Authorization",
+            "valuePrefix": "Bearer ",
+            "secrets": { "token": "env://PROBE_BEARER_TOKEN" } } } }
 ```
 
 ## Before seeding

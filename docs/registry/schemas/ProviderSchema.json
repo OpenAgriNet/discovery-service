@@ -52,7 +52,7 @@
     "MappingPath": { "type": "string", "maxLength": 256,
                      "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.jsonata$" },
 
-    "ParticipantId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,63}$" },
+    "ParticipantId": { "type": "string", "maxLength": 253, "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$" },
     "CapabilityCode": { "type": "string",
                         "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$",
                         "not": { "pattern": "^openagrinet:Agriculture(Capability|Resource)$" } },

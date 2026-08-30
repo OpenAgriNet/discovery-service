@@ -53,6 +53,11 @@ def rules(by_entity, fail):
                 fail(f'rule 2: {key} names {label} {ref!r}, which is not in {MD}')
             elif row["status"] != "active":
                 fail(f'rule 2: {key} names {label} {ref!r}, which is {row["status"]}')
+            elif label == "Participant" and row.get("type") != "upstream":
+                # A binding says how to call an API. A node is not one — it has no
+                # baseUrl and no auth, so this resolves to a call that cannot be made.
+                fail(f'rule 2: {key} names Participant {ref!r}, which is a '
+                     f'{row.get("type")}, not an upstream')
 
         # rule 6 — an enricher's config holds no address. config is the one free-form
         # object in all three schemas, so it is the one place a literal DSN can be pasted
@@ -64,7 +69,7 @@ def rules(by_entity, fail):
                      f'({val.split("://")[0]}://…) — that belongs in enricher.secrets')
 
     for p in by_entity.get("Participant", []):
-        auth = p.get("upstream", {}).get("auth", {})
+        auth = p.get("auth", {})
         # rule 3 — paramNames keys are exactly the secrets keys
         if "paramNames" in auth:
             if set(auth["paramNames"]) != set(auth.get("secrets", {})):
@@ -72,7 +77,7 @@ def rules(by_entity, fail):
                      f'{sorted(auth["paramNames"])} != secrets keys '
                      f'{sorted(auth.get("secrets", {}))}')
         # rule 5 — keyId unique within node.keys
-        ids = [k["keyId"] for k in p.get("node", {}).get("keys", [])]
+        ids = [k["keyId"] for k in p.get("keys", [])]
         if len(ids) != len(set(ids)):
             fail(f'rule 5: {p["participantId"]} repeats a keyId in node.keys')
 
@@ -80,7 +85,7 @@ def rules(by_entity, fail):
     # permits inline:, because an operator who cannot set an environment needs
     # it; a reviewed document in git is never that operator.
     for p in by_entity.get("Participant", []):
-        for name, ref in p.get("upstream", {}).get("auth", {}).get("secrets", {}).items():
+        for name, ref in p.get("auth", {}).get("secrets", {}).items():
             if not ref.startswith("env://"):
                 fail(f'committed docs: {p["participantId"]} secrets.{name} is '
                      f'{ref.split(":")[0]}:… — only env:// belongs in a tracked file')
