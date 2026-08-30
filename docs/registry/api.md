@@ -129,4 +129,4 @@ until that reload.
 |---|---|
 | **Response body shapes** | The requests are corroborated. Whether RC returns search rows bare or wrapped is unchecked against the pinned build — treat every response body here as illustrative. |
 | **`DELETE` being closed** | Policy. That it is closed *at the gateway* is a deployment fact this page cannot assert about your environment — confirm it. |
-| **`schemaUrl` resolvability** | Nothing fetches these URLs, and nothing checks `version` against the URL's `vN.N` segment. Both belong in the seeding path. |
+| **`schemaUrl` resolvability** | Nothing fetches these URLs, and RC does not check `version` against the URL's `vN.N` segment — only `verify/records.py` does, over this folder. Both belong in the seeding path too. |

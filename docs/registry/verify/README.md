@@ -22,10 +22,19 @@ both, and a per-block rule would force the docs to document one and stop documen
 `examples.md` carries two probe records under *Forms no seeded record uses* to keep `paramNames`
 and `valuePrefix` exercised, since no v1 record uses either.
 
+`shape.py` also checks `_osConfig`, which no record can exercise because it is RC configuration
+rather than schema — and which therefore rots in silence. A `privateFields` path naming a field
+that no longer exists matches nothing, so the secret is returned in the clear with no error
+anywhere; the flatten left `$.upstream.auth.secrets` behind exactly that way. `indexFields` is the
+other half: it is what RC will actually let an operator filter on, api.md states it in a table, and
+nothing compared the two. Both directions mutation-tested — reverting the path, dropping a field
+from the schema, and adding one to the table each produce exactly one failure.
+
 `records.py` catches what a schema cannot. Validating the records is the easy half; the half that
 matters is the [six rules](../schemas.md#six-rules-the-schema-cannot-express) — `bindingKey`
 against its own two fields, references that resolve to live records, `paramNames` against
-`secrets`, `version` against `schemaUrl`, `keyId` uniqueness within `keys`. Each is a record
+`secrets`, `version` against `schemaUrl`, `keyId` uniqueness within `keys`, and no address
+pasted into `enricher.config`. Each is a record
 that passes every pattern in its schema and still produces a failed call, or a silently
 unverifiable signature, weeks later.
 
@@ -33,7 +42,7 @@ unverifiable signature, weeks later.
 by mutation: inject the violation into a copy of `examples.md` and confirm the checker reports
 that rule and not another.
 
-`records.py` also carries one invariant that is not one of the five: **no secret in `examples.md`
+`records.py` also carries one invariant that is not one of the six: **no secret in `examples.md`
 may be anything but `env://`.** The schema permits `inline:` on purpose — an operator who cannot
 set an environment variable needs it — but a reviewed file in git is never that operator, and the
 day someone pastes a working key into an example is the day it is in every clone.
@@ -46,9 +55,9 @@ now fail for the intended reason.
 
 Its `SHAPE` block pins what `type` decides. None of it can be shown by a record in `examples.md`,
 because a valid record cannot demonstrate an illegal combination — a node carrying `auth`, an
-upstream carrying `keys`, a node id that is not a hostname, a credential over plaintext http. Half
-the cases guard a revert rather than a bug: `subscriberId` reappearing, the `node` / `upstream`
-wrapper objects coming back, `role` sliding back to `type`. Mutation-tested against the schema
+upstream carrying `keys`, a node id that is not a hostname, a credential over plaintext http.
+Three of them guard a revert rather than a bug: `subscriberId` reappearing, and either
+wrapper object — `node` or `upstream` — coming back. Mutation-tested against the schema
 itself — deleting the two `if/then` branches fails 8 of the 18, and relaxing
 `additionalProperties` fails the 3 revert guards.
 

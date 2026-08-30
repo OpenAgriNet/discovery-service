@@ -516,10 +516,12 @@
       "participantId"
     ],
     "indexFields": [
-      "status"
+      "status",
+      "type",
+      "baseUrl"
     ],
     "privateFields": [
-      "$.upstream.auth.secrets"
+      "$.auth.secrets"
     ],
     "roles": [
       "registryOperator"

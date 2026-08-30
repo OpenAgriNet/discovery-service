@@ -3,6 +3,10 @@
   (a) it validates against its entity's schema, and
   (b) across all blocks for an entity, EVERY declared property is exercised.
 
+And `_osConfig` — which is not part of any record, so nothing above would touch it — must
+name only fields that exist, and must agree with the table in api.md that tells an operator
+what they may filter on.
+
 A block counts as a record if its single top-level key is an entity name. Every other
 ```json block in these pages is a Beckn payload or an upstream response and is skipped,
 so a page can show whatever it needs without tripping this.
@@ -72,6 +76,44 @@ def covered(inst, node, sch, where="", depth=0):
     return acc
 
 
+def check_osconfig(schemas):
+    """`_osConfig` is RC configuration, not schema, so no record exercises it.
+
+    Two ways it rots silently. A path that names a field which no longer exists matches
+    nothing — for `privateFields` that is a secret returned in the clear, with no error
+    anywhere. And `indexFields` is what RC will actually let you filter on, which api.md
+    states in a table; a table nothing compares against the file drifts from it.
+    """
+    fail = 0
+    tbl = {}
+    md = io.open("api.md", encoding="utf-8").read()
+    for ent, uniq, idx in re.findall(
+            r"^\|\s*`(\w+)`\s*\|\s*`([\w.]+)`\s*\|([^|]*)\|\s*$", md, re.M):
+        tbl[ent] = ([uniq], re.findall(r"`([\w.$]+)`", idx))
+
+    for entity, sch in sorted(schemas.items()):
+        cfg = sch.get("_osConfig", {})
+        want = declared(sch["definitions"][entity], sch)
+        for key in ("uniqueIndexFields", "indexFields", "privateFields"):
+            for f in cfg.get(key, []):
+                path = f[2:] if f.startswith("$.") else f
+                if path not in want:
+                    fail += 1
+                    print(f"  DANGLING  {entity}._osConfig.{key}: {f!r} is not a field of {entity}")
+        if entity not in tbl:
+            fail += 1
+            print(f"  NO api.md ROW for {entity} in the indexed-fields table")
+            continue
+        uniq, idx = tbl[entity]
+        for key, doc in (("uniqueIndexFields", uniq), ("indexFields", idx)):
+            if cfg.get(key, []) != doc:
+                fail += 1
+                print(f"  DRIFT  {entity}.{key}: schema {cfg.get(key, [])} != api.md {doc}")
+    if not fail:
+        print("  OK  _osConfig: every path resolves, and api.md's table matches all three files")
+    return fail
+
+
 def main():
     schemas = {f.split("/")[-1][:-5]: json.load(io.open(f, encoding="utf-8"))
                for f in glob.glob("schemas/*.json")}
@@ -118,6 +160,9 @@ def main():
             print(f"  {entity}: {len(gap)} of {len(want)} properties never exercised: {gap}")
         else:
             print(f"  OK  {entity}: all {len(want)} declared properties exercised across its blocks")
+
+    print()
+    fail += check_osconfig(schemas)
 
     print(f"\nfailures: {fail}")
     return 1 if fail else 0

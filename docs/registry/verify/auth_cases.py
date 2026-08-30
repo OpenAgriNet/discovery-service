@@ -13,8 +13,8 @@ make a bare pasted credential legal.
 
 SHAPE pins the third: `type` is a discriminator, and every branch it decides is a
 rule no record in examples.md can demonstrate, because a valid record cannot show
-an illegal combination. Half of these guard against a revert — the wrapper objects
-coming back, `subscriberId` reappearing, `role` sliding back to `type`.
+an illegal combination. Three of them guard against a revert — either wrapper
+object coming back, and `subscriberId` reappearing.
 """
 import json, io, sys
 

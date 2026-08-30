@@ -76,10 +76,10 @@ def rules(by_entity, fail):
                 fail(f'rule 3: {p["participantId"]} paramNames keys '
                      f'{sorted(auth["paramNames"])} != secrets keys '
                      f'{sorted(auth.get("secrets", {}))}')
-        # rule 5 — keyId unique within node.keys
+        # rule 5 — keyId unique within keys
         ids = [k["keyId"] for k in p.get("keys", [])]
         if len(ids) != len(set(ids)):
-            fail(f'rule 5: {p["participantId"]} repeats a keyId in node.keys')
+            fail(f'rule 5: {p["participantId"]} repeats a keyId in keys')
 
     # not a §3.4 rule — an invariant of this file being COMMITTED. The schema
     # permits inline:, because an operator who cannot set an environment needs

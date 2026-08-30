@@ -185,7 +185,8 @@ these is a record that passes every pattern and still fails weeks later. Checked
 
 1. **`bindingKey` equals `participantId` + `"|"` + `capabilityCode`.**
 2. **Both halves resolve to `active` records, and the Participant is an `upstream`.** A
-   binding says how to call an API; a node is not one, and has no `baseUrl` to call.
+   binding says how to call an API. A node is not one — its `baseUrl` takes Beckn actions, not
+   a binding's `path` — so the binding resolves to a call that cannot be made.
 3. **Where `auth.paramNames` is used, its keys are exactly the keys of `auth.secrets`.** A name
    with no secret sends an empty header; a secret with no name is never sent.
 4. **`version` equals the `vN.N` segment of `schemaUrl`.** Otherwise a record advertises `v0.1`

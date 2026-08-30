@@ -48,8 +48,8 @@ verifier.
   consumer node
 ```
 
-Four registry records carry that flow: the three nodes, plus `mausamgram` as an upstream and its
-binding to `openagrinet:WeatherObservation`.
+Five registry records carry that flow: the three nodes, plus `mausamgram` as an upstream and
+its binding to `openagrinet:WeatherObservation`.
 
 ## Documents
 
