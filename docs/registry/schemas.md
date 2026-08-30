@@ -69,9 +69,9 @@ logged. One field holding both is the field somebody eventually logs whole.
 
 Why a discriminator rather than a `oneOf` over two wrapper objects: `if/then` tells a reader
 "`role` is a required property", where `oneOf` says "is not valid under any of the given schemas"
-and leaves them to work out which half they were in. It also makes `type` a real field — so rule 2
-can refuse a binding that points at a node, and RC's `/search`, which indexes top-level fields
-only, can filter on `baseUrl` and `type` at all.
+and leaves them to work out which half they were in. It also makes `type` a real field — so
+`verify/records.py` can refuse a binding that points at a node, and RC's `/search`, which indexes
+top-level fields only, can filter on `baseUrl` and `type` at all.
 
 ```jsonc
 { "Participant": {
@@ -157,7 +157,7 @@ An enricher that needs a database of its own carries both optional halves:
   "method": "GET",
   "path": "/v1/fetch-agmarknet-vistaar-location",
   "enricher": { "name": "marketAndCommodityCodes",
-                "config":  { "maxDistanceMeters": 50000 },   // free-form; addresses are refused by rule 6
+                "config":  { "maxDistanceMeters": 50000 },   // free-form, but an address belongs in secrets
                 "secrets": { "dsn": "env://GEO_DSN" } },     // env:// only — inline: does not validate here
   "requestMapping":  "mappings/agmarknet/select.request.jsonata",
   "responseMapping": "mappings/agmarknet/select.response.jsonata",
@@ -174,40 +174,3 @@ to hold the behaviour would become a programming language.
 A binding with no enricher passes the Beckn body straight to the mapping. A binding whose adapter
 has no implementation for the name it declares is a **seeding prerequisite** that returns nothing
 useful, and nothing here catches it: `enricher.name` is a string, not a reference.
-
----
-
-## Six rules the schema cannot express
-
-JSON Schema cannot compare two fields, and RC enforces no reference between entities. Each of
-these is a record that passes every pattern and still fails weeks later. Checked by
-`verify/records.py`.
-
-1. **`bindingKey` equals `participantId` + `"|"` + `capabilityCode`.**
-2. **Both halves resolve to `active` records, and the Participant is an `upstream`.** A
-   binding says how to call an API. A node is not one — its `baseUrl` takes Beckn actions, not
-   a binding's `path` — so the binding resolves to a call that cannot be made.
-3. **Where `auth.paramNames` is used, its keys are exactly the keys of `auth.secrets`.** A name
-   with no secret sends an empty header; a secret with no name is never sent.
-4. **`version` equals the `vN.N` segment of `schemaUrl`.** Otherwise a record advertises `v0.1`
-   and resolves `v0.2`.
-5. **`keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so
-   two entries with the same `keyId` and different material both pass, and a verifier gets
-   whichever it found first.
-6. **No `enricher.config` value is an address.** `config` is the only free-form object in all
-   three schemas, so it is the only place a literal DSN can be pasted where an `env://` pointer
-   belongs. Anything containing `://` goes in `enricher.secrets`.
-
----
-
-## About the files
-
-Two things about [`schemas/`](schemas) that a record cannot show:
-
-- **`baseUrl` and `MappingPath` use negative lookahead**, to refuse `..`. Ajv and Java compile
-  those patterns; **Go's RE2 does not**, so a Go adapter validating these records locally has to
-  implement those two rules in code. Nothing else in the three files is RE2-hostile, and the
-  length caps are written under RE2's 1000-repeat limit to keep it that way.
-- **Shared definitions are copied, not referenced.** RC loads each entity schema alone, so
-  `Status`, `ParticipantId` and `CapabilityCode` are duplicated verbatim across the three files.
-  Identical names make a drift a diff, but nothing fails a build on it.

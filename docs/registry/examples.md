@@ -267,7 +267,7 @@ rather than only claimed.
 - **Reads are authenticated.** Seeding needs the operator token, the adapter a read-only one.
 - **The read-only role does not exist yet** — any token that can read these can also write them.
   Close that before seeding a credential.
-- **Check `version` against `schemaUrl`.** Rule 4; the schema cannot compare them.
+- **Check `version` against `schemaUrl`.** The schema cannot compare two fields; `verify/records.py` does.
 - **There is no delete.** A correction is a full `PUT`, or `status: "inactive"`.
 - `agmarknet`'s request mapping must emit `lat`, `long`, `commodity_id` and a single `date` — the
   older four-code endpoint is not what production calls.

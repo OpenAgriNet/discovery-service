@@ -30,13 +30,25 @@ other half: it is what RC will actually let an operator filter on, api.md states
 nothing compared the two. Both directions mutation-tested — reverting the path, dropping a field
 from the schema, and adding one to the table each produce exactly one failure.
 
-`records.py` catches what a schema cannot. Validating the records is the easy half; the half that
-matters is the [six rules](../schemas.md#six-rules-the-schema-cannot-express) — `bindingKey`
-against its own two fields, references that resolve to live records, `paramNames` against
-`secrets`, `version` against `schemaUrl`, `keyId` uniqueness within `keys`, and no address
-pasted into `enricher.config`. Each is a record
-that passes every pattern in its schema and still produces a failed call, or a silently
-unverifiable signature, weeks later.
+`records.py` catches what a schema cannot. JSON Schema cannot compare two fields and RC enforces
+no reference between entities, so six rules live here instead. Each is a record that passes every
+pattern in its schema and still produces a failed call, or a silently unverifiable signature,
+weeks later.
+
+1. **`bindingKey` equals `participantId` + `"|"` + `capabilityCode`.**
+2. **Both halves resolve to `active` records, and the Participant is an `upstream`.** A binding
+   says how to call an API. A node is not one — its `baseUrl` takes Beckn actions, not a
+   binding's `path` — so the binding resolves to a call that cannot be made.
+3. **Where `auth.paramNames` is used, its keys are exactly the keys of `auth.secrets`.** A name
+   with no secret sends an empty header; a secret with no name is never sent.
+4. **`version` equals the `vN.N` segment of `schemaUrl`.** Otherwise a record advertises `v0.1`
+   and resolves `v0.2`.
+5. **`keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so two
+   entries with the same `keyId` and different material both pass, and a verifier gets whichever
+   it found first.
+6. **No `enricher.config` value is an address.** `config` is the only free-form object in the
+   three schemas, so it is the only place a literal DSN can be pasted where an `env://` pointer
+   belongs. Anything containing `://` goes in `enricher.secrets`.
 
 `paramNames` and `keyId` uniqueness are not violated by any seeded record, so they were verified
 by mutation: inject the violation into a copy of `examples.md` and confirm the checker reports

@@ -285,7 +285,7 @@ constants — IMD is slow, and an operator changes this without a deploy.
 1, never from the request**. A request that could name the participant could point a
 credentialled call at a host of its choosing. That row is `type: "upstream"`, so it carries a
 `baseUrl` and an `auth`; a binding naming a node instead would resolve to a call that cannot be
-made, which is why rule 2 refuses one at seeding time.
+made, which is why `verify/records.py` refuses one at seeding time.
 
 An empty result from either read is a hard failure — `BIZ_PROVIDER_NOT_FOUND`, not a fallback.
 
