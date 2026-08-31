@@ -94,8 +94,10 @@ Authorization: Bearer <operator-token>
             "secrets": { "token": "env://MANDI_TOKEN_2026" } } } }
 ```
 
-**Because `PUT` replaces, a field you omit is a field you delete.** On a node record `keys` is the
-dangerous one: dropping it removes every key that node may sign with, silently.
+**Because `PUT` replaces, a field you omit is a field you delete.** Two arrays make this sharp:
+dropping `keys` from a node record removes every key it may sign with, and dropping an entry from a
+binding's `actions` removes that action — both silently. Changing one action's timeout means sending
+the whole array back, so read the record first and edit what you read.
 
 Rotating an `env://` pointer is a registry write. Rotating the *value behind* it is not — that is
 an environment change in the adapter.
@@ -117,7 +119,8 @@ A genuine erasure is an operator task against the database with a reason recorde
 ## The runtime does not call these per request
 
 All sixteen records are a few kilobytes. The adapter loads them at boot and indexes them by
-`bindingKey` and `participantId`, so resolving a `select` is two map lookups and the registry
+`bindingKey` and `participantId`, so resolving a `select` is two map lookups — the row, then its
+`actions[]` entry for the action — and the registry
 contributes **zero** latency and zero availability risk to the request path. A registry change
 takes effect on the next reload — the tradeoff, and the right one for records that change on
 operator action rather than on traffic. It is also why `status: "revoked"` on a key is inert

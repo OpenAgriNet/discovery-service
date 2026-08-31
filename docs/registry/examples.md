@@ -107,7 +107,7 @@ Five external APIs. None of them has heard of Beckn; each appears on the wire as
   "name": "IMD Mausamgram NWP",
   "type": "upstream",
   "status": "active",
-  "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",
+  "baseUrl": "https://mausamgram.imd.gov.in",
   "auth": { "scheme": "basic",
             "secrets": { "username": "env://MAUSAMGRAM_USER",
                          "password": "env://MAUSAMGRAM_X_API_KEY" } } } }
@@ -155,73 +155,87 @@ Five external APIs. None of them has heard of Beckn; each appears on the wire as
 
 `oan-vector` is a bare IP over plain HTTP, legal only because `scheme: none` — nothing is leaked.
 `mausamgram` and `imd-city-weather` are both IMD on different hosts, so two records — one
-organisation looking like two participants. One `Participant` is one `baseUrl`; whether a second
-endpoint should be a path, a subdomain or a host override on the binding is open, and choosing
-before a real case arrives invents semantics.
+organisation looking like two participants. One `Participant` is one **host**: `mausamgram`'s
+`baseUrl` stops at the hostname and `/nwpapi` moved into the binding's `path`, so a second endpoint
+on the same host at any depth needs nothing new. A second endpoint on a *different* host is a
+second `Participant`, because the credential and the https guard both hang off `baseUrl`.
 
 Every credential is an `env://` pointer resolved in the adapter's environment. No v1 record uses
 `inline:`.
 
 ## Bindings
 
+One row per provider and capability. `actions[]` holds what varies per Beckn action — the URL, the
+method, the mapping file, the timeout, and its own `status`.
+
 ```json
 { "ProviderSchema": {
   "bindingKey": "mausamgram|openagrinet:WeatherObservation",
   "participantId": "mausamgram",
   "capabilityCode": "openagrinet:WeatherObservation",
-  "method": "GET", "path": "/get-daily",
-  "enricher": { "name": "pointFromIntent" },
-  "requestMapping":  "mappings/mausamgram/select.request.jsonata",
-  "responseMapping": "mappings/mausamgram/select.response.jsonata",
-  "timeoutMs": 30000, "retryMax": 3, "status": "active" } }
+  "status": "active",
+  "actions": [
+    { "action": "select", "method": "GET", "path": "/nwpapi/get-daily",
+      "enricher": { "name": "pointFromIntent" },
+      "mappings": "mappings/mausamgram/weather-observation.select.yaml",
+      "timeoutMs": 30000, "retryMax": 3, "status": "active" } ] } }
 ```
 ```json
 { "ProviderSchema": {
   "bindingKey": "imd-city-weather|openagrinet:WeatherObservation",
   "participantId": "imd-city-weather",
   "capabilityCode": "openagrinet:WeatherObservation",
-  "method": "GET", "path": "/api/cityweather_loc.php",
-  "enricher": { "name": "stationFromPoint",
-                "secrets": { "dsn": "env://GEO_DSN" } },
-  "requestMapping":  "mappings/imd-city-weather/select.request.jsonata",
-  "responseMapping": "mappings/imd-city-weather/select.response.jsonata",
-  "timeoutMs": 15000, "status": "active" } }
+  "status": "active",
+  "actions": [
+    { "action": "select", "method": "GET", "path": "/api/cityweather_loc.php",
+      "enricher": { "name": "stationFromPoint",
+                    "secrets": { "dsn": "env://GEO_DSN" } },
+      "mappings": "mappings/imd-city-weather/weather-observation.select.yaml",
+      "timeoutMs": 15000, "status": "active" } ] } }
 ```
 ```json
 { "ProviderSchema": {
   "bindingKey": "agmarknet|openagrinet:MandiPrice",
   "participantId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPrice",
-  "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
-  "enricher": { "name": "marketAndCommodityCodes",
-                "config":  { "maxDistanceMeters": 50000 },
-                "secrets": { "dsn": "env://GEO_DSN" } },
-  "requestMapping":  "mappings/agmarknet/select.request.jsonata",
-  "responseMapping": "mappings/agmarknet/select.response.jsonata",
-  "timeoutMs": 20000, "retryMax": 2, "status": "active" } }
+  "status": "active",
+  "actions": [
+    { "action": "select", "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
+      "enricher": { "name": "marketAndCommodityCodes",
+                    "config":  { "maxDistanceMeters": 50000 },
+                    "secrets": { "dsn": "env://GEO_DSN" } },
+      "mappings": "mappings/agmarknet/mandi-price.select.yaml",
+      "timeoutMs": 20000, "retryMax": 2, "status": "active" } ] } }
 ```
 ```json
 { "ProviderSchema": {
   "bindingKey": "hasura-content|openagrinet:KnowledgeResource",
   "participantId": "hasura-content",
   "capabilityCode": "openagrinet:KnowledgeResource",
-  "method": "POST", "path": "/v1/graphql",
-  "enricher": { "name": "contentQueryFromIntent" },
-  "requestMapping":  "mappings/hasura-content/select.request.jsonata",
-  "responseMapping": "mappings/hasura-content/select.response.jsonata",
-  "timeoutMs": 15000, "retryMax": 0, "status": "active" } }
+  "status": "active",
+  "actions": [
+    { "action": "select", "method": "POST", "path": "/v1/graphql",
+      "enricher": { "name": "contentQueryFromIntent" },
+      "mappings": "mappings/hasura-content/knowledge-resource.select.yaml",
+      "timeoutMs": 15000, "retryMax": 0, "status": "active" } ] } }
 ```
 ```json
 { "ProviderSchema": {
   "bindingKey": "oan-vector|openagrinet:KnowledgeResource",
   "participantId": "oan-vector",
   "capabilityCode": "openagrinet:KnowledgeResource",
-  "method": "POST", "path": "/indexes/oan-index/search",
-  "enricher": { "name": "vectorQueryFromIntent" },
-  "requestMapping":  "mappings/oan-vector/select.request.jsonata",
-  "responseMapping": "mappings/oan-vector/select.response.jsonata",
-  "timeoutMs": 15000, "status": "active" } }
+  "status": "active",
+  "actions": [
+    { "action": "select", "method": "POST", "path": "/indexes/oan-index/search",
+      "enricher": { "name": "vectorQueryFromIntent" },
+      "mappings": "mappings/oan-vector/knowledge-resource.select.yaml",
+      "timeoutMs": 15000, "status": "active" } ] } }
 ```
+
+**Every seeded action is `select`.** `discover` is answered from the published catalog and never
+calls an upstream, so it has no binding. A second action on a provider is a second entry in that
+provider's array, not a second row — the shape is there because a subscription capability needs
+`confirm` on a different URL from `select`, with its own timeout.
 
 `imd-city-weather`'s `path` is `/api/cityweather_loc.php` and not the documented
 `/citywx/city_weather_test.php`; it takes `?id=<station code>` and returns an **array** with

@@ -5,7 +5,7 @@ Run from `docs/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`
 
 ```
 python3 verify/shape.py         # every record shown in any page here is a real record
-python3 verify/records.py       # the records in examples.md, plus the six rules
+python3 verify/records.py       # the records in examples.md, plus the eight rules
 python3 verify/auth_cases.py    # what `type` decides, the auth matrix, the material grammar
 python3 verify/links.py         # every `](file.md#anchor)` in this folder resolves
 python3 verify/packs.py         # every resource shown here satisfies its network-specs domain pack
@@ -16,7 +16,12 @@ All five exit non-zero on failure, so they drop into CI unchanged.
 `shape.py` scans every `.md` here except `README.md`, and treats a `json` block as a record claim
 when its single top-level key is an entity name — so a page can show Beckn payloads and upstream
 responses freely without tripping it. Each record must validate, and — **unioned across an
-entity's blocks** — every declared property must be exercised. The union matters:
+entity's blocks, and across an array's entries** — every declared property must be exercised. The
+walk follows `items` as well as `properties`, so a field that exists only inside `actions[]` or
+`keys[]` still has to appear somewhere on these pages; without that it stopped at the array and
+everything inside counted as covered by having shown the array at all. Mutation-tested — deleting
+`retryMax` from every `actions[]` entry reports `actions[].retryMax` and nothing else. The union
+matters:
 `auth.paramName` and `auth.paramNames` are mutually exclusive, so no single record can cover
 both, and a per-block rule would force the docs to document one and stop documenting the other.
 `examples.md` carries two probe records under *Forms no seeded record uses* to keep `paramNames`
@@ -31,7 +36,7 @@ nothing compared the two. Both directions mutation-tested — reverting the path
 from the schema, and adding one to the table each produce exactly one failure.
 
 `records.py` catches what a schema cannot. JSON Schema cannot compare two fields and RC enforces
-no reference between entities, so six rules live here instead. Each is a record that passes every
+no reference between entities, so eight rules live here instead. Each is a record that passes every
 pattern in its schema and still produces a failed call, or a silently unverifiable signature,
 weeks later.
 
@@ -49,12 +54,18 @@ weeks later.
 6. **No `enricher.config` value is an address.** `config` is the only free-form object in the
    three schemas, so it is the only place a literal DSN can be pasted where an `env://` pointer
    belongs. Anything containing `://` goes in `enricher.secrets`.
+7. **One `actions[]` entry per action.** `uniqueItems` compares whole objects — the same problem
+   as rule 5 — so two `select` entries with different paths both validate and the adapter calls
+   whichever it indexed first.
+8. **A mapping filename's action segment equals the `action` it sits under.** Both are valid in
+   isolation; disagreeing applies a correct mapping to the wrong call, which returns a
+   well-shaped answer to a question nobody asked.
 
 `paramNames` and `keyId` uniqueness are not violated by any seeded record, so they were verified
 by mutation: inject the violation into a copy of `examples.md` and confirm the checker reports
 that rule and not another.
 
-`records.py` also carries one invariant that is not one of the six: **no secret in `examples.md`
+`records.py` also carries one invariant that is not one of the eight: **no secret in `examples.md`
 may be anything but `env://`.** The schema permits `inline:` on purpose — an operator who cannot
 set an environment variable needs it — but a reviewed file in git is never that operator, and the
 day someone pastes a working key into an example is the day it is in every clone.

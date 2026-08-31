@@ -1,7 +1,7 @@
 """The records in examples.md are write bodies, so they must be valid write bodies:
 
   (a) each ```json block that names an entity validates against schemas/<Entity>.json, and
-  (b) the six rules of verify/README.md hold across the whole set — the ones draft-07
+  (b) the eight rules of verify/README.md hold across the whole set — the ones draft-07
       cannot express, which are therefore the ones nothing else checks.
 
 (b) is the point. A record can satisfy every pattern in its schema and still be wrong in a
@@ -35,7 +35,7 @@ def records(schemas):
 
 
 def rules(by_entity, fail):
-    """The six rules of verify/README.md — what JSON Schema and RC cannot express."""
+    """The eight rules of verify/README.md — what JSON Schema and RC cannot express."""
     participants = {r["participantId"]: r for r in by_entity.get("Participant", [])}
     caps = {r["capabilityCode"]: r for r in by_entity.get("SchemaRegistry", [])}
 
@@ -54,19 +54,43 @@ def rules(by_entity, fail):
             elif row["status"] != "active":
                 fail(f'rule 2: {key} names {label} {ref!r}, which is {row["status"]}')
             elif label == "Participant" and row.get("type") != "upstream":
-                # A binding says how to call an API. A node is not one — it has no
-                # baseUrl and no auth, so this resolves to a call that cannot be made.
+                # A binding says how to call an API. A node is not one — its baseUrl
+                # takes Beckn actions, not a binding's path, and it carries no
+                # credential of ours, so this resolves to a call that cannot be made.
                 fail(f'rule 2: {key} names Participant {ref!r}, which is a '
                      f'{row.get("type")}, not an upstream')
 
-        # rule 6 — an enricher's config holds no address. config is the one free-form
-        # object in all three schemas, so it is the one place a literal DSN can be pasted
-        # where an env:// pointer belongs. Anything address-shaped goes in secrets.
-        enr = b.get("enricher", {})
-        for name, val in enr.get("config", {}).items():
-            if isinstance(val, str) and "://" in val:
-                fail(f'rule 6: {key} enricher.config.{name} looks like an address '
-                     f'({val.split("://")[0]}://…) — that belongs in enricher.secrets')
+        seen_actions = []
+        for i, a in enumerate(b.get("actions", [])):
+            act = a.get("action")
+            where = f'{key} actions[{i}]'
+
+            # rule 6 — an enricher's config holds no address. config is the one free-form
+            # object in all three schemas, so it is the one place a literal DSN can be pasted
+            # where an env:// pointer belongs. Anything address-shaped goes in secrets.
+            for name, val in a.get("enricher", {}).get("config", {}).items():
+                if isinstance(val, str) and "://" in val:
+                    fail(f'rule 6: {where} enricher.config.{name} looks like an address '
+                         f'({val.split("://")[0]}://…) — that belongs in enricher.secrets')
+
+            # rule 7 — one entry per action. uniqueItems compares whole objects, so two
+            # entries for the same action with different paths both validate and the
+            # adapter takes whichever it indexed first. Same failure as rule 5's keyId.
+            seen_actions.append(act)
+
+            # rule 8 — the mapping filename's action segment equals the action it sits
+            # under. Both are correct in isolation; disagreeing applies a valid mapping
+            # to the wrong call, which returns a shaped answer to the wrong question.
+            seg = re.search(r"\.([a-z_]+)\.ya?ml$", a.get("mappings", ""))
+            if seg is None:
+                fail(f'rule 8: {where} mappings has no action segment')
+            elif seg.group(1) != act:
+                fail(f'rule 8: {where} is action {act!r} but its mapping is '
+                     f'{seg.group(1)!r} — {a["mappings"]}')
+
+        dupes = sorted({a for a in seen_actions if seen_actions.count(a) > 1})
+        if dupes:
+            fail(f'rule 7: {key} repeats action(s) {dupes} in actions[]')
 
     for p in by_entity.get("Participant", []):
         auth = p.get("auth", {})

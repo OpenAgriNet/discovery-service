@@ -130,47 +130,90 @@ becomes a registry write.
 
 ## `ProviderSchema`
 
-Everything but `timeoutMs`, `retryMax` and `enricher` is required.
+One row is one provider and one capability. Everything that varies per **Beckn action** — the URL,
+the method, the mapping file, the timeout, the enricher — varies inside `actions[]`, because a
+capability can need `select` on one endpoint and `confirm` on another.
+
+| | on the row | on an `actions[]` entry |
+|---|---|---|
+| required | `bindingKey`, `participantId`, `capabilityCode`, `status`, `actions` | `action`, `method`, `path`, `mappings`, `status` |
+| optional | | `timeoutMs`, `retryMax`, `enricher` |
 
 ```jsonc
 { "ProviderSchema": {
   "bindingKey": "mausamgram|openagrinet:WeatherObservation",   // <participantId>|<capabilityCode>
   "participantId": "mausamgram",                    // an active upstream Participant — read from HERE, never from the request
   "capabilityCode": "openagrinet:WeatherObservation",   // must be an active SchemaRegistry
-  "method": "GET",                                  // GET | POST
-  "path": "/get-daily",                             // appended to that upstream's baseUrl
-  "enricher": { "name": "pointFromIntent" },        // optional; a Go function, named here and implemented in code
-  "requestMapping":  "mappings/mausamgram/select.request.jsonata",
-  "responseMapping": "mappings/mausamgram/select.response.jsonata",
-  "timeoutMs": 30000,                               // optional, 1000–120000, default 15000
-  "retryMax": 3,                                    // optional, 0–5, default 0
-  "status": "active"
-} }
+  "status": "active",                               // retires the whole binding
+  "actions": [ {                                    // 1–10, one entry per action
+    "action": "select",                             // discover | select | init | confirm | status | track | cancel | update | rate | support
+    "method": "GET",                                // GET | POST
+    "path": "/nwpapi/get-daily",                    // appended to that upstream's baseUrl; any depth
+    "enricher": { "name": "pointFromIntent" },      // optional; a Go function, named here and implemented in code
+    "mappings": "mappings/mausamgram/weather-observation.select.yaml",   // both directions, one file
+    "timeoutMs": 30000,                             // optional, 1000–120000, default 15000
+    "retryMax": 3,                                  // optional, 0–5, default 0
+    "status": "active"                              // retires this action only
+  } ] } }
 ```
-An enricher that needs a database of its own carries both optional halves:
+
+Two actions on one capability, on different endpoints with different timeouts:
 
 ```jsonc
 { "ProviderSchema": {
   "bindingKey": "agmarknet|openagrinet:MandiPrice",
   "participantId": "agmarknet",
   "capabilityCode": "openagrinet:MandiPrice",
-  "method": "GET",
-  "path": "/v1/fetch-agmarknet-vistaar-location",
-  "enricher": { "name": "marketAndCommodityCodes",
-                "config":  { "maxDistanceMeters": 50000 },   // free-form, but an address belongs in secrets
-                "secrets": { "dsn": "env://GEO_DSN" } },     // env:// only — inline: does not validate here
-  "requestMapping":  "mappings/agmarknet/select.request.jsonata",
-  "responseMapping": "mappings/agmarknet/select.response.jsonata",
-  "status": "active"
-} }
+  "status": "active",
+  "actions": [
+    { "action": "select", "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
+      "enricher": { "name": "marketAndCommodityCodes",
+                    "config":  { "maxDistanceMeters": 50000 },   // free-form, but an address belongs in secrets
+                    "secrets": { "dsn": "env://GEO_DSN" } },     // env:// only — inline: does not validate here
+      "mappings": "mappings/agmarknet/mandi-price.select.yaml",
+      "timeoutMs": 20000, "retryMax": 2, "status": "active" },
+    { "action": "confirm", "method": "POST", "path": "/v1/alerts/subscribe",
+      "mappings": "mappings/agmarknet/mandi-price.confirm.yaml",
+      "timeoutMs": 5000, "status": "inactive" } ] } }   // built, not live
 ```
 
-**`enricher` runs before `requestMapping`.** It exists because what an upstream needs is often not
-derivable from the Beckn body: `agmarknet` wants a market and commodity code, `imd-city-weather` a
-station id. The enricher produces those into `_local`, and the request mapping reads
-`{ request, _local }`. The registry holds the **name**; Go holds the behaviour — config that tried
-to hold the behaviour would become a programming language.
+**A per-action `status` is why this is an array and not a keyed object.** Retiring `confirm` is one
+field on one entry; the capability, the other actions and every published resource are untouched.
 
-A binding with no enricher passes the Beckn body straight to the mapping. A binding whose adapter
-has no implementation for the name it declares is a **seeding prerequisite** that returns nothing
+**An `on_*` callback is not an action here.** `on_select` is the `response:` half of the `select`
+entry — the same HTTP round trip — which is also why one file holds both directions:
+
+```yaml
+# mappings/mausamgram/weather-observation.select.yaml
+request: |
+  { "lat": $string(_local.lat), "lon": $string(_local.lon) }
+
+response: |
+  $map([1..5], function($i) {{
+    "@type": "openagrinet:WeatherObservation",
+    "informationMode": "Direct",
+    "observationType": "Forecast",
+    "source": "IMD Mausamgram NWP",
+    "location": { "type": "Point",
+                  "coordinates": [ $number(location.lon), $number(location.lat) ] },
+    "generatedAt": $now(),
+    "parameters": [
+      { "parameter": "Rainfall",    "value": $lookup($, "fcstday" & $i).rain, "unit": "mm" },
+      { "parameter": "Temperature", "value": $lookup($, "fcstday" & $i).tmax, "unit": "Celsius" }
+    ] }})
+```
+
+The response mapping only works because the request swapped GeoJSON `[lon, lat]` into `lat`/`lon`.
+Splitting them across two registry fields hid that; one file per binding-action does not. YAML
+block scalars carry JSONata with no escaping, and the filename's action segment must equal the
+`action` it sits under — a mismatch would apply a correct mapping to the wrong call, silently.
+
+**`enricher` runs before the request mapping.** It exists because what an upstream needs is often
+not derivable from the Beckn body: `agmarknet` wants a market and commodity code,
+`imd-city-weather` a station id. The enricher produces those into `_local`, and the request mapping
+reads `{ request, _local }`. The registry holds the **name**; Go holds the behaviour — config that
+tried to hold the behaviour would become a programming language.
+
+An entry with no enricher passes the Beckn body straight to the mapping. An entry whose adapter has
+no implementation for the name it declares is a **seeding prerequisite** that returns nothing
 useful, and nothing here catches it: `enricher.name` is a string, not a reference.

@@ -52,10 +52,17 @@ def resolve(node, sch):
 
 
 def declared(node, sch, where="", depth=0):
-    """Every property path the schema declares, recursively."""
-    if depth > 6: return set()
+    """Every property path the schema declares, recursively.
+
+    Array items are followed under a `[]` segment, so a field that only exists inside
+    actions[] is still a field the pages have to show. Without this the walk stops at
+    the array and everything inside it counts as covered by having shown the array.
+    """
+    if depth > 8: return set()
     node = resolve(node, sch)
     acc = set()
+    if "items" in node:
+        acc |= declared(node["items"], sch, f"{where}[]", depth + 1)
     for name, sub in node.get("properties", {}).items():
         path = f"{where}.{name}" if where else name
         acc.add(path)
@@ -64,10 +71,17 @@ def declared(node, sch, where="", depth=0):
 
 
 def covered(inst, node, sch, where="", depth=0):
-    """Every property path this record actually sets."""
-    if depth > 6 or not isinstance(inst, dict): return set()
+    """Every property path this record actually sets. Unioned over an array's entries,
+    so two entries each showing half the optional fields together cover both."""
+    if depth > 8: return set()
     node = resolve(node, sch)
     acc = set()
+    if isinstance(inst, list):
+        if "items" not in node: return acc
+        for entry in inst:
+            acc |= covered(entry, node["items"], sch, f"{where}[]", depth + 1)
+        return acc
+    if not isinstance(inst, dict): return acc
     for name, sub in node.get("properties", {}).items():
         if name not in inst: continue
         path = f"{where}.{name}" if where else name
