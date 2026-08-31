@@ -1,0 +1,93 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: the service module has no dependencies yet, so
+          # a literal go.sum path would fail to resolve and disable the cache.
+          cache-dependency-path: "**/go.sum"
+
+      # T4, half one: known vulnerabilities in the Go dependency graph.
+      - name: govulncheck
+        run: make security 2>&1 | tee govulncheck-report.txt
+
+      # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
+      # Docker subscription — anonymous pulls 401. Same login a local build
+      # needs (see the Dockerfile's FROM comment), just non-interactive here.
+      - name: Log in to dhi.io
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USERNAME }}
+          password: ${{ secrets.DHI_TOKEN }}
+
+      # T4, half two: the shipped image. The scan is of the image and not of
+      # go.sum so that the toolchain pinned in tools/go.mod — which is never
+      # linked into the binary — cannot fail a release it does not ship in.
+      - name: Build image
+        run: docker build -t discovery-service:${{ github.sha }} .
+
+      - name: Trivy image scan (report)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: discovery-service:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+          output: trivy-report.txt
+
+      - name: Assemble PR report
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo "### Security scan report"
+            echo
+            echo "<details><summary>govulncheck</summary>"
+            echo
+            echo '```'
+            cat govulncheck-report.txt
+            echo '```'
+            echo "</details>"
+            echo
+            echo "<details><summary>Trivy image scan (HIGH,CRITICAL)</summary>"
+            echo
+            echo '```'
+            cat trivy-report.txt
+            echo '```'
+            echo "</details>"
+          } > pr-report.md
+
+      - name: Comment scan reports on PR
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-tag: security-scan
+          body-path: pr-report.md
+
+      # Gate the PR on the same findings the comment already showed.
+      - name: Trivy image scan (gate)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: discovery-service:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
