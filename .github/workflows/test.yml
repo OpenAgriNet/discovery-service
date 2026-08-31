@@ -18,6 +18,7 @@ env:
   # this the whole semantic path would go untested from the day semantic search
   # was deferred.
   EMBEDDING_PROVIDER: hashing
+  MIN_COVERAGE: "80"
 
 jobs:
   lint:
@@ -45,9 +46,6 @@ jobs:
       - run: make build
       - run: make test
 
-      # Report only: CLAUDE.md calls for coverage trending up against "an
-      # agreed threshold", but no number is defined anywhere in this repo yet.
-      # Gate on one once someone sets it.
       - name: Coverage
         run: |
           make cover
@@ -58,7 +56,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           {
             echo "<!-- coverage-report -->"
-            echo "### Test coverage"
+            echo "### Test coverage (min ${MIN_COVERAGE}%)"
             echo '```'
             tail -1 coverage-func.txt
             echo '```'
@@ -81,3 +79,10 @@ jobs:
           issue-number: ${{ github.event.pull_request.number }}
           body-path: coverage-report.md
           edit-mode: replace
+
+      - name: Gate on minimum coverage
+        run: |
+          pct=$(tail -1 coverage-func.txt | grep -oE '[0-9]+\.[0-9]+%$' | tr -d '%')
+          echo "coverage: ${pct}%, minimum: ${MIN_COVERAGE}%"
+          awk -v pct="$pct" -v min="$MIN_COVERAGE" 'BEGIN { exit !(pct >= min) }' \
+            || { echo "::error::coverage ${pct}% is below the ${MIN_COVERAGE}% minimum"; exit 1; }
