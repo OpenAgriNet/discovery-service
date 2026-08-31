@@ -176,7 +176,6 @@ method, the mapping file, the timeout, and its own `status`.
   "status": "active",
   "actions": [
     { "action": "select", "method": "GET", "path": "/nwpapi/get-daily",
-      "enricher": { "name": "pointFromIntent" },
       "mappings": "mappings/mausamgram/weather-observation.select.yaml",
       "timeoutMs": 30000, "retryMax": 3, "status": "active" } ] } }
 ```
@@ -188,8 +187,6 @@ method, the mapping file, the timeout, and its own `status`.
   "status": "active",
   "actions": [
     { "action": "select", "method": "GET", "path": "/api/cityweather_loc.php",
-      "enricher": { "name": "stationFromPoint",
-                    "secrets": { "dsn": "env://GEO_DSN" } },
       "mappings": "mappings/imd-city-weather/weather-observation.select.yaml",
       "timeoutMs": 15000, "status": "active" } ] } }
 ```
@@ -201,9 +198,6 @@ method, the mapping file, the timeout, and its own `status`.
   "status": "active",
   "actions": [
     { "action": "select", "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
-      "enricher": { "name": "marketAndCommodityCodes",
-                    "config":  { "maxDistanceMeters": 50000 },
-                    "secrets": { "dsn": "env://GEO_DSN" } },
       "mappings": "mappings/agmarknet/mandi-price.select.yaml",
       "timeoutMs": 20000, "retryMax": 2, "status": "active" } ] } }
 ```
@@ -215,7 +209,6 @@ method, the mapping file, the timeout, and its own `status`.
   "status": "active",
   "actions": [
     { "action": "select", "method": "POST", "path": "/v1/graphql",
-      "enricher": { "name": "contentQueryFromIntent" },
       "mappings": "mappings/hasura-content/knowledge-resource.select.yaml",
       "timeoutMs": 15000, "retryMax": 0, "status": "active" } ] } }
 ```
@@ -227,7 +220,6 @@ method, the mapping file, the timeout, and its own `status`.
   "status": "active",
   "actions": [
     { "action": "select", "method": "POST", "path": "/indexes/oan-index/search",
-      "enricher": { "name": "vectorQueryFromIntent" },
       "mappings": "mappings/oan-vector/knowledge-resource.select.yaml",
       "timeoutMs": 15000, "status": "active" } ] } }
 ```
@@ -241,10 +233,12 @@ provider's array, not a second row — the shape is there because a subscription
 `/citywx/city_weather_test.php`; it takes `?id=<station code>` and returns an **array** with
 `"NIL"` sentinels — [usecases.md](usecases.md#the-other-five).
 
-**Four of the five need a step no field here names.** `mausamgram` a grid point,
+**All five need a step no field here names.** `mausamgram` a point lifted out of the intent,
 `imd-city-weather` the nearest station, `agmarknet` market and commodity codes, both
-`KnowledgeResource` bindings their query parameters. Adapter-internal, keyed off
-`participantId`, and a seeding prerequisite.
+`KnowledgeResource` bindings their query parameters. That step is the adapter plugin's, selected
+by the same `bindingKey` and action that select the mapping, so the registry gains nothing by
+naming it — and a plugin that reads a PostGIS DSN reads it from its own environment, which is why
+no secret but `auth` appears on these rows. Having the plugin is a seeding prerequisite.
 
 ## Forms no seeded record uses
 

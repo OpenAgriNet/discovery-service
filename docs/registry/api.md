@@ -120,8 +120,8 @@ A genuine erasure is an operator task against the database with a reason recorde
 
 All sixteen records are a few kilobytes. The adapter loads them at boot and indexes them by
 `bindingKey` and `participantId`, so resolving a `select` is two map lookups — the row, then its
-`actions[]` entry for the action — and the registry
-contributes **zero** latency and zero availability risk to the request path. A registry change
+`actions[]` entry for the action — and the registry contributes **zero** latency and zero
+availability risk to the request path. A registry change
 takes effect on the next reload — the tradeoff, and the right one for records that change on
 operator action rather than on traffic. It is also why `status: "revoked"` on a key is inert
 until that reload.

@@ -286,8 +286,9 @@ live while one of its actions is not.
 
 **Read 2** — where it is and how to authenticate: `Participant` by the `participantId` **from row
 1, never from the request**. `baseUrl` is the host and the entry's `path` is appended to it, so the
-credential can only ever reach the host its own record names. A request that could name the participant could point a
-credentialled call at a host of its choosing. That row is `type: "upstream"`, so it carries a
+credential can only ever reach the host its own record names. A request that could name the
+participant could point a credentialled call at a host of its choosing. That row is
+`type: "upstream"`, so it carries a
 `baseUrl` and an `auth`; a binding naming a node instead would resolve to a call that cannot be
 made, which is why `verify/records.py` refuses one at seeding time.
 
@@ -299,9 +300,10 @@ in production neither read is a request at all
 
 ### 1.5 Enrich, map the request, authenticate, call
 
-**Enrich first.** The binding names `enricher: { "name": "pointFromIntent" }` — declared in the
-registry, implemented in Go — and it runs **before** the request mapping, because the mapping is
-evaluated over `{ request, _local }` and `_local` is what the enricher produces:
+**Enrich first.** No registry field names this step: the adapter's plugin for this binding-action
+is already selected by `bindingKey` plus `action`, the same pair that selects the mapping. It runs
+**before** the request mapping, because the mapping is evaluated over `{ request, _local }` and
+`_local` is what the plugin produces:
 
 ```
 resourceAttributes.location.coordinates  →  _local = { "lat": 19.9975, "lon": 73.7898 }
@@ -310,12 +312,12 @@ resourceAttributes.location.coordinates  →  _local = { "lat": 19.9975, "lon": 
 Trivial here, because mausamgram takes a raw point. **It is not trivial in general, and this use
 case is the wrong place to look for the interesting case.** A station resolver is use case 2
 (`imd-city-weather` wants a station id); market and commodity codes are use case 3 — both PostGIS
-lookups off the point, both carrying `enricher.secrets.dsn`. The registry holds the **name**; Go
-holds the behaviour. Config that tried to hold the behaviour would become a programming language,
-and nothing here checks that the name resolves to an implementation.
+lookups off the point, and both read their DSN from the plugin's own environment, not from the
+registry row. So the plugin existing is a seeding prerequisite that nothing here can check, and a
+binding whose plugin is missing validates, seeds and answers nothing.
 
-**Then map.** The `request:` half of `mappings/mausamgram/weather-observation.select.yaml`, over
-`{ request, _local }`:
+**Then map.** The `request:` half of `mappings/mausamgram/weather-observation.select.yaml` — the
+file named by the `select` entry — over `{ request, _local }`:
 
 ```jsonata
 { "lat": $string(_local.lat), "lon": $string(_local.lon) }

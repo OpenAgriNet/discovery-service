@@ -5,7 +5,7 @@ Run from `docs/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`
 
 ```
 python3 verify/shape.py         # every record shown in any page here is a real record
-python3 verify/records.py       # the records in examples.md, plus the eight rules
+python3 verify/records.py       # the records in examples.md, plus the seven rules
 python3 verify/auth_cases.py    # what `type` decides, the auth matrix, the material grammar
 python3 verify/links.py         # every `](file.md#anchor)` in this folder resolves
 python3 verify/packs.py         # every resource shown here satisfies its network-specs domain pack
@@ -36,7 +36,7 @@ nothing compared the two. Both directions mutation-tested — reverting the path
 from the schema, and adding one to the table each produce exactly one failure.
 
 `records.py` catches what a schema cannot. JSON Schema cannot compare two fields and RC enforces
-no reference between entities, so eight rules live here instead. Each is a record that passes every
+no reference between entities, so seven rules live here instead. Each is a record that passes every
 pattern in its schema and still produces a failed call, or a silently unverifiable signature,
 weeks later.
 
@@ -51,13 +51,10 @@ weeks later.
 5. **`keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so two
    entries with the same `keyId` and different material both pass, and a verifier gets whichever
    it found first.
-6. **No `enricher.config` value is an address.** `config` is the only free-form object in the
-   three schemas, so it is the only place a literal DSN can be pasted where an `env://` pointer
-   belongs. Anything containing `://` goes in `enricher.secrets`.
-7. **One `actions[]` entry per action.** `uniqueItems` compares whole objects — the same problem
+6. **One `actions[]` entry per action.** `uniqueItems` compares whole objects — the same problem
    as rule 5 — so two `select` entries with different paths both validate and the adapter calls
    whichever it indexed first.
-8. **A mapping filename's action segment equals the `action` it sits under.** Both are valid in
+7. **A mapping filename's action segment equals the `action` it sits under.** Both are valid in
    isolation; disagreeing applies a correct mapping to the wrong call, which returns a
    well-shaped answer to a question nobody asked.
 
@@ -65,11 +62,13 @@ weeks later.
 by mutation: inject the violation into a copy of `examples.md` and confirm the checker reports
 that rule and not another.
 
-`records.py` also carries one invariant that is not one of the eight: **no secret in `examples.md`
+`records.py` also carries one invariant that is not one of the seven: **no secret in `examples.md`
 may be anything but `env://`.** The schema permits `inline:` on purpose — an operator who cannot
 set an environment variable needs it — but a reviewed file in git is never that operator, and the
 day someone pastes a working key into an example is the day it is in every clone.
-Mutation-tested.
+Mutation-tested. It covers every secret there is: `auth.secrets` is the only one left in the three
+schemas, now that what an upstream needs beyond the Beckn body is the adapter plugin's and its DSN
+comes from the plugin's own environment.
 
 `auth_cases.py` carries negative cases as well as positive ones. A case that passes for the wrong
 reason is worse than no case — before `paramNames` existed, every `paramNames` negative passed

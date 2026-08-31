@@ -1,7 +1,7 @@
 """The records in examples.md are write bodies, so they must be valid write bodies:
 
   (a) each ```json block that names an entity validates against schemas/<Entity>.json, and
-  (b) the eight rules of verify/README.md hold across the whole set — the ones draft-07
+  (b) the seven rules of verify/README.md hold across the whole set — the ones draft-07
       cannot express, which are therefore the ones nothing else checks.
 
 (b) is the point. A record can satisfy every pattern in its schema and still be wrong in a
@@ -35,7 +35,7 @@ def records(schemas):
 
 
 def rules(by_entity, fail):
-    """The eight rules of verify/README.md — what JSON Schema and RC cannot express."""
+    """The seven rules of verify/README.md — what JSON Schema and RC cannot express."""
     participants = {r["participantId"]: r for r in by_entity.get("Participant", [])}
     caps = {r["capabilityCode"]: r for r in by_entity.get("SchemaRegistry", [])}
 
@@ -65,32 +65,24 @@ def rules(by_entity, fail):
             act = a.get("action")
             where = f'{key} actions[{i}]'
 
-            # rule 6 — an enricher's config holds no address. config is the one free-form
-            # object in all three schemas, so it is the one place a literal DSN can be pasted
-            # where an env:// pointer belongs. Anything address-shaped goes in secrets.
-            for name, val in a.get("enricher", {}).get("config", {}).items():
-                if isinstance(val, str) and "://" in val:
-                    fail(f'rule 6: {where} enricher.config.{name} looks like an address '
-                         f'({val.split("://")[0]}://…) — that belongs in enricher.secrets')
-
-            # rule 7 — one entry per action. uniqueItems compares whole objects, so two
+            # rule 6 — one entry per action. uniqueItems compares whole objects, so two
             # entries for the same action with different paths both validate and the
             # adapter takes whichever it indexed first. Same failure as rule 5's keyId.
             seen_actions.append(act)
 
-            # rule 8 — the mapping filename's action segment equals the action it sits
+            # rule 7 — the mapping filename's action segment equals the action it sits
             # under. Both are correct in isolation; disagreeing applies a valid mapping
             # to the wrong call, which returns a shaped answer to the wrong question.
             seg = re.search(r"\.([a-z_]+)\.ya?ml$", a.get("mappings", ""))
             if seg is None:
-                fail(f'rule 8: {where} mappings has no action segment')
+                fail(f'rule 7: {where} mappings has no action segment')
             elif seg.group(1) != act:
-                fail(f'rule 8: {where} is action {act!r} but its mapping is '
+                fail(f'rule 7: {where} is action {act!r} but its mapping is '
                      f'{seg.group(1)!r} — {a["mappings"]}')
 
         dupes = sorted({a for a in seen_actions if seen_actions.count(a) > 1})
         if dupes:
-            fail(f'rule 7: {key} repeats action(s) {dupes} in actions[]')
+            fail(f'rule 6: {key} repeats action(s) {dupes} in actions[]')
 
     for p in by_entity.get("Participant", []):
         auth = p.get("auth", {})
@@ -113,8 +105,8 @@ def rules(by_entity, fail):
             if not ref.startswith("env://"):
                 fail(f'committed docs: {p["participantId"]} secrets.{name} is '
                      f'{ref.split(":")[0]}:… — only env:// belongs in a tracked file')
-    # enricher.secrets is env://-only in the schema itself, so there is nothing to add
-    # here — the pattern refuses inline: at write time, not merely in a tracked file.
+    # auth.secrets is the only secret in the three schemas, so this loop is the whole
+    # of it — nothing on a ProviderSchema row holds a credential to check.
 
     for c in by_entity.get("SchemaRegistry", []):
         # rule 4 — version equals the vN.N segment of schemaUrl

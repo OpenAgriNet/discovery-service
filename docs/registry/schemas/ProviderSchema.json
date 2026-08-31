@@ -33,7 +33,7 @@
     },
 
     "ActionBinding": {
-      "description": "How to call this provider for one Beckn action. status is per action, so one can be retired without touching the others.",
+      "description": "How to call this provider for one Beckn action: where, how, and with which mapping. Anything the upstream needs that the Beckn body cannot express is the adapter plugin's work, not a field here. status is per action, so one can be retired without touching the others.",
       "type": "object",
       "additionalProperties": false,
       "required": ["action", "method", "path", "mappings", "status"],
@@ -46,8 +46,7 @@
         "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 15000 },
         "retryMax":  { "type": "integer", "minimum": 0, "maximum": 5, "default": 0 },
 
-        "enricher": { "$ref": "#/definitions/Enricher" },
-        "status":   { "$ref": "#/definitions/Status" }
+        "status":    { "$ref": "#/definitions/Status" }
       }
     },
 
@@ -57,21 +56,6 @@
       "enum": ["discover", "select", "init", "confirm", "status",
                "track", "cancel", "update", "rate", "support"]
     },
-
-    "Enricher": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name"],
-      "properties": {
-        "name":    { "type": "string", "pattern": "^[a-z][A-Za-z0-9]{2,63}$" },
-        "config":  { "type": "object" },
-        "secrets": { "type": "object",
-                     "minProperties": 1, "maxProperties": 8,
-                     "additionalProperties": { "$ref": "#/definitions/EnvRef" } }
-      }
-    },
-
-    "EnvRef": { "type": "string", "pattern": "^env://[A-Z][A-Z0-9_]{0,63}$" },
 
     "MappingPath": {
       "description": "One file per binding-action, holding request: and response: as YAML block scalars. The action segment must equal the action it sits under — verify/records.py.",

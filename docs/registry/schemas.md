@@ -13,7 +13,7 @@ Every row carries `status: "active" \| "inactive"`. Every read filters on `activ
 
 Which row a field goes on: `Participant` holds what is true of a provider whatever you ask it
 for — `baseUrl`, `auth`. `ProviderSchema` holds what varies per capability — `method`, `path`, the
-mappings, the enricher, the timeouts. So a provider serving two capabilities is one `Participant`
+mapping file, the timeouts. So a provider serving two capabilities is one `Participant`
 and two `ProviderSchema` rows.
 
 ---
@@ -97,7 +97,7 @@ top-level fields only, can filter on `baseUrl` and `type` at all.
   "name": "IMD Mausamgram NWP",
   "type": "upstream",                               // does not speak Beckn: no role, no keys
   "status": "active",
-  "baseUrl": "https://mausamgram.imd.gov.in/nwpapi",   // a binding's path is appended; https unless scheme is none
+  "baseUrl": "https://mausamgram.imd.gov.in",       // the host; a binding's path is appended, https unless scheme is none
   "auth": {                                       // how WE authenticate TO it
     "scheme": "basic",                            // none | apiKeyQuery | apiKeyHeader | basic
     "secrets": { "username": "env://MAUSAMGRAM_USER",     // pointers, never material —
@@ -131,13 +131,13 @@ becomes a registry write.
 ## `ProviderSchema`
 
 One row is one provider and one capability. Everything that varies per **Beckn action** — the URL,
-the method, the mapping file, the timeout, the enricher — varies inside `actions[]`, because a
-capability can need `select` on one endpoint and `confirm` on another.
+the method, the mapping file, the timeout — varies inside `actions[]`, because a capability can
+need `select` on one endpoint and `confirm` on another.
 
 | | on the row | on an `actions[]` entry |
 |---|---|---|
 | required | `bindingKey`, `participantId`, `capabilityCode`, `status`, `actions` | `action`, `method`, `path`, `mappings`, `status` |
-| optional | | `timeoutMs`, `retryMax`, `enricher` |
+| optional | | `timeoutMs`, `retryMax` |
 
 ```jsonc
 { "ProviderSchema": {
@@ -149,7 +149,6 @@ capability can need `select` on one endpoint and `confirm` on another.
     "action": "select",                             // discover | select | init | confirm | status | track | cancel | update | rate | support
     "method": "GET",                                // GET | POST
     "path": "/nwpapi/get-daily",                    // appended to that upstream's baseUrl; any depth
-    "enricher": { "name": "pointFromIntent" },      // optional; a Go function, named here and implemented in code
     "mappings": "mappings/mausamgram/weather-observation.select.yaml",   // both directions, one file
     "timeoutMs": 30000,                             // optional, 1000–120000, default 15000
     "retryMax": 3,                                  // optional, 0–5, default 0
@@ -167,9 +166,6 @@ Two actions on one capability, on different endpoints with different timeouts:
   "status": "active",
   "actions": [
     { "action": "select", "method": "GET", "path": "/v1/fetch-agmarknet-vistaar-location",
-      "enricher": { "name": "marketAndCommodityCodes",
-                    "config":  { "maxDistanceMeters": 50000 },   // free-form, but an address belongs in secrets
-                    "secrets": { "dsn": "env://GEO_DSN" } },     // env:// only — inline: does not validate here
       "mappings": "mappings/agmarknet/mandi-price.select.yaml",
       "timeoutMs": 20000, "retryMax": 2, "status": "active" },
     { "action": "confirm", "method": "POST", "path": "/v1/alerts/subscribe",
@@ -199,7 +195,7 @@ response: |
     "generatedAt": $now(),
     "parameters": [
       { "parameter": "Rainfall",    "value": $lookup($, "fcstday" & $i).rain, "unit": "mm" },
-      { "parameter": "Temperature", "value": $lookup($, "fcstday" & $i).tmax, "unit": "Celsius" }
+      { "parameter": "Temperature", "value": $lookup($, "fcstday" & $i).tmax, "unit": "Cel" }
     ] }})
 ```
 
@@ -208,12 +204,15 @@ Splitting them across two registry fields hid that; one file per binding-action 
 block scalars carry JSONata with no escaping, and the filename's action segment must equal the
 `action` it sits under — a mismatch would apply a correct mapping to the wrong call, silently.
 
-**`enricher` runs before the request mapping.** It exists because what an upstream needs is often
-not derivable from the Beckn body: `agmarknet` wants a market and commodity code,
-`imd-city-weather` a station id. The enricher produces those into `_local`, and the request mapping
-reads `{ request, _local }`. The registry holds the **name**; Go holds the behaviour — config that
-tried to hold the behaviour would become a programming language.
+**What the Beckn body cannot express is the plugin's, and no field here names it.** `agmarknet`
+wants a market and commodity code, `imd-city-weather` a station id; neither is derivable from the
+request. The adapter's plugin for this binding-action produces them into `_local`, and the request
+mapping is evaluated over `{ request, _local }`. Naming that plugin here would buy nothing:
+`bindingKey` plus `action` already selects it, exactly as it selects the mapping, so a name is a
+second way to say the same thing and a first way to disagree — and unverifiable either way, since
+it would be a string, not a reference. It also keeps the DSN out: a plugin reading PostGIS reads
+the DSN from its own environment, which leaves `auth.secrets` the only secret in these three
+schemas.
 
-An entry with no enricher passes the Beckn body straight to the mapping. An entry whose adapter has
-no implementation for the name it declares is a **seeding prerequisite** that returns nothing
-useful, and nothing here catches it: `enricher.name` is a string, not a reference.
+Having the plugin is therefore a **seeding prerequisite**. A binding whose plugin does not exist
+validates, seeds and returns nothing useful.
