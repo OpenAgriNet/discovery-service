@@ -284,13 +284,15 @@ per-action registry fields, not service constants — IMD is slow, and an operat
 without a deploy. An entry whose own `status` is `inactive` is not a match: the capability can be
 live while one of its actions is not.
 
-**Read 2** — where it is and how to authenticate: `Participant` by the `participantId` **from row
-1, never from the request**. `baseUrl` is the host and the entry's `path` is appended to it, so the
-credential can only ever reach the host its own record names. A request that could name the
-participant could point a credentialled call at a host of its choosing. That row is
-`type: "upstream"`, so it carries a
-`baseUrl` and an `auth`; a binding naming a node instead would resolve to a call that cannot be
-made, which is why `verify/records.py` refuses one at seeding time.
+**Read 2** — where it is: `Participant` by the `participantId` **from row 1, never from the
+request**. `baseUrl` is the host and the entry's `path` is appended to it, so the call can only ever
+reach the host its own record names. A request that could name the participant could point a
+credentialled call at a host of its choosing. That row is `type: "upstream"`, so it carries a
+`baseUrl` and no keys; a binding naming a node instead would resolve to a call that cannot be made,
+which is why `verify/records.py` refuses one at seeding time.
+
+**How to authenticate is not one of these reads.** No registry field holds it. The plugin selected
+below presents the credential, reading it from the adapter's own environment.
 
 An empty result from either read is a hard failure — `BIZ_PROVIDER_NOT_FOUND`, not a fallback.
 
@@ -298,7 +300,7 @@ There is **no `SchemaRegistry` read**: a capability is vocabulary, not part of t
 in production neither read is a request at all
 ([api.md](api.md#the-runtime-does-not-call-these-per-request)).
 
-### 1.5 Enrich, map the request, authenticate, call
+### 1.5 Enrich, map the request, call
 
 **Enrich first.** No registry field names this step: the adapter's plugin for this binding-action
 is already selected by `bindingKey` plus `action`, the same pair that selects the mapping. It runs
@@ -313,8 +315,10 @@ Trivial here, because mausamgram takes a raw point. **It is not trivial in gener
 case is the wrong place to look for the interesting case.** A station resolver is use case 2
 (`imd-city-weather` wants a station id); market and commodity codes are use case 3 — both PostGIS
 lookups off the point, and both read their DSN from the plugin's own environment, not from the
-registry row. So the plugin existing is a seeding prerequisite that nothing here can check, and a
-binding whose plugin is missing validates, seeds and answers nothing.
+registry row. **The upstream credential now comes from there too**: the plugin holds it and presents
+it on the call below, which is why no row in [examples.md](examples.md) has an `auth` field. So the
+plugin existing is a seeding prerequisite that nothing here can check, and a binding whose plugin is
+missing validates, seeds and answers nothing.
 
 **Then map.** The `request:` half of `mappings/mausamgram/weather-observation.select.yaml` — the
 file named by the `select` entry — over `{ request, _local }`:
@@ -329,7 +333,7 @@ not cosmetic either; the endpoint rejects unquoted numerics.
 
 ```
 GET https://mausamgram.imd.gov.in/nwpapi/get-daily?lat=19.9975&lon=73.7898
-Authorization: Basic <resolved from env://MAUSAMGRAM_USER + env://MAUSAMGRAM_X_API_KEY>
+Authorization: Basic <presented by the binding's plugin, from its own environment>
 timeout 30000ms   retries 3
 ```
 

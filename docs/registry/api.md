@@ -16,8 +16,9 @@ is `Participant`, `SchemaRegistry` or `ProviderSchema`.
 - **`osid` is RC's row id**, returned by the create. It is not `participantId` and not
   `bindingKey`, so an update has to search first.
 - The *who* column is intent, not enforcement: `_osConfig.roles` gates the **entity, not the
-  verb**, so on the pinned build any token that can read these records can also write them. Close
-  that before seeding a credential.
+  verb**, so on the pinned build any token that can read these records can also write them. No
+  record holds a credential, so that is no longer a disclosure risk — it is still a write anybody
+  with a read token can make, and it must be closed before v1 carries traffic.
 
 ## Create
 
@@ -32,10 +33,7 @@ Content-Type: application/json
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
   "type": "upstream",
   "status": "active",
-  "baseUrl": "https://api.agmarknet.gov.in",
-  "auth": { "scheme": "apiKeyQuery",
-            "paramName": "token",
-            "secrets": { "token": "env://MANDI_TOKEN" } } } }
+  "baseUrl": "https://api.agmarknet.gov.in" } }
 ```
 ```json
 200 OK
@@ -63,9 +61,12 @@ Only indexed fields can be filtered:
 | `Participant` | `participantId` | `status`, `type`, `baseUrl` |
 | `ProviderSchema` | `bindingKey` | `participantId`, `capabilityCode`, `status` |
 
-**`search` is not public.** A record may hold an `inline:` credential, so a read of `Participant`
-can be a read of live key material. `privateFields` *should* redact `$.auth.secrets`; that is
-unverified on the pinned build, so assume it does not.
+**`search` is still not public**, but it is no longer holding back a secret. Nothing in these
+three schemas is one — the credential for calling an upstream lives in the binding plugin's
+environment — so **none of them declares a `_osConfig.privateFields`**, and none needs to. That is
+the point: `privateFields` behaviour is unverified on the pinned build, so a read being safe must not
+depend on it. What a read does expose is the network's shape: who its participants are, which hosts
+they front, and what each is bound to.
 
 `type` and `baseUrl` are indexed because flattening made them indexable — RC filters on top-level
 fields only, so `upstream.baseUrl` could not be searched at all. `type` is the useful one: it
@@ -88,19 +89,18 @@ Authorization: Bearer <operator-token>
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
   "type": "upstream",
   "status": "inactive",
-  "baseUrl": "https://api.agmarknet.gov.in",
-  "auth": { "scheme": "apiKeyQuery",
-            "paramName": "token",
-            "secrets": { "token": "env://MANDI_TOKEN_2026" } } } }
+  "baseUrl": "https://api.agmarknet.gov.in" } }
 ```
 
-**Because `PUT` replaces, a field you omit is a field you delete.** Two arrays make this sharp:
-dropping `keys` from a node record removes every key it may sign with, and dropping an entry from a
-binding's `actions` removes that action — both silently. Changing one action's timeout means sending
-the whole array back, so read the record first and edit what you read.
+**Because `PUT` replaces, a field you omit is a field you delete.** Omitting `keys` leaves a node
+with no key at all — there is one, so there is no second one to fall back to — and dropping an entry
+from a binding's `actions` removes that action. Both silently. Changing one action's timeout means
+sending the whole array back, so read the record first and edit what you read.
 
-Rotating an `env://` pointer is a registry write. Rotating the *value behind* it is not — that is
-an environment change in the adapter.
+Rotating a node's key is such a `PUT`: the object is replaced, and because it has no successor to
+overlap with, every verifier must reload before the node signs with the new material. Rotating an
+**upstream** credential is not a registry write at all — it touches no record, only the adapter's
+environment.
 
 ## Delete — disabled
 

@@ -5,8 +5,8 @@ Run from `docs/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`
 
 ```
 python3 verify/shape.py         # every record shown in any page here is a real record
-python3 verify/records.py       # the records in examples.md, plus the seven rules
-python3 verify/auth_cases.py    # what `type` decides, the auth matrix, the material grammar
+python3 verify/records.py       # the records in examples.md, plus the five rules
+python3 verify/cases.py         # what `type` decides, and the key-material grammar
 python3 verify/links.py         # every `](file.md#anchor)` in this folder resolves
 python3 verify/packs.py         # every resource shown here satisfies its network-specs domain pack
 ```
@@ -17,77 +17,79 @@ All five exit non-zero on failure, so they drop into CI unchanged.
 when its single top-level key is an entity name — so a page can show Beckn payloads and upstream
 responses freely without tripping it. Each record must validate, and — **unioned across an
 entity's blocks, and across an array's entries** — every declared property must be exercised. The
-walk follows `items` as well as `properties`, so a field that exists only inside `actions[]` or
-`keys[]` still has to appear somewhere on these pages; without that it stopped at the array and
-everything inside counted as covered by having shown the array at all. Mutation-tested — deleting
-`retryMax` from every `actions[]` entry reports `actions[].retryMax` and nothing else. The union
-matters:
-`auth.paramName` and `auth.paramNames` are mutually exclusive, so no single record can cover
-both, and a per-block rule would force the docs to document one and stop documenting the other.
-`examples.md` carries two probe records under *Forms no seeded record uses* to keep `paramNames`
-and `valuePrefix` exercised, since no v1 record uses either.
+walk follows `items` as well as `properties`, so a field that exists only inside `actions[]` still
+has to appear somewhere on these pages; without that it stopped at the array and everything inside
+counted as covered by having shown the array at all. Mutation-tested — deleting `retryMax` from
+every `actions[]` entry reports `actions[].retryMax` and nothing else. The union matters: `role` and
+`keys` exist only on a node and are refused on an upstream, so no single record can cover the whole
+schema, and a per-block rule would force the docs to document one half and stop documenting the
+other.
 
 `shape.py` also checks `_osConfig`, which no record can exercise because it is RC configuration
 rather than schema — and which therefore rots in silence. A `privateFields` path naming a field
-that no longer exists matches nothing, so the secret is returned in the clear with no error
-anywhere; the flatten left `$.upstream.auth.secrets` behind exactly that way. `indexFields` is the
-other half: it is what RC will actually let an operator filter on, api.md states it in a table, and
+that no longer exists matches nothing, and nothing errors; the flatten left
+`$.upstream.auth.secrets` behind exactly that way. Dropping `auth` removed the last thing a path
+could name, so `privateFields` is now absent from all three schemas rather than stale in one — and
+the check's job here is to make the *next* one loud, on the day a field worth redacting returns.
+`indexFields` is the other half: it is what RC will actually let an operator filter on, api.md states it in a table, and
 nothing compared the two. Both directions mutation-tested — reverting the path, dropping a field
 from the schema, and adding one to the table each produce exactly one failure.
 
 `records.py` catches what a schema cannot. JSON Schema cannot compare two fields and RC enforces
-no reference between entities, so seven rules live here instead. Each is a record that passes every
-pattern in its schema and still produces a failed call, or a silently unverifiable signature,
-weeks later.
+no reference between entities, so five rules live here instead. Each is a record that passes every
+pattern in its schema and still produces a failed call weeks later.
 
 1. **`bindingKey` equals `participantId` + `"|"` + `capabilityCode`.**
 2. **Both halves resolve to `active` records, and the Participant is an `upstream`.** A binding
    says how to call an API. A node is not one — its `baseUrl` takes Beckn actions, not a
    binding's `path` — so the binding resolves to a call that cannot be made.
-3. **Where `auth.paramNames` is used, its keys are exactly the keys of `auth.secrets`.** A name
-   with no secret sends an empty header; a secret with no name is never sent.
-4. **`version` equals the `vN.N` segment of `schemaUrl`.** Otherwise a record advertises `v0.1`
+3. **`version` equals the `vN.N` segment of `schemaUrl`.** Otherwise a record advertises `v0.1`
    and resolves `v0.2`.
-5. **`keys[].keyId` is unique within the array.** `uniqueItems` compares whole objects, so two
-   entries with the same `keyId` and different material both pass, and a verifier gets whichever
-   it found first.
-6. **One `actions[]` entry per action.** `uniqueItems` compares whole objects — the same problem
-   as rule 5 — so two `select` entries with different paths both validate and the adapter calls
-   whichever it indexed first.
-7. **A mapping filename's action segment equals the `action` it sits under.** Both are valid in
+4. **One `actions[]` entry per action.** `uniqueItems` compares whole objects, so two `select`
+   entries with different paths both validate and the adapter calls whichever it indexed first.
+5. **A mapping filename's action segment equals the `action` it sits under.** Both are valid in
    isolation; disagreeing applies a correct mapping to the wrong call, which returns a
    well-shaped answer to a question nobody asked.
 
-`paramNames` and `keyId` uniqueness are not violated by any seeded record, so they were verified
-by mutation: inject the violation into a copy of `examples.md` and confirm the checker reports
-that rule and not another.
+Rule 4 is not violated by any seeded record, so it was verified by mutation: duplicate the `select`
+entry in a copy of `examples.md` and confirm the checker reports rule 4 and not another.
 
-`records.py` also carries one invariant that is not one of the seven: **no secret in `examples.md`
-may be anything but `env://`.** The schema permits `inline:` on purpose — an operator who cannot
-set an environment variable needs it — but a reviewed file in git is never that operator, and the
-day someone pastes a working key into an example is the day it is in every clone.
-Mutation-tested. It covers every secret there is: `auth.secrets` is the only one left in the three
-schemas, now that what an upstream needs beyond the Beckn body is the adapter plugin's and its DSN
-comes from the plugin's own environment.
+`records.py` also carries one invariant that is not one of the five: **no record holds a
+credential.** There is no field for one — the credential for calling an upstream belongs to the
+binding plugin's environment — and `additionalProperties: false` refuses a field named `auth`. What
+nothing refuses is a secret smuggled into a field that *is* declared: a token in a `baseUrl` query,
+a password pasted into a `name`. So the check walks **every string in every record** and fails on
+`env://` or `inline:` anywhere. It is deliberately stricter than the old rule, which looked only at
+`auth.secrets` and would have passed all of those. Mutation-tested — a pointer dropped into a
+`name` produces exactly one failure.
 
-`auth_cases.py` carries negative cases as well as positive ones. A case that passes for the wrong
-reason is worse than no case — before `paramNames` existed, every `paramNames` negative passed
-because `additionalProperties: false` refused the field outright. They are kept so the same cases
-now fail for the intended reason.
+`cases.py` (formerly `auth_cases.py`) carries negative cases as well as positive ones. A case that
+passes for the wrong reason is worse than no case: a negative that `additionalProperties: false`
+refuses outright pins nothing about the rule it claims to test, so each is checked against a schema
+mutated to remove the rule and confirmed to fail for the intended reason.
 
 Its `SHAPE` block pins what `type` decides. None of it can be shown by a record in `examples.md`,
-because a valid record cannot demonstrate an illegal combination — a node carrying `auth`, an
-upstream carrying `keys`, a node id that is not a hostname, a credential over plaintext http.
-Three of them guard a revert rather than a bug: `subscriberId` reappearing, and either
-wrapper object — `node` or `upstream` — coming back. Mutation-tested against the schema
-itself — deleting the two `if/then` branches fails 8 of the 18, and relaxing
-`additionalProperties` fails the 3 revert guards.
+because a valid record cannot demonstrate an illegal combination — an upstream carrying `keys`, a
+node id that is not a hostname, a node over plaintext http. Five of the twenty guard a revert rather
+than a bug: `subscriberId` reappearing, either wrapper object — `node` or `upstream` — coming back,
+and `auth` coming back on either half. A sixth guards `keys` going back to an array. Mutation-tested
+against the schema itself: deleting the two `if/then` branches fails 6 of the 20, relaxing
+`additionalProperties` fails the 5 revert guards and nothing else, and restoring `keys` as an array
+of `PublicKey` fails 3 — the array guard plus the two node records that are no longer valid, which
+is the shape of that revert stated twice.
 
-Its `NARROWING` block pins the material grammar in both directions: a **secret is always a
-pointer** (`env://`, or `inline:` under protest) and a **public key is always material**
-(`base64:` + 44 chars). Each set must refuse the other's form, and the length cases pin 32 bytes,
-which is what both Ed25519 and X25519 use — so a truncated key is rejected at write time rather
-than at the first signature it fails to verify.
+One case is a **positive with nothing behind it**: `upstream over plaintext http` passes because,
+with no `auth` field, the schema cannot tell whether a credential rides on the call and so cannot
+condition the transport rule on one. The guard that used to sit here — https unless
+`auth.scheme` was `none` — is gone, and it now lives in the binding's plugin, where nothing in this
+folder can assert it.
+
+Its `NARROWING` block pins the key-material grammar: a **public key is always material**
+(`base64:` + 44 chars), and both credential forms — `env://` and `inline:` — are refused, so the
+field cannot quietly become a place to put one. The length cases pin 32 bytes, which is what both
+Ed25519 and X25519 use, so a truncated key is rejected at write time rather than at the first
+signature it fails to verify. It has one half now; a secret is not expressible in these schemas at
+all, and the `records.py` invariant above is what asserts that.
 
 `links.py` exists because renaming an entity broke four anchors here and nothing failed. GitHub
 derives an anchor from the heading text, so a renamed heading is a broken link at every site that

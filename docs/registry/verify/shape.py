@@ -11,8 +11,8 @@ A block counts as a record if its single top-level key is an entity name. Every 
 ```json block in these pages is a Beckn payload or an upstream response and is skipped,
 so a page can show whatever it needs without tripping this.
 
-Coverage is a union across blocks, not per block — `auth.paramName` and
-`auth.paramNames` are mutually exclusive, so no single record can exercise both.
+Coverage is a union across blocks, not per block — `role` and `keys` exist only on a
+node and are refused on an upstream, so no single record can exercise every property.
 
 Run:  python3 verify/shape.py          (from docs/registry)
 Needs: jsonschema

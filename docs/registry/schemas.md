@@ -12,9 +12,9 @@ the reading of them.
 Every row carries `status: "active" \| "inactive"`. Every read filters on `active`.
 
 Which row a field goes on: `Participant` holds what is true of a provider whatever you ask it
-for — `baseUrl`, `auth`. `ProviderSchema` holds what varies per capability — `method`, `path`, the
+for — its `baseUrl`. `ProviderSchema` holds what varies per capability — `method`, `path`, the
 mapping file, the timeouts. So a provider serving two capabilities is one `Participant`
-and two `ProviderSchema` rows.
+and two `ProviderSchema` rows. Neither holds a credential; see below.
 
 ---
 
@@ -45,8 +45,8 @@ Five fields always, then `type` decides the rest. One level, no wrapper object:
 
 | | always | `node` | `upstream` |
 |---|---|---|---|
-| required | `participantId`, `name`, `type`, `status`, `baseUrl` | `role`, `keys` | `auth` |
-| refused | | `auth` | `role`, `keys` |
+| required | `participantId`, `name`, `type`, `status`, `baseUrl` | `role`, `keys` | — |
+| refused | | | `role`, `keys` |
 
 A **node** speaks Beckn. Its `participantId` *is* its network identity — what goes on the wire as
 `context.bapId` / `context.bppId`, and field 1 of the `Authorization` keyId. There is no second id
@@ -54,18 +54,35 @@ field, because a node id that is also a hostname is one name for one thing; the 
 hostname shape when `type` is `node`, so `oan-provider` is refused there and
 `provider-network-vistaar.da.gov.in` is not.
 
+**`keys` is one key, not a list.** A node therefore holds a signing key *or* an encryption key,
+never both, and cannot hold an old and a new key at once: rotation is a full replace and a hard
+cutover, and anything signed between the write and the last verifier refreshing does not verify.
+`keyId` still names the key in the `Authorization` header — one name out of one, which is what makes
+that field survivable if a second key is ever needed.
+
 An **upstream** is an ordinary API. It has not heard of Beckn, so it has no role and no keys, and
 its `participantId` is the `offer.provider.id` the farmer sees.
 
 `baseUrl` is one field because it was always one idea: the base something is appended to — a Beckn
-action for a node, a binding's `path` for an upstream. It is `https` in every case but one, an
-upstream whose `auth.scheme` is `none`, where there is no credential to leak.
+action for a node, a binding's `path` for an upstream. It is `https` for a node, unconditionally. For
+an upstream it may be plaintext, and that is a **loss**: the rule used to be conditional on
+`auth.scheme` being `none`, so plaintext was permitted exactly where nothing could leak. With no
+`auth` field the schema cannot tell a credentialled call from an uncredentialled one, so it cannot
+condition anything on it. `oan-vector` over `http://` is still the only plaintext row, but nothing
+refuses a second one that does carry a credential.
 
-**`keys` and `auth` are not the same thing and must not be merged.** `keys` is *their* public
-material, which we use to verify what they sent; `auth` is *our* credential, which we present to
-them. Opposite directions, and opposite handling — `keys` is publishable and sits in
-[examples.md](examples.md) in full, `auth.secrets` holds `env://` pointers and must never be
-logged. One field holding both is the field somebody eventually logs whole.
+**No credential we present lives in these schemas.** `keys` is *their* public material, which we
+use to verify what they sent, and it is publishable — it sits in [examples.md](examples.md) in full.
+*Our* credential for calling an upstream is not a field here at all: the binding's plugin reads it
+from the adapter's own environment, alongside the DSN it already reads there. So there is no secret
+in the registry and no field for somebody to log whole — and **none of the three schemas carries a
+`_osConfig.privateFields` at all**, because there is nothing left for one to redact. That is the
+strongest form of the property: a read cannot leak a credential, rather than being configured not
+to.
+
+The cost is that authenticating becomes code rather than configuration. One declarative
+`auth.scheme` used to let a single HTTP client serve every upstream; now each plugin authenticates
+itself, so onboarding an upstream is a code change and four plugins can get it wrong four ways.
 
 Why a discriminator rather than a `oneOf` over two wrapper objects: `if/then` tells a reader
 "`role` is a required property", where `oneOf` says "is not valid under any of the given schemas"
@@ -81,15 +98,15 @@ top-level fields only, can filter on `baseUrl` and `type` at all.
   "status": "active",                               // active | inactive
   "baseUrl": "https://provider-network-vistaar.da.gov.in/beckn",   // where Beckn messages go; https only
   "role": "BPP",                                  // BAP = consumer node, BPP = provider node, NETWORK = the network node
-  "keys": [ {                                     // 1–8; plural so a rotation can overlap
+  "keys": {                                       // ONE key; rotation replaces it
     "keyId": "k1",                                // field 2 of the Authorization keyId — the sender says which key it used
-    "use": "sign",                                // sign | encrypt
+    "use": "sign",                                // sign | encrypt — one key, so one of them
     "alg": "ed25519",                             // fixed by use: sign→ed25519, encrypt→x25519
     "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",   // 44 chars = 32 raw bytes
     "validFrom": "2026-08-01T00:00:00Z",
-    "validUntil": "2026-11-01T00:00:00Z",         // optional; absent = open-ended
-    "status": "active"                            // active | revoked
-  } ] } }
+    "validUntil": "2026-11-01T00:00:00Z",         // optional; absent = open-ended. No successor
+    "status": "active"                            // to overlap with, so this date is a deadline
+  } } }
 ```
 ```jsonc
 { "Participant": {
@@ -97,34 +114,13 @@ top-level fields only, can filter on `baseUrl` and `type` at all.
   "name": "IMD Mausamgram NWP",
   "type": "upstream",                               // does not speak Beckn: no role, no keys
   "status": "active",
-  "baseUrl": "https://mausamgram.imd.gov.in",       // the host; a binding's path is appended, https unless scheme is none
-  "auth": {                                       // how WE authenticate TO it
-    "scheme": "basic",                            // none | apiKeyQuery | apiKeyHeader | basic
-    "secrets": { "username": "env://MAUSAMGRAM_USER",     // pointers, never material —
-                 "password": "env://MAUSAMGRAM_X_API_KEY" } } } }   // resolved in the adapter's environment
+  "baseUrl": "https://mausamgram.imd.gov.in"        // the host; a binding's path is appended
+} }                                               // no auth: the credential is the plugin's
 ```
 
 An API and the adapter in front of it are separate deployables, so separate records:
 `mausamgram` is IMD's API, `provider-network-vistaar.da.gov.in` is the BPP that calls it. Which
 upstreams a provider node fronts is that adapter's config.
-
-### `auth`
-
-A legal example cannot show an illegal combination, so:
-
-| `scheme` | needs | forbids |
-|---|---|---|
-| `none` | — | `secrets`, `paramName`, `paramNames`, `valuePrefix` |
-| `apiKeyQuery` | `secrets` + `paramName` (one secret) or `paramNames` | `valuePrefix` |
-| `apiKeyHeader` | `secrets` + `paramName` (one secret) or `paramNames` | `paramNames` excludes `valuePrefix` |
-| `basic` | `secrets` with `username` and `password` | |
-
-`paramName` holds the header *name*; `valuePrefix` keeps its trailing space — `"Bearer "`. Both in
-[examples.md](examples.md#forms-no-seeded-record-uses).
-
-`inline:` secrets also validate, for an operator who cannot set an environment variable. It costs
-three things: `/search` must be authenticated, the database holds live key material, and rotation
-becomes a registry write.
 
 ---
 
@@ -210,9 +206,9 @@ request. The adapter's plugin for this binding-action produces them into `_local
 mapping is evaluated over `{ request, _local }`. Naming that plugin here would buy nothing:
 `bindingKey` plus `action` already selects it, exactly as it selects the mapping, so a name is a
 second way to say the same thing and a first way to disagree — and unverifiable either way, since
-it would be a string, not a reference. It also keeps the DSN out: a plugin reading PostGIS reads
-the DSN from its own environment, which leaves `auth.secrets` the only secret in these three
-schemas.
+it would be a string, not a reference. It also keeps the credentials out: a plugin reading PostGIS reads its DSN from its own
+environment, and now reads its upstream credential from there too — which is why there is no
+secret in these three schemas at all.
 
 Having the plugin is therefore a **seeding prerequisite**. A binding whose plugin does not exist
 validates, seeds and returns nothing useful.

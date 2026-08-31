@@ -1,7 +1,7 @@
 """The records in examples.md are write bodies, so they must be valid write bodies:
 
   (a) each ```json block that names an entity validates against schemas/<Entity>.json, and
-  (b) the seven rules of verify/README.md hold across the whole set — the ones draft-07
+  (b) the five rules of verify/README.md hold across the whole set — the ones draft-07
       cannot express, which are therefore the ones nothing else checks.
 
 (b) is the point. A record can satisfy every pattern in its schema and still be wrong in a
@@ -29,13 +29,13 @@ def records(schemas):
         try:
             rec = json.loads(body)
         except Exception:
-            continue                      # fragments (a bare auth object) are illustrative
+            continue                      # fragments are illustrative, not records
         if isinstance(rec, dict) and len(rec) == 1 and list(rec)[0] in schemas:
             yield list(rec)[0], rec
 
 
 def rules(by_entity, fail):
-    """The seven rules of verify/README.md — what JSON Schema and RC cannot express."""
+    """The five rules of verify/README.md — what JSON Schema and RC cannot express."""
     participants = {r["participantId"]: r for r in by_entity.get("Participant", [])}
     caps = {r["capabilityCode"]: r for r in by_entity.get("SchemaRegistry", [])}
 
@@ -55,8 +55,8 @@ def rules(by_entity, fail):
                 fail(f'rule 2: {key} names {label} {ref!r}, which is {row["status"]}')
             elif label == "Participant" and row.get("type") != "upstream":
                 # A binding says how to call an API. A node is not one — its baseUrl
-                # takes Beckn actions, not a binding's path, and it carries no
-                # credential of ours, so this resolves to a call that cannot be made.
+                # takes Beckn actions, not a binding's path — so this resolves to a
+                # call that cannot be made.
                 fail(f'rule 2: {key} names Participant {ref!r}, which is a '
                      f'{row.get("type")}, not an upstream')
 
@@ -65,56 +65,58 @@ def rules(by_entity, fail):
             act = a.get("action")
             where = f'{key} actions[{i}]'
 
-            # rule 6 — one entry per action. uniqueItems compares whole objects, so two
+            # rule 4 — one entry per action. uniqueItems compares whole objects, so two
             # entries for the same action with different paths both validate and the
-            # adapter takes whichever it indexed first. Same failure as rule 5's keyId.
+            # adapter takes whichever it indexed first.
             seen_actions.append(act)
 
-            # rule 7 — the mapping filename's action segment equals the action it sits
+            # rule 5 — the mapping filename's action segment equals the action it sits
             # under. Both are correct in isolation; disagreeing applies a valid mapping
             # to the wrong call, which returns a shaped answer to the wrong question.
             seg = re.search(r"\.([a-z_]+)\.ya?ml$", a.get("mappings", ""))
             if seg is None:
-                fail(f'rule 7: {where} mappings has no action segment')
+                fail(f'rule 5: {where} mappings has no action segment')
             elif seg.group(1) != act:
-                fail(f'rule 7: {where} is action {act!r} but its mapping is '
+                fail(f'rule 5: {where} is action {act!r} but its mapping is '
                      f'{seg.group(1)!r} — {a["mappings"]}')
 
         dupes = sorted({a for a in seen_actions if seen_actions.count(a) > 1})
         if dupes:
-            fail(f'rule 6: {key} repeats action(s) {dupes} in actions[]')
+            fail(f'rule 4: {key} repeats action(s) {dupes} in actions[]')
 
-    for p in by_entity.get("Participant", []):
-        auth = p.get("auth", {})
-        # rule 3 — paramNames keys are exactly the secrets keys
-        if "paramNames" in auth:
-            if set(auth["paramNames"]) != set(auth.get("secrets", {})):
-                fail(f'rule 3: {p["participantId"]} paramNames keys '
-                     f'{sorted(auth["paramNames"])} != secrets keys '
-                     f'{sorted(auth.get("secrets", {}))}')
-        # rule 5 — keyId unique within keys
-        ids = [k["keyId"] for k in p.get("keys", [])]
-        if len(ids) != len(set(ids)):
-            fail(f'rule 5: {p["participantId"]} repeats a keyId in keys')
+    # not one of the five — the invariant that the credential really did leave the
+    # registry. additionalProperties:false already refuses a field named `auth`, but
+    # nothing refuses a secret smuggled into a field that IS declared: a name, a
+    # baseUrl with a token in its query, a path. The property is "no record holds a
+    # credential", so check every string in every record rather than one field.
+    def strings(node, where=""):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield from strings(v, f"{where}.{k}" if where else k)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                yield from strings(v, f"{where}[{i}]")
+        elif isinstance(node, str):
+            yield where, node
 
-    # not a §3.4 rule — an invariant of this file being COMMITTED. The schema
-    # permits inline:, because an operator who cannot set an environment needs
-    # it; a reviewed document in git is never that operator.
-    for p in by_entity.get("Participant", []):
-        for name, ref in p.get("auth", {}).get("secrets", {}).items():
-            if not ref.startswith("env://"):
-                fail(f'committed docs: {p["participantId"]} secrets.{name} is '
-                     f'{ref.split(":")[0]}:… — only env:// belongs in a tracked file')
-    # auth.secrets is the only secret in the three schemas, so this loop is the whole
-    # of it — nothing on a ProviderSchema row holds a credential to check.
+    for entity, rows in sorted(by_entity.items()):
+        for row in rows:
+            ident = (row.get("participantId") or row.get("capabilityCode")
+                     or row.get("bindingKey"))
+            for where, val in strings(row):
+                for form in ("env://", "inline:"):
+                    if form in val:
+                        fail(f'no credential in the registry: {entity} {ident} {where} '
+                             f'contains {form!r} — a credential belongs to the binding\'s '
+                             f'plugin environment, not to a record')
 
     for c in by_entity.get("SchemaRegistry", []):
-        # rule 4 — version equals the vN.N segment of schemaUrl
+        # rule 3 — version equals the vN.N segment of schemaUrl
         seg = re.search(r"/(v[0-9]+\.[0-9]+)/", c["schemaUrl"])
         if seg is None:
-            fail(f'rule 4: {c["capabilityCode"]} schemaUrl has no version segment')
+            fail(f'rule 3: {c["capabilityCode"]} schemaUrl has no version segment')
         elif seg.group(1) != c["version"]:
-            fail(f'rule 4: {c["capabilityCode"]} says {c["version"]!r} '
+            fail(f'rule 3: {c["capabilityCode"]} says {c["version"]!r} '
                  f'but resolves {seg.group(1)!r}')
 
 
