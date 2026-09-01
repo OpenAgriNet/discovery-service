@@ -66,17 +66,12 @@ jobs:
       # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
       # Docker subscription — anonymous pulls 401. Same login a local build
       # needs (see the Dockerfile's FROM comment), just non-interactive here.
-      #
-      # MY_DHI_KEY is a combined base64 "user:token" auth blob (the same
-      # thing `docker login` writes to config.json), not a plain password —
-      # docker/login-action's username/password inputs don't accept that
-      # shape, so config.json is written directly instead.
       - name: Log in to dhi.io
-        run: |
-          mkdir -p ~/.docker
-          cat > ~/.docker/config.json <<EOF
-          {"auths":{"dhi.io":{"auth":"${{ secrets.MY_DHI_KEY }}"}}}
-          EOF
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USERNAME }}
+          password: ${{ secrets.DHI_PAT }}
 
       # T4, half two: the shipped image. The scan is of the image and not of
       # go.sum so that the toolchain pinned in tools/go.mod — which is never
