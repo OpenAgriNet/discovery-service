@@ -31,8 +31,10 @@ type bucket struct {
 
 // limiter is the token-bucket state behind RateLimit.
 //
-// It is keyed on the caller's remote address. **Not on `context.bapId`**, which
-// is what A4 says, and the departure is deliberate: until a signature is
+// It is keyed on the caller's remote address. **Not on the caller's declared
+// participant id** — `context.bapId`, which is what A4 says, and now
+// `context.senderId`, which is the field that replaced it. The departure is
+// deliberate and survives the rename: until a signature is
 // verified that field is a string the caller chose. Keying on it would let any
 // caller shed their own limit by rotating the field, and — the worse half — let
 // any caller exhaust a *named third party's* bucket by claiming their id, which

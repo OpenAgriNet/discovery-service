@@ -40,10 +40,28 @@ type Context struct {
 	Action  string `json:"action,omitempty"`
 	Version string `json:"version,omitempty"`
 
-	BapID      string `json:"bapId,omitempty"`
-	BapURI     string `json:"bapUri,omitempty"`
-	BppID      string `json:"bppId,omitempty"`
-	BppURI     string `json:"bppUri,omitempty"`
+	// The two participant identities this service reads, and the only two.
+	// Each is a DID resolving to the document that carries the party's
+	// verification keys, so one field answers both "who" and "with what key" —
+	// which is what the parked signature layer will need.
+	//
+	// `bapId`, `bapUri`, `bppId` and `bppUri` are deliberately NOT here. The
+	// spec retains them for backward compatibility and a caller may still send
+	// them; they are ignored rather than modelled, because a field this service
+	// echoes but never reads is one a reader has to check is unused, and one an
+	// operator can mistake for an identity that was verified. A body carrying
+	// them is still accepted — Context declares no `additionalProperties:
+	// false` and the decoder is not strict — it simply does not get them back.
+	//
+	// NEITHER IS VERIFIED, and on a callback that has a sharp edge. The two
+	// controllers build a response by swapping them, so this service's own
+	// `senderId` is whatever the caller put in `receiverId` — a caller can name
+	// a third party there and be handed a callback asserting that DID as the
+	// sender. It is the same "a string the caller chose" hazard the rate
+	// limiter refuses to key on, and it closes the same way: the signature
+	// layer resolves the DID document, and a configured self-DID replaces the
+	// echo. Until then a caller sending neither gets a callback naming neither,
+	// which is honest — an absent identity claims less than an unverified one.
 	SenderID   string `json:"senderId,omitempty"`
 	ReceiverID string `json:"receiverId,omitempty"`
 

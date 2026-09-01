@@ -108,6 +108,25 @@ var allowed = map[string]string{
 	// X-Beckn-Error-Type header and the error_type log field; this key is
 	// written only when ERROR_INCLUDE_LEGACY_TYPE is true, for v1-era clients.
 	"extra:Error.type": "C1 — legacy error category, off by default",
+
+	// The spec itself calls these four legacy: it renamed BAP/BPP to Consumer
+	// Node and Provider Node and kept the wire names only "to preserve backward
+	// compatibility with existing integrations". senderId and receiverId carry
+	// the same two identities as DIDs, which is what the parked signature layer
+	// resolves keys from, so modelling both would give one participant two
+	// spellings and no rule saying which wins when they disagree.
+	//
+	// Dropping a declared property is the direction this walk exists to catch,
+	// and the reason it does — losing a publisher's data in transit — does not
+	// apply here: these are envelope fields this service only ever echoed, not
+	// catalog members it stores and renders back. Nothing reads them, so
+	// nothing loses them. A caller may still send them and the request is still
+	// accepted; Context declares no additionalProperties:false and the decoder
+	// is not strict. They simply do not come back on the callback.
+	"missing:Context.bapId":  "legacy CN id, superseded by senderId",
+	"missing:Context.bapUri": "legacy CN address, resolved from the sender's DID document",
+	"missing:Context.bppId":  "legacy PN id, superseded by receiverId",
+	"missing:Context.bppUri": "legacy PN address, resolved from the receiver's DID document",
 }
 
 func TestWireStructsMatchTheSpecification(t *testing.T) {

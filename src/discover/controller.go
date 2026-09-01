@@ -142,10 +142,12 @@ func responseContext(request beckn.Context) beckn.Context {
 		Action:  beckn.ActionOnDiscover,
 		Version: beckn.Version,
 
-		BapID:  request.BapID,
-		BapURI: request.BapURI,
-		BppID:  request.BppID,
-		BppURI: request.BppURI,
+		// The legs reverse. On the request this service was the receiver; on
+		// the answer it is the sender, so echoing these unswapped would put the
+		// caller's DID on a message the caller did not send.
+		// Neither is verified; beckn.Context spells out what that costs here.
+		SenderID:   request.ReceiverID,
+		ReceiverID: request.SenderID,
 
 		TransactionID: request.TransactionID,
 		MessageID:     request.MessageID,
