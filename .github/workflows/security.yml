@@ -18,88 +18,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          # A glob, not a list: the service module has no dependencies yet, so
-          # a literal go.sum path would fail to resolve and disable the cache.
-          cache-dependency-path: "**/go.sum"
 
       # T4, half one: known vulnerabilities in the Go dependency graph.
-      - name: govulncheck
-        run: make security 2>&1 | tee govulncheck-report.txt
+      # skip-dirs excludes tools/ (a separate go.mod for build-time tooling,
+      # e.g. golangci-lint) for the same reason the image scan below never
+      # touches it: it's never linked into the shipped binary, so it can't
+      # fail a release it doesn't ship in.
+      - name: Trivy dependency scan (report)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          skip-dirs: tools
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+          output: trivy-deps-report.txt
 
-      - name: Assemble govulncheck PR comment
+      - name: Assemble Trivy dependency PR comment
         if: github.event_name == 'pull_request'
         run: |
           {
-            echo "<!-- sec-scan:govulncheck -->"
-            echo "### 🛡️ govulncheck — Go dependency vulnerabilities"
+            echo "<!-- sec-scan:trivy-deps -->"
+            echo "### 🛡️ Trivy — Go dependency scan (HIGH,CRITICAL)"
             echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
-            if grep -q '^Vulnerability #' govulncheck-report.txt; then
-              echo "| Module | Installed | Fixed | Issue |"
-              echo "|---|---|---|---|"
-              awk '
-                /^Vulnerability #/ {
-                  id = $0; sub(/^Vulnerability #[0-9]+: /, "", id)
-                  module = ""; summary = ""; in_summary = 1
-                  next
-                }
-                /More info:/ { in_summary = 0 }
-                in_summary {
-                  line = $0
-                  gsub(/^[ \t]+/, "", line)
-                  summary = summary (summary == "" ? "" : " ") line
-                  next
-                }
-                /^  Module:/          { line = $0; sub(/^  Module: */, "", line); module = line }
-                /^  Standard library/ { module = "Go standard library" }
-                /Found in:/ { line = $0; sub(/^.*Found in: */, "", line); if (index(line, "@") > 0) { split(line, a, "@"); line = a[2] }; installed = line }
-                /Fixed in:/ {
-                  line = $0; sub(/^.*Fixed in: */, "", line)
-                  if (index(line, "@") > 0) { split(line, a, "@"); line = a[2] }
-                  fixed = line
-
-                  # the summary usually repeats the module path as a prefix
-                  # ("moby/go-archive: Crafted tar archive..."); drop it, the
-                  # Module column already has it
-                  base = module
-                  sub(/^[a-zA-Z0-9.-]+\//, "", base)
-                  prefix = base ": "
-                  if (index(summary, prefix) == 1) summary = substr(summary, length(prefix) + 1)
-
-                  printf "| %s | %s | %s | [%s](https://pkg.go.dev/vuln/%s) |\n", module, installed, fixed, summary, id
-                }
-              ' govulncheck-report.txt
-            else
-              echo "No known vulnerabilities found."
-            fi
-            echo
-            echo "<details><summary>Full govulncheck output</summary>"
+            echo "<details><summary>Findings</summary>"
             echo
             echo '```'
-            cat govulncheck-report.txt
+            cat trivy-deps-report.txt
             echo '```'
             echo "</details>"
-          } > govulncheck-comment.md
+          } > trivy-deps-comment.md
 
-      - name: Find existing govulncheck comment
+      - name: Find existing Trivy dependency comment
         if: github.event_name == 'pull_request'
         uses: peter-evans/find-comment@v3
-        id: find-govulncheck-comment
+        id: find-trivy-deps-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: "github-actions[bot]"
-          body-includes: "<!-- sec-scan:govulncheck -->"
+          body-includes: "<!-- sec-scan:trivy-deps -->"
 
-      - name: Comment govulncheck report on PR
+      - name: Comment Trivy dependency report on PR
         if: github.event_name == 'pull_request'
         uses: peter-evans/create-or-update-comment@v4
         with:
-          comment-id: ${{ steps.find-govulncheck-comment.outputs.comment-id }}
+          comment-id: ${{ steps.find-trivy-deps-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
-          body-path: govulncheck-comment.md
+          body-path: trivy-deps-comment.md
           edit-mode: replace
 
       # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
@@ -174,6 +141,16 @@ jobs:
           edit-mode: replace
 
       # Gate the PR on the same findings the comments above already showed.
+      - name: Trivy dependency scan (gate)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          skip-dirs: tools
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+
       - name: Trivy image scan (gate)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
