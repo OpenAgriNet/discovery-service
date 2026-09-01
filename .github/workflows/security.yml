@@ -7,7 +7,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+  # Findings are uploaded as SARIF and rendered by GitHub's own code scanning
+  # UI — the Security tab, plus annotations on the diff — rather than pasted
+  # into a pull request comment this workflow has to format itself.
+  security-events: write
 
 concurrency:
   group: security-${{ github.ref }}
@@ -19,11 +22,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # T4, half one: known vulnerabilities in the Go dependency graph.
+      # T4, half one: the dependency graph as written. This catches what the
+      # image scan structurally cannot — a vulnerable module that only the test
+      # suite imports, so it is never linked into the binary and never appears
+      # in a layer. The first real finding was exactly that shape:
+      # github.com/moby/go-archive, pulled in by testcontainers.
+      #
       # skip-dirs excludes tools/ (a separate go.mod for build-time tooling,
-      # e.g. golangci-lint) for the same reason the image scan below never
-      # touches it: it's never linked into the shipped binary, so it can't
-      # fail a release it doesn't ship in.
+      # e.g. golangci-lint) for the reason that module exists at all: the
+      # linter's dependency graph is not the binary's, so it cannot fail a
+      # release it does not ship in.
+      #
+      # limit-severities-for-sarif is what makes the SARIF obey `severity`.
+      # Without it the report carries every severity Trivy knows and the
+      # Security tab fills with LOW noise the gate below would never fail on.
       - name: Trivy dependency scan (report)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -31,43 +43,18 @@ jobs:
           scan-ref: .
           skip-dirs: tools
           severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
           exit-code: "0"
-          format: table
-          output: trivy-deps-report.txt
+          format: sarif
+          output: trivy-deps.sarif
 
-      - name: Assemble Trivy dependency PR comment
-        if: github.event_name == 'pull_request'
-        run: |
-          {
-            echo "<!-- sec-scan:trivy-deps -->"
-            echo "### 🛡️ Trivy — Go dependency scan (HIGH,CRITICAL)"
-            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo
-            echo "<details><summary>Findings</summary>"
-            echo
-            echo '```'
-            cat trivy-deps-report.txt
-            echo '```'
-            echo "</details>"
-          } > trivy-deps-comment.md
-
-      - name: Find existing Trivy dependency comment
-        if: github.event_name == 'pull_request'
-        uses: peter-evans/find-comment@v3
-        id: find-trivy-deps-comment
+      # A category per scan: without it the second upload replaces the first,
+      # because GitHub keys an analysis on (ref, category).
+      - name: Upload dependency findings
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          issue-number: ${{ github.event.pull_request.number }}
-          comment-author: "github-actions[bot]"
-          body-includes: "<!-- sec-scan:trivy-deps -->"
-
-      - name: Comment Trivy dependency report on PR
-        if: github.event_name == 'pull_request'
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          comment-id: ${{ steps.find-trivy-deps-comment.outputs.comment-id }}
-          issue-number: ${{ github.event.pull_request.number }}
-          body-path: trivy-deps-comment.md
-          edit-mode: replace
+          sarif_file: trivy-deps.sarif
+          category: trivy-dependencies
 
       # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
       # Docker subscription — anonymous pulls 401. Same login a local build
@@ -91,9 +78,13 @@ jobs:
           {"auths":{"dhi.io":{"auth":"${AUTH}"}}}
           EOF
 
-      # T4, half two: the shipped image. The scan is of the image and not of
-      # go.sum so that the toolchain pinned in tools/go.mod — which is never
-      # linked into the binary — cannot fail a release it does not ship in.
+      # T4, half two: the shipped image, which is what the dependency scan
+      # above cannot see. It reads the base layers, and it reads the Go build
+      # info embedded in the binary — including `stdlib`, so a Go toolchain CVE
+      # is reported here and nowhere else. Trivy does not derive stdlib from
+      # go.mod's `go` directive: measured, a go.mod declaring `go 1.21.0`
+      # reports zero findings, and the same vulnerabilities appear as `stdlib`
+      # once the compiled binary is scanned.
       - name: Build image
         run: docker build -t discovery-service:${{ github.sha }} .
 
@@ -102,59 +93,36 @@ jobs:
         with:
           image-ref: discovery-service:${{ github.sha }}
           severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
           exit-code: "0"
-          format: table
-          output: trivy-report.txt
+          format: sarif
+          output: trivy-image.sarif
 
-      - name: Assemble Trivy PR comment
-        if: github.event_name == 'pull_request'
+      - name: Upload image findings
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # Gate on the reports already produced rather than scanning a third and
+      # fourth time. Two independent scans of the same thing can disagree —
+      # Trivy refreshes its database on each run — so a gate that rescans can
+      # fail on a finding that is in no uploaded report, which is the one state
+      # nobody can act on. Reading the SARIF makes the gate and the Security
+      # tab the same answer by construction.
+      #
+      # Last in the job, so a red build still leaves both reports behind.
+      # limit-severities-for-sarif above is what makes counting results
+      # equivalent to Trivy's own `--exit-code 1 --severity HIGH,CRITICAL`.
+      - name: Gate on HIGH or CRITICAL findings
         run: |
-          {
-            echo "<!-- sec-scan:trivy-image -->"
-            echo "### 🛡️ Trivy — image scan (HIGH,CRITICAL)"
-            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo
-            echo "<details><summary>Findings</summary>"
-            echo
-            echo '```'
-            cat trivy-report.txt
-            echo '```'
-            echo "</details>"
-          } > trivy-comment.md
-
-      - name: Find existing Trivy comment
-        if: github.event_name == 'pull_request'
-        uses: peter-evans/find-comment@v3
-        id: find-trivy-comment
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          comment-author: "github-actions[bot]"
-          body-includes: "<!-- sec-scan:trivy-image -->"
-
-      - name: Comment Trivy report on PR
-        if: github.event_name == 'pull_request'
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          comment-id: ${{ steps.find-trivy-comment.outputs.comment-id }}
-          issue-number: ${{ github.event.pull_request.number }}
-          body-path: trivy-comment.md
-          edit-mode: replace
-
-      # Gate the PR on the same findings the comments above already showed.
-      - name: Trivy dependency scan (gate)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          skip-dirs: tools
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          format: table
-
-      - name: Trivy image scan (gate)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: discovery-service:${{ github.sha }}
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          format: table
+          fail=0
+          for report in trivy-deps.sarif trivy-image.sarif; do
+            count=$(jq '[.runs[].results[]?] | length' "$report")
+            echo "${report}: ${count} HIGH/CRITICAL"
+            if [ "$count" -gt 0 ]; then
+              jq -r '.runs[].results[]? | "::error::\(.ruleId) \(.message.text)"' "$report"
+              fail=1
+            fi
+          done
+          exit "$fail"
