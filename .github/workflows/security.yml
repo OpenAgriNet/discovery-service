@@ -37,7 +37,26 @@ jobs:
             echo "### 🛡️ govulncheck — Go dependency vulnerabilities"
             echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
-            echo "<details><summary>Findings</summary>"
+            if grep -q '^Vulnerability #' govulncheck-report.txt; then
+              echo "| Module | Installed | Fixed | Advisory |"
+              echo "|---|---|---|---|"
+              awk '
+                /Module:/    { module = $2 }
+                /Found in:/  { split($0, a, "@"); installed = a[2] }
+                /Fixed in:/  { split($0, a, "@"); fixed = a[2] }
+                /^Vulnerability #/ {
+                  id = $3
+                  next
+                }
+                /Fixed in:/ {
+                  printf "| %s | %s | %s | [%s](https://pkg.go.dev/vuln/%s) |\n", module, installed, fixed, id, id
+                }
+              ' govulncheck-report.txt
+            else
+              echo "No known vulnerabilities found."
+            fi
+            echo
+            echo "<details><summary>Full govulncheck output</summary>"
             echo
             echo '```'
             cat govulncheck-report.txt
