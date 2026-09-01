@@ -19,6 +19,7 @@ env:
   # was deferred.
   EMBEDDING_PROVIDER: hashing
   MIN_COVERAGE: "80"
+  GOTESTSUM_VERSION: v1.13.0
 
 jobs:
   lint:
@@ -44,29 +45,66 @@ jobs:
           # a literal go.sum path would fail to resolve and disable the cache.
           cache-dependency-path: "**/go.sum"
       - run: make build
-      - run: make test
 
-      - name: Coverage
+      # gotestsum instead of `go test` directly: one tick per package with its
+      # coverage on the same line, and the output of failing tests only.
+      # Installed here rather than pinned in tools/go.mod because this is the
+      # only place that needs it — `make test` stays as it is.
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }}
+
+      # pkgname, not the github-actions format. gotestsum drives `go test
+      # -json`, which implies -v, so every format that prints per-test output
+      # prints the output of PASSING tests too — and the acceptance suite logs
+      # a spec-fetch warning per test. Measured: the github-actions format
+      # emits 755 collapsible groups, most of them holding a warning about a
+      # cache fallback that is the intended behaviour. pkgname reports one line
+      # per package and still prints failing tests in full, with file:line.
+      #
+      # One run, not two: the profile costs nothing on top of the suite, so the
+      # previous `make test` plus `make cover` pair paid for every test twice
+      # to learn the same pass/fail answer. EMBEDDING_PROVIDER is pinned at the
+      # workflow level, which is what the Makefile's TEST_ENV does locally.
+      - name: Test
         run: |
-          make cover
-          go tool cover -func=coverage.out | tee coverage-func.txt
-          {
-            echo "### Coverage"
-            echo '```'
-            cat coverage-func.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          gotestsum --format pkgname --format-hide-empty-pkg -- \
+            -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      # continue-on-error so a coverage miss still posts its report; the last
+      # step in the job turns that outcome back into a failure.
+      - name: Check coverage
+        id: coverage
+        continue-on-error: true
+        uses: vladopajic/go-test-coverage@v2
+        with:
+          profile: coverage.out
+          threshold-total: ${{ env.MIN_COVERAGE }}
+
+      # The report leads with the total and the pass/fail, then lists only the
+      # files that have uncovered lines — 59 lines against the 550 that
+      # `go tool cover -func` prints, because it says nothing about the files
+      # that are already fully covered.
+      #
+      # The `&&`/`||` guard is for the case the step above failed before
+      # producing an output: fromJSON('') is an error, and a coverage report
+      # that cannot be built must not fail the job with a template error that
+      # says nothing about coverage.
+      - name: Assemble coverage report
+        env:
+          REPORT: >-
+            ${{ steps.coverage.outputs.report
+                && fromJSON(steps.coverage.outputs.report)
+                || 'Coverage report unavailable — see the Test step.' }}
+        run: |
           {
             echo "<!-- coverage-report -->"
             echo "### Test coverage (min ${MIN_COVERAGE}%)"
             echo
-            echo "<details><summary>Per-function breakdown</summary>"
-            echo
             echo '```'
-            cat coverage-func.txt
+            printf '%s\n' "$REPORT"
             echo '```'
-            echo "</details>"
           } > coverage-report.md
+          cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Find existing coverage comment
         if: github.event_name == 'pull_request'
@@ -87,8 +125,7 @@ jobs:
           edit-mode: replace
 
       - name: Gate on minimum coverage
+        if: steps.coverage.outcome == 'failure'
         run: |
-          pct=$(tail -1 coverage-func.txt | grep -oE '[0-9]+\.[0-9]+%$' | tr -d '%')
-          echo "coverage: ${pct}%, minimum: ${MIN_COVERAGE}%"
-          awk -v pct="$pct" -v min="$MIN_COVERAGE" 'BEGIN { exit !(pct >= min) }' \
-            || { echo "::error::coverage ${pct}% is below the ${MIN_COVERAGE}% minimum"; exit 1; }
+          echo "::error::coverage is below the ${MIN_COVERAGE}% minimum"
+          exit 1
