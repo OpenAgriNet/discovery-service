@@ -50,16 +50,22 @@ jobs:
         run: |
           make cover
           go tool cover -func=coverage.out | tee coverage-func.txt
-          echo "### Coverage" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -1 coverage-func.txt >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Coverage"
+            echo '```'
+            cat coverage-func.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           {
             echo "<!-- coverage-report -->"
             echo "### Test coverage (min ${MIN_COVERAGE}%)"
+            echo
+            echo "<details><summary>Per-function breakdown</summary>"
+            echo
             echo '```'
-            tail -1 coverage-func.txt
+            cat coverage-func.txt
             echo '```'
+            echo "</details>"
           } > coverage-report.md
 
       - name: Find existing coverage comment
