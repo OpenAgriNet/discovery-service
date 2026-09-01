@@ -40,12 +40,13 @@ jobs:
             if grep -q '^Vulnerability #' govulncheck-report.txt; then
               echo '```'
               awk '
-                function hline(w1, w2, w3, w4, l, m, r,    k) {
+                function hline(w1, w2, w3, w4, w5, l, m, r,    k) {
                   printf "%s", l
                   for (k = 0; k < w1 + 2; k++) printf "─"; printf "%s", m
                   for (k = 0; k < w2 + 2; k++) printf "─"; printf "%s", m
                   for (k = 0; k < w3 + 2; k++) printf "─"; printf "%s", m
-                  for (k = 0; k < w4 + 2; k++) printf "─"; print r
+                  for (k = 0; k < w4 + 2; k++) printf "─"; printf "%s", m
+                  for (k = 0; k < w5 + 2; k++) printf "─"; print r
                 }
                 /^Vulnerability #/ { id = $3; summary = ""; in_summary = 1; next }
                 /More info:/       { in_summary = 0 }
@@ -59,34 +60,29 @@ jobs:
                 /Found in:/ { split($0, a, "@"); installed = a[2] }
                 /Fixed in:/ {
                   split($0, a, "@"); fixed = a[2]
+                  if (length(summary) > 55) summary = substr(summary, 1, 52) "..."
                   n++
                   ID[n] = id; MOD[n] = module; INS[n] = installed; FIX[n] = fixed; SUM[n] = summary
                 }
                 END {
-                  h1 = "Module"; h2 = "Installed"; h3 = "Fixed"; h4 = "Advisory"
-                  w1 = length(h1); w2 = length(h2); w3 = length(h3); w4 = length(h4)
+                  h1 = "Module"; h2 = "Installed"; h3 = "Fixed"; h4 = "Issue"; h5 = "Advisory"
+                  w1 = length(h1); w2 = length(h2); w3 = length(h3); w4 = length(h4); w5 = length(h5)
                   for (i = 1; i <= n; i++) {
                     if (length(MOD[i]) > w1) w1 = length(MOD[i])
                     if (length(INS[i]) > w2) w2 = length(INS[i])
                     if (length(FIX[i]) > w3) w3 = length(FIX[i])
-                    if (length(ID[i])  > w4) w4 = length(ID[i])
+                    if (length(SUM[i]) > w4) w4 = length(SUM[i])
+                    if (length(ID[i])  > w5) w5 = length(ID[i])
                   }
-                  hline(w1, w2, w3, w4, "┌", "┬", "┐")
-                  printf "│ %-*s │ %-*s │ %-*s │ %-*s │\n", w1, h1, w2, h2, w3, h3, w4, h4
-                  hline(w1, w2, w3, w4, "├", "┼", "┤")
+                  hline(w1, w2, w3, w4, w5, "┌", "┬", "┐")
+                  printf "│ %-*s │ %-*s │ %-*s │ %-*s │ %-*s │\n", w1, h1, w2, h2, w3, h3, w4, h4, w5, h5
+                  hline(w1, w2, w3, w4, w5, "├", "┼", "┤")
                   for (i = 1; i <= n; i++)
-                    printf "│ %-*s │ %-*s │ %-*s │ %-*s │\n", w1, MOD[i], w2, INS[i], w3, FIX[i], w4, ID[i]
-                  hline(w1, w2, w3, w4, "└", "┴", "┘")
-                  print "```"
-                  print ""
-                  for (i = 1; i <= n; i++) {
-                    printf "**%s** — `%s`\n", ID[i], MOD[i]
-                    printf "- Issue: %s\n", SUM[i]
-                    printf "- Fix: `go get %s@%s && go mod tidy`\n", MOD[i], FIX[i]
-                    printf "- Advisory: https://pkg.go.dev/vuln/%s\n\n", ID[i]
-                  }
+                    printf "│ %-*s │ %-*s │ %-*s │ %-*s │ %-*s │\n", w1, MOD[i], w2, INS[i], w3, FIX[i], w4, SUM[i], w5, ID[i]
+                  hline(w1, w2, w3, w4, w5, "└", "┴", "┘")
                 }
               ' govulncheck-report.txt
+              echo '```'
             else
               echo "No known vulnerabilities found."
             fi
