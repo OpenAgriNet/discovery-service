@@ -14,6 +14,16 @@ DATABASE_URL ?= postgres://discovery:discovery@localhost:5432/discovery?sslmode=
 # would go untested from the day semantic search was deferred.
 TEST_ENV := EMBEDDING_PROVIDER=hashing
 
+# Coverage instruments these packages regardless of which test binary is
+# running. Without it Go instruments only the package under test, and
+# tests/acceptance and tests/dbtest are separate packages holding almost no
+# statements of their own — their entire job is to drive src/. So the suite that
+# exercises the most code would credit none of it: the total read 68.6% against
+# a real 88.5%, and src/beckn read 22.2% against a real 81.9%. A number that
+# understates the suite is not a conservative estimate, it is an argument for
+# writing tests that already exist.
+COVERPKG := ./src/...,./cmd/...
+
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOVULNCHECK   := $(BIN_DIR)/govulncheck
 SQLC          := $(BIN_DIR)/sqlc
@@ -42,7 +52,23 @@ test-short:
 
 ## cover: run the suites and write a coverage profile
 cover:
-	$(TEST_ENV) $(GO) test -race -coverprofile=coverage.out -covermode=atomic ./...
+	$(TEST_ENV) $(GO) test -race -covermode=atomic -coverpkg=$(COVERPKG) \
+		-coverprofile=coverage.out ./...
+
+## cover-total: the one number — total statement coverage
+cover-total: cover
+	@$(GO) tool cover -func=coverage.out | tail -1
+
+## cover-report: per-package coverage, thinnest last
+cover-report: cover
+	@awk -f tools/cover-report.awk coverage.out
+
+## cover-html: annotated source, green covered and red not, in coverage.html
+# -o rather than letting `go tool cover` open a browser: this has to work over
+# ssh and in CI, where there is no browser to open and the command would hang.
+cover-html: cover
+	@$(GO) tool cover -html=coverage.out -o coverage.html
+	@echo "wrote coverage.html"
 
 ## lint: vet, format check and static analysis
 lint: $(GOLANGCI_LINT)
@@ -126,7 +152,7 @@ tools: $(GOLANGCI_LINT) $(GOVULNCHECK) $(SQLC) $(MIGRATE)
 
 ## clean: remove build output and coverage profiles
 clean:
-	rm -rf $(BIN_DIR) coverage.out
+	rm -rf $(BIN_DIR) coverage.out coverage.html
 
 $(GOLANGCI_LINT): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
@@ -147,5 +173,6 @@ $(MIGRATE): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
 	$(GO) -C tools build -tags postgres -o ../$@ github.com/golang-migrate/migrate/v4/cmd/migrate
 
-.PHONY: help build test test-short cover lint fmt sqlc sqlc-verify migrate run logs \
+.PHONY: help build test test-short cover cover-total cover-report cover-html \
+	lint fmt sqlc sqlc-verify migrate run logs \
 	migrate-down security docker up down verify newman audit tools clean
