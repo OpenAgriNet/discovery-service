@@ -68,8 +68,16 @@ jobs:
       # each finding's detail lives as prose in message.text ("Package:
       # ...\nSeverity: ...\n..."), so the table columns below are pulled out
       # of that text rather than from dedicated JSON fields.
+      # continue-on-error: this step's own jq bug is what took the whole job
+      # down last run — capture(...)?.v is valid on jq 1.8 (what a workstation
+      # has) but a syntax error on jq 1.7.1 (what this runner image ships),
+      # so it never reached the image build at all. Fixed below with a `def`,
+      # which sidesteps the postfix-`?`-then-field-access ambiguity outright,
+      # but a report-formatting step must never be able to fail the job
+      # regardless — the gate at the bottom is what decides that.
       - name: Assemble Trivy dependency PR comment
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: |
           {
             echo "<!-- sec-scan:trivy-deps -->"
@@ -77,6 +85,7 @@ jobs:
             echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
             jq -r '
+              def val(re; default): (capture(re) // {v: default}).v;
               [ .runs[].results[]? ] as $found
               | if ($found | length) == 0 then
                   "No HIGH or CRITICAL findings."
@@ -84,11 +93,11 @@ jobs:
                   "| Package | Severity | Installed | Fixed in | Advisory |",
                   "|---|---|---|---|---|",
                   ( $found[] | .ruleId as $id | (.message.text // "") as $m |
-                    "| `\($m | capture("Package: (?<v>[^\\n]+)")?.v // "?")` "
-                    + "| \($m | capture("Severity: (?<v>[^\\n]+)")?.v // "?") "
-                    + "| \($m | capture("Installed Version: (?<v>[^\\n]+)")?.v // "?") "
-                    + "| \($m | capture("Fixed Version: (?<v>[^\\n]+)")?.v // "—") "
-                    + "| [\($id)](\($m | capture("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)")?.v // "")) |"
+                    "| `" + ($m | val("Package: (?<v>[^\\n]+)"; "?")) + "` "
+                    + "| " + ($m | val("Severity: (?<v>[^\\n]+)"; "?")) + " "
+                    + "| " + ($m | val("Installed Version: (?<v>[^\\n]+)"; "?")) + " "
+                    + "| " + ($m | val("Fixed Version: (?<v>[^\\n]+)"; "—")) + " "
+                    + "| [" + $id + "](" + ($m | val("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)"; "")) + ") |"
                   )
                 end
             ' trivy-deps.sarif
@@ -168,6 +177,7 @@ jobs:
 
       - name: Assemble Trivy image PR comment
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: |
           {
             echo "<!-- sec-scan:trivy-image -->"
@@ -175,6 +185,7 @@ jobs:
             echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
             jq -r '
+              def val(re; default): (capture(re) // {v: default}).v;
               [ .runs[].results[]? ] as $found
               | if ($found | length) == 0 then
                   "No HIGH or CRITICAL findings."
@@ -182,11 +193,11 @@ jobs:
                   "| Package | Severity | Installed | Fixed in | Advisory |",
                   "|---|---|---|---|---|",
                   ( $found[] | .ruleId as $id | (.message.text // "") as $m |
-                    "| `\($m | capture("Package: (?<v>[^\\n]+)")?.v // "?")` "
-                    + "| \($m | capture("Severity: (?<v>[^\\n]+)")?.v // "?") "
-                    + "| \($m | capture("Installed Version: (?<v>[^\\n]+)")?.v // "?") "
-                    + "| \($m | capture("Fixed Version: (?<v>[^\\n]+)")?.v // "—") "
-                    + "| [\($id)](\($m | capture("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)")?.v // "")) |"
+                    "| `" + ($m | val("Package: (?<v>[^\\n]+)"; "?")) + "` "
+                    + "| " + ($m | val("Severity: (?<v>[^\\n]+)"; "?")) + " "
+                    + "| " + ($m | val("Installed Version: (?<v>[^\\n]+)"; "?")) + " "
+                    + "| " + ($m | val("Fixed Version: (?<v>[^\\n]+)"; "—")) + " "
+                    + "| [" + $id + "](" + ($m | val("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)"; "")) + ") |"
                   )
                 end
             ' trivy-image.sarif
