@@ -112,8 +112,13 @@ jobs:
           } > coverage-report.md
           cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
+      # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
+      # read-only, so create-or-update-comment 403s there even with
+      # pull-requests: write declared. A comment that can't post must never
+      # fail the job — coverage already gated above, this step is cosmetic.
       - name: Find existing coverage comment
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: peter-evans/find-comment@v3
         id: find-coverage-comment
         with:
@@ -123,6 +128,7 @@ jobs:
 
       - name: Comment coverage on PR
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: peter-evans/create-or-update-comment@v4
         with:
           comment-id: ${{ steps.find-coverage-comment.outputs.comment-id }}
