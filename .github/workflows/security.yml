@@ -60,7 +60,23 @@ jobs:
                 /Fixed in:/ {
                   split($0, a, "@"); fixed = a[2]
                   link = "https://pkg.go.dev/vuln/" id
-                  if (length(summary) > 55) summary = substr(summary, 1, 52) "..."
+
+                  # the summary usually repeats the module path as a prefix
+                  # ("moby/go-archive: Crafted tar archive..."); drop it, the
+                  # Module column already has it
+                  base = module
+                  sub(/^[a-zA-Z0-9.-]+\//, "", base)
+                  prefix = base ": "
+                  if (index(summary, prefix) == 1) summary = substr(summary, length(prefix) + 1)
+
+                  limit = 48
+                  if (length(summary) > limit) {
+                    cut = substr(summary, 1, limit)
+                    sp = 0
+                    for (p = limit; p > 1; p--) if (substr(summary, p, 1) == " ") { sp = p; break }
+                    if (sp > 0) cut = substr(summary, 1, sp - 1)
+                    summary = cut "..."
+                  }
                   n++
                   MOD[n] = module; INS[n] = installed; FIX[n] = fixed; SUM[n] = summary; LNK[n] = link
                 }
@@ -86,8 +102,6 @@ jobs:
                 }
               ' govulncheck-report.txt
               echo '```'
-              echo
-              echo "Advisories: $(awk '/^Vulnerability #/ { printf "[%s](https://pkg.go.dev/vuln/%s) ", $3, $3 }' govulncheck-report.txt)"
             else
               echo "No known vulnerabilities found."
             fi
