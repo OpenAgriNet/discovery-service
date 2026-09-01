@@ -20,11 +20,19 @@ not being implemented, so the Ed25519 primitives are not built and the
 `Signature` middleware is not written. Task 22 is Phase 1 despite sounding
 deferred — see the notes under the checklist for all three.
 
-**Next task to implement: Task 23, OpenTelemetry Tracing & Metrics.**
+**Next task to implement: Task 23a, Telemetry foundation and the Resource.**
 
 Tasks 1-22 have landed, with three holes that are decisions rather than
 omissions: **6** is parked, **7** shipped at half scope (`Envelope` only), and
-**10** (L2 validation) is deferred. Task 23 is the last one in the plan.
+**10** (L2 validation) is deferred.
+
+**Task 23 is now six sub-tasks (A23), and it is no longer the last in the plan.**
+23a-23e run in order and are unblocked; **23f is blocked** on the `domain` string
+and the `producer` registry, and **Task 24 (metrics exporter) is blocked** on a
+metrics registry that does not exist. Both blockers are network-level decisions
+outside this repo, and building either on a guess produces data a facilitator
+will reject or misread. Run 23a-23e, then stop and report the two blockers rather
+than inventing values to get past them.
 
 ---
 
@@ -66,7 +74,9 @@ summarize what you built — don't continue to the next task until I say go.
 
 ## Next task — ready to paste
 
-Task 23. Paste this verbatim into a fresh session.
+Task 23a. Paste this verbatim into a fresh session. The sub-tasks run one at a
+time with a review gate between them, exactly like the numbered tasks — so this
+block names 23a, and the next session's names 23b.
 
 An earlier version of this section carried Task 8's prompt and stayed there
 while twelve tasks landed past it, which is the failure mode of a document that
@@ -75,8 +85,8 @@ does not go stale; this block is only ever the template with one number filled
 in, and it is worth keeping only because it saves the paste.
 
 ```
-Implement Task 23 — OpenTelemetry Tracing & Metrics from
-docs/design/discover-and-publish.md, and only Task 23.
+Implement Task 23a — Telemetry foundation and the Resource from
+docs/design/discover-and-publish.md, and only 23a.
 
 Rules:
 - Follow the task's own steps literally, in TDD order (failing test first, run
@@ -87,14 +97,24 @@ Rules:
 - Check Spec Conflicts, Amendments and Open Items before asking a question —
   most things are already decided there, with the reasoning.
 - Names from the plan are load-bearing. Do not simplify them.
-- Stop when Task 23 is done. Summarize what you built, paste the real output of
-  `make build`, `make lint` and `make test`, and wait for review.
+- Stop when 23a is done. Summarize what you built, paste the real output of
+  `make build`, `make lint` and `make test`, and wait for review. Do not start
+  23b.
 
-What this task specifically replaces: Task 8 shipped `Trace` as a no-op
-pass-through whose only effect is appending `trace` to `X-Beckn-Chain`. Task 23
-puts real `otelhttp` instrumentation in its place and drops that chain entry.
-The chain itself does not move — Task 20's order test reads the remaining
-entries and must still pass.
+Read A23 in the Amendments table first — it is what restructured this task, and
+it names two things the older text got wrong.
+
+Scope note: 23a builds the package, the Resource and the exporter. It starts no
+spans; `Trace` stays the no-op pass-through until 23c. So nothing observable
+changes for a request in this sub-task, and the tests are about boot: the
+exporter defaulting to `none` must not fail startup, and `otlp` with Producer or
+Domain empty must fail at boot rather than emit a non-conformant span later.
+
+Also read docs/design/opentelemetry.md — it is the single design document for
+telemetry here. Part 1 and Part 2 are the wire shape and carry the worked
+envelopes the attribute names come from; its Implementation section is 23a's own
+scope, and its Decisions table names the four things to settle before writing
+code.
 
 Note before you start: `src/platform/telemetry/` exists but holds only a
 `.gitkeep`. ADR-0011 is the accepted decision and describes the shape; the OTel
@@ -128,7 +148,8 @@ makes them direct.
 | 20 | Container, Router & Server Lifecycle | First point the service actually boots end-to-end. Wires the full middleware chain **minus `Signature`**, order-tested by observing side effects — specifically the *order of the two entries* `Trace` and `Recover` append to `X-Beckn-Chain`, since both are appended before `Recover` writes its 500 and a mere presence marker therefore survives under either nesting. `RequestLogger`'s position stamps no chain entry, so it is pinned behaviourally instead (A11): a panicking route must produce one completion line at `status = 500` with `X-Response-Time` set. Reads `SERVER_MAX_REQUEST_BODY_BYTES` once and passes it to `Envelope`; sets no second ceiling on the `http.Server` (C14) |
 | 21 | End-to-End Acceptance Suite | The 35 scenarios in the doc's Scenarios section get pinned here, over real HTTP against a real Postgres — this is the integration/e2e layer, not unit tests. Covers publish and discover each in their own `_test.go` file, plus offers, validity, performance, defaults, geopath and spatial-operator groups. Runs against **Postgres only** — memory-backend parity is `storage/conformance`'s job (Tasks 11/12/15/16), not this suite's |
 | 22 | Structured Attribute Filtering | *Phase 1, per the doc's Open Items table* — do not skip unless you've deliberately decided to push it to Phase 2. Validation + rebase live in `src/platform/jsonpath/subset.go` (backend-agnostic, beside `Canonicalise`); `storage/postgres/jsonpath.go` only casts/executes the already-accepted expression |
-| 23 | OpenTelemetry Tracing & Metrics | Replaces Task 8's no-op `Trace` body with real `otelhttp` instrumentation and drops its `trace` entry from `X-Beckn-Chain` — the chain itself doesn't move |
+| 23 | OpenTelemetry Tracing | **Six sub-tasks (A23), one review gate each.** **23a** foundation — the `telemetry` package, the Resource's five mandatory attributes, the OTLP exporter, `Producer`/`Domain` config; boots only, starts no spans. **23b** the observation record — `correlation` generalises from `[]zap.Field` to a timestamped fact record; a pure refactor whose acceptance criterion is that every existing test passes *unchanged*. **23c** the span — replaces Task 8's no-op `Trace` body and drops its `trace` entry from `X-Beckn-Chain`; **hand-rolled, not `otelhttp`**, because the spec requires `scope.name`/`version` and the instrumentation scope is immutable once the span exists. Task 20's order assertion moves here. **23d** events — the spec's own `request_info`/`retrieval_info`/`response_info`/`error`, projected from the record; controllers call `record()` and never import telemetry; event times must be strictly increasing. **23e** `trace_id`/`span_id` log fields. **23f BLOCKED** — the facilitator exporter and its deny-list, gated on the `domain` string and the `producer` registry |
+| 24 | Metrics Exporter | **BLOCKED, and probably not this repo.** The OTLP METRIC signal the spec requires of participants. Not in this binary: a stateless service behind N replicas emits N partial counts nobody can reassemble, so `ref-impl-design.md` puts computation in the tier with storage. Aggregates over Task 23's spans — cannot precede it, needs no new instrumentation in `src/`. Gated on a metrics registry that does not exist for OAN; `metric.code` is defined there and invented codes will not match |
 
 ---
 
