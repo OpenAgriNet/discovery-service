@@ -88,7 +88,7 @@ paths:
               $ref: "#/components/schemas/PublishRequest"
             examples:
               weatherForecast:
-                summary: One weather resource, MERGE, scoped to two networks
+                summary: One weather resource, MERGE
                 value:
                   context:
                     action: publish
@@ -96,7 +96,6 @@ paths:
                     messageId: 1c0a55d7-8e64-4b19-9a2f-33b7c6e1d905
                     transactionId: 9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44
                     timestamp: "2026-08-26T06:11:58.004Z"
-                    networkId: da.gov.in/vistaar
                   message:
                     catalogs:
                       - id: cat:mausamgram:weather
@@ -149,9 +148,6 @@ paths:
                       - catalogId: cat:mausamgram:weather
                         catalogType: REGULAR
                         updateMode: MERGE
-                        visibleTo:
-                          - da.gov.in/vistaar
-                          - oan
       responses:
         "200":
           description: |
