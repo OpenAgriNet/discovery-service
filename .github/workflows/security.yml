@@ -86,6 +86,8 @@ jobs:
                 }
               ' govulncheck-report.txt
               echo '```'
+              echo
+              echo "Advisories: $(awk '/^Vulnerability #/ { printf "[%s](https://pkg.go.dev/vuln/%s) ", $3, $3 }' govulncheck-report.txt)"
             else
               echo "No known vulnerabilities found."
             fi
