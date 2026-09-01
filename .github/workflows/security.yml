@@ -29,15 +29,54 @@ jobs:
       - name: govulncheck
         run: make security 2>&1 | tee govulncheck-report.txt
 
+      - name: Assemble govulncheck PR comment
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo "<!-- sec-scan:govulncheck -->"
+            echo "### 🛡️ govulncheck — Go dependency vulnerabilities"
+            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            echo "<details><summary>Findings</summary>"
+            echo
+            echo '```'
+            cat govulncheck-report.txt
+            echo '```'
+            echo "</details>"
+          } > govulncheck-comment.md
+
+      - name: Find existing govulncheck comment
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/find-comment@v3
+        id: find-govulncheck-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- sec-scan:govulncheck -->"
+
+      - name: Comment govulncheck report on PR
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-govulncheck-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: govulncheck-comment.md
+          edit-mode: replace
+
       # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
       # Docker subscription — anonymous pulls 401. Same login a local build
       # needs (see the Dockerfile's FROM comment), just non-interactive here.
+      #
+      # MY_DHI_KEY is a combined base64 "user:token" auth blob (the same
+      # thing `docker login` writes to config.json), not a plain password —
+      # docker/login-action's username/password inputs don't accept that
+      # shape, so config.json is written directly instead.
       - name: Log in to dhi.io
-        uses: docker/login-action@v3
-        with:
-          registry: dhi.io
-          username: ${{ secrets.DHI_USERNAME }}
-          password: ${{ secrets.DHI_TOKEN }}
+        run: |
+          mkdir -p ~/.docker
+          cat > ~/.docker/config.json <<EOF
+          {"auths":{"dhi.io":{"auth":"${{ secrets.MY_DHI_KEY }}"}}}
+          EOF
 
       # T4, half two: the shipped image. The scan is of the image and not of
       # go.sum so that the toolchain pinned in tools/go.mod — which is never
@@ -46,7 +85,7 @@ jobs:
         run: docker build -t discovery-service:${{ github.sha }} .
 
       - name: Trivy image scan (report)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: discovery-service:${{ github.sha }}
           severity: HIGH,CRITICAL
@@ -54,38 +93,43 @@ jobs:
           format: table
           output: trivy-report.txt
 
-      - name: Assemble PR report
+      - name: Assemble Trivy PR comment
         if: github.event_name == 'pull_request'
         run: |
           {
-            echo "### Security scan report"
+            echo "<!-- sec-scan:trivy-image -->"
+            echo "### 🛡️ Trivy — image scan (HIGH,CRITICAL)"
+            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
             echo
-            echo "<details><summary>govulncheck</summary>"
-            echo
-            echo '```'
-            cat govulncheck-report.txt
-            echo '```'
-            echo "</details>"
-            echo
-            echo "<details><summary>Trivy image scan (HIGH,CRITICAL)</summary>"
+            echo "<details><summary>Findings</summary>"
             echo
             echo '```'
             cat trivy-report.txt
             echo '```'
             echo "</details>"
-          } > pr-report.md
+          } > trivy-comment.md
 
-      - name: Comment scan reports on PR
+      - name: Find existing Trivy comment
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/find-comment@v3
+        id: find-trivy-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- sec-scan:trivy-image -->"
+
+      - name: Comment Trivy report on PR
         if: github.event_name == 'pull_request'
         uses: peter-evans/create-or-update-comment@v4
         with:
+          comment-id: ${{ steps.find-trivy-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
-          comment-tag: security-scan
-          body-path: pr-report.md
+          body-path: trivy-comment.md
+          edit-mode: replace
 
-      # Gate the PR on the same findings the comment already showed.
+      # Gate the PR on the same findings the comments above already showed.
       - name: Trivy image scan (gate)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: discovery-service:${{ github.sha }}
           severity: HIGH,CRITICAL
