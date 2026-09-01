@@ -86,30 +86,54 @@ jobs:
           profile: coverage.out
           threshold-total: ${{ env.MIN_COVERAGE }}
 
-      # The report leads with the total and the pass/fail, then lists only the
-      # files that have uncovered lines — 59 lines against the 550 that
-      # `go tool cover -func` prints, because it says nothing about the files
-      # that are already fully covered.
+      # go-test-coverage's own `report` output is the same tabwriter dump
+      # ReportForHuman prints to a terminal, JSON-wrapped as one big string —
+      # not structured data, so consuming it verbatim just moves the dump into
+      # the PR comment. Built from coverage.out directly instead: the headline
+      # from the action's `total-coverage` output (a clean 0-100 integer, no
+      # parsing needed), and a real markdown table for the rest — only the
+      # files below the threshold, since a table entry for a file that's
+      # already fine answers a question nobody asked. No uncovered-line
+      # ranges: those matter to whoever opens the file, not to a PR summary.
       #
-      # The `&&`/`||` guard is for the case the step above failed before
-      # producing an output: fromJSON('') is an error, and a coverage report
-      # that cannot be built must not fail the job with a template error that
-      # says nothing about coverage.
+      # The file-level percentage is computed the same way `go tool cover`
+      # computes it — covered statements over total statements per file, read
+      # straight from the profile's `file:pos numStmt count` lines — so it
+      # can't drift from what the gate itself measured.
       - name: Assemble coverage report
-        env:
-          REPORT: >-
-            ${{ steps.coverage.outputs.report
-                && fromJSON(steps.coverage.outputs.report)
-                || 'Coverage report unavailable — see the Test step.' }}
         run: |
-          {
-            echo "<!-- coverage-report -->"
-            echo "### Test coverage (min ${MIN_COVERAGE}%)"
-            echo
-            echo '```'
-            printf '%s\n' "$REPORT"
-            echo '```'
-          } > coverage-report.md
+          TOTAL="${{ steps.coverage.outputs.total-coverage }}"
+          if [ -z "$TOTAL" ]; then
+            {
+              echo "<!-- coverage-report -->"
+              echo "### Test coverage unavailable — see the Test step"
+            } > coverage-report.md
+          else
+            STATUS="passed"
+            [ "$TOTAL" -lt "$MIN_COVERAGE" ] && STATUS="failed"
+            MODULE="github.com/OpenAgriNet/discovery-service/"
+            {
+              echo "<!-- coverage-report -->"
+              echo "### Test coverage: ${TOTAL}% (min ${MIN_COVERAGE}%) — ${STATUS}"
+              echo
+              BELOW=$(awk -F'[: ]' -v mod="$MODULE" -v min="$MIN_COVERAGE" 'NR>1 {
+                f=$1; s=$(NF-1); c=$NF
+                t[f]+=s; if (c>0) v[f]+=s
+              }
+              END {
+                for (f in t) { p=v[f]/t[f]*100; sub(mod,"",f); if (p<min) printf "%.0f\t%s\n", p, f }
+              }' coverage.out | sort -n)
+              if [ -z "$BELOW" ]; then
+                echo "Every file meets the ${MIN_COVERAGE}% minimum."
+              else
+                echo "Files below ${MIN_COVERAGE}%:"
+                echo
+                echo "| File | Coverage |"
+                echo "|---|---|"
+                echo "$BELOW" | awk -F'\t' '{printf "| `%s` | %s%% |\n", $2, $1}'
+              fi
+            } > coverage-report.md
+          fi
           cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
       # continue-on-error on both: a fork PR's default GITHUB_TOKEN is

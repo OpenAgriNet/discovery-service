@@ -7,9 +7,12 @@ on:
 
 permissions:
   contents: read
-  # Findings are uploaded as SARIF and rendered by GitHub's own code scanning
-  # UI — the Security tab, plus annotations on the diff — rather than pasted
-  # into a pull request comment this workflow has to format itself.
+  # Findings are uploaded as SARIF for GitHub's own code scanning UI (Security
+  # tab, diff annotations) AND posted as a PR comment — the SARIF path alone
+  # took three clicks (check -> run -> results) to see a finding that used to
+  # be one scroll away in the PR conversation. pull-requests: write is for
+  # the comment; security-events: write is for the SARIF upload.
+  pull-requests: write
   security-events: write
 
 concurrency:
@@ -55,6 +58,65 @@ jobs:
         with:
           sarif_file: trivy-deps.sarif
           category: trivy-dependencies
+
+      # Posted right after the report, on every run — pass or fail, and
+      # before the image is even built — so a PR shows the dependency finding
+      # immediately rather than after the whole job finishes. Reads the same
+      # SARIF just uploaded above; no second scan.
+      #
+      # Trivy's SARIF has no structured per-field severity/version columns;
+      # each finding's detail lives as prose in message.text ("Package:
+      # ...\nSeverity: ...\n..."), so the table columns below are pulled out
+      # of that text rather than from dedicated JSON fields.
+      - name: Assemble Trivy dependency PR comment
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo "<!-- sec-scan:trivy-deps -->"
+            echo "### 🛡️ Trivy — Go dependency scan (HIGH,CRITICAL)"
+            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            jq -r '
+              [ .runs[].results[]? ] as $found
+              | if ($found | length) == 0 then
+                  "No HIGH or CRITICAL findings."
+                else
+                  "| Package | Severity | Installed | Fixed in | Advisory |",
+                  "|---|---|---|---|---|",
+                  ( $found[] | .ruleId as $id | (.message.text // "") as $m |
+                    "| `\($m | capture("Package: (?<v>[^\\n]+)")?.v // "?")` "
+                    + "| \($m | capture("Severity: (?<v>[^\\n]+)")?.v // "?") "
+                    + "| \($m | capture("Installed Version: (?<v>[^\\n]+)")?.v // "?") "
+                    + "| \($m | capture("Fixed Version: (?<v>[^\\n]+)")?.v // "—") "
+                    + "| [\($id)](\($m | capture("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)")?.v // "")) |"
+                  )
+                end
+            ' trivy-deps.sarif
+          } > trivy-deps-comment.md
+
+      - name: Find existing Trivy dependency comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/find-comment@v3
+        id: find-trivy-deps-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- sec-scan:trivy-deps -->"
+
+      # continue-on-error: a fork PR's default GITHUB_TOKEN is read-only, so
+      # this 403s there even with pull-requests: write declared. The gate at
+      # the bottom of this job is what actually decides pass/fail; a comment
+      # that can't post must never fail the job over that.
+      - name: Comment Trivy dependency report on PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-trivy-deps-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: trivy-deps-comment.md
+          edit-mode: replace
 
       # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
       # Docker subscription — anonymous pulls 401. Same login a local build
@@ -103,6 +165,52 @@ jobs:
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
+
+      - name: Assemble Trivy image PR comment
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo "<!-- sec-scan:trivy-image -->"
+            echo "### 🛡️ Trivy — image scan (HIGH,CRITICAL)"
+            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            jq -r '
+              [ .runs[].results[]? ] as $found
+              | if ($found | length) == 0 then
+                  "No HIGH or CRITICAL findings."
+                else
+                  "| Package | Severity | Installed | Fixed in | Advisory |",
+                  "|---|---|---|---|---|",
+                  ( $found[] | .ruleId as $id | (.message.text // "") as $m |
+                    "| `\($m | capture("Package: (?<v>[^\\n]+)")?.v // "?")` "
+                    + "| \($m | capture("Severity: (?<v>[^\\n]+)")?.v // "?") "
+                    + "| \($m | capture("Installed Version: (?<v>[^\\n]+)")?.v // "?") "
+                    + "| \($m | capture("Fixed Version: (?<v>[^\\n]+)")?.v // "—") "
+                    + "| [\($id)](\($m | capture("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)")?.v // "")) |"
+                  )
+                end
+            ' trivy-image.sarif
+          } > trivy-image-comment.md
+
+      - name: Find existing Trivy image comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/find-comment@v3
+        id: find-trivy-image-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- sec-scan:trivy-image -->"
+
+      - name: Comment Trivy image report on PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-trivy-image-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: trivy-image-comment.md
+          edit-mode: replace
 
       # Gate on the reports already produced rather than scanning a third and
       # fourth time. Two independent scans of the same thing can disagree —
