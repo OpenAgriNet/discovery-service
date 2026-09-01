@@ -1,15 +1,22 @@
-# Two stacks in one file, separated by a profile.
+# Three stacks in one file, separated by a profile.
 #
 #   docker compose up -d --wait          PostgreSQL alone — the development
 #                                        default, and what `make up` runs
-#   docker compose --profile app up -d   PostgreSQL plus the service
+#   docker compose --profile app up -d   PostgreSQL plus the service, built
+#                                        from source
+#   docker compose --profile pull up -d  PostgreSQL plus the service, pulled
+#                                        prebuilt from GHCR — no Go toolchain
+#                                        needed
 #
 # The default stays dependencies-only on purpose. The integration suites reach
 # PostgreSQL through testcontainers and never through this file, and day-to-day
 # development runs the binary from the host against it — so a service container
 # in the default set would rebuild on every `make up` and serve a binary one
 # edit behind the one being worked on. Under `--profile app` it is the opposite
-# case: someone who wants to TRY the service, not change it.
+# case: someone who wants to TRY the service, not change it. Under
+# `--profile pull` it is the same case as `app` minus the build step, for
+# someone who wants the published image rather than one built from this
+# checkout.
 
 services:
   postgres:
@@ -100,6 +107,25 @@ services:
     # probes are HTTP and are for you rather than for Compose —
     # GET /healthz answers that the process is up, GET /readyz that it can
     # reach PostgreSQL.
+
+  discovery-service-pull:
+    profiles: ["pull"]
+    image: ghcr.io/nisargabd/discovery-service:${TAG:-latest}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://discovery:discovery@postgres:5432/discovery?sslmode=disable
+      DATABASE_AUTO_MIGRATE: "true"
+      APP_NETWORK_ID: local-network
+      LOG_LEVEL: info
+
+      # Same requirement as the `app` profile's service, but with no local
+      # build there is no `./tests/testdata/` to mount the cached spec from
+      # — so this one takes the fetch path instead of the mount.
+      VALIDATION_SPEC_URL: https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/heads/main/api/v2.0.0/beckn.yaml
 
 volumes:
   postgres-data:
