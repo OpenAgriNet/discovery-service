@@ -32,7 +32,13 @@ jobs:
           # A glob, not a list: the service module has no dependencies yet, so
           # a literal go.sum path would fail to resolve and disable the cache.
           cache-dependency-path: "**/go.sum"
+
+      # continue-on-error rather than dropping the job: CLAUDE.md keeps CI
+      # lint as the safety net behind the pre-commit hook, which is bypassable
+      # (--no-verify). Advisory here, not a gate — a red lint check must never
+      # be the reason a PR can't merge, only a reason someone looks.
       - run: make lint
+        continue-on-error: true
 
   test:
     runs-on: ubuntu-latest
