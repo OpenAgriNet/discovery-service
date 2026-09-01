@@ -77,8 +77,10 @@ jobs:
                   hline(w1, w2, w3, w4, w5, "┌", "┬", "┐")
                   printf "│ %-*s │ %-*s │ %-*s │ %-*s │ %-*s │\n", w1, h1, w2, h2, w3, h3, w4, h4, w5, h5
                   hline(w1, w2, w3, w4, w5, "├", "┼", "┤")
-                  for (i = 1; i <= n; i++)
+                  for (i = 1; i <= n; i++) {
                     printf "│ %-*s │ %-*s │ %-*s │ %-*s │ %-*s │\n", w1, MOD[i], w2, INS[i], w3, FIX[i], w4, SUM[i], w5, ID[i]
+                    if (i < n) hline(w1, w2, w3, w4, w5, "├", "┼", "┤")
+                  }
                   hline(w1, w2, w3, w4, w5, "└", "┴", "┘")
                 }
               ' govulncheck-report.txt
