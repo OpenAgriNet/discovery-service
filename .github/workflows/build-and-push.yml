@@ -59,13 +59,30 @@ jobs:
 
       # Each arch is a separate tag here; the manifest job below stitches
       # amd64 and arm64 into the single tag users actually pull.
-      - name: Build and push
+      #
+      # load: true instead of push: true — the image lands in this runner's
+      # local Docker daemon first so Trivy can scan the exact bytes about to
+      # ship, and a vulnerable image never reaches GHCR at all.
+      - name: Build (local, unpushed)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          push: true
+          load: true
           tags: ghcr.io/${{ env.OWNER }}/discovery-service:${{ github.ref_name }}-${{ matrix.arch }}
+
+      # exit-code: 1 fails the job here, before the push step below runs --
+      # the release gate, not just a report.
+      - name: Trivy image scan (gate)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.OWNER }}/discovery-service:${{ github.ref_name }}-${{ matrix.arch }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+
+      - name: Push
+        run: docker push ghcr.io/${{ env.OWNER }}/discovery-service:${{ github.ref_name }}-${{ matrix.arch }}
 
   manifest:
     runs-on: ubuntu-latest
