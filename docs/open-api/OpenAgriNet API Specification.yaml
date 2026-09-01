@@ -145,10 +145,6 @@ paths:
                               updateFrequency: PT12H
                               subjectCategories:
                                 - Weather
-                        offers:
-                          - id: offer:mausamgram:open-data
-                            resourceIds:
-                              - res:mausamgram:point-forecast
                     publishDirectives:
                       - catalogId: cat:mausamgram:weather
                         catalogType: REGULAR
