@@ -39,7 +39,7 @@ rather than discovering:
 |---|---|
 | **Config** | `targetType: "url"` on every route. `bppTxnCaller` and `bapTxnReceiver` never fire — half the ONIX config is dormant by design, not misconfigured. |
 | **`bapUri` / `bppUri` still matter** | They are how the counterparty is *resolved* — `context.networkId` names the subnet registry, which returns `subscriber_url` and key material. Nothing is delivered to them. |
-| **The retry budget becomes the farmer's wait** | `mausamgram` is seeded `timeoutMs: 30000, retryMax: 3` — up to **120 s** on an open connection. Async hides retries; sync bills them to the farmer. Whether to cap the sync path at one attempt is open. |
+| **The retry budget becomes the farmer's wait** | `mausamgram`'s `select` entry is seeded `timeoutMs: 30000, retryMax: 3` — up to **120 s** on an open connection. Async hides retries; sync bills them to the farmer. Whether to cap the sync path at one attempt is open. |
 | **Interop** | Until the amendment lands, a CN built to the published schema waits for a callback that never arrives. Sync holds while both ends are BV-operated; a third party calling in needs the amended spec, not a note in this folder. |
 
 Errors are NACK-only on the open connection: no partial results, no silent empties.
@@ -269,23 +269,30 @@ registry** to verify the signature — `networkId` → registry URL → lookup o
 material. What follows is the **capability registry**, these three tables, and it is read on the
 **provider side only**. If the consumer side resolved capabilities it would need the upstream
 credentials, which is the whole thing this split exists to prevent: the consumer must never learn
-that `mausamgram` means `https://mausamgram.imd.gov.in/nwpapi`.
+that `mausamgram` means `https://mausamgram.imd.gov.in`.
 
 ```
 offer.provider.id            → "mausamgram"
 resourceAttributes["@type"]  → "openagrinet:WeatherObservation"
 bindingKey                   = "mausamgram|openagrinet:WeatherObservation"
+context.action               → "select"                    → actions[] entry
 ```
 
-**Read 1** — the call plan: `ProviderSchema` by `bindingKey`, giving `GET /get-daily`,
-`timeoutMs: 30000`, `retryMax: 3`. Those are per-provider registry fields, not service
-constants — IMD is slow, and an operator changes this without a deploy.
+**Read 1** — the call plan: `ProviderSchema` by `bindingKey`, then the `actions[]` entry whose
+`action` is `select`, giving `GET /nwpapi/get-daily`, `timeoutMs: 30000`, `retryMax: 3`. Those are
+per-action registry fields, not service constants — IMD is slow, and an operator changes this
+without a deploy. An entry whose own `status` is `inactive` is not a match: the capability can be
+live while one of its actions is not.
 
-**Read 2** — where it is and how to authenticate: `Participant` by the `participantId` **from row
-1, never from the request**. A request that could name the participant could point a
+**Read 2** — where it is: `Participant` by the `participantId` **from row 1, never from the
+request**. `baseUrl` is the host and the entry's `path` is appended to it, so the call can only ever
+reach the host its own record names. A request that could name the participant could point a
 credentialled call at a host of its choosing. That row is `type: "upstream"`, so it carries a
-`baseUrl` and an `auth`; a binding naming a node instead would resolve to a call that cannot be
-made, which is why `verify/records.py` refuses one at seeding time.
+`baseUrl` and no keys; a binding naming a node instead would resolve to a call that cannot be made,
+which is why `verify/records.py` refuses one at seeding time.
+
+**How to authenticate is not one of these reads.** No registry field holds it. The plugin selected
+below presents the credential, reading it from the adapter's own environment.
 
 An empty result from either read is a hard failure — `BIZ_PROVIDER_NOT_FOUND`, not a fallback.
 
@@ -293,11 +300,12 @@ There is **no `SchemaRegistry` read**: a capability is vocabulary, not part of t
 in production neither read is a request at all
 ([api.md](api.md#the-runtime-does-not-call-these-per-request)).
 
-### 1.5 Enrich, map the request, authenticate, call
+### 1.5 Enrich, map the request, call
 
-**Enrich first.** The binding names `enricher: { "name": "pointFromIntent" }` — declared in the
-registry, implemented in Go — and it runs **before** `requestMapping`, because the mapping is
-evaluated over `{ request, _local }` and `_local` is what the enricher produces:
+**Enrich first.** No registry field names this step: the adapter's plugin for this binding-action
+is already selected by `bindingKey` plus `action`, the same pair that selects the mapping. It runs
+**before** the request mapping, because the mapping is evaluated over `{ request, _local }` and
+`_local` is what the plugin produces:
 
 ```
 resourceAttributes.location.coordinates  →  _local = { "lat": 19.9975, "lon": 73.7898 }
@@ -306,11 +314,14 @@ resourceAttributes.location.coordinates  →  _local = { "lat": 19.9975, "lon": 
 Trivial here, because mausamgram takes a raw point. **It is not trivial in general, and this use
 case is the wrong place to look for the interesting case.** A station resolver is use case 2
 (`imd-city-weather` wants a station id); market and commodity codes are use case 3 — both PostGIS
-lookups off the point, both carrying `enricher.secrets.dsn`. The registry holds the **name**; Go
-holds the behaviour. Config that tried to hold the behaviour would become a programming language,
-and nothing here checks that the name resolves to an implementation.
+lookups off the point, and both read their DSN from the plugin's own environment, not from the
+registry row. **The upstream credential now comes from there too**: the plugin holds it and presents
+it on the call below, which is why no row in [examples.md](examples.md) has an `auth` field. So the
+plugin existing is a seeding prerequisite that nothing here can check, and a binding whose plugin is
+missing validates, seeds and answers nothing.
 
-**Then map.** `mappings/mausamgram/select.request.jsonata` over `{ request, _local }`:
+**Then map.** The `request:` half of `mappings/mausamgram/weather-observation.select.yaml` — the
+file named by the `select` entry — over `{ request, _local }`:
 
 ```jsonata
 { "lat": $string(_local.lat), "lon": $string(_local.lon) }
@@ -322,7 +333,7 @@ not cosmetic either; the endpoint rejects unquoted numerics.
 
 ```
 GET https://mausamgram.imd.gov.in/nwpapi/get-daily?lat=19.9975&lon=73.7898
-Authorization: Basic <resolved from env://MAUSAMGRAM_USER + env://MAUSAMGRAM_X_API_KEY>
+Authorization: Basic <presented by the binding's plugin, from its own environment>
 timeout 30000ms   retries 3
 ```
 
@@ -368,7 +379,7 @@ Captured response, two of its five day-blocks, values re-pointed to Nashik:
 
 ### 1.6 The `200` — `on_select` as a body
 
-`responseMapping` runs over `{ request, response, _local }`; `_local` stays in scope so the
+The same file's `response:` half runs over `{ request, response, _local }`; `_local` stays in scope so the
 resolved point reaches the output. Then the provider node signs the result and returns it on the
 still-open connection — no POST to `bapUri`.
 
@@ -457,7 +468,7 @@ Same two hops, same envelope. What differs is the call plan and the upstream's q
 | 3 | `agmarknet` | `GET /v1/fetch-agmarknet-vistaar-location` | Needs `lat`, `long`, `commodity_id`, one `date` — market and commodity codes in its own namespace. Returns **Title Case keys with spaces** (`"Max Price"`, `"Modal Price"`, `"Arrival Date"`, `"Price Unit": "Rs./Qtl"`); a mapping written against snake_case returns nothing at all, with no error. |
 | 4 | `hasura-content` | `POST /v1/graphql` | GraphQL `variables` block built by the adapter. Illustrative payload — this provider appears in no captured workbook row. |
 | 5 | `oan-vector` | `POST /indexes/oan-index/search` | Same capability as 4, different request shape: a vector search body, not a GraphQL one. Same query-parameter step, different request mapping. Illustrative payload. |
-| 6 | *weather advisory* | — | **Not seeded.** It would be a second capability on `mausamgram`, and mapping paths carry no capability segment, so both would resolve to one filename needing two output shapes. Fix the convention first. |
+| 6 | *weather advisory* | — | **Not seeded**, but now seedable: a second capability on `mausamgram` is a second row, and `mappings/mausamgram/weather-advisory.select.yaml` no longer collides with the forecast's file. What is missing is the mapping and the pack reading, not a convention. |
 
 ## Conformance
 
@@ -497,7 +508,8 @@ One code for all three is an afternoon of auditing a correct registry.
 1. **Two hops, both synchronous.** `discover` finds who; `select` gets what; each answer comes
    back on the connection that asked. Synchronous is BV's decision and the spec's `Ack` says
    otherwise — see [above](#both-hops-are-synchronous--the-spec-has-not-caught-up).
-2. **`bindingKey` is the only route.** `<provider>|<capability>`, and the participant comes off
-   the binding row, never off the request.
+2. **`bindingKey` plus the action is the only route.** `<provider>|<capability>`, then the
+   `actions[]` entry matching `context.action` — and the participant comes off the binding row,
+   never off the request.
 3. **The registry never appears in the request path.** Records load at boot; resolution is two map
    lookups.

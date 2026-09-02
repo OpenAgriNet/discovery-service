@@ -95,9 +95,13 @@ func unsupportedVersion(message string) *apperrors.AppError {
 // no package-level mutable state, and a table nothing can reach is a table
 // nothing can quietly reorder.
 //
-// bapId, bppId and networkId are deliberately absent. networkId is a filter
-// rather than an identity claim and defaults when omitted, and the two
-// participant ids belong to a signature layer this phase parks.
+// networkId, senderId and receiverId are deliberately absent. networkId is a
+// filter rather than an identity claim and defaults when omitted, and the two
+// participant DIDs belong to a signature layer this phase parks: requiring a
+// field this build cannot verify would demand an identity and then take the
+// caller's word for it, which reads as a check and is not one. C6 and A24 in
+// the plan name this exact set, so a fourth entry added here contradicts a
+// written rule rather than merely widening a list.
 func envelopeRules() []envelopeRule {
 	return []envelopeRule{
 		{field: "action", read: func(c beckn.Context) string { return c.Action }},

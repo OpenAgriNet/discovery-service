@@ -92,7 +92,7 @@ deviation but a choice between two things the schema says at once.
 | **C3** | Spec returns `Ack` and calls back out-of-band; PRD requires results in the 200 body | 200 body is `{context, message}` where `message` is the spec's `CatalogOnPublishAction` / `OnDiscoverAction` — the callback shape, returned inline. Async callback dispatch is out of scope |
 | **C4** | PRD and the reference implementation treat `@context` as an array; `Attributes` declares `'@context'` and `'@type'` as scalar `string`, and makes **both required** | Two scalar `TEXT` columns, `schema_context` and `schema_type`. No array, no normalisation pass. An array for either is a 400 from L1, not a silent first-element pick |
 | **C5** | PRD requires categories; the spec has **no `category` field anywhere**. `Resource` is exactly `{id, descriptor, resourceAttributes}`, and `Intent` is `additionalProperties: false` with no category filter | No column, no index, no derivation. `stats.categoryCount` in the publish ack *is* in the spec, so it is answered as the count of distinct `@type` values in the catalog — the only grouping the schema actually has |
-| **C6** | `Context` declares no `required` list, so L1 alone cannot reject a missing `transactionId` | Envelope rules are enforced separately by struct tags: `action`, `version`(=2.0.0), `messageId`(uuid4), `transactionId`(uuid4), `timestamp`(RFC3339) required. `bppId`, `bapId`, `networkId` stay optional. Runs even when L1 is off |
+| **C6** | `Context` declares no `required` list, so L1 alone cannot reject a missing `transactionId` | Envelope rules are enforced separately by struct tags: `action`, `version`(=2.0.0), `messageId`(uuid4), `transactionId`(uuid4), `timestamp`(RFC3339) required. `senderId`, `receiverId`, `networkId` stay optional (**A24** — the two participant DIDs are unverified in this phase, and a required field this service cannot check would demand an identity and then take the caller's word for it; `networkId` is a filter with a default, C8). Runs even when L1 is off |
 | **C7** | Validation produces many faults, and `Error` is singular. But `Error.details` is itself `additionalProperties: false` with exactly two keys, `path` and `cause` — a list of extra pointers cannot go there and still validate | Two answers, because the spec already supplies both. **Publish:** `CatalogProcessingResult.errors` is natively `array of Error`, so every fault is its own `Error` and there is nothing to pack. **A NACK:** one `Error`, and each remaining fault is the `details.cause` of the one before it — a chain, which is exactly what that self-referencing field is documented for. `details.path` is a JSONPath (`$.message.publishDirectives[1]`), the form the spec's own example uses. No fault is dropped silently |
 | **C8** | `publishDirectives.visibleTo`: *"When omitted, the catalog is visible to all eligible subscribers"* | **Deviation.** Omitted or empty becomes `[network]` — the request's `networkId`, else `APP_NETWORK_ID` (`mahavistar`, `bharatvistar`, …). Publishing to every network by a typo is the worse failure of the two, and a publisher wanting network-wide reach can say so explicitly. **The default applies in both update modes** (A9): a republish that does not mention `visibleTo` gets `[network]`, exactly as a first publish does. A field with a declared default is never "absent" by the time the merge sees it, so MERGE and FULL cannot disagree about what a silent publisher meant. An explicit `[]` resolves to `[network]` too |
 | **C9** | With no `publishDirectives`, the spec **infers** the type from content: catalogs with offers are `regular`, catalogs with only resources are `master` | **Deviation.** An absent directive is REGULAR. Honouring the inference would make A1 reject every ordinary catalog that happens to carry no offers — the common case. Only an explicit `catalogType: MASTER`, or a resource carrying `extends`, is refused |
@@ -145,6 +145,8 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A20** | **The router is `net/http.ServeMux`, not chi v5.** D1 chose chi and the service shipped without it — chi is not in `go.mod` and never was, so for all of Phase 1 this document named a dependency the binary does not have. Kept as shipped rather than corrected toward the document: D1's four stated requirements — `net/http` types throughout, native `context.Context` propagation, `httptest`, `otelhttp` with no adapter — are all properties of `net/http` itself, which is why chi could only ever have satisfied them by being a thin layer over the thing that already did. What chi added on top was method and parameter routing, and `ServeMux` gained method patterns in Go 1.22; this module is on Go 1.25. The features that remain distinctive to chi — nested routers, URL parameters, middleware groups — are unused: four routes, all fixed paths, and a middleware chain composed by hand in `chain(a)` so its order reads as a list. One behaviour differs and is correct: `ServeMux` answers a matching path with a non-matching method as **405 with `Allow`**, where a wildcard mount would have said 404. That is not the C2 case — `/catalog/publish` is a PATH that must read as absent, and it still 404s. Recorded in ADR-0016, which supersedes ADR-0001 | 20 |
 | **A21** | **The schema ships as ONE migration at version 1, and the six that this document numbered 001-006 are now sections of it.** They were never a history: `git log -- migrations/` shows all six created in a single commit and then edited in place twice, so their numbering recorded the order they were typed in rather than any sequence a database had lived through. Six versions no database ever visited one at a time are six things to keep consistent and one story to read. Identity was proven rather than assumed — two throwaway `pgvector/pgvector:0.8.0-pg16` instances, one given the six originals and one the squash, agree on `pg_dump --schema-only` (identical md5), on a 285-row catalog introspection covering every column type, constraint definition, index `indexdef` + `reloptions` + **per-column opclass**, and every function's signature, volatility, strictness and `md5(prosrc)`, and on an `up -> down -all -> up` round trip that leaves no residue beyond golang-migrate's own bookkeeping table. Even the auto-generated `resource_geometries_check` / `check1` names match, which is what says CHECK declaration order survived. **This is defensible only pre-release, and the window closes at the first deployment.** golang-migrate compares version NUMBERS and never file contents, so a database this project did not create cannot be reconciled with an edited version 1 — it is not silently stranded, which was the fear, but loudly so: the binary refuses to boot with `no migration found for version 6`. A developer holding a volume from the six must `make down` (the `-v` is the point) and `make up`, once. **The first schema change after the first deployment is therefore `000002_*`, and every one after it is additive.** Section order inside the file is load-bearing, not editorial: `vector` and `pg_trgm` before the indexes that name their opclasses, `catalogs` before everything referencing it, `resources` before `resource_geometries`' composite foreign key, and `geo_haversine_m` before `geo_distance_m`, whose body calls it and is parsed at CREATE time | all |
 | **A22** | **`context.version` is stored on `catalogs.protocol_version`, resolved by the mapper and moved by every republish.** It describes the DOCUMENT, not the build: `beckn.Version` says what this binary serves today, and the two agree only until a second version is served — on that day "which version was this catalog written under" has no other answer, and a version derived at read time would answer for the reader instead of the writer. **Today the column is provably constant, and that is worth saying out loud rather than discovering later.** C6's envelope rules make `version` REQUIRED and pin it to `beckn.Version`, so an absent one is `CTX_MISSING_FIELD` and any other value is `CTX_VERSION_UNSUPPORTED` — both refused before the mapper runs. Every row this service can currently write therefore holds `2.0.0`. The column is built now anyway because the alternative is a backfill with no source: once a second version is accepted, rows written before the ALTER would have to be assigned a version nobody recorded, and the only honest value for them would be a guess. Three decisions carry it. **The mapper resolves the default, not the column.** `DEFAULT '2.0.0'` fires only on INSERT, so a republish that dropped `version` would silently keep whatever the first publish declared and the catalog would report a version no request in its history sent; `publish.MapCatalog` takes the envelope's version as a parameter and substitutes `beckn.Version` for an empty one, because the mapper is the last layer that can still tell an absent version from a declared one. That branch is unreachable through HTTP while C6 holds and is exercised by unit tests directly — it is the seam the gate will relax onto, not dead code, and the DEFAULT stays as a fail-safe for a hand-written INSERT. **`MergeCatalog` applies it unconditionally**, alongside `isActive` and `visibleTo` under A9 — there is no "absent" left by then, so keeping the stored value would make a republish claim a version its own envelope never declared. **`CHECK (protocol_version <> '')` is the pin**, and it is what makes a writer that forgot the field fail loudly rather than store a catalog claiming no version at all; it is also why every fixture that reaches a backend directly must set it, which is a cost paid once and the reason it is worth paying. Like `visible_to`, `active` and the four validity columns, this one is write-side state: discover's hydration reads `id` and `document` alone, so nothing serves it back today | 11, 14, 15, 17, 18 |
+| **A23** | **Task 23 splits into six sub-tasks, `otelhttp` is rejected, and metrics leave this service.** The task was written when tracing meant local debugging. It is now an **interop contract**: the Sunbird-Obsrv network telemetry spec governs the wire shape, a facilitator consumes it, and a span missing a mandatory attribute is a compliance failure rather than a thin dashboard. Four things follow. **`otelhttp` cannot be used, and the original task named it.** The spec requires `scope.name` and `scope.version`; the instrumentation scope is fixed when the span is created and is immutable afterwards, so a span started by `otelhttp` carries that package's name and version and no later call can correct it. `Trace` is therefore hand-rolled — roughly thirty lines, against `go.opentelemetry.io/otel/trace` directly. **Metrics move out of the process.** The original task put RED metrics and retrieval-mode counters in `src/platform/telemetry/metrics.go`; a stateless service behind N replicas computing `search_api_total_count` in memory emits N partial counts that no consumer can reassemble, because nothing on the wire says what N was. `ref-impl-design.md` §Micro Observability puts metric computation in the tier that has storage and aggregation precisely for this reason, so `metrics.go` is dropped and a **metrics exporter becomes Task 24**, outside this binary. `search_degraded_modes` and `embedding_duration_ms` survive as span facts, which is what that exporter aggregates over. **Facts are recorded once and projected twice.** `correlation` generalises from `[]zap.Field` into a timestamped per-request record; the log line and the span both read it. Seven of the eight log fields are also span attributes, and instrumenting them separately would put `error_type` in two places — the duplication C1 exists to prevent — while every later signal or field would be another pass through the controllers. It is also what makes an AUDIT projection cheap if the network ever asks for one. **Events carry their own timestamps and must be stamped when they occur.** The phase breakdown — parse, retrieve, serialise — exists only as the deltas between `request_info`, `retrieval_info` and `response_info`. Emitted together at handler exit they collapse to one value, the breakdown reads as zeros, the total stays correct and every dashboard still renders: a silent loss with no failing assertion, which is why 23d pins monotonic event times rather than trusting the call sites. Task 20's order-assertion migration is unchanged and moves to **23c** | 8, 20, 23, 24 |
+| **A24** | **`Context` carries `senderId` and `receiverId`, and the four legacy participant fields are not modelled at all.** `bapId`, `bapUri`, `bppId` and `bppUri` are gone from the struct — not deprecated, absent. The spec retains them for backward compatibility and a caller may still send them; they are **accepted and ignored**, because `Context` declares no `additionalProperties: false` and the decoder is not strict, so a v1-style body still gets a 200 and simply does not get them back. Two reasons they went rather than staying as echoed fields. **A field this service echoes but never reads costs a reader a check and an operator a mistake:** the check is "is this used anywhere", and the mistake is reading an id on a response as an identity that was verified. **And the pair that replaced them says strictly more** — `senderId`/`receiverId` are DIDs resolving to the document that holds that party's verification keys, so one field answers both *who* and *with what key*, which is what the parked signature layer needs and what `bapId` plus a separate `bapUri` could not answer at all. **Both controllers build the response by SWAPPING them** (`SenderID: request.ReceiverID`, `ReceiverID: request.SenderID`): the legs reverse, so on the request this service was the receiver and echoing unswapped would put the caller's DID on a message the caller did not send. **Neither is verified, and on the callback that has a sharp edge.** This service's own `senderId` is whatever the caller put in `receiverId`, so a caller can name a third party there and be handed a callback asserting that DID as the sender — the same "a string the caller chose" hazard the rate limiter refuses to key on (A4). Note the two halves are not equally sound: `receiverId ← request.senderId` is correct and durable, while `senderId ← request.receiverId` is only *accidentally* correct, because `senderId` is the pointer from which the SENDER's keys resolve and must therefore be the DID whose document holds the key this service signs with. **It closes OUTSIDE this service: the adopter's layer owns participant signature verification** (owner decision, 2026-09-01), so this repo gains no self-DID config and no key resolution — until then a caller sending neither gets a callback naming neither, which is honest: an absent identity claims less than an unverified one. **`Catalog.bppId` and `Catalog.bppUri` are UNAFFECTED** and still stored, rendered and round-tripped (A17, Task 21b) — they describe the provider a catalog belongs to, which is a fact about the document rather than a claim about who sent it, so a grep for `bppId` in this plan should still find them. The removal is pinned by `src/beckn/schema_conformance_test.go`, which reflects over the struct's JSON tags against `beckn.yaml` and demands a stated reason for each of the four absences — and checks that allowlist in BOTH directions, so re-adding a field without deleting its entry fails too | 4, 7, 8, 18, 19 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -158,7 +160,7 @@ implementation is a guess; one with a conformance test is a contract.
 | | TRD | Resolution | Tasks |
 |---|---|---|---|
 | **T1** | §1 Configurability | Four config layers, lowest first: `envDefault` tags → `config/common.yaml` → `config/instance.yaml` → process environment. Environment stays on top because secrets arrive from a secret store and must beat a file. viper stays rejected — layering two YAML documents under `env.Parse` is a function, not a dependency | 1, 2 |
-| **T2** | §6, §7 Observability | OpenTelemetry traces + metrics, W3C Trace Context in and out, OTLP exporter (default `none` so a collector-less deploy still boots), RED metrics per route. Dashboards are out of scope | 23, 20 |
+| **T2** | §6, §7 Observability | OpenTelemetry traces, W3C Trace Context in and out, OTLP exporter (default `none` so a collector-less deploy still boots). **Metrics are not emitted from this process — see A23**: RED figures per route are computed downstream from the spans, by Task 24, because a stateless replica's in-memory counter is a partial nobody can reassemble. Dashboards are out of scope | 20, 23, 24 |
 | **T3** | §1 Schemas without redeploy | L2 schemas load through a `SchemaSource` (directory or HTTP registry) with a refresh loop, swapped behind `atomic.Pointer`. This service *consumes* schemas; owning the schema CRUD API is the registry's job. A configured registry URL is trusted; a URL from a request body is not — that distinction does not soften | 10, 20 |
 | **T4** | §8 Supply chain | `govulncheck` + Trivy image scan failing on HIGH/CRITICAL in CI | 1 |
 | **T5** | §2, §9 | ADR-0012 names which interfaces are promises and which are internal. ADR-0013 records the protocol-version-coexistence shape (version-keyed `SpecIndex`, accepted-versions set, response echoes request version) without building it | 1 |
@@ -198,7 +200,7 @@ Two sit on the boundary and are called out rather than dismissed:
 |---|---|---|
 | `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE` | Contribution policy and disclosure timelines are decisions the project has not made. A placeholder `SECURITY.md` publishes a promise. `LICENSE` joined them rather than shipping: the licence has not been chosen, and it is the one file where a placeholder cannot be quietly corrected later — a grant, once published, is relied upon. An absent licence grants nothing, which is the honest default; a wrong one grants something the project did not agree to | `README.md`, with a Licence section that says the decision is open |
 | Signature verification | Phase 2; the key registry is another team's. **Parked further than originally planned:** the Ed25519 primitives are no longer built ahead of use either, because a primitive with no caller is a primitive whose first real caller finds out what it got wrong | The **slot** in the middleware order and the flag, nothing behind them. `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` therefore **refuses to boot** — a flag named for a security control, silently doing nothing, is the one failure mode worse than not having the flag: an operator reads it back as enabled and is wrong. Task 6 and the `Signature` half of Task 7 are parked with it |
-| Rate limiting per subscriber id (A4) | It is keyed on `context.bapId`, and until a signature is verified that field is a claim, not an identity. A limiter that trusts it is one any caller sheds by rotating the field — and one that any caller can turn on a named third party by claiming *their* id, spending someone else's budget for them | A token bucket keyed on the **remote address**, with the same knobs, the same `429` / `Retry-After` / `AUT_RATE_LIMITED` answer and the same eviction. The key moves to the subscriber id in the task that verifies the signature, and not before |
+| Rate limiting per subscriber id (A4) | It is keyed on `context.senderId`, and until a signature is verified that field is a claim, not an identity — a DID resolvable to a verification key looks *more* trustworthy than the `bapId` it replaced (A24) while being exactly as unchecked until something resolves it. A limiter that trusts it is one any caller sheds by rotating the field — and one that any caller can turn on a named third party by claiming *their* id, spending someone else's budget for them | A token bucket keyed on the **remote address**, with the same knobs, the same `429` / `Retry-After` / `AUT_RATE_LIMITED` answer and the same eviction. The key moves to the subscriber id in the task that verifies the signature, and not before |
 | Publish-time embedding (A5) | 15–40 ms of inference on the write path for one mode of four | `noop` provider; nullable `embedding` column doubles as the backfill queue |
 | **L2 extended schema validation (Task 10)** | Skipped by decision on 2026-08-26, not by a technical blocker. The whole task — `SchemaSource`, the refresh loop, `L2`, and the `schemas/<TypeName>/attributes.yaml` set — is unbuilt. **C4 therefore has no enforcer:** nothing requires `@context` and `@type` to be present scalar strings, so Task 22 filters on a field whose shape was never checked, and two publishers disagreeing about it surfaces as a discover query that matches one of them. The SSRF boundary is unaffected: nothing fetches a URL from a payload because nothing fetches at all | Nothing. **`VALIDATION_ENABLE_L2_CONTEXT` and `config/common.yaml`'s `enableL2Context` still default to `true`, and now name a control that does not exist.** Task 20 must either default them off or refuse to boot when they are true, on the same reasoning that made `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` a boot refusal: a flag an operator reads back as enabled, silently doing nothing, is worse than no flag |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
@@ -225,7 +227,7 @@ notes, not the shared record (see `.gitignore`).
 | D8 | Embeddings | `Embedder` interface — `noop` default (A5), `hashing` in CI, `ollama` when enabled | OpenAI, Cohere | Self-hosted keeps the DPG mandate |
 | D9 | Config | `caarlos0/env/v11` + `yaml.v3`, layered (amended by T1) | viper | Reviewed YAML files under the environment |
 | D10 | Migrations | `golang-migrate/v4` | goose, atlas | Plain `.up.sql`/`.down.sql`, `//go:embed`-able so the binary self-migrates |
-| D11 | Telemetry | OTel + `otelhttp` + Prometheus client | zap alone | Only a propagation standard makes one request followable across a network hop |
+| D11 | Telemetry | OTel, ~~`otelhttp` + Prometheus client~~ **hand-rolled middleware, no in-process metrics — see A23** | zap alone | Only a propagation standard makes one request followable across a network hop. `otelhttp` fixes the instrumentation scope the network spec requires us to set; Prometheus counters in a stateless replica are partials nobody can reassemble |
 
 ---
 
@@ -279,7 +281,7 @@ src/platform/                       knows nothing of publish or discover
   crypto/signature/                 deferred, but built
   validation/  spec_index, schema_validator(L1), envelope_rules(C6),
                schema_source, schema_cache, extended_validator(L2)
-  telemetry/   telemetry.go  metrics.go
+  telemetry/   telemetry.go  redact.go
   middlewares/ recover, request_logger, envelope, signature,
                ratelimit, schema_validator, trace
 
@@ -3667,13 +3669,13 @@ then — the reason it exists is recorded here.)*
   the map is not a leak.
 - **The bucket is keyed on the remote address, not the subscriber id.** This is
   the one place this task departs from A4 as written, and it departs because
-  signature verification is parked: `context.bapId` on an unverified request is
-  a string the caller chose. Keying on it would let any caller shed its own
-  limit by rotating the field, and — the worse half — exhaust a *named third
-  party's* bucket by claiming their id, which turns the protection into the
-  attack. Subscriber-id keying is in **Deferred**, tied to the task that
-  verifies the signature, because that is the point at which the id stops being
-  a claim and becomes an identity. A deployment behind a proxy must hand the
+  signature verification is parked: `context.senderId` on an unverified request
+  is a string the caller chose — a DID, but nothing here resolves it (A24).
+  Keying on it would let any caller shed its own limit by rotating the field,
+  and — the worse half — exhaust a *named third party's* bucket by claiming
+  their id, which turns the protection into the attack. Subscriber-id keying is
+  in **Deferred**, tied to the task that verifies the signature, because that
+  is the point at which the id stops being a claim and becomes an identity. A deployment behind a proxy must hand the
   service the real peer address: `X-Forwarded-For` is not read, for the same
   reason `X-Request-Id` is not.
 - `Trace` is a **no-op pass-through here**, but not side-effect-free: before
@@ -3688,10 +3690,10 @@ then — the reason it exists is recorded here.)*
   middlewares run before anything calls `WriteHeader` — `Recover` writes the
   500 only after catching — so a lone presence marker survives a recovered
   panic under **either** nesting, and an assertion that it is present passes
-  whichever way round the two are mounted. Task 23 replaces the
-  inside of `Trace` with `otelhttp` and drops its `trace` entry; `Trace`'s
-  exported signature does not change, so nothing built against the chain in
-  Task 20 needs to change when Task 23 lands.
+  whichever way round the two are mounted. **Task 23c** replaces the inside of
+  `Trace` — hand-rolled, not `otelhttp` (A23) — and drops its `trace` entry;
+  `Trace`'s exported signature does not change, so nothing built against the
+  chain in Task 20 needs to change when 23c lands.
 
 **Tests pin:** `RequestID` mints an id, echoes it as `X-Request-Id`, ignores an
 inbound one, and leaves a logger below it that carries `request_id` — pinned by
@@ -4920,48 +4922,219 @@ the cast, never an interpolated query.
 
 ---
 
-### Task 23 — OpenTelemetry Tracing & Metrics
+### Task 23 — OpenTelemetry Tracing
 
-**Files:** `src/platform/telemetry/telemetry.go`, `metrics.go`;
-Modify: `src/platform/middlewares/trace.go`
+Six sub-tasks, in order. **23a–23e are unblocked; 23f is not** — see Open Items.
+Metrics are no longer part of this task (A23); they are Task 24.
 
-**Produces:** `telemetry.Init(cfg)`, RED metrics, retrieval-mode counters
+The wire shape is governed by the Sunbird-Obsrv network telemetry specification,
+and `docs/design/opentelemetry.md` is the single design document for it — which
+attributes we set, which events we emit, what never leaves the process, and the
+sub-task plan below restated against the files it touches. Where that document
+and this one disagree about the *shape of a span*, it wins; where they disagree
+about anything else, this one does.
 
-- `otelhttp` on the server, W3C Trace Context propagated **in and out** — a
-  correlation id that stops at the process boundary satisfies the letter of
-  "logged" and none of the point (TRD §6). This replaces Task 8's no-op
-  `Trace` middleware body — including dropping the `X-Beckn-Chain: trace`
-  entry Task 8 added only so Task 20's order test had something to observe —
-  and the chain Task 20 wired and tested does not move. **Task 20's order
-  assertion moves with it**, from the header pair to the span: the 500 a
-  recovered panic produces must be recorded *inside* the exported span, which
-  is true only if `Trace` wraps `Recover`. `Recover` keeps its `recover`
-  entry, but on its own it is a single value and a single value orders
-  nothing — after this task the chain header proves no pair. What still places
-  `Recover` is the behavioural pin: a panicking route logs one completion line
-  at `status = 500` with `X-Response-Time` set, which holds only while
-  `RequestLogger` wraps `Recover` (A11). Keep that assertion when the header
-  pair goes.
-- OTLP exporter configured by `OTEL_*`, defaulting to `none` so a deployment
-  with no collector still starts.
-- `search_degraded_modes` and `embedding_duration_ms` become metrics rather than
-  log fields nobody aggregates.
+Only the two protocol routes produce API events. `GET /healthz` and `/readyz` are
+not network transactions and emit no span.
 
-**Tests pin:** an inbound `traceparent` is joined rather than replaced; the
-exporter defaulting to `none` does not fail startup; a degraded search
-increments the counter.
+#### 23a — Telemetry foundation and the Resource
+
+**Files:** `src/platform/telemetry/telemetry.go`;
+Modify: `src/platform/config/config.go`, `src/app/container.go`, `src/app/server.go`
+
+**Produces:** `telemetry.Init(cfg)`, the Resource, the tracer provider, the OTLP
+exporter and its shutdown
+
+- The existing `OTel` config group gains `Producer` and `Domain`. Both are
+  **required only when `OTEL_EXPORTER` is not `none`**, so a collector-less
+  deployment still boots — which is the same reason the exporter defaults to
+  `none` in the first place.
+- The Resource carries `eid=API`, `producer`, `domain`, `service.name` and
+  `network.id`. `service.name` is the **same value** as `producer`: they are one
+  identity until one participant runs several services, and two spellings of one
+  thing is a grouping that splits. `network.id` comes from `APP_NETWORK_ID` (C8).
+- Shutdown flushes. A dropped tail is a request the facilitator never sees.
+
+**Tests pin:** `OTEL_EXPORTER=none` does not fail startup; the Resource carries
+all five attributes; `otlp` with `Producer` or `Domain` empty is a config error at
+boot rather than a span rejected later.
+
+#### 23b — The observation record
+
+**Files:** Modify `src/platform/middlewares/correlation.go`, `envelope.go`,
+`request_logger.go`
+
+**Produces:** a timestamped per-request fact record, replacing `correlation`'s
+`[]zap.Field`
+
+- Facts are recorded once, where they are known. The zap fields become a
+  **projection** of the record rather than the record itself.
+- Every fact records **when** it was recorded. That is what lets 23d build
+  correctly-timed events from call sites that never touch a span.
+- The nil-receiver tolerance survives: a middleware mounted without
+  `RequestLogger` above it still records nothing rather than panicking.
+
+**This sub-task changes no output.** The acceptance criterion is that every
+existing logger and middleware test passes **unchanged** — a refactor that needed
+its own tests rewritten to go green has not been shown to preserve anything.
+
+**Tests pin:** log output byte-identical before and after; a fact recorded below
+`Envelope` reaches `RequestLogger`'s completion line; a request with no envelope
+still logs.
+
+#### 23c — Span lifecycle and the mandatory attribute profile
+
+**Files:** Modify `src/platform/middlewares/trace.go`
+
+**Produces:** the span, its mandatory attributes, and the scope
+
+- **Hand-rolled, not `otelhttp`** (A23): the spec requires `scope.name` and
+  `scope.version`, and the instrumentation scope is immutable once the span
+  exists, so a span `otelhttp` started carries that package's identity
+  permanently. This replaces Task 8's no-op `Trace` body and drops the
+  `X-Beckn-Chain: trace` entry it added only so Task 20's order test had
+  something to observe.
+- `span_uuid` and `observedTimeUnixNano` — the two fields nothing else produces.
+  `sender.id`, `recipient.id`, and `http.method` / `http.route` / `http.host` /
+  `http.status.code`. The status code is emitted **twice**: the spec's dotted
+  spelling as a string, and OTel's own `http.status_code` as an int, because
+  tooling reads the second and the facilitator requires the first.
+- `sender.id` has no reliable source in this phase — identity was parked with
+  Task 6 — so it is **omitted rather than blanked**, with `sender.unidentified`
+  set. A field that is empty on every request is one nothing can be filtered by,
+  and an invented id is worse than an absent one.
+- W3C Trace Context propagated **in and out**: a correlation id that stops at the
+  process boundary satisfies the letter of "logged" and none of the point
+  (TRD §6).
+- **Task 20's order assertion moves here**, from the header pair to the span: the
+  500 a recovered panic produces must be recorded *inside* the exported span,
+  which is true only if `Trace` wraps `Recover`. `Recover` keeps its `recover`
+  entry, but on its own it is a single value and a single value orders nothing —
+  after this sub-task the chain header proves no pair. What still places
+  `Recover` is the behavioural pin: a panicking route logs one completion line at
+  `status = 500` with `X-Response-Time` set, which holds only while
+  `RequestLogger` wraps `Recover` (A11). Keep that assertion when the header pair
+  goes.
+
+**Tests pin:** an inbound `traceparent` is joined rather than replaced;
+`scope.name` and `scope.version` are ours and not a dependency's; the recovered
+panic's 500 is inside the exported span; A11's behavioural pin still holds.
+
+#### 23d — Events
+
+**Files:** Modify `src/discover/controller.go`, `src/publish/controller.go`,
+`src/platform/httpx/response_writer.go`, and the projection in
+`src/platform/telemetry/`
+
+**Produces:** `request_info`, `retrieval_info`, `response_info`, `error`
+
+- The names are the **spec's own**, not invented ones. A facilitator reading
+  three networks should not have to learn three vocabularies for one thing.
+- **Controllers call `record()` and nothing else.** They do not start spans, add
+  events, or import the telemetry package. The projection turns the record into
+  events using the timestamps the record already holds.
+- On publish, `request_info` fires **at intake, before the A1 MASTER refusal** —
+  after it, `publish.catalog_types` reads `REGULAR` on every span that exists and
+  the field is worthless.
+- `error` is projected from the same fault `logNack` already has, so the C1
+  category is decided in exactly one place (C1) and the span and the log line
+  cannot disagree.
+- The shape of the question travels, never its content: retrieval mode names,
+  operator names, counts and booleans — no query text, no coordinates, no bodies.
+
+**Tests pin:** event times are **strictly increasing and none equals the span's
+end time** — the cheapest way to catch events batched at handler exit, which no
+other assertion notices; a publish naming a master reports `MASTER` in
+`publish.catalog_types`; the `error` event's category matches the
+`X-Beckn-Error-Type` header byte for byte.
+
+#### 23e — Trace and log correlation
+
+**Files:** Modify `src/platform/logger/logger.go`,
+`src/platform/middlewares/trace.go`
+
+**Produces:** `trace_id` and `span_id` log fields
+
+Without these the logs and the traces are two islands and an operator holding a
+slow span has no way back to the lines that explain it. Two constructors beside
+`RequestID`, spelled in `logger.go` like every other field.
+
+**Tests pin:** both present once a span exists; both absent — not empty — when
+the exporter is `none`.
+
+#### 23f — The facilitator stream and redaction — **BLOCKED**
+
+**Files:** `src/platform/telemetry/redact.go`; a conformance test
+
+**Produces:** the second exporter and the deny-list
+
+Two destinations, not one. The micro-observability tier (ours) may hold more than
+the facilitator stream does; the no-PII rule binds the second, not the first.
+
+**Do not start this until Open Items resolve the literal `domain` string and the
+`producer` registry.** Both are Resource attributes that every OAN component must
+emit identically or the facilitator's grouping splits, and a guess is worse than
+silence because it looks like an answer.
+
+**Tests pin:** a deny-list over exported keys fails if a body, a query string or
+an IP appears — asserted against the **facilitator** exporter specifically.
+Asserting it against the ClickStack one would forbid the local analysis the split
+exists to permit; asserting it against neither is how the rule quietly stops
+holding.
+
+---
+
+### Task 24 — Metrics Exporter — **BLOCKED, and probably not this repo**
+
+**Produces:** the OTLP METRIC signal the spec requires of every participant
+
+The spec is explicit that participants must generate metrics, and equally
+explicit about where: `ref-impl-design.md` §Micro Observability puts computation
+in the tier with storage and aggregation, because that is what a windowed
+aggregate needs and what a stateless replica cannot have (A23).
+
+What does not exist yet is the thing that runs the aggregation and ships it. A
+store and a dashboard are not a metric exporter: something must run one query per
+`metric.code` on the registry's stated granularity and frequency, shape the
+result into `resourceMetrics` / `scopeMetrics` / `metrics` with `eid=METRIC`, and
+POST it. That component is named here so it is not mistaken for solved.
+
+- Only `sum` aggregation, non-monotonic, in the spec's current version.
+- The same Resource attributes as the spans — another reason `producer` and
+  `domain` must be settled once and shared rather than per-signal.
+- It aggregates over the spans Task 23 produces, so it **cannot precede Task 23**
+  and needs no new instrumentation inside this service.
+
+**Blocked on a metrics registry**, which does not exist for OAN. `metric.code` is
+defined there; invented codes will not match the ones a facilitator later
+publishes, and a stream of unrecognised codes is worse than none.
 
 ---
 
 ## Open Items
 
-**None.** Every question this plan raised has an owner decision behind it.
+**Three, all network-level, all raised by Task 23.** Every other question this
+plan raised has an owner decision behind it.
 
-That is a statement with a short shelf life — implementation will raise more —
-so what matters is the table below, not this line. **The decisions are recorded
-rather than dropped**, because the next reader's first question is why the
-schema looks the way it does, and an undocumented decision is indistinguishable
-from an accident:
+The line above used to read "None", with a note that it had a short shelf life
+because implementation would raise more. It did. These three are not ours to
+settle — they are agreements between OAN participants, and this service can only
+state what it needs and wait:
+
+| | Open | Blocks | Why a guess is worse than waiting |
+|---|---|---|---|
+| **O1** | **What is the literal `domain` string?** `Agriculture` is a placeholder. The network telemetry spec requires the attribute, nothing in the Beckn envelope carries it, and it is a Resource attribute — one value for the whole deployment | 23f | Every OAN component must emit the **identical** string or the facilitator's grouping splits in two and each half looks like half the traffic. The same applies to the `network.id` key name, which is our invention and has to be told to the adapter and experience layer rather than discovered |
+| **O2** | **What is `producer`, and who keeps the list of participant ids?** `discovery-service` is a guess. The Sunbird registry schema holds *Providers*, and a discovery service is not one, so there is no record for us to resolve from unless a participant record type is added | 23f, 24 | It identifies us to the facilitator on every span and every metric. Answering it also decides whether `producer` and `service.name` stay one value (23a) or split |
+| **O3** | **Is a publish an AUDIT event?** The spec's third signal is AUDIT-as-OTel-LOG, for "updates and state changes of entities within the network". A publish is exactly that — it mutates a catalog, and a `FULL` republish deletes resources | A future task, not 23 | Modelling publish as *both* API and AUDIT is defensible and duplicates every publish in the facilitator's store; modelling it as neither loses the state change. Picking one is a network call. Note the spec makes this signal **optional** — `ref-impl-design.md` says participants *may* generate LOG events — so unlike O1 and O2 this one can stay open indefinitely without blocking anything |
+
+The A23 restructure assumes all three stay open. 23a–23e are specified so they do
+not depend on any of them: the `domain` and `producer` values are config, so a
+deployment can be reconfigured without a rebuild, and nothing is exported to a
+facilitator until 23f.
+
+**The decisions below are recorded rather than dropped**, because the next
+reader's first question is why the schema looks the way it does, and an
+undocumented decision is indistinguishable from an accident:
 
 | | Was open | Decided |
 |---|---|---|

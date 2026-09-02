@@ -8,10 +8,10 @@
   "definitions": {
 
     "ProviderSchema": {
+      "description": "One row is one provider and one capability. What varies per Beckn action — the URL, the method, the mapping, the timeout — varies inside actions[].",
       "type": "object",
       "additionalProperties": false,
-      "required": ["bindingKey", "participantId", "capabilityCode", "status",
-                   "method", "path", "requestMapping", "responseMapping"],
+      "required": ["bindingKey", "participantId", "capabilityCode", "status", "actions"],
       "properties": {
         "bindingKey": {
           "type": "string",
@@ -22,35 +22,47 @@
         "capabilityCode": { "$ref": "#/definitions/CapabilityCode" },
         "status":         { "$ref": "#/definitions/Status" },
 
-        "method":          { "type": "string", "enum": ["GET", "POST"] },
-        "path":            { "$ref": "#/definitions/Path" },
-        "requestMapping":  { "$ref": "#/definitions/MappingPath" },
-        "responseMapping": { "$ref": "#/definitions/MappingPath" },
+        "actions": {
+          "description": "At least one. uniqueItems compares whole objects, so it cannot pin one entry per action — verify/records.py does.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": { "$ref": "#/definitions/ActionBinding" }
+        }
+      }
+    },
+
+    "ActionBinding": {
+      "description": "How to call this provider for one Beckn action: where, how, and with which mapping. Anything the upstream needs that the Beckn body cannot express is the adapter plugin's work, not a field here. status is per action, so one can be retired without touching the others.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "method", "path", "mappings", "status"],
+      "properties": {
+        "action":   { "$ref": "#/definitions/Action" },
+        "method":   { "type": "string", "enum": ["GET", "POST"] },
+        "path":     { "$ref": "#/definitions/Path" },
+        "mappings": { "$ref": "#/definitions/MappingPath" },
 
         "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 15000 },
         "retryMax":  { "type": "integer", "minimum": 0, "maximum": 5, "default": 0 },
 
-        "enricher": { "$ref": "#/definitions/Enricher" }
+        "status":    { "$ref": "#/definitions/Status" }
       }
     },
 
-    "Enricher": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name"],
-      "properties": {
-        "name":    { "type": "string", "pattern": "^[a-z][A-Za-z0-9]{2,63}$" },
-        "config":  { "type": "object" },
-        "secrets": { "type": "object",
-                     "minProperties": 1, "maxProperties": 8,
-                     "additionalProperties": { "$ref": "#/definitions/EnvRef" } }
-      }
+    "Action": {
+      "description": "beckn v2.0.0 request actions. An on_* callback is not one: it is the response half of the action that made the call.",
+      "type": "string",
+      "enum": ["discover", "select", "init", "confirm", "status",
+               "track", "cancel", "update", "rate", "support"]
     },
 
-    "EnvRef": { "type": "string", "pattern": "^env://[A-Z][A-Z0-9_]{0,63}$" },
-
-    "MappingPath": { "type": "string", "maxLength": 256,
-                     "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.jsonata$" },
+    "MappingPath": {
+      "description": "One file per binding-action, holding request: and response: as YAML block scalars. The action segment must equal the action it sits under — verify/records.py.",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.(discover|select|init|confirm|status|track|cancel|update|rate|support)\\.ya?ml$"
+    },
 
     "ParticipantId": { "type": "string", "maxLength": 253, "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$" },
     "CapabilityCode": { "type": "string",

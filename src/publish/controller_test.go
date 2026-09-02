@@ -129,6 +129,71 @@ func TestTheResponseIsTheCallbackEnvelope(t *testing.T) {
 	}
 }
 
+// The participant DIDs are the one pair that must NOT be echoed unchanged. They
+// name the two ends of a single hop, and catalog/on_publish is the hop back:
+// the party that received the publish is the party sending the acknowledgement.
+//
+// The two ids are deliberately distinct strings. Swapped and echoed are the
+// same assertion when both ends carry the same value, so a fixture reusing one
+// DID would pass against the very bug this pins.
+func TestTheParticipantDIDsSwapOnTheWayBack(t *testing.T) {
+	recorder := post(t, mount(t), "/publish", `{"context":{
+		"action":"publish","version":"2.0.0",
+		"transactionId":"t-1","messageId":"m-1",
+		"senderId":"did:example:publisher","receiverId":"did:example:discovery"
+	},"message":{"catalogs":[{"id":"c1"}]}}`)
+
+	// Before decoding: a Nack body unmarshals into the same envelope with a zero
+	// Context, so a regression that turns this into a 400 would otherwise be
+	// reported as an empty senderId — blaming the swap for a rejection.
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body)
+	}
+
+	envelope := decodeResponse(t, recorder)
+	if envelope.Context.SenderID != "did:example:discovery" {
+		t.Errorf("senderId = %q, want the request's receiverId — this service sent the acknowledgement",
+			envelope.Context.SenderID)
+	}
+	if envelope.Context.ReceiverID != "did:example:publisher" {
+		t.Errorf("receiverId = %q, want the request's senderId — the publisher receives it",
+			envelope.Context.ReceiverID)
+	}
+}
+
+// The four legacy BAP/BPP fields are accepted and dropped. A publisher still
+// sending them gets its catalogs stored rather than a rejection — Context
+// declares no additionalProperties:false — and gets none of them back on the
+// envelope, because this service no longer models an identity it cannot verify.
+//
+// `bppId` on the CATALOG is a different field and stays: that one is a
+// publisher's data, stored verbatim and rendered back (A17). This asserts on
+// the context alone for exactly that reason.
+func TestTheLegacyParticipantFieldsAreAcceptedAndNotEchoed(t *testing.T) {
+	recorder := post(t, mount(t), "/publish", `{"context":{
+		"action":"publish","version":"2.0.0",
+		"transactionId":"t-1","messageId":"m-1",
+		"bapId":"publisher.example.com","bapUri":"https://publisher.example.com/beckn",
+		"bppId":"discovery.example.com","bppUri":"https://discovery.example.com/beckn"
+	},"message":{"catalogs":[{"id":"c1"}]}}`)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a legacy field is ignored, not refused; body: %s",
+			recorder.Code, recorder.Body)
+	}
+
+	envelope := decodeResponse(t, recorder)
+	context, err := json.Marshal(envelope.Context)
+	if err != nil {
+		t.Fatalf("re-encoding the response context: %v", err)
+	}
+	for _, field := range []string{"bapId", "bapUri", "bppId", "bppUri"} {
+		if strings.Contains(string(context), field) {
+			t.Errorf("the response context carries %q; it should have been dropped:\n%s", field, context)
+		}
+	}
+}
+
 // A `message` this route cannot read is a transport failure, not a verdict.
 // There is no catalog to attach a REJECTED to, so a results array would have to
 // be empty — which reads as "nothing was sent".

@@ -8,6 +8,7 @@
 # Build output and the pinned toolchain built into it — derived, never shared
 bin/
 coverage.out
+coverage.html
 
 # Fetched-at-boot artefacts: beckn.yaml is cached here, not committed. Only a
 # pinned CI fixture of the spec is in the tree.

@@ -138,6 +138,82 @@ func TestTheResponseIsTheOnDiscoverEnvelope(t *testing.T) {
 	}
 }
 
+// The participant DIDs are the one pair that must NOT be echoed unchanged. They
+// name the two ends of a single hop, and on_discover is the hop back: the party
+// that received the request is the party sending the answer.
+//
+// The two ids are deliberately distinct strings. Swapped and echoed are the
+// same assertion when both ends carry the same value, so a fixture reusing one
+// DID would pass against the very bug this pins.
+func TestTheParticipantDIDsSwapOnTheWayBack(t *testing.T) {
+	handler := mount(t, &stubRepo{
+		capabilities: everything(),
+		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
+	}, settings())
+
+	recorder := post(t, handler, "/discover", `{"context":{
+		"action":"discover","version":"2.0.0",
+		"transactionId":"t-1","messageId":"m-1",
+		"senderId":"did:example:consumer","receiverId":"did:example:discovery"
+	},"message":{"intent":{"textSearch":"wheat"}}}`)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body)
+	}
+
+	envelope := decodeResponse(t, recorder)
+	if envelope.Context.SenderID != "did:example:discovery" {
+		t.Errorf("senderId = %q, want the request's receiverId — this service sent the answer",
+			envelope.Context.SenderID)
+	}
+	if envelope.Context.ReceiverID != "did:example:consumer" {
+		t.Errorf("receiverId = %q, want the request's senderId — the caller receives the answer",
+			envelope.Context.ReceiverID)
+	}
+}
+
+// The four legacy BAP/BPP fields are accepted and dropped. A caller still
+// sending them gets a 200 rather than a rejection — Context declares no
+// additionalProperties:false — and gets none of them back, because this service
+// no longer models an identity it cannot verify.
+//
+// The assertion is scoped to the CONTEXT, not the whole body, and the stub
+// returns a catalog document that would trip a body-wide scan. `bppId` on a
+// catalog is a different field: documents are stored and rendered back verbatim
+// (A17), so a publisher's own `bppId` reaching the response is correct — it is
+// the publisher's data, not this service's echo of an identity claim.
+func TestTheLegacyParticipantFieldsAreAcceptedAndNotEchoed(t *testing.T) {
+	handler := mount(t, &stubRepo{
+		capabilities: everything(),
+		result: domain.SearchResult{Catalogs: []domain.Catalog{{
+			ID:       "c1",
+			Document: []byte(`{"id":"c1","bppId":"weather.example.org"}`),
+		}}},
+	}, settings())
+
+	recorder := post(t, handler, "/discover", `{"context":{
+		"action":"discover","version":"2.0.0",
+		"transactionId":"t-1","messageId":"m-1",
+		"bapId":"consumer.example.com","bapUri":"https://consumer.example.com/beckn",
+		"bppId":"discovery.example.com","bppUri":"https://discovery.example.com/beckn"
+	},"message":{"intent":{"textSearch":"wheat"}}}`)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a legacy field is ignored, not refused; body: %s",
+			recorder.Code, recorder.Body)
+	}
+	envelope := decodeResponse(t, recorder)
+	context, err := json.Marshal(envelope.Context)
+	if err != nil {
+		t.Fatalf("re-encoding the response context: %v", err)
+	}
+	for _, field := range []string{"bapId", "bapUri", "bppId", "bppUri"} {
+		if strings.Contains(string(context), field) {
+			t.Errorf("the response context carries %q; it should have been dropped:\n%s", field, context)
+		}
+	}
+}
+
 // C11, both halves. The degraded list is a HEADER, and the body it travels
 // beside carries no `degraded` key — OnDiscoverAction declares
 // additionalProperties:false with `catalogs` as its only property, so a body

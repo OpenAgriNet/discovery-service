@@ -144,11 +144,27 @@ func TestATimestampThatIsNotRFC3339IsRejected(t *testing.T) {
 // The three C6 leaves optional stay optional. networkId in particular is a
 // filter and not an identity claim, and a publish carrying only the five
 // required fields is a valid request — it is what publishers send.
+//
+// Both directions, because "optional" is two claims: absent is accepted, and so
+// is present. A rule table that had started rejecting an unrecognised value
+// would pass the absent case on its own.
 func TestTheOptionalContextFieldsAreNotRequired(t *testing.T) {
-	envelope := valid()
-	envelope.NetworkID, envelope.BapID, envelope.BppID = "", "", ""
+	populated := valid()
+	populated.NetworkID = "mahavistar"
+	populated.SenderID, populated.ReceiverID = "did:example:sender", "did:example:receiver"
 
-	if faults := ValidateEnvelope(envelope); len(faults) != 0 {
-		t.Errorf("an envelope naming no network, bap or bpp produced %d faults: %v", len(faults), faults)
+	cleared := valid()
+	cleared.NetworkID, cleared.SenderID, cleared.ReceiverID = "", "", ""
+
+	for _, testcase := range []struct {
+		name     string
+		envelope beckn.Context
+	}{
+		{"naming a network, a sender and a receiver", populated},
+		{"naming none of them", cleared},
+	} {
+		if faults := ValidateEnvelope(testcase.envelope); len(faults) != 0 {
+			t.Errorf("an envelope %s produced %d faults: %v", testcase.name, len(faults), faults)
+		}
 	}
 }
