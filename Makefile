@@ -94,7 +94,7 @@ test-ci: $(GOTESTSUM)
 cover-diff: coverage.out
 	@CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go' | grep -v '_test\.go$$' || true); \
 	if [ -z "$$CHANGED" ]; then \
-		echo "No changed Go files vs $(BASE_REF) — nothing to gate." | tee coverage-report.md; \
+		echo "📊 Coverage — no changed Go files vs $(BASE_REF), nothing to gate" | tee coverage-report.md; \
 		exit 0; \
 	fi; \
 	MODULE=$$($(GO) list -m); \
@@ -104,12 +104,12 @@ cover-diff: coverage.out
 		  tot[f] += $$(NF-1); if ($$NF > 0) cov[f] += $$(NF-1) } \
 		END { \
 			T = 0; C = 0; for (f in tot) { T += tot[f]; C += cov[f] }; \
-			if (T == 0) { print "Changed files carry no coverable statements."; exit } \
-			pct = int(C * 100 / T); status = (pct < min) ? "failed" : "passed"; \
-			printf "Coverage (changed files): %d%% (min %d%%) — %s\n", pct, min, status \
+			if (T == 0) { print "📊 Coverage — changed files carry no coverable statements"; exit } \
+			pct = int(C * 100 / T); icon = (pct < min) ? "❌" : "✅"; status = (pct < min) ? "failed" : "passed"; \
+			printf "📊 **Coverage (changed files): %d%%** (min %d%%) — %s %s\n", pct, min, icon, status \
 		}' - coverage.out > coverage-report.md; \
 	cat coverage-report.md; \
-	! grep -q ' — failed$$' coverage-report.md
+	! grep -q '❌' coverage-report.md
 
 ## trivy-deps: dependency graph scan (T4), SARIF report. Catches what the
 ##             image scan structurally cannot — a vulnerable module only the
@@ -122,33 +122,37 @@ trivy-deps: $(TRIVY)
 	$(TRIVY) fs . --skip-dirs tools --severity $(SEVERITY) --exit-code 0 \
 		--format sarif --output trivy-deps.sarif
 
+TRIVY_IMAGE_SCAN = $(TRIVY) image $(IMAGE) --severity $(SEVERITY)
+
 ## trivy-image: shipped image scan (T4), SARIF report — reads base layers and
 ##              the Go build info embedded in the binary, including stdlib,
 ##              so a Go toolchain CVE shows up here and nowhere else that the
 ##              dependency scan above cannot see. IMAGE names the ref to scan.
 trivy-image: $(TRIVY)
-	$(TRIVY) image $(IMAGE) --severity $(SEVERITY) --exit-code 0 \
-		--format sarif --output trivy-image.sarif
+	$(TRIVY_IMAGE_SCAN) --exit-code 0 --format sarif --output trivy-image.sarif
 
 ## trivy-release-gate: the same image scan as trivy-image, but exit 1 on a
 ##                     finding instead of writing a report — the pre-push
 ##                     release gate build-and-push.yml runs once per
 ##                     arch-tagged local image, before anything is pushed.
 trivy-release-gate: $(TRIVY)
-	$(TRIVY) image $(IMAGE) --severity $(SEVERITY) --exit-code 1 --format table
+	$(TRIVY_IMAGE_SCAN) --exit-code 1 --format table
 
 ## trivy-gate: fail if either SARIF report already produced by a scan step
 ##             carries a finding. Reads the reports rather than rescanning —
 ##             two scans of the same thing can disagree, since Trivy refreshes
 ##             its DB each run, and a gate that rescans can fail on a finding
-##             in no uploaded report, the one state nobody can act on.
+##             in no uploaded report, the one state nobody can act on. Plain
+##             output only — same as a local run sees; the GitHub Actions
+##             ::error:: annotation is the caller's concern, not this
+##             target's (security.yml's gate step adds it).
 trivy-gate:
 	@fail=0; \
 	for report in trivy-deps.sarif trivy-image.sarif; do \
 		count=$$(jq '[.runs[].results[]?] | length' "$$report"); \
 		echo "$${report}: $${count} $(SEVERITY)"; \
 		if [ "$$count" -gt 0 ]; then \
-			jq -r '.runs[].results[]? | "::error::\(.ruleId) \(.message.text)"' "$$report"; \
+			jq -r '.runs[].results[]? | "\(.ruleId) \(.message.text)"' "$$report"; \
 			fail=1; \
 		fi; \
 	done; \

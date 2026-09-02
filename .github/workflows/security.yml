@@ -25,6 +25,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The trivy-action this replaced cached both the binary and its
+      # vulnerability DB across runs; `make trivy-deps`/`trivy-image` alone
+      # would re-download both (binary ~30MB, DB ~100MB+) on every run.
+      # Keyed on the Makefile's own hash so a TRIVY_VERSION bump there busts
+      # the cache automatically, plus a daily date so the DB itself doesn't
+      # go stale for longer than a day.
+      - name: Trivy cache date
+        id: trivy-date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy binary and vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/trivy
+            ~/.cache/trivy
+          key: trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.trivy-date.outputs.date }}
+          restore-keys: |
+            trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-
+
       # T4, half one: the dependency graph as written. This catches what the
       # image scan structurally cannot — a vulnerable module that only the test
       # suite imports, so it is never linked into the binary and never appears
@@ -115,20 +135,11 @@ jobs:
           body-path: trivy-deps-comment.md
           edit-mode: replace
 
-      # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
-      # Docker subscription — anonymous pulls 401. Same login a local build
-      # needs (see the Dockerfile's FROM comment), just non-interactive here.
-      #
-      # Written directly to config.json rather than through docker/login-action,
-      # whose username/password inputs don't accept a pre-combined blob — this
-      # matches the format `docker login` itself writes.
       - name: Log in to dhi.io
-        run: |
-          AUTH=$(printf '%s:%s' "${{ secrets.DOCKERHUB_USERNAME }}" "${{ secrets.DOCKERHUB_TOKEN }}" | base64 -w0)
-          mkdir -p ~/.docker
-          cat > ~/.docker/config.json <<EOF
-          {"auths":{"dhi.io":{"auth":"${AUTH}"}}}
-          EOF
+        uses: ./.github/actions/dhi-login
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # T4, half two: the shipped image, which is what the dependency scan
       # above cannot see. It reads the base layers, and it reads the Go build
@@ -201,8 +212,7 @@ jobs:
       # fourth time — logic lives in the Makefile's trivy-gate target so a
       # local `make trivy-gate` checks the exact same two files this job
       # just wrote. Last in the job, so a red build still leaves both reports
-      # behind. limit-severities-for-sarif above is what makes counting
-      # results equivalent to Trivy's own `--exit-code 1 --severity
-      # HIGH,CRITICAL`.
+      # behind. The target's own output is plain — same as a local run sees —
+      # so the ::error:: annotation is added here, not baked into the target.
       - name: Gate on HIGH or CRITICAL findings
-        run: make trivy-gate
+        run: make trivy-gate || { echo "::error::HIGH or CRITICAL Trivy findings — see job log above"; exit 1; }

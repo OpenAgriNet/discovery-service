@@ -32,6 +32,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Each matrix leg is a separate runner (amd64, arm64), so this is keyed
+      # per-arch too — otherwise one leg would restore the other's wrong-arch
+      # binary. See security.yml's identical cache step for why: the
+      # trivy-action this replaced cached both the binary and its
+      # vulnerability DB across runs; a bare `make trivy-release-gate` alone
+      # re-downloads both every run.
+      - name: Trivy cache date
+        id: trivy-date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy binary and vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/trivy
+            ~/.cache/trivy
+          key: trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.trivy-date.outputs.date }}
+          restore-keys: |
+            trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-
+
       - uses: docker/setup-buildx-action@v3
 
       # One flag per registry, read from repo variables (Settings > Secrets
@@ -48,20 +68,11 @@ jobs:
           echo "AZURE_CONTAINER_REGISTRY_ENABLED=${{ vars.AZURE_CONTAINER_REGISTRY_ENABLED == 'true' }}" >> "$GITHUB_ENV"
           echo "GOOGLE_ARTIFACT_REGISTRY_ENABLED=${{ vars.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true' }}" >> "$GITHUB_ENV"
 
-      # Base images are dhi.io/*, a Docker Hardened Images registry gated on a
-      # Docker subscription — anonymous pulls 401. Unrelated to which
-      # registry we push the built image to below.
-      #
-      # Written directly to config.json rather than through docker/login-action,
-      # whose username/password inputs don't accept a pre-combined blob — this
-      # matches the format `docker login` itself writes.
       - name: Log in to dhi.io
-        run: |
-          AUTH=$(printf '%s:%s' "${{ secrets.DOCKERHUB_USERNAME }}" "${{ secrets.DOCKERHUB_TOKEN }}" | base64 -w0)
-          mkdir -p ~/.docker
-          cat > ~/.docker/config.json <<EOF
-          {"auths":{"dhi.io":{"auth":"${AUTH}"}}}
-          EOF
+        uses: ./.github/actions/dhi-login
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # GITHUB_TOKEN can be denied write_package when creating a brand-new
       # package under a personal (non-org) namespace, even with this
