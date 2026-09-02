@@ -91,25 +91,52 @@ test-ci: $(GOTESTSUM)
 ##             needs the diff's number, not the whole repo's. One line, no
 ##             per-file table: an entry for a file nobody touched answers a
 ##             question nobody asked.
+## cover-diff: on failure, names the changed files dragging the number down
+##             (worst first) so "what broke" is answered in the same place
+##             as "did it break" — on a pass, still just the one line.
 cover-diff: coverage.out
 	@CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go' | grep -v '_test\.go$$' || true); \
 	if [ -z "$$CHANGED" ]; then \
-		echo "📊 Coverage — no changed Go files vs $(BASE_REF), nothing to gate" | tee coverage-report.md; \
+		echo "📊 **Test Coverage: ✅ Passed** — not applicable, no changed Go files vs $(BASE_REF)" | tee coverage-report.md; \
 		exit 0; \
 	fi; \
 	MODULE=$$($(GO) list -m); \
-	echo "$$CHANGED" | awk -v mod="$$MODULE/" -v min="$(MIN_COVERAGE)" ' \
+	RESULT=$$(echo "$$CHANGED" | awk -v mod="$$MODULE/" -v min="$(MIN_COVERAGE)" ' \
 		NR==FNR { want[mod $$0] = 1; next } \
 		{ f = $$1; sub(/:.*/, "", f); if (!(f in want)) next; \
 		  tot[f] += $$(NF-1); if ($$NF > 0) cov[f] += $$(NF-1) } \
 		END { \
-			T = 0; C = 0; for (f in tot) { T += tot[f]; C += cov[f] }; \
-			if (T == 0) { print "📊 Coverage — changed files carry no coverable statements"; exit } \
-			pct = int(C * 100 / T); icon = (pct < min) ? "❌" : "✅"; status = (pct < min) ? "failed" : "passed"; \
-			printf "📊 **Coverage (changed files): %d%%** (min %d%%) — %s %s\n", pct, min, icon, status \
-		}' - coverage.out > coverage-report.md; \
+			T = 0; C = 0; \
+			for (f in tot) { \
+				T += tot[f]; C += cov[f]; \
+				p = int(cov[f] * 100 / tot[f]); \
+				disp = f; sub("^" mod, "", disp); \
+				if (p < min) print "FILE\t" p "\t" disp; \
+			} \
+			if (T == 0) { print "EMPTY"; exit } \
+			print "TOTAL\t" int(C * 100 / T) \
+		}' - coverage.out); \
+	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
+		echo "📊 **Test Coverage: ✅ Passed** — not applicable, changed files carry no coverable statements" | tee coverage-report.md; \
+		exit 0; \
+	fi; \
+	PCT=$$(echo "$$RESULT" | awk -F'\t' '$$1=="TOTAL"{print $$2}'); \
+	if [ "$$PCT" -lt "$(MIN_COVERAGE)" ]; then \
+		BELOW=$$(echo "$$RESULT" | awk -F'\t' '$$1=="FILE"{printf "%s\t%s\n",$$2,$$3}' | sort -n); \
+		TOTAL_BELOW=$$(echo "$$BELOW" | wc -l); \
+		{ \
+			echo "📊 **Test Coverage: ❌ Failed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%"; \
+			echo; \
+			echo "| File | Coverage |"; \
+			echo "|---|---|"; \
+			echo "$$BELOW" | head -15 | awk -F'\t' '{printf "| `%s` | %s%% |\n", $$2, $$1}'; \
+			[ "$$TOTAL_BELOW" -gt 15 ] && echo "| … | $$((TOTAL_BELOW - 15)) more file(s) below $(MIN_COVERAGE)% |"; \
+		} > coverage-report.md; \
+	else \
+		echo "📊 **Test Coverage: ✅ Passed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%" > coverage-report.md; \
+	fi; \
 	cat coverage-report.md; \
-	! grep -q '❌' coverage-report.md
+	[ "$$PCT" -ge "$(MIN_COVERAGE)" ]
 
 ## trivy-deps: dependency graph scan (T4), SARIF report. Catches what the
 ##             image scan structurally cannot — a vulnerable module only the

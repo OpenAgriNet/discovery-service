@@ -75,6 +75,13 @@ jobs:
           printf '<!-- coverage-report -->\n%s\n' "$(cat coverage-report.md)" > coverage-report.md
           cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
+      # Always posted, pass or fail or not-applicable — a comment that only
+      # shows up on failure is ambiguous from the PR itself: did coverage
+      # run at all, pass, or just never trigger? Always-visible with an
+      # explicit ✅/❌ (cover-diff's own output) answers that without a
+      # reviewer having to open the job. Updated in place across runs, not
+      # reposted, via find-comment below.
+      #
       # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
       # read-only, so create-or-update-comment 403s there even with
       # pull-requests: write declared. A comment that can't post must never
