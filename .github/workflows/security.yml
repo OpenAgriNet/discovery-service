@@ -31,25 +31,13 @@ jobs:
       # in a layer. The first real finding was exactly that shape:
       # github.com/moby/go-archive, pulled in by testcontainers.
       #
-      # skip-dirs excludes tools/ (a separate go.mod for build-time tooling,
-      # e.g. golangci-lint) for the reason that module exists at all: the
-      # linter's dependency graph is not the binary's, so it cannot fail a
-      # release it does not ship in.
-      #
-      # limit-severities-for-sarif is what makes the SARIF obey `severity`.
-      # Without it the report carries every severity Trivy knows and the
-      # Security tab fills with LOW noise the gate below would never fail on.
+      # Logic lives in the Makefile's trivy-deps target — same command a local
+      # `make trivy-deps` runs. Verified live against trivy v0.74.0: --severity
+      # filters the SARIF output on its own now, so no separate
+      # limit-severities-for-sarif post-filter is needed the way the old
+      # trivy-action wrapper required.
       - name: Trivy dependency scan (report)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          skip-dirs: tools
-          severity: HIGH,CRITICAL
-          limit-severities-for-sarif: true
-          exit-code: "0"
-          format: sarif
-          output: trivy-deps.sarif
+        run: make trivy-deps
 
       # A category per scan: without it the second upload replaces the first,
       # because GitHub keys an analysis on (ref, category).
@@ -153,14 +141,7 @@ jobs:
         run: docker build -t discovery-service:${{ github.sha }} .
 
       - name: Trivy image scan (report)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: discovery-service:${{ github.sha }}
-          severity: HIGH,CRITICAL
-          limit-severities-for-sarif: true
-          exit-code: "0"
-          format: sarif
-          output: trivy-image.sarif
+        run: make trivy-image IMAGE=discovery-service:${{ github.sha }}
 
       - name: Upload image findings
         uses: github/codeql-action/upload-sarif@v3
@@ -217,24 +198,11 @@ jobs:
           edit-mode: replace
 
       # Gate on the reports already produced rather than scanning a third and
-      # fourth time. Two independent scans of the same thing can disagree —
-      # Trivy refreshes its database on each run — so a gate that rescans can
-      # fail on a finding that is in no uploaded report, which is the one state
-      # nobody can act on. Reading the SARIF makes the gate and the Security
-      # tab the same answer by construction.
-      #
-      # Last in the job, so a red build still leaves both reports behind.
-      # limit-severities-for-sarif above is what makes counting results
-      # equivalent to Trivy's own `--exit-code 1 --severity HIGH,CRITICAL`.
+      # fourth time — logic lives in the Makefile's trivy-gate target so a
+      # local `make trivy-gate` checks the exact same two files this job
+      # just wrote. Last in the job, so a red build still leaves both reports
+      # behind. limit-severities-for-sarif above is what makes counting
+      # results equivalent to Trivy's own `--exit-code 1 --severity
+      # HIGH,CRITICAL`.
       - name: Gate on HIGH or CRITICAL findings
-        run: |
-          fail=0
-          for report in trivy-deps.sarif trivy-image.sarif; do
-            count=$(jq '[.runs[].results[]?] | length' "$report")
-            echo "${report}: ${count} HIGH/CRITICAL"
-            if [ "$count" -gt 0 ]; then
-              jq -r '.runs[].results[]? | "::error::\(.ruleId) \(.message.text)"' "$report"
-              fail=1
-            fi
-          done
-          exit "$fail"
+        run: make trivy-gate

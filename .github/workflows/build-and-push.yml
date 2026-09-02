@@ -126,15 +126,10 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ matrix.arch }}
 
-      # exit-code: 1 fails the job here, before any push below runs — the
-      # release gate, not just a report. One scan covers every registry.
+      # trivy-release-gate exits 1 on a finding — the release gate, not just
+      # a report — before any push below runs. One scan covers every registry.
       - name: Trivy image scan (gate)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ matrix.arch }}
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          format: table
+        run: make trivy-release-gate IMAGE=${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ matrix.arch }}
 
       # Re-tag the already-scanned local image for each enabled registry and
       # push it there. No rebuild, no re-scan.

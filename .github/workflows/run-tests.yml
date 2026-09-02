@@ -13,14 +13,6 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Pinned rather than inherited: production defaults to noop (A5), and without
-  # this the whole semantic path would go untested from the day semantic search
-  # was deferred.
-  EMBEDDING_PROVIDER: hashing
-  MIN_COVERAGE: "80"
-  GOTESTSUM_VERSION: v1.13.0
-
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -43,7 +35,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 — cover-diff below needs the base branch's history
+      # locally to compute the PR's changed files; a PR checkout otherwise
+      # holds only the head commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -51,89 +48,31 @@ jobs:
           # a literal go.sum path would fail to resolve and disable the cache.
           cache-dependency-path: "**/go.sum"
       - run: make build
-
-      # gotestsum instead of `go test` directly: one tick per package with its
-      # coverage on the same line, and the output of failing tests only.
-      # Installed here rather than pinned in tools/go.mod because this is the
-      # only place that needs it — `make test` stays as it is.
-      - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }}
-
-      # pkgname, not the github-actions format. gotestsum drives `go test
-      # -json`, which implies -v, so every format that prints per-test output
-      # prints the output of PASSING tests too — and the acceptance suite logs
-      # a spec-fetch warning per test. Measured: the github-actions format
-      # emits 755 collapsible groups, most of them holding a warning about a
-      # cache fallback that is the intended behaviour. pkgname reports one line
-      # per package and still prints failing tests in full, with file:line.
-      #
-      # One run, not two: the profile costs nothing on top of the suite, so the
-      # previous `make test` plus `make cover` pair paid for every test twice
-      # to learn the same pass/fail answer. EMBEDDING_PROVIDER is pinned at the
-      # workflow level, which is what the Makefile's TEST_ENV does locally.
-      - name: Test
-        run: |
-          gotestsum --format pkgname --format-hide-empty-pkg -- \
-            -race -coverprofile=coverage.out -covermode=atomic ./...
+      - run: make test-ci
 
       # continue-on-error so a coverage miss still posts its report; the last
-      # step in the job turns that outcome back into a failure.
+      # step in the job turns that outcome back into a failure. Always
+      # diff-scoped, never whole-repo — main only ever moves by PR merge
+      # (CLAUDE.md: never commit directly to main), so a PR's own diff is
+      # already the gate that matters. On a pull_request event that's the PR
+      # branch vs its target; on a push to main (the merge landing) it's
+      # github.event.before, the commit main pointed to right before this one.
       - name: Check coverage
         id: coverage
         continue-on-error: true
-        uses: vladopajic/go-test-coverage@v2
-        with:
-          profile: coverage.out
-          threshold-total: ${{ env.MIN_COVERAGE }}
-
-      # go-test-coverage's own `report` output is the same tabwriter dump
-      # ReportForHuman prints to a terminal, JSON-wrapped as one big string —
-      # not structured data, so consuming it verbatim just moves the dump into
-      # the PR comment. Built from coverage.out directly instead: the headline
-      # from the action's `total-coverage` output (a clean 0-100 integer, no
-      # parsing needed), and a real markdown table for the rest — only the
-      # files below the threshold, since a table entry for a file that's
-      # already fine answers a question nobody asked. No uncovered-line
-      # ranges: those matter to whoever opens the file, not to a PR summary.
-      #
-      # The file-level percentage is computed the same way `go tool cover`
-      # computes it — covered statements over total statements per file, read
-      # straight from the profile's `file:pos numStmt count` lines — so it
-      # can't drift from what the gate itself measured.
-      - name: Assemble coverage report
         run: |
-          TOTAL="${{ steps.coverage.outputs.total-coverage }}"
-          if [ -z "$TOTAL" ]; then
-            {
-              echo "<!-- coverage-report -->"
-              echo "### Test coverage unavailable — see the Test step"
-            } > coverage-report.md
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            make cover-diff BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
           else
-            STATUS="passed"
-            [ "$TOTAL" -lt "$MIN_COVERAGE" ] && STATUS="failed"
-            MODULE="github.com/OpenAgriNet/discovery-service/"
-            {
-              echo "<!-- coverage-report -->"
-              echo "### Test coverage: ${TOTAL}% (min ${MIN_COVERAGE}%) — ${STATUS}"
-              echo
-              BELOW=$(awk -F'[: ]' -v mod="$MODULE" -v min="$MIN_COVERAGE" 'NR>1 {
-                f=$1; s=$(NF-1); c=$NF
-                t[f]+=s; if (c>0) v[f]+=s
-              }
-              END {
-                for (f in t) { p=v[f]/t[f]*100; sub(mod,"",f); if (p<min) printf "%.0f\t%s\n", p, f }
-              }' coverage.out | sort -n)
-              if [ -z "$BELOW" ]; then
-                echo "Every file meets the ${MIN_COVERAGE}% minimum."
-              else
-                echo "Files below ${MIN_COVERAGE}%:"
-                echo
-                echo "| File | Coverage |"
-                echo "|---|---|"
-                echo "$BELOW" | awk -F'\t' '{printf "| `%s` | %s%% |\n", $2, $1}'
-              fi
-            } > coverage-report.md
+            make cover-diff BASE_REF="${{ github.event.before }}"
           fi
+
+      # Marker goes into the file itself, not just the step summary — it's
+      # what body-path feeds the PR comment below, and find-comment matches
+      # on this exact string to update rather than duplicate that comment.
+      - name: Publish coverage summary
+        run: |
+          printf '<!-- coverage-report -->\n%s\n' "$(cat coverage-report.md)" > coverage-report.md
           cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
       # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
@@ -163,5 +102,5 @@ jobs:
       - name: Gate on minimum coverage
         if: steps.coverage.outcome == 'failure'
         run: |
-          echo "::error::coverage is below the ${MIN_COVERAGE}% minimum"
+          echo "::error::coverage is below the minimum — see the summary above"
           exit 1
