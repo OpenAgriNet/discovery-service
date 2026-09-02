@@ -1,0 +1,167 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned rather than inherited: production defaults to noop (A5), and without
+  # this the whole semantic path would go untested from the day semantic search
+  # was deferred.
+  EMBEDDING_PROVIDER: hashing
+  MIN_COVERAGE: "80"
+  GOTESTSUM_VERSION: v1.13.0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: the service module has no dependencies yet, so
+          # a literal go.sum path would fail to resolve and disable the cache.
+          cache-dependency-path: "**/go.sum"
+
+      # continue-on-error rather than dropping the job: CLAUDE.md keeps CI
+      # lint as the safety net behind the pre-commit hook, which is bypassable
+      # (--no-verify). Advisory here, not a gate — a red lint check must never
+      # be the reason a PR can't merge, only a reason someone looks.
+      - run: make lint
+        continue-on-error: true
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: the service module has no dependencies yet, so
+          # a literal go.sum path would fail to resolve and disable the cache.
+          cache-dependency-path: "**/go.sum"
+      - run: make build
+
+      # gotestsum instead of `go test` directly: one tick per package with its
+      # coverage on the same line, and the output of failing tests only.
+      # Installed here rather than pinned in tools/go.mod because this is the
+      # only place that needs it — `make test` stays as it is.
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }}
+
+      # pkgname, not the github-actions format. gotestsum drives `go test
+      # -json`, which implies -v, so every format that prints per-test output
+      # prints the output of PASSING tests too — and the acceptance suite logs
+      # a spec-fetch warning per test. Measured: the github-actions format
+      # emits 755 collapsible groups, most of them holding a warning about a
+      # cache fallback that is the intended behaviour. pkgname reports one line
+      # per package and still prints failing tests in full, with file:line.
+      #
+      # One run, not two: the profile costs nothing on top of the suite, so the
+      # previous `make test` plus `make cover` pair paid for every test twice
+      # to learn the same pass/fail answer. EMBEDDING_PROVIDER is pinned at the
+      # workflow level, which is what the Makefile's TEST_ENV does locally.
+      - name: Test
+        run: |
+          gotestsum --format pkgname --format-hide-empty-pkg -- \
+            -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      # continue-on-error so a coverage miss still posts its report; the last
+      # step in the job turns that outcome back into a failure.
+      - name: Check coverage
+        id: coverage
+        continue-on-error: true
+        uses: vladopajic/go-test-coverage@v2
+        with:
+          profile: coverage.out
+          threshold-total: ${{ env.MIN_COVERAGE }}
+
+      # go-test-coverage's own `report` output is the same tabwriter dump
+      # ReportForHuman prints to a terminal, JSON-wrapped as one big string —
+      # not structured data, so consuming it verbatim just moves the dump into
+      # the PR comment. Built from coverage.out directly instead: the headline
+      # from the action's `total-coverage` output (a clean 0-100 integer, no
+      # parsing needed), and a real markdown table for the rest — only the
+      # files below the threshold, since a table entry for a file that's
+      # already fine answers a question nobody asked. No uncovered-line
+      # ranges: those matter to whoever opens the file, not to a PR summary.
+      #
+      # The file-level percentage is computed the same way `go tool cover`
+      # computes it — covered statements over total statements per file, read
+      # straight from the profile's `file:pos numStmt count` lines — so it
+      # can't drift from what the gate itself measured.
+      - name: Assemble coverage report
+        run: |
+          TOTAL="${{ steps.coverage.outputs.total-coverage }}"
+          if [ -z "$TOTAL" ]; then
+            {
+              echo "<!-- coverage-report -->"
+              echo "### Test coverage unavailable — see the Test step"
+            } > coverage-report.md
+          else
+            STATUS="passed"
+            [ "$TOTAL" -lt "$MIN_COVERAGE" ] && STATUS="failed"
+            MODULE="github.com/OpenAgriNet/discovery-service/"
+            {
+              echo "<!-- coverage-report -->"
+              echo "### Test coverage: ${TOTAL}% (min ${MIN_COVERAGE}%) — ${STATUS}"
+              echo
+              BELOW=$(awk -F'[: ]' -v mod="$MODULE" -v min="$MIN_COVERAGE" 'NR>1 {
+                f=$1; s=$(NF-1); c=$NF
+                t[f]+=s; if (c>0) v[f]+=s
+              }
+              END {
+                for (f in t) { p=v[f]/t[f]*100; sub(mod,"",f); if (p<min) printf "%.0f\t%s\n", p, f }
+              }' coverage.out | sort -n)
+              if [ -z "$BELOW" ]; then
+                echo "Every file meets the ${MIN_COVERAGE}% minimum."
+              else
+                echo "Files below ${MIN_COVERAGE}%:"
+                echo
+                echo "| File | Coverage |"
+                echo "|---|---|"
+                echo "$BELOW" | awk -F'\t' '{printf "| `%s` | %s%% |\n", $2, $1}'
+              fi
+            } > coverage-report.md
+          fi
+          cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
+      # read-only, so create-or-update-comment 403s there even with
+      # pull-requests: write declared. A comment that can't post must never
+      # fail the job — coverage already gated above, this step is cosmetic.
+      - name: Find existing coverage comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/find-comment@v3
+        id: find-coverage-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- coverage-report -->"
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-coverage-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: coverage-report.md
+          edit-mode: replace
+
+      - name: Gate on minimum coverage
+        if: steps.coverage.outcome == 'failure'
+        run: |
+          echo "::error::coverage is below the ${MIN_COVERAGE}% minimum"
+          exit 1
