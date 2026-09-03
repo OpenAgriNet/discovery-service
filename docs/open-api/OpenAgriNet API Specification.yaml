@@ -3,8 +3,9 @@ info:
   title: OpenAgriNet API Specification
   version: 1.0.0
   description: |-
-    Two surfaces, one network. **Discovery** publishes resources and searches them; the
-    **registry** says who is on the network and how to call them.
+    Three surfaces, one network. **Discovery** publishes resources and searches them; the
+    **registry** says who is on the network and how to call them; the **provider node**
+    returns the data itself.
 
     They are separate services on separate hosts. Every path carries its own
     `servers`, so the host is unambiguous per operation.
@@ -13,6 +14,7 @@ info:
     |---|---|---|---|
     | Discovery | `discovery-network-vistaar.da.gov.in` | handled by the adapter in front | Publish, Discover |
     | Registry | `registry-network-vistaar.da.gov.in` | bearer | SchemaRegistry, Participant, ProviderSchema |
+    | Provider node | `provider-network-vistaar.da.gov.in` | Beckn request signature, verified by the adapter | Select |
 
     Discovery follows Beckn v2.0.0; see `beckn.yaml` for the protocol and for the
     authoritative shape of `Catalog`, `Provider`, `Resource` and `Offer`, which are
@@ -317,9 +319,13 @@ paths:
 
         For an open-data provider such as IMD Mausamgram nothing is being committed and there
         is no price: the commitment goes out `DRAFT` and comes back `ACTIVE`, and the payload
-        is the data. Only `informationMode` differs between what was advertised and what is
-        returned — `OnDemand` on the way in, `Direct` on the way back. The advertisement and
-        the answer are the same `@type`; what differs is whether values are present.
+        is the data.
+
+        The resources that come back are not the ones that went in. The request names what
+        was advertised; the response carries what the provider actually returned — the same
+        `@type`, now with values: `informationMode: Direct` where the advertisement said
+        `OnDemand`, one resource per forecast day rather than the single point that was
+        asked for, and a `unit` on every parameter.
       requestBody:
         required: true
         content:
@@ -1065,9 +1071,10 @@ components:
               value:
                 message:
                   status: NACK
-                error:
-                  code: BIZ_PROVIDER_NOT_FOUND
-                  message: no active binding for mausamgram|openagrinet:WeatherObservation
+                  messageId: 7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22
+                  error:
+                    code: BIZ_PROVIDER_NOT_FOUND
+                    message: no active binding for mausamgram|openagrinet:WeatherObservation
   schemas:
     Context:
       type: object
@@ -1607,25 +1614,33 @@ components:
       required:
         - message
       description: |-
-        The provider node's rejection body. Note the shape differs from the discovery
-        service's `Nack`: `error` sits beside `message`, not inside it.
+        The rejection body, in the shape every Beckn NACK uses: `error` inside `message`,
+        and `messageId` echoed so the caller can tie the rejection to the request that
+        caused it. There is no `context` key.
       properties:
         message:
           type: object
+          required:
+            - status
+            - messageId
+            - error
           properties:
             status:
               type: string
               const: NACK
-        error:
-          type: object
-          required:
-            - code
-            - message
-          properties:
-            code:
-              $ref: "#/components/schemas/SelectErrorCode"
-            message:
+            messageId:
               type: string
+              description: Echoed from the request.
+            error:
+              type: object
+              required:
+                - code
+                - message
+              properties:
+                code:
+                  $ref: "#/components/schemas/SelectErrorCode"
+                message:
+                  type: string
     SelectErrorCode:
       type: string
       description: |-
