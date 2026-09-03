@@ -39,6 +39,9 @@ servers:
   - &id002
     url: https://registry-network-vistaar.da.gov.in
     description: Bharat Vistaar registry
+  - &id003
+    url: https://provider-network-vistaar.da.gov.in
+    description: Bharat Vistaar provider node — select
 tags:
   - name: Publish
     description: Providers submit resources for indexing.
@@ -52,6 +55,8 @@ tags:
       APIs behind them.
   - name: ProviderSchema
     description: How to call each provider for each capability it offers.
+  - name: Select
+    description: Consumers ask a provider for the data itself.
 x-tagGroups:
   - name: Discovery API Specification
     tags:
@@ -62,6 +67,9 @@ x-tagGroups:
       - SchemaRegistry
       - Participant
       - ProviderSchema
+  - name: Provider Node API Specification
+    tags:
+      - Select
 paths:
   /publish:
     post:
@@ -290,6 +298,171 @@ paths:
           $ref: "#/components/responses/ServerError"
     servers:
       - *id001
+  /beckn/select:
+    post:
+      tags:
+        - Select
+      operationId: select
+      summary: Ask a provider for the data itself
+      description: |-
+        Names the resources a consumer wants from a catalog it has already discovered, and
+        returns them with values filled in. `/discover` advertises what a provider *can*
+        answer; this is where the answer arrives.
+
+        The consumer node posts straight to the provider node, at the `bppUri` that
+        `on_discover` returned — the network node has no part in this hop. The provider node
+        resolves the capability binding, calls the provider's own API, maps the reply into the
+        capability's shape and returns it **in the 200 body**. There is no callback to
+        `bapUri` to wait for.
+
+        For an open-data provider such as IMD Mausamgram nothing is being committed and there
+        is no price: the commitment goes out `DRAFT` and comes back `ACTIVE`, and the payload
+        is the data. Only `informationMode` differs between what was advertised and what is
+        returned — `OnDemand` on the way in, `Direct` on the way back. The advertisement and
+        the answer are the same `@type`; what differs is whether values are present.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SelectRequest"
+            examples:
+              weatherObservation:
+                summary: A five-day forecast for a point near Nashik
+                value:
+                  context:
+                    action: select
+                    version: 2.0.0
+                    messageId: 7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22
+                    transactionId: 9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44
+                    timestamp: "2026-08-26T06:12:01.330Z"
+                    bapId: seeker-network-vistaar.da.gov.in
+                    bapUri: https://seeker-network-vistaar.da.gov.in/beckn
+                    bppId: provider-network-vistaar.da.gov.in
+                    bppUri: https://provider-network-vistaar.da.gov.in/beckn
+                  message:
+                    contract:
+                      commitments:
+                        - status:
+                            descriptor:
+                              code: DRAFT
+                              name: Draft
+                          resources:
+                            - id: res:mausamgram:point-forecast
+                              resourceAttributes:
+                                "@context": https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld
+                                "@type": openagrinet:WeatherObservation
+                                subjectCategories:
+                                  - Weather
+                                location:
+                                  type: Point
+                                  coordinates:
+                                    - 73.7898
+                                    - 19.9975
+                                validity:
+                                  startsAt: "2026-08-26"
+                                  endsAt: "2026-08-30"
+                          offer:
+                            id: offer:mausamgram:open-data
+                            resourceIds:
+                              - res:mausamgram:point-forecast
+      responses:
+        "200":
+          description: |-
+            The `on_select` payload — the typed data, on the still-open connection. Each
+            upstream day-block becomes one resource, which is what makes the five days
+            independently addressable; one is shown here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnSelectResponse"
+              examples:
+                weatherObservation:
+                  summary: One forecast day, mapped into the capability's shape
+                  value:
+                    context:
+                      action: on_select
+                      version: 2.0.0
+                      messageId: 7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22
+                      transactionId: 9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44
+                      timestamp: "2026-08-26T06:12:04.918Z"
+                      bapId: seeker-network-vistaar.da.gov.in
+                      bapUri: https://seeker-network-vistaar.da.gov.in/beckn
+                      bppId: provider-network-vistaar.da.gov.in
+                      bppUri: https://provider-network-vistaar.da.gov.in/beckn
+                    message:
+                      contract:
+                        commitments:
+                          - status:
+                              descriptor:
+                                code: ACTIVE
+                                name: Active
+                            resources:
+                              - id: res:mausamgram:forecast:2026-08-26
+                                resourceAttributes:
+                                  "@context": https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld
+                                  "@type": openagrinet:WeatherObservation
+                                  informationMode: Direct
+                                  observationType: Forecast
+                                  subjectCategories:
+                                    - Weather
+                                  source:
+                                    sourceId: mausamgram
+                                    sourceName: IMD Mausamgram NWP
+                                  location:
+                                    type: Point
+                                    coordinates:
+                                      - 73.7898
+                                      - 19.9975
+                                  validity:
+                                    startsAt: "2026-08-26T00:00:00Z"
+                                    endsAt: "2026-08-26T23:59:59Z"
+                                  generatedAt: "2026-08-26T06:12:04.201Z"
+                                  parameters:
+                                    - parameter: Rainfall
+                                      aggregation: Total
+                                      unit: mm
+                                      value: 0.84
+                                    - parameter: Temperature
+                                      aggregation: Maximum
+                                      unit: Cel
+                                      value: 39.24
+                                    - parameter: Temperature
+                                      aggregation: Minimum
+                                      unit: Cel
+                                      value: 32.8
+                                    - parameter: Humidity
+                                      aggregation: Maximum
+                                      unit: "%"
+                                      value: 58.67
+                                    - parameter: Humidity
+                                      aggregation: Minimum
+                                      unit: "%"
+                                      value: 40.81
+                                    - parameter: WindSpeed
+                                      aggregation: Mean
+                                      unit: m/s
+                                      value: 2.83
+                                    - parameter: WindDirection
+                                      aggregation: Mean
+                                      unit: deg
+                                      value: 273.39
+                            offer:
+                              id: offer:mausamgram:open-data
+                              resourceIds:
+                                - res:mausamgram:forecast:2026-08-26
+        "400":
+          $ref: "#/components/responses/SelectNack"
+        "401":
+          $ref: "#/components/responses/SelectNack"
+        "403":
+          $ref: "#/components/responses/SelectNack"
+        "429":
+          $ref: "#/components/responses/SelectNack"
+        "500":
+          $ref: "#/components/responses/SelectNack"
+    servers:
+      - *id003
   /api/v1/SchemaRegistry:
     post:
       tags:
@@ -877,6 +1050,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/RCResponse"
+    SelectNack:
+      description: |-
+        NACK, on the open connection. There are no partial results and no silent empties: a
+        `select` either returns the data or returns this. The code says which — see
+        `SelectErrorCode`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SelectNack"
+          examples:
+            noBinding:
+              summary: Nothing in the registry answers for that capability
+              value:
+                message:
+                  status: NACK
+                error:
+                  code: BIZ_PROVIDER_NOT_FOUND
+                  message: no active binding for mausamgram|openagrinet:WeatherObservation
   schemas:
     Context:
       type: object
@@ -1254,6 +1445,210 @@ components:
           description: Time with offset, e.g. 09:00:00+05:30
         endTime:
           type: string
+    SelectContext:
+      type: object
+      description: |-
+        The envelope for the consumer-node-to-provider-node hop. It carries both ends of the
+        hop, which the discovery envelope does not need: the consumer posts to `bppUri` and
+        the provider node addresses its reply to `bapUri`.
+      properties:
+        action:
+          type: string
+          enum:
+            - select
+            - on_select
+          description: "`select` on the request, `on_select` on the response body."
+        version:
+          type: string
+          const: 2.0.0
+        messageId:
+          type: string
+          description: |-
+            New for this hop. The same `messageId` comes back on the `on_select`, which is how
+            a consumer ties the answer to the question it asked.
+        transactionId:
+          type: string
+          description: Carried over unchanged from the `discover` that found the resource.
+        timestamp:
+          type: string
+          format: date-time
+        bapId:
+          type: string
+          description: The consumer node — the adapter acting for the experience layer.
+        bapUri:
+          type: string
+          format: uri
+        bppId:
+          type: string
+          description: The provider node. Not the provider's own API, which the consumer never sees.
+        bppUri:
+          type: string
+          format: uri
+          description: |-
+            Where this request was posted, taken from the `on_discover` that advertised the
+            resource.
+    SelectRequest:
+      type: object
+      required:
+        - context
+        - message
+      properties:
+        context:
+          $ref: "#/components/schemas/SelectContext"
+        message:
+          $ref: "#/components/schemas/SelectAction"
+    SelectAction:
+      type: object
+      required:
+        - contract
+      properties:
+        contract:
+          $ref: "#/components/schemas/Contract"
+    OnSelectResponse:
+      type: object
+      required:
+        - context
+        - message
+      properties:
+        context:
+          $ref: "#/components/schemas/SelectContext"
+        message:
+          $ref: "#/components/schemas/SelectAction"
+    Contract:
+      type: object
+      required:
+        - commitments
+      description: |-
+        What is being asked for, and on the way back what is being answered. For open data
+        nothing is committed and no money moves; the contract is the envelope the resources
+        travel in, because `select` has nowhere else to put them.
+      properties:
+        id:
+          type: string
+        commitments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Commitment"
+    Commitment:
+      type: object
+      required:
+        - status
+        - resources
+        - offer
+      description: One group of resources and the terms they come under.
+      properties:
+        id:
+          type: string
+        status:
+          type: object
+          description: |-
+            `DRAFT` going out, `ACTIVE` coming back. For a zero-cost provider the transition
+            is the only thing the quote step does.
+          properties:
+            descriptor:
+              type: object
+              properties:
+                code:
+                  type: string
+                  enum:
+                    - DRAFT
+                    - ACTIVE
+                    - CLOSED
+                name:
+                  type: string
+        resources:
+          type: array
+          description: |-
+            On the request, the resource ids `on_discover` returned, each carrying only enough
+            `resourceAttributes` to pin the ask down — for weather, the point and the date
+            range. On the response, the same `@type` with values present.
+          items:
+            type: object
+            required:
+              - id
+            properties:
+              id:
+                type: string
+              resourceAttributes:
+                type: object
+                description: |-
+                  The JSON-LD typed payload — `@context`, `@type` and the capability's own
+                  fields, as its attribute pack defines them. Every parameter the provider
+                  returns carries a `unit`, and coordinates are **`[longitude, latitude]`**.
+        offer:
+          $ref: "#/components/schemas/Offer"
+    Offer:
+      type: object
+      description: |-
+        Which offer from the discovered catalog the resources are being taken under. Required
+        by `Commitment` even where nothing is priced — for an open-data provider it names the
+        open-data terms and carries no consideration.
+      properties:
+        id:
+          type: string
+        resourceIds:
+          type: array
+          items:
+            type: string
+        provider:
+          type: object
+          properties:
+            id:
+              type: string
+            descriptor:
+              type: object
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+    SelectNack:
+      type: object
+      required:
+        - message
+      description: |-
+        The provider node's rejection body. Note the shape differs from the discovery
+        service's `Nack`: `error` sits beside `message`, not inside it.
+      properties:
+        message:
+          type: object
+          properties:
+            status:
+              type: string
+              const: NACK
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              $ref: "#/components/schemas/SelectErrorCode"
+            message:
+              type: string
+    SelectErrorCode:
+      type: string
+      description: |-
+        Canonical Beckn `ErrorCode` members, narrowed to what this hop produces. The status
+        each maps to is the provider node's to publish; this spec does not assert one.
+
+        | code | means |
+        |---|---|
+        | `SCH_REQUIRED_FIELD_MISSING` | the request is malformed |
+        | `SCH_SCHEMA_VALIDATION_FAILED` | it parses but does not match the capability's shape |
+        | `CTX_ACTION_MISMATCH` | `context.action` is not `select` |
+        | `BIZ_PROVIDER_NOT_FOUND` | no active binding or participant for the resolved capability. A hard failure — never a fallback to another provider |
+        | `NET_TIMEOUT` | the provider's own API did not answer in time |
+        | `NET_DOWNSTREAM_UNAVAILABLE` | the provider's own API is down |
+        | `NET_INTERNAL_ERROR` | the provider node itself failed |
+      enum:
+        - SCH_REQUIRED_FIELD_MISSING
+        - SCH_SCHEMA_VALIDATION_FAILED
+        - CTX_ACTION_MISMATCH
+        - BIZ_PROVIDER_NOT_FOUND
+        - NET_TIMEOUT
+        - NET_DOWNSTREAM_UNAVAILABLE
+        - NET_INTERNAL_ERROR
     Nack:
       type: object
       required:
