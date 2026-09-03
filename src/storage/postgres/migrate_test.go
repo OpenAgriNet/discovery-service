@@ -133,6 +133,36 @@ func TestMigrateIsANoOpTheSecondTime(t *testing.T) {
 
 // The DSN arrives from DATABASE_URL, and an operator who mistypes it should be
 // told so at boot rather than discover a half-applied schema.
+// A host nothing is listening on is what makes opening the migrator itself
+// fail, distinct from a migration failing once it is open.
+func TestMigrateWrapsAFailureToOpenTheMigrator(t *testing.T) {
+	err := postgres.Migrate("postgres://user:pass@127.0.0.1:1/db")
+	if err == nil || !strings.Contains(err.Error(), "open the migrator") {
+		t.Errorf("err = %v, want it naming the migrator", err)
+	}
+}
+
+// A table the migration means to create, already there ahead of it, is what
+// makes Up() itself fail — as opposed to ErrNoChange, which is not an error at
+// all (TestMigrateIsANoOpTheSecondTime), and as opposed to never reaching the
+// migrator (the previous test).
+func TestMigrateWrapsAFailureToApplyAMigration(t *testing.T) {
+	dsn := dbtest.NewMigrationTarget(t)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if _, err := pool.Exec(context.Background(), "CREATE TABLE resources (id text)"); err != nil {
+		t.Fatalf("pre-create resources: %v", err)
+	}
+
+	if err := postgres.Migrate(dsn); err == nil || !strings.Contains(err.Error(), "apply migrations") {
+		t.Errorf("err = %v, want it naming the migration that failed", err)
+	}
+}
+
 func TestMigrateRefusesAConnectionStringItCannotParse(t *testing.T) {
 	if err := postgres.Migrate("postgres://user:pass@%%%/db"); err == nil {
 		t.Error("Migrate accepted a connection string that is not a URL")
