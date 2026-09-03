@@ -311,11 +311,11 @@ paths:
         returns them with values filled in. `/discover` advertises what a provider *can*
         answer; this is where the answer arrives.
 
-        The consumer node posts straight to the provider node, at the `bppUri` that
-        `on_discover` returned — the network node has no part in this hop. The provider node
-        resolves the capability binding, calls the provider's own API, maps the reply into the
-        capability's shape and returns it **in the 200 body**. There is no callback to
-        `bapUri` to wait for.
+        The consumer node posts straight to the provider node, at the `bppUri` the discovered
+        catalog carries — the network node has no part in this hop. The provider node resolves
+        the capability binding, calls the provider's own API, maps the reply into the
+        capability's shape and returns it **in the 200 body**. There is no callback to wait
+        for, and no address in the envelope for one.
 
         For an open-data provider such as IMD Mausamgram nothing is being committed and there
         is no price: the commitment goes out `DRAFT` and comes back `ACTIVE`, and the payload
@@ -342,10 +342,8 @@ paths:
                     messageId: 7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22
                     transactionId: 9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44
                     timestamp: "2026-08-26T06:12:01.330Z"
-                    bapId: seeker-network-vistaar.da.gov.in
-                    bapUri: https://seeker-network-vistaar.da.gov.in/beckn
-                    bppId: provider-network-vistaar.da.gov.in
-                    bppUri: https://provider-network-vistaar.da.gov.in/beckn
+                    senderId: seeker-network-vistaar.da.gov.in
+                    receiverId: provider-network-vistaar.da.gov.in
                   message:
                     contract:
                       commitments:
@@ -392,10 +390,8 @@ paths:
                       messageId: 7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22
                       transactionId: 9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44
                       timestamp: "2026-08-26T06:12:04.918Z"
-                      bapId: seeker-network-vistaar.da.gov.in
-                      bapUri: https://seeker-network-vistaar.da.gov.in/beckn
-                      bppId: provider-network-vistaar.da.gov.in
-                      bppUri: https://provider-network-vistaar.da.gov.in/beckn
+                      senderId: provider-network-vistaar.da.gov.in
+                      receiverId: seeker-network-vistaar.da.gov.in
                     message:
                       contract:
                         commitments:
@@ -1455,9 +1451,12 @@ components:
     SelectContext:
       type: object
       description: |-
-        The envelope for the consumer-node-to-provider-node hop. It carries both ends of the
-        hop, which the discovery envelope does not need: the consumer posts to `bppUri` and
-        the provider node addresses its reply to `bapUri`.
+        The same envelope the discovery surface uses, and the same two identities.
+
+        `bapId`, `bapUri`, `bppId` and `bppUri` are retained by Beckn v2.0.0 for backward
+        compatibility and are not modelled here. A caller may still send them; they are not
+        read and do not come back. Where the request goes is not carried in the envelope
+        anyway — it is the `bppUri` on the discovered catalog.
       properties:
         action:
           type: string
@@ -1479,21 +1478,17 @@ components:
         timestamp:
           type: string
           format: date-time
-        bapId:
+        senderId:
           type: string
-          description: The consumer node — the adapter acting for the experience layer.
-        bapUri:
-          type: string
-          format: uri
-        bppId:
-          type: string
-          description: The provider node. Not the provider's own API, which the consumer never sees.
-        bppUri:
-          type: string
-          format: uri
           description: |-
-            Where this request was posted, taken from the `on_discover` that advertised the
-            resource.
+            A DID resolving to the document carrying the sender's verification keys, so one
+            field answers both who sent this and with what key. The consumer node on the
+            request; the provider node on the response, because the two swap on the way back.
+        receiverId:
+          type: string
+          description: |-
+            The other end — the provider node on the request. The provider node, not the
+            provider's own API, which the consumer never addresses.
     SelectRequest:
       type: object
       required:
