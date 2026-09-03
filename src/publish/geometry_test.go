@@ -165,6 +165,23 @@ func TestATypeNameWithoutItsMemberIsNotAGeometryAndNotAFault(t *testing.T) {
 	}
 }
 
+// A `type` naming something that is not one of the seven RFC 7946 shapes is
+// not a geometry either — a GeoJSON `Feature` is the plausible real-world
+// case, distinct from TestATypeNameWithoutItsMemberIsNotAGeometryAndNotAFault
+// above: there the type name IS one of the seven and the required member is
+// missing; here the type name itself is not one at all.
+func TestATypeNameNotOneOfTheSevenIsNotAGeometryAndNotAFault(t *testing.T) {
+	catalog := catalogWith(`{"summary":{"type":"Feature","properties":{}},"geo":` + point + `}`)
+
+	found, faults := publish.ExtractGeometries(0, catalog)
+	if len(faults) != 0 {
+		t.Fatalf("faults = %v, want none — a Feature wrapper is not a bare geometry", faults)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %d geometries, want 1 — the geo field alone", len(found))
+	}
+}
+
 // One bad geometry costs one geometry. It is named, it is a partial, and the
 // catalog still publishes everything else.
 func TestOneMalformedGeometryCostsOneGeometry(t *testing.T) {

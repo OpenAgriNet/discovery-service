@@ -150,6 +150,20 @@ func TestDerivationDoesNotReachTheResourceID(t *testing.T) {
 // cost of storing the resource whole, and it is bounded: Name is a column,
 // derived and written before any of this, so the resource stays findable by the
 // thing publishers actually search for.
+// appendValues' own contract — "unreadable bytes contribute nothing and are
+// not an error" — checked directly. deriveSearchText's two callers both go
+// through domain.Resource's member() extraction, which never hands back a
+// non-empty value that fails to parse (a decoded sub-token is syntactically
+// valid JSON by construction), so this branch is unreachable through
+// deriveSearchText itself; appendValues is a general-purpose helper and
+// deserves its own case regardless of what its current callers guarantee.
+func TestAppendValuesOfUnreadableBytesContributesNothing(t *testing.T) {
+	got := appendValues([]string{"existing"}, json.RawMessage(`{not valid`))
+	if len(got) != 1 || got[0] != "existing" {
+		t.Errorf("appendValues = %v, want the input unchanged", got)
+	}
+}
+
 func TestDerivationOfAnUnreadableDocumentKeepsWhatItCanRead(t *testing.T) {
 	resource := domain.Resource{
 		Name:     "Rice",

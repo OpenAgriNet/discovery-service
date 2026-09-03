@@ -162,6 +162,29 @@ func TestTheEnvelopesVersionReachesTheStoredPatch(t *testing.T) {
 	}
 }
 
+// A1's other refusal, at the CATALOG rather than the resource: catalogs merge
+// by id too, and an empty one is not a key the merge can place. Distinct from
+// the acceptance suite's "the id is the empty string" case, which is about a
+// resource's id — this is intakeRefusal's own first check, on the catalog.
+func TestACatalogWithAnEmptyIDIsRejected(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	results := publishBody(t, service, `{"catalogs":[{"id":""}]}`)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want 1", results)
+	}
+	if results[0].Status != beckn.StatusRejected {
+		t.Fatalf("status = %q, want REJECTED", results[0].Status)
+	}
+	if len(results[0].Errors) != 1 || results[0].Errors[0].Code != beckn.CodeSchemaValidationFailed {
+		t.Errorf("Errors = %+v, want one SCH_VALIDATION_FAILED", results[0].Errors)
+	}
+	if len(repo.patches) != 0 {
+		t.Errorf("the repository saw %d patches; a refused catalog stores nothing", len(repo.patches))
+	}
+}
+
 func resultFor(t *testing.T, results []beckn.CatalogProcessingResult, catalogID string) beckn.CatalogProcessingResult {
 	t.Helper()
 
