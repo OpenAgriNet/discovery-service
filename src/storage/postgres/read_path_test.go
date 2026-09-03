@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
@@ -18,6 +19,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres"
+	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
 
@@ -543,6 +545,116 @@ func TestSemanticIsACapabilityOnlyWhenAnEmbedderIsConfigured(t *testing.T) {
 	}
 }
 
+// The fuzzy retriever's own query failure, isolated with the same injector
+// Hydrate's four queries are. Every other retrieve-failure case in this file
+// exercises lexical (via a real bad query elsewhere) or semantic (via a
+// dimension mismatch below); fuzzy had no case of its own.
+func TestFuzzyRetrieverNamesItsOwnQueryFailure(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-fuzzy-fail", resources: []domain.ResourcePatch{
+		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+	}})
+
+	retriever := postgres.NewFuzzyRetriever(&queryFailsAfter{DBTX: pool, n: 1}, 10)
+	_, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: "kharif"}, domain.Scope{})
+	if err == nil || !strings.Contains(err.Error(), "fuzzy retriever") {
+		t.Errorf("err = %v, want it naming the fuzzy retriever", err)
+	}
+}
+
+// wrongWidth answers every embed with a vector width that does not match what
+// it declares — the provider misconfiguration the dimension guard exists for,
+// distinct from TestAModeThatFailsIsDegradedAndThePageIsWhatTheOthersFound's
+// case, which is a real embedder at the WRONG column width rather than one
+// that lies about its own output.
+type wrongWidth struct{ claims int }
+
+func (w wrongWidth) Embed(context.Context, string) ([]float32, error) {
+	return make([]float32, w.claims+1), nil
+}
+
+func (w wrongWidth) Dimensions() int { return w.claims }
+
+// The dimension guard runs in Go, before the statement, so a provider that
+// lies about its own output degrades the mode with a clear cause rather than
+// reaching pgvector and failing as a storage error three layers away from it.
+func TestAQueryEmbedderThatLiesAboutItsWidthDegradesTheMode(t *testing.T) {
+	repository, _ := publish(t, wrongWidth{claims: 768}, readFixture{
+		catalog:   "cat-lying-embedder",
+		resources: []domain.ResourcePatch{searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot")},
+	})
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("a lying embedder failed the whole search: %v", err)
+	}
+	if !slices.Contains(result.Degraded, string(domain.CapabilitySemantic)) {
+		t.Errorf("Degraded is %v, want it to name semantic", result.Degraded)
+	}
+}
+
+// The happy path, missing until now: every other semantic case runs with no
+// embedder, an unreachable one, or one at the wrong width. This is the one
+// where embedding actually happens and the vector index returns the row it
+// was pointed at — Hashing embeds both the corpus and the query, so two texts
+// sharing every token land in the same bucket on both sides.
+func TestSemanticRetrieverFindsTheResourceItWasEmbeddedFor(t *testing.T) {
+	hashing := embeddings.NewHashing(768)
+	embedByText := func(merged *domain.Catalog, touched []string) []domain.Fault {
+		if faults := deriveSearchable(merged, touched); faults != nil {
+			return faults
+		}
+		for index := range merged.Resources {
+			vector, err := hashing.Embed(context.Background(), merged.Resources[index].SearchText)
+			if err != nil {
+				return []domain.Fault{{Code: "FIXTURE", Message: err.Error()}}
+			}
+			merged.Resources[index].Embedding = vector
+		}
+		return nil
+	}
+
+	repository, _ := publish(t, hashing, readFixture{
+		catalog: "cat-semantic",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+			searchable("tractor", "diesel tractor", "", "https://beckn.org/Agri", "Equipment"),
+		},
+		derive: embedByText,
+	})
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif wheat", Limit: searchConfig().MaxPageSize},
+		[]domain.Capability{domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	// HNSW answers the nearest N, not everything within a distance threshold
+	// (the query's own comment), so both rows in this two-row corpus come back
+	// — ranked. wheat sharing every query token first is the assertion.
+	if got := matchedIDs(result); len(got) == 0 || got[0] != "wheat" {
+		t.Fatalf("semantic search ranked %v first, want wheat — it shares every query "+
+			"token, and the tractor shares none", got)
+	}
+}
+
+// An empty query text is nil and no error, not a call to a provider with
+// nothing to embed — SemanticRetriever.Retrieve is exercised here with an
+// intent discover.Service's own modesFor never actually sends it (it only
+// asks for semantic when Text is non-empty), because the storage layer's
+// contract does not depend on that guarantee holding upstream.
+func TestSemanticRetrieverWithNoTextEmbedsNothing(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-semantic-empty", resources: []domain.ResourcePatch{
+		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+	}})
+
+	retriever := postgres.NewSemanticRetriever(pool, embeddings.NewHashing(768), 10)
+	if _, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: ""}, domain.Scope{}); err != nil {
+		t.Errorf("Retrieve with no text: %v, want no error", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // geometry
 // ---------------------------------------------------------------------------
@@ -753,6 +865,167 @@ func TestHydrationReturnsOnlyTheOffersTouchingThePagePlusTheCatalogWideOnes(t *t
 	if got := offerIDs(result.Catalogs[0]); !slices.Equal(got, []string{"catalog-wide", "on-wheat"}) {
 		t.Errorf("the page carries offers %v; want the wheat's own and the catalog-wide one — "+
 			"not the barley's, and not the expired one", got)
+	}
+}
+
+// ScopeFilter has no caller yet in this repository's own Search — it exists
+// for a retriever whose index carries no notion of validity or visibility
+// (the doc comment's example is a vector index), so it is exercised directly
+// against the hydrator rather than through Search.
+
+// An id the gate admits comes back, one it does not is dropped, and the
+// caller's own order survives — reversed here so a rebuild from the row order
+// instead would fail.
+func TestScopeFilterKeepsAdmittedIdsInTheCallersOrder(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog: "cat-scope",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+			searchable("barley", "rabi barley", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+
+	ids := []string{
+		domain.ResourceKey("cat-scope", "barley"),
+		domain.ResourceKey("cat-scope", "not-a-real-resource"),
+		domain.ResourceKey("cat-scope", "wheat"),
+	}
+	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), ids, domain.Scope{})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if want := []string{ids[0], ids[2]}; !slices.Equal(kept, want) {
+		t.Errorf("kept = %v, want %v — the caller's order, with the unknown id dropped", kept, want)
+	}
+}
+
+// A network the fixture was never made visible to admits nothing, the same
+// gate HydrateResources applies (A6's shared predicate).
+func TestScopeFilterAppliesTheNetworkGate(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog:   "cat-scope-net",
+		visibleTo: []string{"mahavistar"},
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+
+	id := domain.ResourceKey("cat-scope-net", "wheat")
+	hydrator := postgres.NewHydrator(pool)
+
+	kept, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkID: "mahavistar"})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if !slices.Equal(kept, []string{id}) {
+		t.Errorf("kept = %v, want %v — mahavistar is the network it was published to", kept, []string{id})
+	}
+
+	kept, err = hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkID: "bharatvistar"})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if len(kept) != 0 {
+		t.Errorf("kept = %v, want none — bharatvistar is not a network this resource is visible to", kept)
+	}
+}
+
+// No ids is no query, and no error — the same short-circuit Hydrate takes for
+// the same reason (a page nothing matched is not a fault).
+func TestScopeFilterOfNoIdsRunsNoQuery(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-scope-empty"})
+
+	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), nil, domain.Scope{})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if kept != nil {
+		t.Errorf("kept = %v, want nil", kept)
+	}
+}
+
+// A page whose every id the gate refuses is nil catalogs and no error — not
+// the same as a query failure, and not reached by any existing Hydrate case,
+// which always has at least one admitted resource.
+func TestHydrateOfAGateRefusedPageReturnsNoCatalogs(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog:   "cat-hydrate-empty",
+		visibleTo: []string{"mahavistar"},
+		resources: []domain.ResourcePatch{searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot")},
+	})
+
+	id := domain.ResourceKey("cat-hydrate-empty", "wheat")
+	catalogs, err := postgres.NewHydrator(pool).Hydrate(
+		context.Background(), []string{id}, domain.Scope{NetworkID: "bharatvistar"})
+	if err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if catalogs != nil {
+		t.Errorf("catalogs = %+v, want nil — bharatvistar is not a network this resource is visible to", catalogs)
+	}
+}
+
+// queryFailsAfter wraps a real gen.DBTX and fails the Nth call to Query, so a
+// specific query inside a multi-query method (Hydrate runs four) can be made
+// to fail without the ones before it succeeding by luck rather than by
+// isolation.
+type queryFailsAfter struct {
+	gen.DBTX
+	calls int
+	n     int
+}
+
+func (f *queryFailsAfter) Query(
+	ctx context.Context, sql string, args ...interface{},
+) (pgx.Rows, error) {
+	f.calls++
+	if f.calls == f.n {
+		return nil, errors.New("boom")
+	}
+	return f.DBTX.Query(ctx, sql, args...)
+}
+
+// Hydrate wraps each of its four queries in its own fmt.Errorf, naming what it
+// was doing — checked one at a time, since a shared "query failed" message
+// would pass whichever query actually broke.
+func TestHydrateNamesWhicheverOfItsFourQueriesFailed(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog: "cat-hydrate-fail",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+	id := domain.ResourceKey("cat-hydrate-fail", "wheat")
+
+	cases := []struct {
+		call    int
+		wantsay string
+	}{
+		{1, "resources"},
+		{2, "catalogs"},
+		{3, "geometries"},
+		{4, "offers"},
+	}
+	for _, testCase := range cases {
+		hydrator := postgres.NewHydrator(&queryFailsAfter{DBTX: pool, n: testCase.call})
+		_, err := hydrator.Hydrate(context.Background(), []string{id}, domain.Scope{})
+		if err == nil || !strings.Contains(err.Error(), testCase.wantsay) {
+			t.Errorf("query %d failing: err = %v, want it naming %q", testCase.call, err, testCase.wantsay)
+		}
+	}
+}
+
+// ScopeFilter's own query is wrapped the same way.
+func TestScopeFilterNamesItsOwnQueryFailure(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-scope-fail", resources: []domain.ResourcePatch{
+		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+	}})
+	id := domain.ResourceKey("cat-scope-fail", "wheat")
+
+	hydrator := postgres.NewHydrator(&queryFailsAfter{DBTX: pool, n: 1})
+	_, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{})
+	if err == nil || !strings.Contains(err.Error(), "scope gate") {
+		t.Errorf("err = %v, want it naming the scope gate", err)
 	}
 }
 

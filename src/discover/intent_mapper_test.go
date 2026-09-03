@@ -331,3 +331,182 @@ func TestTheMapperLeavesNetworkScopingToTheService(t *testing.T) {
 		t.Errorf("NetworkID = %q, want empty", query.NetworkID)
 	}
 }
+
+// A negative offset reads as the first page rather than as a caller error:
+// unlike an unreadable page (C11's neighbour above), a negative number is not
+// ambiguous about what the caller meant.
+func TestANegativeOffsetIsClampedToZero(t *testing.T) {
+	query, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{Offset: -5}, settings())
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if query.Offset != 0 {
+		t.Errorf("Offset = %d, want 0", query.Offset)
+	}
+}
+
+// A10 answers exactly one spatial constraint. A second one is refused rather
+// than ANDed or ORed, because the spec leaves undefined which of the two this
+// service would silently have picked.
+func TestMoreThanOneSpatialConstraintIsRefused(t *testing.T) {
+	target := `$.catalogs[*].provider.availableAt[*].geo`
+	intent := beckn.Intent{Spatial: []beckn.SpatialConstraint{within(target), within(target)}}
+
+	_, fatal, _ := discover.MapIntent(intent, beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaTypeNotSupported) {
+		t.Fatalf("fatal = %s, want one SCH_TYPE_NOT_SUPPORTED", codesOf(fatal))
+	}
+}
+
+// An operator that is neither answerable nor one of the two named
+// unapproximable ones (S_TOUCHES/S_CROSSES) is unknown outright — a typo, not a
+// future capability.
+func TestAnUnknownSpatialOperatorIsRefused(t *testing.T) {
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Op = "S_NEAR"
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+	if !strings.Contains(fatal[0].Message, "S_NEAR") {
+		t.Errorf("Message = %q, want it to name the operator", fatal[0].Message)
+	}
+}
+
+// No geometry at all is refused with the same code an unreadable one is, since
+// both leave the constraint with nothing to cover against.
+func TestAMissingGeometryIsRefused(t *testing.T) {
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Geometry = nil
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+}
+
+// A geometry of a recognised type whose coordinates cannot be read at all —
+// not merely wrong, but not JSON — is refused rather than passed through to a
+// backend that will fail on it far from the caller who sent it.
+func TestAGeometryThatCannotBeReadIsRefused(t *testing.T) {
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Geometry = &beckn.GeoJSONGeometry{
+		Type:        beckn.GeometryPoint,
+		Coordinates: json.RawMessage(`{not valid`),
+	}
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+	if !strings.Contains(fatal[0].Message, "cannot be read") {
+		t.Errorf("Message = %q, want it to say the geometry could not be read", fatal[0].Message)
+	}
+}
+
+// f64 turns a literal into the pointer beckn.SpatialConstraint.DistanceMeters
+// needs, so a test can state "zero" and "unset" as two different values.
+func f64(v float64) *float64 { return &v }
+
+// S_DWITHIN needs a positive radius. Unset and non-positive are the same
+// refusal, because both leave the operator with no radius to search.
+func TestSDWithinNeedsAPositiveDistance(t *testing.T) {
+	for _, distance := range []*float64{nil, f64(0), f64(-5)} {
+		constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+		constraint.Op = beckn.OpSDWithin
+		constraint.DistanceMeters = distance
+
+		_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+		if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+			t.Fatalf("distance %v: fatal = %s, want one SCH_INVALID_FORMAT", distance, codesOf(fatal))
+		}
+	}
+}
+
+// The success path S_DWITHIN exists for: a radius that survives to the query,
+// and — Point-to-Point being the one case the exact haversine refinement
+// applies to — a Center for coverConstraint to hand the repository.
+func TestSDWithinSetsTheRadiusAndCenterForAPoint(t *testing.T) {
+	distance := 5000.0
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Op = beckn.OpSDWithin
+	constraint.DistanceMeters = &distance
+
+	query, fatal, partial := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if len(partial) != 0 {
+		t.Errorf("partial = %s, want none — distanceMeters is exactly what S_DWITHIN uses", codesOf(partial))
+	}
+	if query.Spatial == nil || query.Spatial.RadiusM != distance {
+		t.Fatalf("Spatial = %+v, want RadiusM %g", query.Spatial, distance)
+	}
+	if query.Spatial.Center == nil || query.Spatial.Center.Lon != 77.5946 || query.Spatial.Center.Lat != 12.9716 {
+		t.Errorf("Center = %+v, want the query point", query.Spatial.Center)
+	}
+}
+
+// No targets at all means every geometry, the same widened answer an
+// unrecognised one is refused for — the difference is that this one was never
+// sent, rather than sent and unreadable.
+func TestNoTargetsMeansEveryGeometry(t *testing.T) {
+	constraint := beckn.SpatialConstraint{Op: beckn.OpSIntersects, Geometry: bengaluru()}
+
+	query, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if len(query.TargetPaths) != 0 {
+		t.Errorf("TargetPaths = %v, want none", query.TargetPaths)
+	}
+}
+
+// validateConstraint's own claim — "reports all of them rather than the
+// first" — checked as a combination rather than one field at a time: four
+// independent faults from one constraint, not the first one short-circuiting
+// the rest.
+func TestValidateConstraintReportsEveryFaultNotJustTheFirst(t *testing.T) {
+	constraint := beckn.SpatialConstraint{
+		Op:         "S_NEAR",
+		SRID:       "EPSG:3857",
+		Quantifier: "SOME",
+		Targets:    beckn.Targets{`$.catalogs[*].provider.availableAt[*].geo`},
+		// Geometry left nil — a fourth, independent fault.
+	}
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 4 {
+		t.Fatalf("fatal = %s, want 4 — one per bad field, not just the first", codesOf(fatal))
+	}
+}
+
+// mapPage's own boundary: `>` refuses, so a page landing EXACTLY on the
+// retrieval depth must be answered, not refused. TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused
+// only asserts the over side of this line.
+func TestAPageExactlyAtTheRetrievalDepthIsNotRefused(t *testing.T) {
+	cfg := settings()
+	page := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode - 100}
+
+	_, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, page, cfg)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none — offset+limit lands exactly on the depth, not past it", codesOf(fatal))
+	}
+}
+
+// validateDistance's own boundary: `>` refuses, so a radius EXACTLY at the
+// ceiling must be answered. TestARadiusOverTheCeilingIsRefused only asserts
+// the value one metre past it.
+func TestARadiusExactlyAtTheCeilingIsNotRefused(t *testing.T) {
+	cfg := settings()
+	atCeiling := float64(cfg.Search.MaxRadiusMeters)
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Op = beckn.OpSDWithin
+	constraint.DistanceMeters = &atCeiling
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, cfg)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none — the ceiling itself is answerable", codesOf(fatal))
+	}
+}
