@@ -10,6 +10,50 @@ import (
 	"go.uber.org/zap"
 )
 
+// Run wires net.Listen and the real signal-cancellable context ahead of
+// serve, which every other test in this file drives directly with a
+// hand-built listener. This is Run's own happy path — the actual production
+// entrypoint, not merely serve one layer down.
+func TestRunOpensTheConfiguredPortAndServesUntilCancelled(t *testing.T) {
+	application := testApp(t, livePool{}, zap.NewNop())
+	application.Config.Server.Port = 0 // the kernel picks a free one
+	application.Config.Server.ShutdownTimeout = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- Run(ctx, application) }()
+
+	time.Sleep(50 * time.Millisecond) // give Run time to bind and start serving
+	cancel()
+
+	if err := <-served; err != nil {
+		t.Errorf("Run: %v, want nil after a clean shutdown", err)
+	}
+}
+
+// A port already in use is a boot failure and has to come back as one — the
+// same claim TestAServeFailureIsReturnedRatherThanSwallowed makes for serve,
+// but Run's own failure is at net.Listen, one layer above.
+func TestRunReturnsAListenFailureRatherThanPanicking(t *testing.T) {
+	listener := listenLocal(t)
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("Addr() = %T, want *net.TCPAddr", listener.Addr())
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close the listener: %v", err)
+		}
+	})
+
+	application := testApp(t, livePool{}, zap.NewNop())
+	application.Config.Server.Port = address.Port
+
+	if err := Run(context.Background(), application); err == nil {
+		t.Error("Run answered nil while the configured port was already in use")
+	}
+}
+
 // listenLocal opens a listener on a port the kernel picks, so the suite never
 // collides with a developer's own service on 8080 and two of these can run in
 // parallel.

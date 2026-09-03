@@ -517,3 +517,97 @@ func TestL2ContextValidationIsOffInTheReviewedFile(t *testing.T) {
 		t.Error("validation.enableL1Schema is false; L1 is built and is the layer that ships")
 	}
 }
+
+// Load reads commonPath and instancePath as given — relative to the process's
+// working directory — rather than to this package's own location. A test's
+// working directory is the package under test, so "config/common.yaml" is not
+// there, and Load must fail the same way load does on any other missing
+// common file rather than resolving some other path silently.
+func TestLoadReadsPathsRelativeToTheProcessWorkingDirectory(t *testing.T) {
+	if _, err := Load(); err == nil {
+		t.Fatal("Load succeeded from a working directory with no config/common.yaml beneath it")
+	} else if !strings.Contains(err.Error(), "config/common.yaml") {
+		t.Errorf("error %v does not name config/common.yaml", err)
+	}
+}
+
+// envMap is os.Environ's KEY=VALUE lines turned into the map Load hands to
+// load, so the environment is a parameter everywhere below Load rather than a
+// global any layer test would have to fight.
+func TestEnvMapSplitsOnTheFirstEquals(t *testing.T) {
+	got := envMap([]string{"FOO=bar", "CONNSTR=user=x;pass=y", "NO_EQUALS_SIGN"})
+
+	if got["FOO"] != "bar" {
+		t.Errorf("FOO = %q, want bar", got["FOO"])
+	}
+	if got["CONNSTR"] != "user=x;pass=y" {
+		t.Errorf("CONNSTR = %q, want the value with its own '=' signs intact", got["CONNSTR"])
+	}
+	if _, present := got["NO_EQUALS_SIGN"]; present {
+		t.Errorf("a line with no '=' produced a map entry")
+	}
+}
+
+// A file that is present but not readable YAML at all — not a config mistake
+// this loader's own vocabulary can name, a document the yaml package itself
+// rejects — is still a startup failure rather than a panic or a silently
+// empty layer.
+func TestAFileThatIsNotValidYAMLFailsStartup(t *testing.T) {
+	common := writeYAML(t, "not: [valid: yaml")
+
+	if _, err := load(common, noInstance, baseEnv()); err == nil {
+		t.Fatal("load accepted a file that is not valid YAML")
+	}
+}
+
+// A key with no value at all — `network:` alone — is YAML null, and null is
+// refused with its own message rather than read as the zero value or crashing
+// on a failed type assertion.
+func TestAKeyWithNoValueAtAllFailsStartup(t *testing.T) {
+	common := writeYAML(t, "app:\n  network:\n")
+
+	if _, err := load(common, noInstance, baseEnv()); err == nil {
+		t.Fatal("load accepted a key with no value")
+	} else if !strings.Contains(err.Error(), "app.network") {
+		t.Errorf("error %v does not name app.network", err)
+	}
+}
+
+// A nested block where a scalar field lives is refused with the same message
+// a group field refuses a bare value with, just from the other direction.
+func TestANestedBlockOverAScalarFieldFailsStartup(t *testing.T) {
+	common := writeYAML(t, "app:\n  network:\n    nested: true\n")
+
+	if _, err := load(common, noInstance, baseEnv()); err == nil {
+		t.Fatal("load accepted a nested block where app.network takes a scalar")
+	} else if !strings.Contains(err.Error(), "app.network") {
+		t.Errorf("error %v does not name app.network", err)
+	}
+}
+
+// A value env.Parse cannot convert to its field's type is a startup failure,
+// not a zero value silently substituted for what the file said — the same
+// posture as every other malformed layer this file refuses.
+func TestAValueTheWrongTypeForItsFieldFailsStartup(t *testing.T) {
+	common := writeYAML(t, "server:\n  port: not-a-number\n")
+
+	if _, err := load(common, noInstance, baseEnv()); err == nil {
+		t.Fatal("load accepted a non-numeric value for an int field")
+	}
+}
+
+// collectField's "no env tag" refusal is proven unreachable through the real
+// loader by TestEveryLeafFieldDeclaresAnEnvTag's AST walk — every leaf field
+// this struct declares has one, so no YAML key can ever resolve to a field
+// without one. Pinned by calling the unexported function directly with a
+// hand-built field, the input its signature allows but no real Config field
+// ever supplies.
+func TestCollectFieldOfAFieldWithNoEnvTagFailsStartup(t *testing.T) {
+	untagged := reflect.StructField{Name: "Untagged", Type: reflect.TypeFor[string]()}
+
+	if err := collectField(untagged, "value", "path.yaml", "key", map[string]string{}); err == nil {
+		t.Fatal("collectField accepted a field with no env tag")
+	} else if !strings.Contains(err.Error(), "declares no env tag") {
+		t.Errorf("error %v does not say the field declares no env tag", err)
+	}
+}

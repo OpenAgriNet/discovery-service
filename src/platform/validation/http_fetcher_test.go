@@ -89,3 +89,25 @@ func TestACancelledContextStopsTheFetch(t *testing.T) {
 		t.Errorf("fetch on a cancelled context returned %v, want it to carry context.Canceled", err)
 	}
 }
+
+// A registry that answers 200 with nothing is not a spec either — compiling
+// an empty document fails somewhere inside kin-openapi with a message that
+// does not point at the registry, the same reason a non-success status is
+// caught here rather than left to the parser.
+func TestAnEmptyBodyIsRefused(t *testing.T) {
+	registry := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(registry.Close)
+
+	_, err := HTTPFetcher()(t.Context(), registry.URL)
+	if err == nil {
+		t.Fatal("fetch accepted an empty body as a spec document")
+	}
+}
+
+// A URL that cannot become a request at all is refused before any network
+// call, not left to the transport to fail on.
+func TestAnUnbuildableURLIsRefused(t *testing.T) {
+	if _, err := fetchSpec(t.Context(), "http://\x7f", maxSpecBytes); err == nil {
+		t.Error("an unbuildable request URL was silently fetched")
+	}
+}

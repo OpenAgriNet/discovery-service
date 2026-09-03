@@ -57,6 +57,15 @@ func TestAcceptTakesFilterForm(t *testing.T) {
 		`  $.catalogs[*] ? (@.isActive == true)  `,
 		`strict $.catalogs[*] ? (@.isActive == true)`,
 		`lax $.catalogs[*] ? (@.isActive == true)`,
+
+		// A single & or | is neither && nor ||, so it is not a second root —
+		// the scanner must move past it rather than treat it as the start of
+		// a conjunction it never completes.
+		`$.catalogs[*] ? (@.rating & 1 == 1)`,
+
+		// An escaped quote inside a string body. closingQuote must skip the
+		// byte after the backslash rather than close on it.
+		`$.catalogs[*] ? (@.descriptor.name == "why \" this")`,
 	} {
 		if err := jsonpath.Accept(expression); err != nil {
 			t.Errorf("Accept(%q) = %v, want nil", expression, err)
@@ -97,6 +106,9 @@ func TestAcceptRefusesTheShapesThatFailSilently(t *testing.T) {
 		`$ ? (@.isActive == true)`:                             "root",
 		`$.message.catalogs[*] ? (@.isActive == true)`:         "root",
 		`$.catalogues[*] ? (@.isActive == true)`:               "root",
+		// A root written in bracket form that is not a quoted member —
+		// rootMember's bracketSegment succeeds but the segment isn't ['name'].
+		`$[0] ? (@.isActive == true)`: "root",
 
 		// TWO ROOTS. Legal jsonpath, and it parses as a predicate expression
 		// — so under `@?` it behaves like the predicate-form case and returns
@@ -149,7 +161,11 @@ func TestAcceptRefusesWhatItCannotRead(t *testing.T) {
 		`$.catalogs[*] ? (@.isActive == true`, // unbalanced parens
 		`$.catalogs[*] ? (@.name == "unterminated`, // unterminated string
 		`$.catalogs[*] ? (@.name == 'unterminated`,
-		`$.catalogs[* ? (@.isActive == true)`, // unbalanced bracket
+		`$.catalogs[* ? (@.isActive == true)`,       // unbalanced bracket
+		`$.catalogs[*] ? (@.isActive == true))`,     // a ) closing nothing
+		`$.catalogs[*]] ? (@.isActive == true)`,     // a ] closing nothing
+		`$.catalogs[*] ? (@.isActive == true) [`,    // a [ never closed, past the filter
+		`$.catalogs[*] == 1 ? (@.isActive == true)`, // a comparison before the filter
 	} {
 		if err := jsonpath.Accept(expression); err == nil {
 			t.Errorf("Accept(%q) = nil, want a refusal", expression)
@@ -183,6 +199,12 @@ func TestIndexableEqualityIsWhatTheGINIndexCanExtract(t *testing.T) {
 		// `==` inside a string body is not a comparison. Reading it as one
 		// would let a regex search past the guard that exists to catch it.
 		`$.catalogs[*].descriptor ? (@.name like_regex "a == b")`: false,
+
+		// An unterminated string, with no == before it. Accept has already
+		// refused this by the time this function would see it; asked
+		// directly, it must not read on into what is really the rest of a
+		// broken string body looking for a comparison that isn't there.
+		`$.catalogs[*] ? (@.name like_regex "unterminated`: false,
 	}
 
 	for expression, want := range cases {

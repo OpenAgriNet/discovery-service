@@ -14,6 +14,9 @@ func TestDotRendersTheWireSpelling(t *testing.T) {
 		"$['catalogs'][2]['resources'][0]":      "$.catalogs[2].resources[0]",
 		"$['catalogs'][*]['provider']['geo']":   "$.catalogs[*].provider.geo",
 		"$['message']['catalogs'][0]['offers']": "$.message.catalogs[0].offers",
+		// A digit that is not the first character is legal in a dotted
+		// identifier — only a LEADING digit forces brackets.
+		"$['ab1']": "$.ab1",
 	} {
 		if got := jsonpath.Dot(canonical); got != want {
 			t.Errorf("Dot(%q) = %q, want %q", canonical, got, want)
@@ -50,6 +53,8 @@ func TestDotRefusesWhatItCannotRead(t *testing.T) {
 		"$['a'",
 		"$[01]",
 		"$[]",
+		"$[55",          // an index segment with no closing ]
+		"$['cat!alog']", // a quoted name with a byte this subset does not carry
 	} {
 		if got := jsonpath.Dot(path); got != "" {
 			t.Errorf("Dot(%q) = %q, want the refusal", path, got)

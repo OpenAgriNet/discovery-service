@@ -64,6 +64,29 @@ func TestTheResponseTimeReachesAResponseTheHandlerWroteItself(t *testing.T) {
 	}
 }
 
+// A handler that writes a body without ever calling WriteHeader still gets
+// the status stamped at 200 — Write commits through WriteHeader the same way
+// net/http's own ResponseWriter would, so a handler that skips the explicit
+// call does not skip the header this wrapper needs stamped before anything is
+// written.
+func TestAHandlerThatWritesWithoutAnExplicitStatusCommitsAt200(t *testing.T) {
+	recorded, logged := serveLogged(t, func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := w.Write([]byte(`{"ok":true}`)); err != nil {
+			t.Errorf("write body: %v", err)
+		}
+	})
+
+	if recorded.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", recorded.Code)
+	}
+	if got := recorded.Result().Header.Get(HeaderResponseTime); got == "" {
+		t.Errorf("%s is absent from a response committed by Write alone", HeaderResponseTime)
+	}
+	if got := completionLine(t, logged).ContextMap()["status"]; got != int64(http.StatusOK) {
+		t.Errorf("logged status = %v, want 200", got)
+	}
+}
+
 // A handler that writes nothing has not committed the response yet, so the
 // header still has somewhere to go. Both cases, because the chain answers
 // requests both ways.

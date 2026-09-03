@@ -525,3 +525,202 @@ func TestARepeatedVertexDoesNotTruncateTheRestOfTheLine(t *testing.T) {
 		t.Errorf("cover %v lost an endpoint; the degenerate segment truncated the walk", cover.CellsCover)
 	}
 }
+
+// The companion to TestAWellFormedButEmptyCoordinatesArrayIsRefused for the
+// three composite types it left out: an empty MultiLineString/MultiPolygon
+// coordinates array is caught by decodePaths/decodeMultiPolygon directly, and
+// an empty GeometryCollection is its own refusal (decodeCollection) since it
+// has no `coordinates` member at all for the shared check to see.
+func TestAnEmptyCompositeGeometryIsRefused(t *testing.T) {
+	empty := map[string]string{
+		"MultiLineString":    `{"type":"MultiLineString","coordinates":[]}`,
+		"MultiPolygon":       `{"type":"MultiPolygon","coordinates":[]}`,
+		"GeometryCollection": `{"type":"GeometryCollection","geometries":[]}`,
+	}
+	for name, body := range empty {
+		t.Run(name, func(t *testing.T) {
+			if _, err := geo.CoverGeometry(shaped(name, body), res); err == nil {
+				t.Errorf("an empty %s was accepted", name)
+			}
+		})
+	}
+}
+
+// Each decode level unmarshals its own JSON and wraps its own failure — a
+// MultiPolygon whose outer array isn't an array is a different code path from
+// a ring, a position, or the top-level envelope (already covered by
+// TestAnUnparseableGeometryIsRefusedRatherThanCoveredEmpty). Checked at every
+// level so a nested decode's error propagates rather than being swallowed.
+func TestMalformedJSONAtEveryDecodeLevelIsRefused(t *testing.T) {
+	cases := map[string]string{
+		"MultiPolygon's own array":       `{"type":"MultiPolygon","coordinates":"not an array"}`,
+		"a MultiPolygon's ring":          `{"type":"MultiPolygon","coordinates":["not an array"]}`,
+		"MultiLineString's own array":    `{"type":"MultiLineString","coordinates":"not an array"}`,
+		"a MultiLineString's line":       `{"type":"MultiLineString","coordinates":["not an array"]}`,
+		"a LineString's position":        `{"type":"LineString","coordinates":[[77.5,12.9],"not a position"]}`,
+		"a Point's own coordinates":      `{"type":"Point","coordinates":"not a position"}`,
+		"a GeometryCollection's member":  `{"type":"GeometryCollection","geometries":["not an object"]}`,
+		"a Polygon ring inside a member": `{"type":"GeometryCollection","geometries":[{"type":"Polygon","coordinates":"not an array"}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := geo.Validate(json.RawMessage(body)); err == nil {
+				t.Errorf("accepted malformed JSON at %s", name)
+			}
+		})
+	}
+}
+
+// maxCollectionDepth bounds the recursion; a publisher's document is not
+// trusted to terminate. Built rather than hand-nested, since the limit itself
+// (8) is what the test names, not an arbitrary depth.
+func TestAGeometryCollectionNestedPastTheDepthLimitIsRefused(t *testing.T) {
+	body := `{"type":"Point","coordinates":[77.5946,12.9716]}`
+	for range 9 {
+		body = `{"type":"GeometryCollection","geometries":[` + body + `]}`
+	}
+	if err := geo.Validate(json.RawMessage(body)); err == nil {
+		t.Error("a GeometryCollection nested past the depth limit was accepted")
+	}
+}
+
+// refutes' default arm: an operator neither the mapper nor this package
+// otherwise names. Reached through the exported MatchesOp rather than an
+// internal test, since refutes has no seam an internal test would need that
+// this doesn't already exercise.
+func TestAnUnknownOperatorIsNeitherProvenNorRefuted(t *testing.T) {
+	stored, err := geo.CoverGeometry(point(bengaluru), res)
+	if err != nil {
+		t.Fatalf("CoverGeometry: %v", err)
+	}
+	_, queryCover, err := geo.CoverQuery(point(bengaluru), domain.OpIntersects, 0, res)
+	if err != nil {
+		t.Fatalf("CoverQuery: %v", err)
+	}
+	if !geo.MatchesOp(domain.SpatialOp("S_UNKNOWN"),
+		stored.CellsFull, stored.CellsCover, nil, queryCover) {
+		t.Error("an unknown operator was refuted; want MAYBE (unrefuted, matching the safe direction)")
+	}
+}
+
+// CoverQuery and BoundsFor decode the SAME way CoverGeometry does, and each has
+// its own decodeShape call site — neither was exercised by
+// TestAnUnparseableGeometryIsRefusedRatherThanCoveredEmpty, which only calls
+// CoverGeometry.
+func TestCoverQueryAndBoundsForAlsoRefuseUnparseableGeometry(t *testing.T) {
+	bad := shaped("Point", `{"type":"Point",`)
+
+	if _, _, err := geo.CoverQuery(bad, domain.OpIntersects, 0, res); err == nil {
+		t.Error("CoverQuery accepted a geometry it cannot represent")
+	}
+	if _, err := geo.BoundsFor(bad, domain.OpIntersects, 0); err == nil {
+		t.Error("BoundsFor accepted a geometry it cannot represent")
+	}
+}
+
+// expandedBy's three declines, each reached through BoundsFor's public
+// surface rather than the unexported function directly.
+func TestBoundsForDeclinesWhereExpansionCannotBeExpressed(t *testing.T) {
+	t.Run("the unexpanded box is already nil", func(t *testing.T) {
+		// A Point AT the pole: boundsOf itself declines (MaxLat >= 90), so
+		// expandedBy is handed a nil bounds and must pass the decline through
+		// rather than dereferencing it.
+		atPole := point(domain.GeoPoint{Lat: 90, Lon: 0})
+		bounds, err := geo.BoundsFor(atPole, domain.OpDWithin, 1000)
+		if err != nil {
+			t.Fatalf("BoundsFor: %v", err)
+		}
+		if bounds != nil {
+			t.Errorf("bounds = %+v, want nil", bounds)
+		}
+	})
+
+	t.Run("expansion reaches a pole", func(t *testing.T) {
+		// A large enough radius off a high-latitude point pushes the expanded
+		// box's own edge to or past 90, even though the point itself is not
+		// at the pole and boundsOf accepts it.
+		near := point(domain.GeoPoint{Lat: 89, Lon: 0})
+		bounds, err := geo.BoundsFor(near, domain.OpDWithin, 500_000)
+		if err != nil {
+			t.Fatalf("BoundsFor: %v", err)
+		}
+		if bounds != nil {
+			t.Errorf("bounds = %+v, want nil — the expansion reaches the pole", bounds)
+		}
+	})
+
+	t.Run("expansion wraps the antimeridian", func(t *testing.T) {
+		near := point(domain.GeoPoint{Lat: 0, Lon: 179.9})
+		bounds, err := geo.BoundsFor(near, domain.OpDWithin, 50_000)
+		if err != nil {
+			t.Fatalf("BoundsFor: %v", err)
+		}
+		if bounds != nil {
+			t.Errorf("bounds = %+v, want nil — the expansion wraps ±180°", bounds)
+		}
+	})
+}
+
+// circleCells' own decline: a lone Point under S_DWITHIN takes the circle
+// branch rather than the general fill/dilate one, and a radius wide enough to
+// carry the approximating circle's own vertices past the pole is what has to
+// make the circle's boundsOf check decline — the point itself is nowhere near
+// 90, so CoverGeometry of the same point (no radius) would accept it.
+func TestCoverQueryOfACircleReachingThePoleDeclines(t *testing.T) {
+	near := point(domain.GeoPoint{Lat: 89, Lon: 0})
+	full, cover, err := geo.CoverQuery(near, domain.OpDWithin, 500_000, res)
+	if err != nil {
+		t.Fatalf("CoverQuery: %v", err)
+	}
+	if full != nil || cover != nil {
+		t.Errorf("full = %v, cover = %v, want both nil — the circle's own vertices reach past the pole", full, cover)
+	}
+}
+
+// ringsFor(distance<=0) is "no dilation", not a failure, and dilate(rings<=0)
+// passes its input straight through — the two branches only meet through a
+// non-point S_DWITHIN shape, since a lone Point takes the circle branch
+// instead.
+func TestCoverQueryOfANonPointSDWithinAtZeroDistanceDilatesByNothing(t *testing.T) {
+	line := shaped("LineString", `{"type":"LineString","coordinates":[[77.59,12.97],[77.69,13.07]]}`)
+
+	_, dilated, err := geo.CoverQuery(line, domain.OpDWithin, 0, res)
+	if err != nil {
+		t.Fatalf("CoverQuery: %v", err)
+	}
+
+	_, plain, err := geo.CoverQuery(line, domain.OpIntersects, 0, res)
+	if err != nil {
+		t.Fatalf("CoverQuery: %v", err)
+	}
+
+	if !slices.Equal(dilated, plain) {
+		t.Errorf("S_DWITHIN at zero distance covers %v, want the undilated cover %v", dilated, plain)
+	}
+}
+
+// The resolution is a caller-supplied parameter (GEO_RESOLUTION_CELLS is
+// config, not a package constant — CoverGeometry's own doc comment says why),
+// so an out-of-range one is a real input to defend, not an internal
+// invariant. It declines with nil covers rather than an error: the shape
+// itself is fine, and CoverQuery/BoundsFor already answer a shape that
+// simply cannot be covered — antimeridian, over budget — the same way.
+func TestAnOutOfRangeResolutionDeclinesRatherThanErrors(t *testing.T) {
+	polygon := squarePolygon(bengaluru, 0.05)
+
+	cover, err := geo.CoverGeometry(polygon, 99)
+	if err != nil {
+		t.Fatalf("CoverGeometry: %v", err)
+	}
+	if cover.CellsFull != nil || cover.CellsCover != nil {
+		t.Errorf("cover = %+v, want both cell slices nil", cover)
+	}
+
+	full, queryCover, err := geo.CoverQuery(polygon, domain.OpIntersects, 0, 99)
+	if err != nil {
+		t.Fatalf("CoverQuery: %v", err)
+	}
+	if full != nil || queryCover != nil {
+		t.Errorf("full = %v, cover = %v, want both nil", full, queryCover)
+	}
+}
