@@ -370,6 +370,11 @@ paths:
                             id: offer:mausamgram:open-data
                             resourceIds:
                               - res:mausamgram:point-forecast
+                            provider:
+                              id: mausamgram
+                              descriptor:
+                                code: IMD-NWP-01
+                                name: IMD Mausamgram NWP
       responses:
         "200":
           description: |-
@@ -453,6 +458,11 @@ paths:
                               id: offer:mausamgram:open-data
                               resourceIds:
                                 - res:mausamgram:forecast:2026-08-26
+                              provider:
+                                id: mausamgram
+                                descriptor:
+                                  code: IMD-NWP-01
+                                  name: IMD Mausamgram NWP
         "400":
           $ref: "#/components/responses/SelectNack"
         "401":
@@ -1581,6 +1591,8 @@ components:
           $ref: "#/components/schemas/Offer"
     Offer:
       type: object
+      required:
+        - id
       description: |-
         Which offer from the discovered catalog the resources are being taken under. Required
         by `Commitment` even where nothing is priced — for an open-data provider it names the
@@ -1590,10 +1602,19 @@ components:
           type: string
         resourceIds:
           type: array
+          description: The resources in this commitment that the offer covers.
           items:
             type: string
         provider:
           type: object
+          required:
+            - id
+            - descriptor
+          description: |-
+            Who the resources come from — the provider whose API the provider node calls, not
+            the provider node itself. `id` is the `participantId` the capability binding is
+            registered under, which is how a consumer can tell two providers of the same
+            capability apart.
           properties:
             id:
               type: string
