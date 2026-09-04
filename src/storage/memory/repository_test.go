@@ -34,6 +34,54 @@ func TestNewReturnsAnEmptyStore(t *testing.T) {
 	}
 }
 
+// ListCatalogResources has no caller in this repository's own conformance
+// run — Postgres's own ListCatalogResources is exercised through
+// GetCatalogRow's merge path, and the memory twin has no equivalent caller —
+// so it is checked directly here: the found case and ErrCatalogNotFound.
+func TestListCatalogResources(t *testing.T) {
+	store := memory.New(resolution)
+
+	if _, err := store.ListCatalogResources(t.Context(), "nothing-published"); !errors.Is(err, domain.ErrCatalogNotFound) {
+		t.Fatalf("a fresh store answered ListCatalogResources with %v, want domain.ErrCatalogNotFound", err)
+	}
+
+	if _, err := store.UpsertCatalog(t.Context(), domain.CatalogPatch{
+		ID:        "c1",
+		NetworkID: "bap.example.com",
+		Active:    true,
+		VisibleTo: []string{"bap.example.com"},
+		Resources: []domain.ResourcePatch{{ID: "r1"}, {ID: "r2"}},
+	}, domain.UpdateModeFull, nil); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	resources, err := store.ListCatalogResources(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("ListCatalogResources: %v", err)
+	}
+	if len(resources) != 2 {
+		t.Fatalf("resources = %+v, want the two published", resources)
+	}
+}
+
+// A filter mode this backend does not declare — jsonpath, per Capabilities'
+// own doc comment: the store holds documents, not PostgreSQL's jsonpath
+// engine — is reported degraded rather than silently narrowing nothing.
+// negotiate's other arms (a ranked mode missing, a filter mode present) are
+// pinned by the conformance suite; this is the one combination — an
+// UNRANKED mode this backend lacks — nothing else here reaches.
+func TestSearchDegradesAFilterModeThisBackendLacks(t *testing.T) {
+	store := memory.New(resolution)
+
+	result, err := store.Search(t.Context(), domain.SearchQuery{}, []domain.Capability{domain.CapabilityJSONPath})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Degraded) != 1 || result.Degraded[0] != string(domain.CapabilityJSONPath) {
+		t.Errorf("Degraded = %v, want [jsonpath]", result.Degraded)
+	}
+}
+
 // The write-path suite, run against this backend.
 //
 // The factory is all this file supplies: a case added for Postgres in Task 15

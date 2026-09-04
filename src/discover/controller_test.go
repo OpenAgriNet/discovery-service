@@ -274,6 +274,26 @@ func TestTheDegradedHeaderIsAbsentWhenNothingDegraded(t *testing.T) {
 	}
 }
 
+// The header joins every degraded mode with a bare comma — checked with two,
+// since TestTheDegradedListIsAHeaderAndNotABodyKey's single mode cannot tell a
+// Join from a bare concatenation.
+func TestTheDegradedHeaderJoinsMultipleModesWithACommaAndNoSpace(t *testing.T) {
+	handler := mount(t, &stubRepo{
+		capabilities: domain.Capabilities{domain.CapabilityLexical: true, domain.CapabilityFuzzy: true},
+		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
+	}, settings())
+
+	recorder := post(t, handler, "/discover", `{"context":{"action":"discover"},
+		"message":{"intent":{"textSearch":"wheat","filters":{
+			"type":"jsonpath","expression":"$.catalogs[*].resources[*] ? (@.grade == \"A\")"}}}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body)
+	}
+	if got := recorder.Header().Get("X-Beckn-Degraded"); got != "semantic,jsonpath" {
+		t.Errorf("X-Beckn-Degraded = %q, want %q", got, "semantic,jsonpath")
+	}
+}
+
 // The same request under SEARCH_FAIL_ON_UNAVAILABLE_MODE=true is a 400 naming
 // the mode, not a 200 with a header.
 func TestAnUnavailableModeIsA400WhenTheDeploymentAsksToBe(t *testing.T) {
@@ -322,6 +342,38 @@ func TestAPaginationParameterThatIsNotANumberIsRefused(t *testing.T) {
 	}
 	if repo.calls != 0 {
 		t.Errorf("the backend was searched %d times; an unreadable page runs no query", repo.calls)
+	}
+}
+
+// The same refusal for offset, which pageFrom reads with its own call to
+// intParam rather than reusing limit's — a valid limit must not mask an
+// unreadable offset.
+func TestAnUnreadableOffsetIsRefused(t *testing.T) {
+	repo := &stubRepo{capabilities: everything()}
+
+	recorder := post(t, mount(t, repo, settings()), "/discover?limit=10&offset=twenty", wheat)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
+	}
+	if repo.calls != 0 {
+		t.Errorf("the backend was searched %d times; an unreadable page runs no query", repo.calls)
+	}
+}
+
+// A request that reaches the handler without the Envelope middleware ahead of
+// it is a wiring fault, not the caller's — nothing about the request is
+// trustworthy enough to echo, since the envelope is what carries the
+// messageId a NACK would otherwise correlate against.
+func TestAMissingEnvelopeMiddlewareIsAWiringFaultNotTheCallers(t *testing.T) {
+	controller := discover.NewController(
+		discover.NewService(&stubRepo{capabilities: everything()}, settings()), config.Errors{})
+
+	request := httptest.NewRequest(http.MethodPost, "/discover", strings.NewReader(wheat))
+	recorder := httptest.NewRecorder()
+	controller.Discover(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", recorder.Code, recorder.Body)
 	}
 }
 

@@ -351,3 +351,42 @@ func TestAnAbsentCorrelatorIsOmittedRatherThanLoggedEmpty(t *testing.T) {
 		t.Errorf("message_id = %v, want the id the envelope carried", got)
 	}
 }
+
+// errReader fails every Read for a reason that is not http.MaxBytesError —
+// the ordinary I/O failure readEnvelope's ceiling-exceeded branch is not, and
+// the one TestTheBodyCeilingIsExactlyWhereItSays does not reach.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestReadEnvelopeOfAnUnreadableSourceIsInvalidJSON(t *testing.T) {
+	_, _, err := readEnvelope(errReader{})
+	if err == nil {
+		t.Fatal("readEnvelope accepted a source it could not read from")
+	}
+	if !strings.Contains(err.Error(), string(beckn.CodeSchemaInvalidJSON)) {
+		t.Errorf("err = %v, want it naming SCH_INVALID_JSON — a read failure below the ceiling "+
+			"is not a body too large, and there is no context yet for anything more specific", err)
+	}
+}
+
+// shift and scalar each carry one branch their own doc comments call
+// unreachable from a real token stream: json.Decoder never emits a closing
+// delimiter without a matching open it already tracked, and an object key
+// position never yields anything but a string. Pinned by calling the
+// unexported functions directly with the input their signature allows but
+// the real walk never constructs.
+func TestShiftOfAnAlreadyEmptyStackIsDoneNotAPanic(t *testing.T) {
+	stack, done := shift(nil, '}')
+	if !done || len(stack) != 0 {
+		t.Errorf("shift(nil, '}') = %v, %v; want an empty stack and done", stack, done)
+	}
+}
+
+func TestScalarAtAKeyPositionThatIsNotAStringYieldsNoEcho(t *testing.T) {
+	stack := []jsonFrame{{object: true, atKey: true}}
+	id, done := scalar(stack, json.Delim('['))
+	if id != "" || !done {
+		t.Errorf("scalar at a non-string key = %q, %v; want empty and done", id, done)
+	}
+}

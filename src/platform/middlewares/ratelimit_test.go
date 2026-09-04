@@ -228,3 +228,12 @@ func TestConcurrentCallersShareOneBucket(t *testing.T) {
 		t.Errorf("50 concurrent requests from one address made %d buckets", len(limiter.buckets))
 	}
 }
+
+// An address with no port — net.SplitHostPort fails on one — is used as it
+// stands rather than refused: a surprising RemoteAddr is the wrong reason to
+// stop limiting a caller.
+func TestCallerKeyOfAnAddressWithNoPortIsUsedAsIs(t *testing.T) {
+	if got := callerKey("203.0.113.7"); got != "203.0.113.7" {
+		t.Errorf("callerKey(%q) = %q, want it unchanged", "203.0.113.7", got)
+	}
+}
