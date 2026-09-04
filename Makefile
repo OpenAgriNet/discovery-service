@@ -8,6 +8,14 @@ BIN_DIR      := bin
 IMAGE        ?= discovery-service:dev
 DATABASE_URL ?= postgres://discovery:discovery@localhost:5432/discovery?sslmode=disable
 
+# CI thresholds/pins live here, not duplicated into workflow env blocks — one
+# source of truth for both a local `make` run and the GitHub Actions runner.
+MIN_COVERAGE      ?= 80
+BASE_REF          ?= origin/main
+SEVERITY          ?= HIGH,CRITICAL
+GOTESTSUM_VERSION := v1.13.0
+TRIVY_VERSION     := v0.74.0
+
 # Test targets pin the embedding provider rather than inheriting it.
 # Production defaults to noop (A5), so without the pin the whole semantic path
 # — query embedding, HNSW, RRF, the dimension guard, the degradation report —
@@ -28,6 +36,8 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOVULNCHECK   := $(BIN_DIR)/govulncheck
 SQLC          := $(BIN_DIR)/sqlc
 MIGRATE       := $(BIN_DIR)/migrate
+GOTESTSUM     := $(BIN_DIR)/gotestsum
+TRIVY         := $(BIN_DIR)/trivy
 
 .DEFAULT_GOAL := help
 
@@ -69,6 +79,111 @@ cover-report: cover
 cover-html: cover
 	@$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "wrote coverage.html"
+
+## test-ci: run the suites through gotestsum — one line per package, coverage
+##          profile written alongside. What run-tests.yml calls; `make test`
+##          stays the plain everyday entrypoint.
+test-ci: $(GOTESTSUM)
+	$(TEST_ENV) $(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
+		-race -coverprofile=coverage.out -covermode=atomic ./...
+
+## cover-diff: coverage restricted to files changed vs BASE_REF — a PR review
+##             needs the diff's number, not the whole repo's. One line, no
+##             per-file table: an entry for a file nobody touched answers a
+##             question nobody asked.
+## cover-diff: on failure, names the changed files dragging the number down
+##             (worst first) so "what broke" is answered in the same place
+##             as "did it break" — on a pass, still just the one line.
+cover-diff: coverage.out
+	@CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go' | grep -v '_test\.go$$' || true); \
+	if [ -z "$$CHANGED" ]; then \
+		echo "📊 **Test Coverage: ✅ Passed** — not applicable, no changed Go files vs $(BASE_REF)" | tee coverage-report.md; \
+		exit 0; \
+	fi; \
+	MODULE=$$($(GO) list -m); \
+	RESULT=$$(echo "$$CHANGED" | awk -v mod="$$MODULE/" -v min="$(MIN_COVERAGE)" ' \
+		NR==FNR { want[mod $$0] = 1; next } \
+		{ f = $$1; sub(/:.*/, "", f); if (!(f in want)) next; \
+		  tot[f] += $$(NF-1); if ($$NF > 0) cov[f] += $$(NF-1) } \
+		END { \
+			T = 0; C = 0; \
+			for (f in tot) { \
+				T += tot[f]; C += cov[f]; \
+				p = int(cov[f] * 100 / tot[f]); \
+				disp = f; sub("^" mod, "", disp); \
+				if (p < min) print "FILE\t" p "\t" disp; \
+			} \
+			if (T == 0) { print "EMPTY"; exit } \
+			print "TOTAL\t" int(C * 100 / T) \
+		}' - coverage.out); \
+	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
+		echo "📊 **Test Coverage: ✅ Passed** — not applicable, changed files carry no coverable statements" | tee coverage-report.md; \
+		exit 0; \
+	fi; \
+	PCT=$$(echo "$$RESULT" | awk -F'\t' '$$1=="TOTAL"{print $$2}'); \
+	if [ "$$PCT" -lt "$(MIN_COVERAGE)" ]; then \
+		BELOW=$$(echo "$$RESULT" | awk -F'\t' '$$1=="FILE"{printf "%s\t%s\n",$$2,$$3}' | sort -n); \
+		TOTAL_BELOW=$$(echo "$$BELOW" | wc -l); \
+		{ \
+			echo "📊 **Test Coverage: ❌ Failed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%"; \
+			echo; \
+			echo "| File | Coverage |"; \
+			echo "|---|---|"; \
+			echo "$$BELOW" | head -15 | awk -F'\t' '{printf "| `%s` | %s%% |\n", $$2, $$1}'; \
+			[ "$$TOTAL_BELOW" -gt 15 ] && echo "| … | $$((TOTAL_BELOW - 15)) more file(s) below $(MIN_COVERAGE)% |"; \
+		} > coverage-report.md; \
+	else \
+		echo "📊 **Test Coverage: ✅ Passed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%" > coverage-report.md; \
+	fi; \
+	cat coverage-report.md; \
+	[ "$$PCT" -ge "$(MIN_COVERAGE)" ]
+
+## trivy-deps: dependency graph scan (T4), SARIF report. Catches what the
+##             image scan structurally cannot — a vulnerable module only the
+##             test suite imports, so it's never linked into the binary and
+##             never appears in a layer. skip-dirs excludes tools/ (a
+##             separate go.mod for build-time tooling): the linter's
+##             dependency graph is not the binary's, so it can't fail a
+##             release it doesn't ship in.
+trivy-deps: $(TRIVY)
+	$(TRIVY) fs . --skip-dirs tools --severity $(SEVERITY) --exit-code 0 \
+		--format sarif --output trivy-deps.sarif
+
+TRIVY_IMAGE_SCAN = $(TRIVY) image $(IMAGE) --severity $(SEVERITY)
+
+## trivy-image: shipped image scan (T4), SARIF report — reads base layers and
+##              the Go build info embedded in the binary, including stdlib,
+##              so a Go toolchain CVE shows up here and nowhere else that the
+##              dependency scan above cannot see. IMAGE names the ref to scan.
+trivy-image: $(TRIVY)
+	$(TRIVY_IMAGE_SCAN) --exit-code 0 --format sarif --output trivy-image.sarif
+
+## trivy-release-gate: the same image scan as trivy-image, but exit 1 on a
+##                     finding instead of writing a report — the pre-push
+##                     release gate build-and-push.yml runs once per
+##                     arch-tagged local image, before anything is pushed.
+trivy-release-gate: $(TRIVY)
+	$(TRIVY_IMAGE_SCAN) --exit-code 1 --format table
+
+## trivy-gate: fail if either SARIF report already produced by a scan step
+##             carries a finding. Reads the reports rather than rescanning —
+##             two scans of the same thing can disagree, since Trivy refreshes
+##             its DB each run, and a gate that rescans can fail on a finding
+##             in no uploaded report, the one state nobody can act on. Plain
+##             output only — same as a local run sees; the GitHub Actions
+##             ::error:: annotation is the caller's concern, not this
+##             target's (security.yml's gate step adds it).
+trivy-gate:
+	@fail=0; \
+	for report in trivy-deps.sarif trivy-image.sarif; do \
+		count=$$(jq '[.runs[].results[]?] | length' "$$report"); \
+		echo "$${report}: $${count} $(SEVERITY)"; \
+		if [ "$$count" -gt 0 ]; then \
+			jq -r '.runs[].results[]? | "\(.ruleId) \(.message.text)"' "$$report"; \
+			fail=1; \
+		fi; \
+	done; \
+	exit $$fail
 
 ## lint: vet, format check and static analysis
 lint: $(GOLANGCI_LINT)
@@ -152,7 +267,7 @@ tools: $(GOLANGCI_LINT) $(GOVULNCHECK) $(SQLC) $(MIGRATE)
 
 ## clean: remove build output and coverage profiles
 clean:
-	rm -rf $(BIN_DIR) coverage.out coverage.html
+	rm -rf $(BIN_DIR) coverage.out coverage-report.md trivy-deps.sarif trivy-image.sarif
 
 $(GOLANGCI_LINT): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
@@ -173,6 +288,22 @@ $(MIGRATE): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
 	$(GO) -C tools build -tags postgres -o ../$@ github.com/golang-migrate/migrate/v4/cmd/migrate
 
-.PHONY: help build test test-short cover cover-total cover-report cover-html \
-	lint fmt sqlc sqlc-verify migrate run logs \
-	migrate-down security docker up down verify newman audit tools clean
+# Installed directly rather than through tools/go.mod like the four builds
+# above: gotestsum is CI-only (see run-tests.yml), so it doesn't belong in the
+# service's or the linter's dependency graph either one.
+$(GOTESTSUM):
+	@mkdir -p $(BIN_DIR)
+	GOBIN=$(abspath $(BIN_DIR)) $(GO) install gotest.tools/gotestsum@$(GOTESTSUM_VERSION)
+
+# The prebuilt release binary, not `go install`: trivy's rpm-db parser needs
+# cgo, and its module graph is comparable in size to golangci-lint's for a
+# tool nothing here imports — the official install script is what
+# aquasecurity itself recommends over building from source for exactly this.
+$(TRIVY):
+	@mkdir -p $(BIN_DIR)
+	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
+		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
+
+.PHONY: help build test test-short test-ci cover cover-diff lint fmt sqlc \
+	sqlc-verify migrate run logs migrate-down security trivy-deps trivy-image \
+	trivy-release-gate trivy-gate docker up down verify newman audit tools clean
