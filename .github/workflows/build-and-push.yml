@@ -1,24 +1,43 @@
 name: Build and Push
 
 # Annotated tags only, per OAN convention: v{SemVer} (e.g. v0.0.1), with an
-# optional -rcN pre-release suffix (e.g. v0.1.1-rc3). Anything else (-test,
-# -beta, ...) does not match, on purpose.
+# optional -rcN pre-release suffix (e.g. v0.1.1-rc3). GitHub tag filters are
+# globs, not regexes — `*` is the only quantifier glob has, so this also
+# admits anything with a v{digit}.{digit}.{digit} prefix followed by any
+# suffix (v1.2.0-beta, v1.2.0-whatever). A tight exclusion needs a
+# `github.ref_name` check in a job step, not a glob.
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"
+      - "v[0-9]*.[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*.[0-9]*-rc[0-9]*"
 
 permissions:
   contents: read
   packages: write
+  # Workload Identity Federation (google-github-actions/auth below, in both
+  # the build and manifest jobs) exchanges a GitHub OIDC token for Google
+  # credentials; without this the workflow cannot request that token and the
+  # GAR leg fails to authenticate.
+  id-token: write
 
 env:
   IMAGE_NAME: discovery-service
 
+# Unlike run-tests/security, cancel-in-progress is false: a half-cancelled
+# release can leave arch tags pushed with no manifest stitching them, which
+# is worse than two releases queueing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     strategy:
+      # A release wants both legs' verdicts. Default fail-fast cancels arm64
+      # the moment amd64 fails, so a single-arch break hides the other arch's
+      # result and costs a full re-run to recover it.
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
@@ -229,9 +248,18 @@ jobs:
         run: |
           create_manifest() {
             local BASE="$1"
+            # :latest tracks stable releases only. The tag filter admits
+            # -rcN on purpose, so moving :latest unconditionally would
+            # publish a pre-release to everyone who omits a tag on
+            # `docker pull`.
+            local EXTRA=()
+            case "${{ github.ref_name }}" in
+              *-rc*) ;;
+              *) EXTRA=(-t "${BASE}:latest") ;;
+            esac
             docker buildx imagetools create \
               -t "${BASE}:${{ github.ref_name }}" \
-              -t "${BASE}:latest" \
+              "${EXTRA[@]}" \
               "${BASE}:${{ github.ref_name }}-amd64" \
               "${BASE}:${{ github.ref_name }}-arm64"
           }
