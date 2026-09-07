@@ -122,7 +122,7 @@ if someone changes it back. A commit message that restates the diff is wasted.
 | `src/publish/`, `src/discover/` | The two request paths |
 | `src/indexing/` | H3 geometry covers and the embedding seam |
 | `src/storage/` | `postgres/` and `memory/`, plus the `conformance/` suite both must pass |
-| `src/platform/` | Config, logging, errors, crypto, middleware, validation, plus `httpx` (envelope + response writer), `jsonpath` and `registry`. `telemetry/` and `constants/` are empty placeholders — telemetry is Task 23 |
+| `src/platform/` | Config, logging, errors, middleware, validation, plus `httpx` (envelope + response writer) and `jsonpath`. Four directories are empty placeholders holding a `.gitkeep` and no Go: `telemetry/` and `constants/` (telemetry is Task 23), and `crypto/signature/` and `registry/` — Task 6 is parked, so nothing declares `registry.Keyring` and `validateAuth` refuses the boot rather than let `AUTH_ENABLE_SIGNATURE_VERIFICATION` claim otherwise |
 | `config/` | `common.yaml` (committed, reviewed); `instance.yaml` is mounted per deployment |
 | `tests/` | `acceptance/`, `dbtest/`, `testdata/`, and `architecture/boundary_test.go` — the import-graph guard on the TRD §5 swap boundary |
 | `docs/design/` | The plan (`discover-and-publish.md`), the telemetry design (`opentelemetry.md`), the driver prompts (`implementation-prompts.md`), and `registry/` — the registry schema design. `schema-revision-proposal.md` is RESOLVED and kept only for the MEASUREMENTS behind A18 and A19, which do not fit in an amendment row — do not delete it as stale. Everything binding lives here |

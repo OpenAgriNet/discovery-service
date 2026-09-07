@@ -13,7 +13,8 @@ service being consulted.
 
 kin-openapi (MIT) validates request bodies against the fetched specification.
 The specification is loaded at boot from `VALIDATION_SPEC_URL`, cached under
-`.cache/beckn/`, and indexed by `context.action` — not by URL, because the two
+`VALIDATION_SPEC_CACHE_PATH` (default `.cache/beckn/beckn.yaml`), and indexed by
+`context.action` — not by URL, because the two
 accepted spellings of the publish action resolve to one schema (C2).
 
 ## Alternatives considered

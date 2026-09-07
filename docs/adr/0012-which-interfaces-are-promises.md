@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-25
+**Amended:** 2026-09-07 — see Amendments
 
 ## Context
 
@@ -12,7 +13,7 @@ and an abstraction nobody has implemented twice is a guess about the future.
 
 ## Decision
 
-Four interfaces are **promises** — a second implementation may arrive behind
+Three interfaces are **promises** — a second implementation may arrive behind
 them, and their shape is deliberately storage-neutral:
 
 | Promise | What may be swapped | Cost of the swap |
@@ -20,7 +21,9 @@ them, and their shape is deliberately storage-neutral:
 | `CatalogRepository` | the metadata store and its transactions | one package under `src/storage/` plus one line in `container.go` |
 | `SearchRepository`, split into `Retriever` per mode + `Hydrator` | the vector store; the geo index | one `Retriever` each |
 | `Embedder` | the inference backend | one file under `src/indexing/embeddings/` |
-| `registry.Keyring` | the participant registry | one file under `src/platform/registry/` |
+
+`registry.Keyring` is **not** on that list. It is a promise the parked Task 6
+will make, not one this build has made — see the amendment below.
 
 Everything else — services, controllers, mappers, the validation chain — is
 **internal**. Concrete types, changed freely, no compatibility owed.
@@ -49,3 +52,28 @@ one that passes it but breaks the import graph fails `boundary_test.go` rather
 than review. The cost is that the memory backend is real code with real
 behaviour to maintain, including the parts of the port nobody uses yet — which
 is the price of the port being a promise rather than a claim.
+
+## Amendments
+
+**2026-09-07.** This ADR read "Four interfaces are **promises**" and the fourth
+row was `registry.Keyring`. There is no such interface: `src/platform/registry/`
+holds a `.gitkeep` and nothing else, and no package imports it.
+
+The correction is not a change of mind about the registry seam. It is this ADR
+applying its own rule to itself — *a seam ships with a conformance test or a
+second implementation behind it, or it does not ship.* An interface that is not
+declared fails that bar more completely than any of the cases the rule was
+written to catch, and a promise table listing one is a table a reader cannot
+check against the tree.
+
+`Keyring` is designed, in Task 6 of `docs/design/discover-and-publish.md`, and
+that task is **parked**: nothing below its heading is implemented, and it is
+kept so Phase 2 restarts from a written design rather than from scratch. What
+holds the line in the meantime is `validateAuth` in `src/platform/config`, which
+refuses the boot when `AUTH_ENABLE_SIGNATURE_VERIFICATION=true`, because a flag
+reporting a control that is not running is worse than no flag. When Task 6 is
+built, `registry.Keyring` returns to the table above with the swap cost it
+always had.
+
+ADR-0014 named `Keyring` in its title on the strength of this row and is
+amended in step.

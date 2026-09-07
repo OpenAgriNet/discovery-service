@@ -23,8 +23,11 @@ The shape is recorded and deliberately not implemented:
   one. A responder that upgrades the version in its reply has changed the
   contract mid-conversation.
 
-Until that is built, `context.version` must equal `2.0.0` (C6), enforced by
-envelope struct tags that run even when L1 validation is off.
+Until that is built, `context.version` must equal `2.0.0` (C6), enforced by the
+envelope well-formedness rules (`src/platform/validation/envelope_rules.go`),
+which run even when L1 validation is off. A version this build does not serve is
+`CTX_VERSION_UNSUPPORTED` rather than `CTX_INVALID_FIELD` — the field is
+well-formed, the version is simply not one this build answers to.
 
 ## Alternatives considered
 

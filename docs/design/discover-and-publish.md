@@ -59,7 +59,7 @@ Every task inherits these.
 | Godoc | Every exported symbol. Non-obvious maths (H3 cover, RRF, haversine) gets inline comments |
 | Comments | Only the **why** — a hidden constraint, a workaround, an invariant not visible at the call site. A comment restating the code is a second thing to keep true, and it is the one that rots first. The model is the `STRICT` / `NOT STRICT` asymmetry on `geo_haversine_m` and `geo_distance_m`: the comment says PostgreSQL declines to inline a STRICT function with a non-strict body, which no reader could recover from the signature. `// returns the distance` is the anti-model |
 | DRY | Envelope parsing, signature verification, error construction, response writing and timing each live in exactly one package |
-| Abstraction | **A seam ships with a conformance test or a second implementation behind it, or it does not ship.** The A6/A7 rule applied generally: an unused abstraction is a guess, one a test drives is a contract. Config knobs meet the same bar — a flag no scenario sets is not shipped. This is not a ban on the seams already named (`Embedder` under A5, `CatalogReplicator` under A7, `Keyring`): each has a task that constructs it and a test that exercises it, which is exactly the difference the rule draws |
+| Abstraction | **A seam ships with a conformance test or a second implementation behind it, or it does not ship.** The A6/A7 rule applied generally: an unused abstraction is a guess, one a test drives is a contract. Config knobs meet the same bar — a flag no scenario sets is not shipped. This is not a ban on the seams already named (`Embedder` under A5, `CatalogReplicator` under A7): each has a task that constructs it and a test that exercises it, which is exactly the difference the rule draws. `Keyring` was named here on the same footing and no longer qualifies — Task 6 is parked, nothing declares the interface, and `validateAuth` refuses the boot rather than let `AUTH_ENABLE_SIGNATURE_VERIFICATION` advertise it (ADR-0014 Amendments) |
 | DI | Explicit constructors only. `dig` / `wire` / reflection containers prohibited (D3) |
 | No globals | No package-level mutable state, and no `init()` that does work. Config, the pool, the logger, clocks and clients are built in `container.go` and passed down; nothing reaches for them through a `var` at call time. This is the DI rule seen from the other end — a dependency injected explicitly **and** reachable globally is not injected, it is a suggestion. A6 already applies it to query scope: a value, not a hidden global |
 | Logging | zap JSON, typed field constructors. Never `zap.Any` or `Sugar()` on the request path |
@@ -179,7 +179,7 @@ Real requirements on the programme; none of them this service's.
 | §1 | The APIs through which schemas and domains are created and versioned | Registry (this service consumes — T3) |
 | §2 | Guardrails, intent detection, response generation | AI layer |
 | §4 | Verifiable Credentials, DIDs, credential issuance | Identity / registry |
-| §4, §8 | The participant registry and its trust model | Registry (consumed through `registry.Keyring`) |
+| §4, §8 | The participant registry and its trust model | Registry (to be consumed through `registry.Keyring`, designed in the parked Task 6 and not built) |
 | §6 | Infrastructure as code, deployment, backup/restore | Platform repo |
 | §6 | Streaming response APIs for voice and chat | AI layer |
 | §7 | Dashboards and analytics over telemetry | Add-on (e.g. Obsrv) |
@@ -3238,7 +3238,7 @@ implementer writes the source against the interfaces named in **Produces**.
 - ADRs 0001–0015: **0001–0011** are the Technology Decisions table (D1–D11),
   **0012** (which interfaces are promises) and **0013** (protocol version
   coexistence) come from T5, **0014** is the seam-ships-with-a-test rule
-  applied to `CatalogReplicator`/`Keyring` (A7), and **0015** is the
+  applied to `CatalogReplicator` (A7), and **0015** is the
   master-catalog-and-inheritance rejection (A1).
 
 **Test:** `make build && make lint && make test` on a clean checkout.
