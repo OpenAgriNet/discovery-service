@@ -271,8 +271,10 @@ trivy-release-gate: $(TRIVY)
 #
 # The jq program lives in tools/trivy-comment.jq rather than inline: as a file
 # it is lintable (`jq -n --arg severity "" -f tools/trivy-comment.jq`),
-# diffable, and free of Makefile `$$`/backslash escaping. It was pasted twice
-# into security.yml, and one copy's jq-version bug took the whole job down.
+# diffable, and free of Makefile `$$`/backslash escaping. The workflow it came
+# from carried two copies of it, and a jq-version bug in one of them took the
+# whole scan job down — which is the argument for one copy, in a file a linter
+# can actually see.
 trivy-report:
 	@{ \
 		echo "$(SEC_MARKER)"; \
