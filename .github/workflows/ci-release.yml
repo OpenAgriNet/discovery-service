@@ -25,10 +25,8 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-*"
 
-# Least privilege at the workflow level; the two jobs add what they need. The
-# previous workflow granted id-token: write to everything for a Google Workload
-# Identity exchange that only happens when GOOGLE_ARTIFACT_REGISTRY_ENABLED is
-# set; it is declared per job below instead.
+# Least privilege at the workflow level; the two jobs add the packages: write
+# they need to push, and nothing else.
 permissions:
   contents: read
 
@@ -38,22 +36,6 @@ permissions:
 concurrency:
   group: ci-release-${{ github.ref }}
   cancel-in-progress: false
-
-# The registry switches, read from repo variables (Settings > Secrets and
-# variables > Actions > Variables) so a registry is turned on without a
-# workflow edit. GHCR defaults on; the rest default off until their secrets
-# exist. The Makefile turns these into the actual repo paths — adding a
-# registry is one line there and one login step here.
-env:
-  GHCR_ENABLED: ${{ vars.GHCR_ENABLED != 'false' }}
-  DOCKERHUB_ENABLED: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
-  AZURE_CONTAINER_REGISTRY_ENABLED: ${{ vars.AZURE_CONTAINER_REGISTRY_ENABLED == 'true' }}
-  GOOGLE_ARTIFACT_REGISTRY_ENABLED: ${{ vars.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true' }}
-  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE }}
-  AZURE_REGISTRY_NAME: ${{ secrets.AZURE_REGISTRY_NAME }}
-  GCP_REGION: ${{ secrets.GCP_REGION }}
-  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GOOGLE_ARTIFACT_REPO: ${{ secrets.GOOGLE_ARTIFACT_REPO }}
 
 jobs:
   build-artifact:
@@ -79,10 +61,6 @@ jobs:
       contents: read
       # The push to a registry. Read is not enough.
       packages: write
-      # Workload Identity Federation (google-github-actions/auth below)
-      # exchanges a GitHub OIDC token for Google credentials; without this the
-      # job cannot request that token and the GAR leg fails to authenticate.
-      id-token: write
     steps:
       # fetch-depth: 0 — VERSION comes from `git describe --tags`, which needs
       # the tag objects, not just the commit.
@@ -108,49 +86,19 @@ jobs:
       # secret is set, which is enough once the package exists or for an
       # org-owned repo.
       - name: Log in to GHCR
-        if: env.GHCR_ENABLED == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        if: env.DOCKERHUB_ENABLED == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Log in to Azure Container Registry
-        if: env.AZURE_CONTAINER_REGISTRY_ENABLED == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.AZURE_REGISTRY_NAME }}
-          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
-          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
-
-      - name: Authenticate to Google Cloud
-        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
-        uses: google-github-actions/auth@v3
-        with:
-          token_format: "access_token"
-          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
-
-      - name: Configure Docker for Google Artifact Registry
-        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
-        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
-
       # Builds the image into this runner's local Docker daemon and gates it on
       # Trivy — exit 1 on a finding, not a report — so the exact bytes about to
       # ship are scanned before they are tagged for or pushed to any registry.
-      # One scan covers every registry, because it is one image.
       - run: make image-build ARCH=${{ matrix.arch }}
 
-      # Re-tags that same scanned image per enabled registry and pushes it. No
-      # rebuild and no re-scan, so what lands in the registry is what the gate
-      # above passed.
+      # Re-tags that same scanned image and pushes it. No rebuild and no
+      # re-scan, so what lands in the registry is what the gate above passed.
       - run: make image-push ARCH=${{ matrix.arch }}
 
   publish-artifact:
@@ -163,7 +111,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
     steps:
       # Checkout is for the Makefile and for the tag objects VERSION reads;
       # this job builds nothing.
@@ -172,43 +119,15 @@ jobs:
           fetch-depth: 0
 
       - name: Log in to GHCR
-        if: env.GHCR_ENABLED == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        if: env.DOCKERHUB_ENABLED == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Log in to Azure Container Registry
-        if: env.AZURE_CONTAINER_REGISTRY_ENABLED == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.AZURE_REGISTRY_NAME }}
-          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
-          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
-
-      - name: Authenticate to Google Cloud
-        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
-        uses: google-github-actions/auth@v3
-        with:
-          token_format: "access_token"
-          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
-
-      - name: Configure Docker for Google Artifact Registry
-        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
-        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
-
-      # The only step that creates the tag users actually pull: one manifest
-      # list per registry from the arch tags the build legs pushed, which is
-      # what lets `docker pull` resolve the right arch by itself. Then inspects
-      # it, so the log shows which platforms the published tag really resolves
-      # to rather than asserting it.
+      # The only step that creates the tag users actually pull: a manifest list
+      # stitched from the two arch tags the build legs pushed, which is what
+      # lets `docker pull` resolve the right arch by itself. Then inspects it,
+      # so the log shows which platforms the published tag really resolves to
+      # rather than asserting it.
       - run: make image-publish

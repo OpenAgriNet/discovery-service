@@ -62,29 +62,18 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
 
-# Where a tag push publishes. One flag per registry, read from the environment
-# (repo variables and secrets, set in the workflow's env: block) so a registry
-# is switched on without editing anything committed — and so no credential or
-# private registry path is ever written into a reviewed file. GHCR is the only
-# one live today, so it defaults on and the rest default off until their
-# secrets exist. Adding a registry is one line here and one login step in the
-# workflow; nothing else changes.
+# Where a tag push publishes. GHCR only, and unconditionally: it is the one
+# registry this project actually uses, and a switchboard for three others that
+# were never configured is not flexibility, it is four ways for a release to
+# quietly push nothing. Adding a registry back is one entry here and one login
+# step in ci-release.yml.
 #
 # GHCR image refs must be lowercase and GITHUB_REPOSITORY_OWNER preserves the
 # owner's real case (OpenAgriNet), hence the tr. Deriving the owner rather than
 # writing it out means a fork publishes to its own namespace.
 OWNER ?= $(shell printf '%s' '$(GITHUB_REPOSITORY_OWNER)' | tr '[:upper:]' '[:lower:]')
 
-GHCR_ENABLED                     ?= true
-DOCKERHUB_ENABLED                ?= false
-AZURE_CONTAINER_REGISTRY_ENABLED ?= false
-GOOGLE_ARTIFACT_REGISTRY_ENABLED ?= false
-
-IMAGE_REPOS = $(strip \
-	$(if $(filter true,$(GHCR_ENABLED)),ghcr.io/$(OWNER)/$(IMAGE_NAME)) \
-	$(if $(filter true,$(DOCKERHUB_ENABLED)),$(DOCKERHUB_NAMESPACE)/$(IMAGE_NAME)) \
-	$(if $(filter true,$(AZURE_CONTAINER_REGISTRY_ENABLED)),$(AZURE_REGISTRY_NAME)/$(IMAGE_NAME)) \
-	$(if $(filter true,$(GOOGLE_ARTIFACT_REGISTRY_ENABLED)),$(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(GOOGLE_ARTIFACT_REPO)/$(IMAGE_NAME)))
+IMAGE_REPOS = ghcr.io/$(OWNER)/$(IMAGE_NAME)
 
 # Test targets pin the embedding provider rather than inheriting it.
 # Production defaults to noop (A5), so without the pin the whole semantic path
@@ -489,14 +478,16 @@ image-publish: require-image-repos
 RELEASE_ARCHES ?= amd64 arm64
 
 # Split out so both push targets fail the same way, naming the thing to set,
-# instead of pushing to a path that is a bare registry and a slash — or, with
-# every flag off, silently succeeding while pushing nothing at all.
+# instead of pushing to a path that is a bare registry and a slash.
+#
+# OWNER is the only thing that can be empty: it comes from
+# GITHUB_REPOSITORY_OWNER, which a runner always sets and a laptop never does.
+# So this is the target that tells you `make image-push` needs it, rather than
+# letting docker fail on `ghcr.io//discovery-service` and making you work out
+# why.
 require-image-repos:
-	@test -n "$(IMAGE_REPOS)" || \
-		{ echo "::error::no registry enabled — set GHCR_ENABLED=true (needs GITHUB_REPOSITORY_OWNER), or another *_ENABLED flag"; exit 1; }
-	@case "$(IMAGE_REPOS)" in \
-		*//*|"/"*) echo "::error::IMAGE_REPOS has an empty segment: $(IMAGE_REPOS) — a registry is enabled but its namespace secret is unset"; exit 1;; \
-	esac
+	@test -n "$(OWNER)" || \
+		{ echo "::error::OWNER is empty — set GITHUB_REPOSITORY_OWNER (CI sets it; locally, pass OWNER=<org>)"; exit 1; }
 	@printf 'publishing %s to:\n' "$(VERSION)"; printf '  %s\n' $(IMAGE_REPOS)
 
 ## up: start PostgreSQL with pgvector and wait for it to accept connections
