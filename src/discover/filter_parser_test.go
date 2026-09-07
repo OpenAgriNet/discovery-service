@@ -172,7 +172,7 @@ func TestAnUnindexableFilterIsServedWhenSomethingElseNarrows(t *testing.T) {
 // An absent filter is not a filter.
 func TestNoFilterIsNoFault(t *testing.T) {
 	query, fatal, partial := discover.MapIntent(
-		beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+		beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, settings())
 
 	if len(fatal) != 0 || len(partial) != 0 {
 		t.Fatalf("an intent with no filter faulted: fatal %s, partial %s", codesOf(fatal), codesOf(partial))
