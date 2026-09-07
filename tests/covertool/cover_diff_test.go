@@ -9,12 +9,24 @@
 package covertool
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+// packageDir reports the directory holding this source file, so the fixtures
+// and the awk program are located relative to the package rather than to
+// whatever working directory the test was invoked from.
+func packageDir() (string, bool) {
+	_, file, _, ok := runtime.Caller(1)
+	if !ok {
+		return "", false
+	}
+	return filepath.Dir(file), true
+}
 
 // The fixture repeats each block three times, the way -coverpkg does across
 // test binaries, and hits each covered block in exactly ONE of the copies:
@@ -38,11 +50,25 @@ func runCoverDiff(t *testing.T, profile string, changed ...string) string {
 		t.Skip("awk not on PATH")
 	}
 
-	_, thisFile, _, ok := runtime.Caller(0)
+	dir, ok := packageDir()
 	if !ok {
 		t.Fatal("cannot locate this test file")
 	}
-	script := filepath.Join(filepath.Dir(thisFile), "..", "..", "tools", "cover-diff.awk")
+
+	// Read the program through os.ReadFile and run the COPY, rather than
+	// pointing awk straight at the repo path. awk is a subprocess, so a file
+	// only it opens is invisible to the go test cache — edit the awk, rerun,
+	// and go replays a stale "ok (cached)" because no Go input changed. That
+	// is a test that stops testing exactly when the thing it guards is being
+	// changed. Reading it here makes it an input the cache tracks.
+	source, err := os.ReadFile(filepath.Join(dir, "..", "..", "tools", "cover-diff.awk"))
+	if err != nil {
+		t.Fatalf("reading cover-diff.awk: %v", err)
+	}
+	script := filepath.Join(t.TempDir(), "cover-diff.awk")
+	if err = os.WriteFile(script, source, 0o600); err != nil {
+		t.Fatalf("staging cover-diff.awk: %v", err)
+	}
 
 	cmd := exec.Command("awk",
 		"-v", "mod="+module,
@@ -50,6 +76,7 @@ func runCoverDiff(t *testing.T, profile string, changed ...string) string {
 		"-f", script,
 		"-", filepath.Join("testdata", profile),
 	)
+	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(strings.Join(changed, "\n") + "\n")
 
 	out, err := cmd.CombinedOutput()
