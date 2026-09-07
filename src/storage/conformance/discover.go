@@ -807,9 +807,10 @@ func aBackendThatRunsFiltersRefusesOneItCannotParse() Case {
 		}},
 		Then: func(t *testing.T, backends Backends) {
 			if !backends.Search.Capabilities().Has(domain.CapabilityJSONPath) {
-				t.Skip("this backend declines jsonpath, so it never parses an expression " +
-					"and owes no refusal for one — the mode is reported in Degraded " +
-					"instead, which aModeTheBackendCannotRunIsDegraded pins")
+				t.Skip("this backend declines jsonpath, so it never parses an " +
+					"expression and owes no refusal for one — the mode is " +
+					"reported in Degraded instead, which " +
+					"aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch pins")
 			}
 
 			// Rooted at $.catalogs, filter form, one root, an `==` — every
@@ -819,7 +820,7 @@ func aBackendThatRunsFiltersRefusesOneItCannotParse() Case {
 			query := domain.SearchQuery{
 				Limit: pageLimit,
 				Filters: []domain.AttributeFilter{{
-					Expression: `$.catalogs[*]resources[*] ? (@.listingType == "listing")`,
+					Expression: `$.catalogs[*]resources[*] ? (@.resourceAttributes.name == "listing")`,
 				}},
 			}
 
