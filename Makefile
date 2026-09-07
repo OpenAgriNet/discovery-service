@@ -85,17 +85,22 @@ cover-html: cover
 ##          stays the plain everyday entrypoint.
 test-ci: $(GOTESTSUM)
 	$(TEST_ENV) $(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
-		-race -coverprofile=coverage.out -covermode=atomic ./...
+		-race -coverprofile=coverage.out -covermode=atomic \
+		-coverpkg=$(COVERPKG) ./...
 
 ## cover-diff: coverage restricted to files changed vs BASE_REF — a PR review
-##             needs the diff's number, not the whole repo's. One line, no
-##             per-file table: an entry for a file nobody touched answers a
-##             question nobody asked.
-## cover-diff: on failure, names the changed files dragging the number down
-##             (worst first) so "what broke" is answered in the same place
-##             as "did it break" — on a pass, still just the one line.
+##             needs the diff's number, not the whole repo's. On failure,
+##             names the changed files dragging the number down (worst
+##             first) so "what broke" is answered in the same place as
+##             "did it break" — on a pass, still just the one line.
+coverage.out:
+	$(MAKE) cover
+
 cover-diff: coverage.out
-	@CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go' | grep -v '_test\.go$$' || true); \
+	@if ! git rev-parse --verify --quiet "$(BASE_REF)" >/dev/null; then \
+		echo "cover-diff: cannot resolve BASE_REF=$(BASE_REF)" >&2; exit 1; \
+	fi; \
+	CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go' | grep -v '_test\.go$$' || true); \
 	if [ -z "$$CHANGED" ]; then \
 		echo "📊 **Test Coverage: ✅ Passed** — not applicable, no changed Go files vs $(BASE_REF)" | tee coverage-report.md; \
 		exit 0; \
@@ -173,9 +178,15 @@ trivy-release-gate: $(TRIVY)
 ##             output only — same as a local run sees; the GitHub Actions
 ##             ::error:: annotation is the caller's concern, not this
 ##             target's (security.yml's gate step adds it).
+TRIVY_GATE_REPORTS ?= trivy-deps.sarif trivy-image.sarif
+
 trivy-gate:
 	@fail=0; \
-	for report in trivy-deps.sarif trivy-image.sarif; do \
+	for report in $(TRIVY_GATE_REPORTS); do \
+		if [ ! -f "$$report" ]; then \
+			echo "$$report: MISSING — no scan produced it"; \
+			fail=1; continue; \
+		fi; \
 		count=$$(jq '[.runs[].results[]?] | length' "$$report"); \
 		echo "$${report}: $${count} $(SEVERITY)"; \
 		if [ "$$count" -gt 0 ]; then \
@@ -267,7 +278,8 @@ tools: $(GOLANGCI_LINT) $(GOVULNCHECK) $(SQLC) $(MIGRATE)
 
 ## clean: remove build output and coverage profiles
 clean:
-	rm -rf $(BIN_DIR) coverage.out coverage-report.md trivy-deps.sarif trivy-image.sarif
+	rm -rf $(BIN_DIR) coverage.out coverage.html coverage-report.md \
+		trivy-deps.sarif trivy-image.sarif
 
 $(GOLANGCI_LINT): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
@@ -304,6 +316,7 @@ $(TRIVY):
 	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
-.PHONY: help build test test-short test-ci cover cover-diff lint fmt sqlc \
-	sqlc-verify migrate run logs migrate-down security trivy-deps trivy-image \
-	trivy-release-gate trivy-gate docker up down verify newman audit tools clean
+.PHONY: help build test test-short test-ci cover cover-total cover-report \
+	cover-html cover-diff lint fmt sqlc sqlc-verify migrate run logs \
+	migrate-down security trivy-deps trivy-image trivy-release-gate \
+	trivy-gate docker up down verify newman audit tools clean
