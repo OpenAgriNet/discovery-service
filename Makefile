@@ -209,21 +209,8 @@ cover-diff: coverage.out
 		exit 0; \
 	fi; \
 	MODULE=$$($(GO) list -m); \
-	RESULT=$$(echo "$$CHANGED" | awk -v mod="$$MODULE/" -v min="$(MIN_COVERAGE)" ' \
-		NR==FNR { want[mod $$0] = 1; next } \
-		{ f = $$1; sub(/:.*/, "", f); if (!(f in want)) next; \
-		  tot[f] += $$(NF-1); if ($$NF > 0) cov[f] += $$(NF-1) } \
-		END { \
-			T = 0; C = 0; \
-			for (f in tot) { \
-				T += tot[f]; C += cov[f]; \
-				p = int(cov[f] * 100 / tot[f]); \
-				disp = f; sub("^" mod, "", disp); \
-				if (p < min) print "FILE\t" p "\t" disp; \
-			} \
-			if (T == 0) { print "EMPTY"; exit } \
-			print "TOTAL\t" int(C * 100 / T) \
-		}' - coverage.out); \
+	RESULT=$$(echo "$$CHANGED" | awk -v mod="$$MODULE/" -v min="$(MIN_COVERAGE)" \
+		-f tools/cover-diff.awk - coverage.out); \
 	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
 		report "➖ Not applicable" "the changed Go files carry no coverable statements, so there are no lines to measure and no percentage to report"; \
 		exit 0; \
@@ -553,9 +540,12 @@ down:
 tools: $(GOLANGCI_LINT) $(GOVULNCHECK) $(SQLC) $(MIGRATE)
 
 ## clean: remove build output, coverage profiles and scan artifacts
+# A literal glob, not $(SARIF_REPORTS): that list narrows under
+# SCAN_IMAGE=false, so cleaning in that mode would leave trivy-image.sarif
+# behind for a later run to find and read as its own.
 clean:
 	rm -rf $(BIN_DIR) coverage.out coverage.html coverage-report.md \
-		$(SARIF_REPORTS) trivy-report.md
+		trivy-*.sarif trivy-report.md
 
 $(GOLANGCI_LINT): tools/go.mod tools/go.sum
 	@mkdir -p $(BIN_DIR)
