@@ -406,3 +406,40 @@ func TestAnyOneOfTheThreeCriteriaIsEnough(t *testing.T) {
 		})
 	}
 }
+
+// Whitespace is not a criterion, and the trim is what makes that true.
+//
+// `"   "` is not empty, so an untrimmed guard admits it — and then modesFor,
+// which reads the mapped text, sees nothing to search on and asks for no mode
+// at all. That is the SAME dead end TestAnIntentWithNoRetrievalCriterionIsRefused
+// closes, reached by a caller who pressed the space bar, and it would answer
+// the same plausible empty page under a 200.
+func TestAWhitespaceOnlyTextSearchIsNotARetrievalCriterion(t *testing.T) {
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: " \t "}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one — whitespace asks for no retrieval mode", codesOf(fatal))
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+}
+
+// The complement: a real term keeps its meaning and loses its padding.
+//
+// The trim reaches the QUERY and not only the guard. Two spellings of one
+// search that differ by a leading space are one search — they must ask the
+// same tsquery and score the same trigram similarity, which is a property the
+// guard alone would not give them.
+func TestTheMappedTextIsTrimmed(t *testing.T) {
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: "  wheat seed\n"}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if want := "wheat seed"; query.Text != want {
+		t.Errorf("Text = %q, want %q", query.Text, want)
+	}
+}

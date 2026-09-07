@@ -88,20 +88,28 @@ func MapIntent(
 	spatial, targets, spatialFatal, partial := mapSpatial(intent.Spatial, cfg)
 	limit, offset, pageFaults := mapPage(page, cfg.Search)
 
+	// Trimmed ONCE, here, and every reader below takes it from this variable.
+	// Whitespace is not a term: it produces an empty tsquery and a trigram
+	// comparison against padding, so `"   "` is a text search that narrows
+	// nothing while being non-empty — which is exactly the input that walks
+	// past a guard spelled `intent.TextSearch != ""`. Two readers doing their
+	// own trimming would be two places to forget it.
+	text := strings.TrimSpace(intent.TextSearch)
+
 	// Whether anything else has already cut the corpus down, which is what
 	// decides between an unindexable filter costing one slow query and costing
 	// a read of every gated row in the catalogue. Read from the MAPPED values
 	// rather than from the intent: a spatial constraint that faulted is not a
 	// constraint, and treating it as one would let the guard be defeated by
 	// sending a broken one.
-	narrowed := intent.TextSearch != "" || spatial != nil || len(schemas) > 0
+	narrowed := text != "" || spatial != nil || len(schemas) > 0
 	filters, filterFaults := mapFilters(intent.Filters, narrowed)
 
 	fatal := append(append(append(schemaFaults, spatialFatal...), pageFaults...), filterFaults...)
-	fatal = append(fatal, criterionFaults(intent)...)
+	fatal = append(fatal, criterionFaults(intent, text)...)
 
 	return domain.SearchQuery{
-		Text:        intent.TextSearch,
+		Text:        text,
 		Schemas:     schemas,
 		Filters:     filters,
 		Spatial:     spatial,
@@ -128,8 +136,14 @@ func MapIntent(
 // because the caller did name a criterion and "you sent no criteria" would be a
 // false sentence stacked on top of the fault that already names the real
 // mistake.
-func criterionFaults(intent beckn.Intent) []domain.Fault {
-	if intent.TextSearch != "" || len(intent.Spatial) > 0 || intent.Filters != nil {
+//
+// The one exception is `text`, which arrives already trimmed and is taken as a
+// parameter for that reason: modesFor reads the TRIMMED value, so a guard
+// testing the raw field would admit `"   "` and hand it a search asking for no
+// mode at all — the same empty page under a 200 that this refusal exists to
+// prevent, reached by a caller who pressed the space bar.
+func criterionFaults(intent beckn.Intent, text string) []domain.Fault {
+	if text != "" || len(intent.Spatial) > 0 || intent.Filters != nil {
 		return nil
 	}
 	return []domain.Fault{{

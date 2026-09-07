@@ -91,6 +91,22 @@ func TestAFilterThatWouldFailSilentlyIsRefused(t *testing.T) {
 			wantCode:   beckn.CodeSchemaInvalidFormat,
 			wantSaying: "narrows nothing",
 		},
+		{
+			// The same filter with a text search that is nothing but spaces.
+			// Whitespace is not a term: it asks the lexical mode for an empty
+			// tsquery, which narrows the corpus by not one row — so counting
+			// it as "something else narrows" is how this guard gets walked
+			// past with a space bar.
+			name: "an unindexable filter beside a text search that is only whitespace",
+			intent: beckn.Intent{
+				TextSearch: "   ",
+				Filters: &beckn.Filters{
+					Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.rating >= 4)`,
+				},
+			},
+			wantCode:   beckn.CodeSchemaInvalidFormat,
+			wantSaying: "narrows nothing",
+		},
 	}
 
 	for _, testCase := range cases {
