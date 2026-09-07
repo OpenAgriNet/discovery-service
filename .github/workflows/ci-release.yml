@@ -37,6 +37,18 @@ concurrency:
   group: ci-release-${{ github.ref }}
   cancel-in-progress: false
 
+# The tag whose push started this run, exactly — not re-derived. The Makefile
+# falls back to `git describe` for a workstation, which has no triggering ref;
+# a runner does, and describe returns whichever tag on HEAD was created last,
+# which on a commit carrying two tags is not the one that was pushed. `?=`
+# there means this wins.
+#
+# Declared here and not in ci.yml on purpose: this file only ever runs on a
+# tag, so github.ref_name is always tag-shaped. On a pull_request it would be
+# "15/merge".
+env:
+  VERSION: ${{ github.ref_name }}
+
 jobs:
   build-artifact:
     # One leg per architecture, on a runner of that architecture — not one leg

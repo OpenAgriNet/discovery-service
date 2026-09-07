@@ -54,10 +54,24 @@ RUN_URL ?= $(if $(GITHUB_RUN_ID),$(GITHUB_SERVER_URL)/$(GITHUB_REPOSITORY)/actio
 # already produces that arch.
 ARCH ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 
-# The version a tag publishes under. git describe, not GITHUB_REF_NAME: it is
-# the same answer on a runner and on a workstation, and it renders an untagged
-# commit as v0.0.1-rc1-3-gabc1234 instead of a branch name that would then be
-# pushed as an image tag. Needs fetch-depth: 0 in CI to see the tag objects.
+# The version a tag publishes under. `?=`, so ci-release.yml overrides this
+# from the environment with github.ref_name — the exact tag whose push started
+# the run.
+#
+# This used to be git describe unconditionally, on the reasoning that one
+# answer on a runner and on a workstation is simpler. That was wrong, and in a
+# way that only shows up on a real release: describe reports whichever tag
+# pointing at HEAD was *created* last, which is not necessarily the one that
+# was pushed. Tag a commit v1.0.0, add v1.0.1-rc1 to that same commit later,
+# push v1.0.0 — describe says v1.0.1-rc1, so the image ships under the wrong
+# name and, because that name has a hyphen, :latest silently does not move.
+#
+# The two contexts do not have the same information, so they should not be
+# forced to the same answer. CI knows the triggering ref exactly. A workstation
+# has no triggering ref at all, so describe is still right there, and still
+# renders an untagged commit as v0.0.1-rc1-3-gabc1234 rather than a branch name
+# that would then be pushed as an image tag. Needs fetch-depth: 0 in CI either
+# way, so a local describe in the same checkout stays meaningful.
 VERSION ?= $(shell git describe --tags --always --dirty)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
@@ -490,6 +504,9 @@ RELEASE_ARCHES ?= amd64 arm64
 require-image-repos:
 	@test -n "$(OWNER)" || \
 		{ echo "::error::OWNER is empty — set GITHUB_REPOSITORY_OWNER (CI sets it; locally, pass OWNER=<org>)"; exit 1; }
+	@case "$(VERSION)" in \
+		""|*/*|*" "*) echo "::error::VERSION is not a usable image tag: '$(VERSION)' — on a tag push this comes from github.ref_name; a value with a slash means a non-tag ref reached a release target"; exit 1;; \
+	esac
 	@printf 'publishing %s to:\n' "$(VERSION)"; printf '  %s\n' $(IMAGE_REPOS)
 
 ## up: start PostgreSQL with pgvector and wait for it to accept connections
