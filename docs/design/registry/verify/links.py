@@ -9,10 +9,12 @@ GitHub's slug: lowercase, drop anything not alphanumeric / `-` / `_` / space,
 then space -> `-`. Consecutive hyphens are NOT collapsed, so `A — b` is
 `a--b`; a checker that collapses them reports false breakage on every em dash.
 
-archive/ is excluded: it is another team's design set, kept diffable against
-its source, and its links point into its own tree.
+archive/ was another team's design set, kept diffable against its source with
+links pointing into its own tree, so this checker never had reason to walk it.
+It was removed when this folder moved under docs/design/; the note survives to
+explain why nothing here excludes it.
 
-Run:  python3 verify/links.py          (from docs/registry)
+Run:  python3 verify/links.py          (from docs/design/registry)
 Needs: nothing
 """
 import glob, io, os, re, sys

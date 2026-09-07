@@ -1,6 +1,6 @@
 # Doc checkers
 
-Run from `docs/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`);
+Run from `docs/design/registry`. Four need `jsonschema` (`packs.py` also needs `pyyaml`);
 `links.py` needs nothing:
 
 ```

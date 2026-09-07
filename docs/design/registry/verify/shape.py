@@ -14,7 +14,7 @@ so a page can show whatever it needs without tripping this.
 Coverage is a union across blocks, not per block — `role` and `keys` exist only on a
 node and are refused on an upstream, so no single record can exercise every property.
 
-Run:  python3 verify/shape.py          (from docs/registry)
+Run:  python3 verify/shape.py          (from docs/design/registry)
 Needs: jsonschema
 """
 import json, re, io, glob, sys, warnings

@@ -8,7 +8,7 @@
 way that only shows up as a failed upstream call weeks later: a bindingKey that disagrees
 with its own two fields, a version that disagrees with its own URL, a dangling reference.
 
-Run:  python3 verify/records.py          (from docs/registry)
+Run:  python3 verify/records.py          (from docs/design/registry)
 Needs: jsonschema
 """
 import json, re, io, glob, sys, warnings

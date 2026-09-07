@@ -36,14 +36,14 @@ verifier.
 │ node   (BAP) │◀─────────────│  (NETWORK)   │    answers from the published catalog
 └──────────────┘  on_discover └──────────────┘
     │
-    │  select   provider = mausamgram
+    │  <action>   provider = mausamgram; any Beckn action the binding registers, not just select
     ▼
 ┌──────────────┐
 │ provider     │   GET https://mausamgram.imd.gov.in/nwpapi/get-daily
 │ node   (BPP) │──────────────────────────────────▶  IMD Mausamgram NWP
 └──────────────┘                                     (an ordinary HTTP API)
     │
-    │  on_select   the typed forecast
+    │  on_<action>   the typed forecast
     ▼
   consumer node
 ```
@@ -61,5 +61,9 @@ its binding to `openagrinet:WeatherObservation`.
 | [usecases.md](usecases.md) | six farmer questions, and the weather one in full |
 
 [`schemas/`](schemas) holds the draft-07 files — **those are the contract**, this folder
-describes them. [`verify/`](verify) keeps these pages true. [`archive/`](archive) is the BV Beckn
-adapter's design set, a different system, kept verbatim for interop context.
+describes them. [`verify/`](verify) keeps these pages true.
+
+The BV Beckn adapter's own design set used to sit here as `archive/`. It was a
+different system, kept verbatim for interop context and binding on nothing, so it
+was removed when this folder moved under `docs/design/`. It remains in git
+history — `git log --diff-filter=D -- 'docs/registry/archive/*'` finds it.

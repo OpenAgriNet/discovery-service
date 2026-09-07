@@ -1,6 +1,6 @@
 """Shape and key-material cases for schemas/Participant.json.
 
-Run:  python3 verify/cases.py          (from docs/registry)
+Run:  python3 verify/cases.py          (from docs/design/registry)
 Needs: jsonschema
 
 These are the rules no record in examples.md can demonstrate, because a valid

@@ -17,7 +17,7 @@ The packs live in a sibling repo, so this checker is conditional on finding it:
   NETWORK_SPECS=/path/to/network-specs python3 verify/packs.py
 Default: ~/Documents/Projects/OpenAgriNet/network-specs
 
-Run:  python3 verify/packs.py     (from docs/registry)
+Run:  python3 verify/packs.py     (from docs/design/registry)
 Needs: jsonschema, pyyaml
 """
 import json, re, io, os, glob, sys, warnings

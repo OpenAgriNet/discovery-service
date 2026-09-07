@@ -175,7 +175,7 @@ match; which to pick is the app's call, not the registry's.
           "informationMode": "OnDemand",
           "supportedObservationTypes": ["Forecast"],
           "supportedParameters": ["Rainfall", "Temperature", "Humidity", "WindSpeed", "WindDirection"],
-          "geographicGranularities": ["Point"],
+          "geographicGranularity": ["Point"],
           "forecastHorizon": "P5D",
           "updateFrequency": "PT12H",
           "subjectCategories": ["Weather"]
@@ -201,7 +201,7 @@ match; which to pick is the app's call, not the registry's.
           "informationMode": "OnDemand",
           "supportedObservationTypes": ["Forecast"],
           "supportedParameters": ["Rainfall", "Temperature", "Humidity"],
-          "geographicGranularities": ["District"],
+          "geographicGranularity": ["District"],
           "forecastHorizon": "P7D",
           "updateFrequency": "PT24H",
           "subjectCategories": ["Weather"]
@@ -216,7 +216,7 @@ match; which to pick is the app's call, not the registry's.
 
 `informationMode: OnDemand` and no values — that is the difference between the hops, and the
 pack enforces it: `OnDemand` **requires** `supportedObservationTypes`, `supportedParameters` and
-`geographicGranularities`, and carries `not: {required: [parameters]}`. An advertisement that
+`geographicGranularity`, and carries `not: {required: [parameters]}`. An advertisement that
 leaked a value would be rejected. `observationType` is the outcome field and does not belong
 here; the advertisement says what forms it *can* return.
 
