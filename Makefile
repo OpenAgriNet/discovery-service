@@ -19,7 +19,7 @@ DATABASE_URL ?= postgres://discovery:discovery@localhost:5432/discovery?sslmode=
 # source of truth for both a local `make` run and the GitHub Actions runner.
 MIN_COVERAGE       ?= 80
 BASE_REF           ?= origin/main
-SEVERITY           ?= HIGH,CRITICAL
+SEVERITY           ?= CRITICAL,HIGH,MEDIUM,LOW
 GOTESTSUM_VERSION  := v1.13.0
 TRIVY_VERSION      := v0.74.0
 ACTIONLINT_VERSION := v1.7.12
@@ -205,7 +205,7 @@ cover-diff: coverage.out
 	fi; \
 	CHANGED=$$(printf '%s\n' "$$CHANGED" | grep -v '_test\.go$$' || true); \
 	if [ -z "$$CHANGED" ]; then \
-		report "✅ Passed" "not applicable, no changed Go files vs $(BASE_REF)"; \
+		report "➖ Not applicable" "no non-test Go files changed vs \`$(BASE_REF)\`, so there are no lines to measure and no percentage to report"; \
 		exit 0; \
 	fi; \
 	MODULE=$$($(GO) list -m); \
@@ -225,7 +225,7 @@ cover-diff: coverage.out
 			print "TOTAL\t" int(C * 100 / T) \
 		}' - coverage.out); \
 	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
-		report "✅ Passed" "not applicable, changed files carry no coverable statements"; \
+		report "➖ Not applicable" "the changed Go files carry no coverable statements, so there are no lines to measure and no percentage to report"; \
 		exit 0; \
 	fi; \
 	PCT=$$(echo "$$RESULT" | awk -F'\t' '$$1=="TOTAL"{print $$2}'); \
