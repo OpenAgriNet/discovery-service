@@ -514,3 +514,10 @@ One code for all three is an afternoon of auditing a correct registry.
    never off the request.
 3. **The registry never appears in the request path.** Records load at boot; resolution is two map
    lookups.
+4. **The `bapId`/`bppId` pair above is how BV's adapters address each other, not how the discovery
+   service reads a caller.** v2.0.0 declares both spellings — `bapId`/`bppId` for compatibility and
+   `senderId`/`receiverId` as the identities — and the discovery service models only the second
+   pair (`src/beckn/types.go`). Its controllers build a reply by swapping them, so a `discover`
+   carrying only the ids shown here is accepted and answered, and the callback names **neither**
+   party. The payloads above are BV-accurate; anything calling the discovery service directly sends
+   `senderId`/`receiverId` as well.

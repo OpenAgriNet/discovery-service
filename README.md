@@ -15,8 +15,11 @@ measurement and what it means.
   uber/h3-go v4 · kin-openapi · zap · testify · testcontainers-go.
 
 The design is specified in
-[`docs/design/discover-and-publish.md`](docs/design/discover-and-publish.md);
-the decisions behind it are recorded in [`docs/adr/`](docs/adr/README.md). Read
+[`docs/design/discover-and-publish.md`](docs/design/discover-and-publish.md),
+with the span shape Task 23 must emit in
+[`docs/design/opentelemetry.md`](docs/design/opentelemetry.md) and the registry
+schema in [`docs/design/registry/`](docs/design/registry/README.md); the
+decisions behind them are recorded in [`docs/adr/`](docs/adr/README.md). Read
 the design document before changing anything here — the constraints it states
 are binding, not advisory.
 

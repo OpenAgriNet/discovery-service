@@ -432,7 +432,7 @@ reviewer can audit the entire swap surface by reading them:
 |---|---|
 | H3 cell computation and array overlap | `indexing/geo/h3.go`, `postgres/search_repository.go` |
 | `tsvector`, `websearch_to_tsquery`, pgvector `<=>` | `migrations/*.sql`, `postgres/queries/discover.sql` |
-| SQL/JSON path rendering | `postgres/jsonpath.go` (Task 22) |
+| SQL/JSON path binding | `postgres/retrievers.go`, `postgres/queries/discover.sql` (Task 22) |
 
 ### Schema — extensions
 
@@ -4838,7 +4838,7 @@ being indexed, which is the whole reason the accessors exist; and the
 ### Task 22 — Structured Attribute Filtering
 
 **Files:** `src/platform/jsonpath/subset.go`, `src/discover/filter_parser.go`,
-`src/storage/postgres/jsonpath.go`
+`src/storage/postgres/retrievers.go`, `src/storage/postgres/queries/discover.sql`
 
 `src/platform/jsonpath/subset.go` validates the caller's expression against the
 accepted grammar and against its **root and form** (A18) — backend-agnostic,
@@ -4848,9 +4848,11 @@ backend does ([Data Model](#data-model), Grammar leak). It does **not** rebase:
 passed through untouched, and the step that used to strip a prefix is now the
 step that refuses the three silently-wrong shapes below.
 `src/discover/filter_parser.go` calls it to turn the wire expression into a
-`SearchQuery` filter value; `src/storage/postgres/jsonpath.go` only casts and
-evaluates the already-validated expression with `@filter::jsonpath` and the
-`@?` operator. The mechanics, and which predicates
+`SearchQuery` filter value; the backend only binds it. There is no
+`postgres/jsonpath.go`: once A18 made the expression pass through unrebased
+there was nothing left for such a file to hold, so `retrievers.go` binds the
+accepted expression as one parameter and `queries/discover.sql` casts it with
+`@filter::jsonpath` and applies the `@?` operator. The mechanics, and which predicates
 the GIN index can actually serve, are in
 [Attribute filters](#attribute-filters--what-postgresql-can-and-cannot-do).
 

@@ -54,6 +54,11 @@ field, because a node id that is also a hostname is one name for one thing; the 
 hostname shape when `type` is `node`, so `oan-provider` is refused there and
 `provider-network-vistaar.da.gov.in` is not.
 
+The same id goes on the wire as `senderId` / `receiverId`, which is the pair the discovery service
+actually reads — it models neither `bapId` nor `bppId`. One id, two spellings, and a caller that
+sends only the legacy pair gets a callback naming no one; see
+[usecases.md](usecases.md#true-in-every-use-case), point 4.
+
 **`keys` is one key, not a list.** A node therefore holds a signing key *or* an encryption key,
 never both, and cannot hold an old and a new key at once: rotation is a full replace and a hard
 cutover, and anything signed between the write and the last verifier refreshing does not verify.

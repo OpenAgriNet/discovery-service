@@ -9,7 +9,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
-// Trace is a pass-through until Task 23 puts otelhttp inside it, so what is
+// Trace is a pass-through until Task 23 starts a span inside it, so what is
 // pinned here is that it passes the request through *as it arrived* — the same
 // request value, not a copy carrying a context of its own — and that the one
 // thing it does add is its chain entry.

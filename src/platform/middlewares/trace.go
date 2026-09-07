@@ -20,7 +20,7 @@ const (
 )
 
 // Trace is the tracing slot in the chain: a pass-through today, and the place
-// Task 23 puts otelhttp.
+// Task 23 starts the span.
 //
 // It is a pass-through with a side effect rather than a bare pass-through. The
 // chain entry exists purely so Task 20's order test has something to observe at
@@ -28,9 +28,13 @@ const (
 // place. The request itself goes through untouched, which is what a test
 // asserting on the request the handler below receives pins.
 //
-// Task 23 replaces this body with otelhttp and drops the entry, moving the
-// order assertion to the span. The exported signature does not change, so the
-// chain Task 20 wires does not move when that lands.
+// Task 23 replaces this body with a hand-rolled span and drops the entry,
+// moving the order assertion to the span. NOT otelhttp: the network telemetry
+// spec requires scope.name/scope.version on every exported batch, and the
+// instrumentation scope is fixed when the span is created, so a span otelhttp
+// started would carry that package's scope for ever (A23, ADR-0011). The
+// exported signature does not change, so the chain Task 20 wires does not move
+// when that lands.
 func Trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Before next, not after: Recover writes its 500 from a deferred
