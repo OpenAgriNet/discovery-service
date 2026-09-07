@@ -25,6 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fork PRs get an empty string for every secrets.* reference, so the
+      # image half of this job (dhi.io login, build, scan) can't run there —
+      # computed once and reused below rather than repeating the expression.
+      - name: Check if same-repo
+        run: echo "SAME_REPO=${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}" >> "$GITHUB_ENV"
+
       # The trivy-action this replaced cached both the binary and its
       # vulnerability DB across runs; `make trivy-deps`/`trivy-image` alone
       # would re-download both (binary ~30MB, DB ~100MB+) on every run.
@@ -135,7 +141,13 @@ jobs:
           body-path: trivy-deps-comment.md
           edit-mode: replace
 
+      # Fork PRs get an empty string for every secrets.* reference, so an
+      # unguarded login here would fail before the image half of this job
+      # ever runs — dhi.io base images can't be pulled unauthenticated
+      # regardless. Skip the image build/scan on forks; the dependency scan
+      # above already ran and still gates the check.
       - name: Log in to dhi.io
+        if: env.SAME_REPO == 'true'
         uses: ./.github/actions/dhi-login
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -149,12 +161,15 @@ jobs:
       # reports zero findings, and the same vulnerabilities appear as `stdlib`
       # once the compiled binary is scanned.
       - name: Build image
+        if: env.SAME_REPO == 'true'
         run: docker build -t discovery-service:${{ github.sha }} .
 
       - name: Trivy image scan (report)
+        if: env.SAME_REPO == 'true'
         run: make trivy-image IMAGE=discovery-service:${{ github.sha }}
 
       - name: Upload image findings
+        if: env.SAME_REPO == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
@@ -214,5 +229,13 @@ jobs:
       # just wrote. Last in the job, so a red build still leaves both reports
       # behind. The target's own output is plain — same as a local run sees —
       # so the ::error:: annotation is added here, not baked into the target.
+      # Fork PRs never build/scan the image (guarded above, dhi.io needs a
+      # login they don't have), so trivy-image.sarif legitimately doesn't
+      # exist there — gate on the dependency report only in that case.
       - name: Gate on HIGH or CRITICAL findings
-        run: make trivy-gate || { echo "::error::HIGH or CRITICAL Trivy findings — see job log above"; exit 1; }
+        run: |
+          if [ "$SAME_REPO" = "true" ]; then
+            make trivy-gate || { echo "::error::HIGH or CRITICAL Trivy findings — see job log above"; exit 1; }
+          else
+            make trivy-gate TRIVY_GATE_REPORTS=trivy-deps.sarif || { echo "::error::HIGH or CRITICAL Trivy findings — see job log above"; exit 1; }
+          fi

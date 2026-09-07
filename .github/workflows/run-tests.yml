@@ -72,6 +72,9 @@ jobs:
       # on this exact string to update rather than duplicate that comment.
       - name: Publish coverage summary
         run: |
+          if [ ! -f coverage-report.md ]; then
+            echo "📊 **Test Coverage: ⚠️ Unavailable** — the coverage step did not produce a report; see its log" > coverage-report.md
+          fi
           printf '<!-- coverage-report -->\n%s\n' "$(cat coverage-report.md)" > coverage-report.md
           cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
