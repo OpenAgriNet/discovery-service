@@ -61,7 +61,10 @@ its binding to `openagrinet:WeatherObservation`.
 | [usecases.md](usecases.md) | six farmer questions, and the weather one in full |
 
 [`schemas/`](schemas) holds the draft-07 files — **those are the contract**, this folder
-describes them. [`verify/`](verify) keeps these pages true.
+describes them. These pages were kept true by a set of `verify/` checkers; those were removed
+when this folder moved under `docs/design/`, so **nothing mechanically checks
+that this prose still matches `schemas/` — read the JSON when it matters.** The
+checkers are in git history.
 
 The BV Beckn adapter's own design set used to sit here as `archive/`. It was a
 different system, kept verbatim for interop context and binding on nothing, so it

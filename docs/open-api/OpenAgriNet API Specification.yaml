@@ -1863,7 +1863,7 @@ components:
           type: string
           pattern: ^v[0-9]+\.[0-9]+$
           description:
-            Must match the `vN.N` segment in `schemaUrl` — checked by `verify/records.py`,
+            Must match the `vN.N` segment in `schemaUrl` — not checked by this schema,
             not by RC.
           example: v0.1
         schemaUrl:
@@ -2053,7 +2053,7 @@ components:
             $ref: "#/components/schemas/ActionBinding"
           description: |-
             One entry per Beckn action. Note that JSON Schema cannot pin one-entry-per-action, so a
-            row with two `select` entries validates here; `verify/records.py` enforces it.
+            row with two `select` entries validates here; nothing currently enforces it.
     ActionBinding:
       type: object
       additionalProperties: false

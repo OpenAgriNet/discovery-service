@@ -243,7 +243,8 @@ all. Having the plugin is a seeding prerequisite.
 - **The read-only role does not exist yet** — any token that can read these can also write them.
   Close it before v1 carries traffic. It is no longer a credential-disclosure risk, because no
   record holds a credential; it is still a write anybody with a read token can make.
-- **Check `version` against `schemaUrl`.** The schema cannot compare two fields; `verify/records.py` does.
+- **Check `version` against `schemaUrl`.** The schema cannot compare two fields, and since the
+  `verify/` checkers were removed **nothing does** — this one is on the seeding path or on you.
 - **There is no delete.** A correction is a full `PUT`, or `status: "inactive"`.
 - `agmarknet`'s request mapping must emit `lat`, `long`, `commodity_id` and a single `date` — the
   older four-code endpoint is not what production calls.

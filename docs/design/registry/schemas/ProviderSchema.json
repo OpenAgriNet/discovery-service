@@ -23,7 +23,7 @@
         "status":         { "$ref": "#/definitions/Status" },
 
         "actions": {
-          "description": "At least one. uniqueItems compares whole objects, so it cannot pin one entry per action — verify/records.py does.",
+          "description": "At least one. uniqueItems compares whole objects, so it cannot pin one entry per action; that rule is unenforced since the verify/ checkers were removed.",
           "type": "array",
           "minItems": 1,
           "maxItems": 10,
@@ -58,7 +58,7 @@
     },
 
     "MappingPath": {
-      "description": "One file per binding-action, holding request: and response: as YAML block scalars. The action segment must equal the action it sits under — verify/records.py.",
+      "description": "One file per binding-action, holding request: and response: as YAML block scalars. The action segment must equal the action it sits under; unenforced by this schema.",
       "type": "string",
       "maxLength": 256,
       "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.(discover|select|init|confirm|status|track|cancel|update|rate|support)\\.ya?ml$"

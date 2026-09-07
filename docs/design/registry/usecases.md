@@ -289,7 +289,8 @@ request**. `baseUrl` is the host and the entry's `path` is appended to it, so th
 reach the host its own record names. A request that could name the participant could point a
 credentialled call at a host of its choosing. That row is `type: "upstream"`, so it carries a
 `baseUrl` and no keys; a binding naming a node instead would resolve to a call that cannot be made,
-which is why `verify/records.py` refuses one at seeding time.
+which is why seeding must refuse one. The `verify/` checker that did so was removed with this
+folder's move; the rule stands and is now unenforced.
 
 **How to authenticate is not one of these reads.** No registry field holds it. The plugin selected
 below presents the credential, reading it from the adapter's own environment.

@@ -87,7 +87,7 @@ itself, so onboarding an upstream is a code change and four plugins can get it w
 Why a discriminator rather than a `oneOf` over two wrapper objects: `if/then` tells a reader
 "`role` is a required property", where `oneOf` says "is not valid under any of the given schemas"
 and leaves them to work out which half they were in. It also makes `type` a real field — so
-`verify/records.py` can refuse a binding that points at a node, and RC's `/search`, which indexes
+a seeding-time check can refuse a binding that points at a node, and RC's `/search`, which indexes
 top-level fields only, can filter on `baseUrl` and `type` at all.
 
 ```jsonc
