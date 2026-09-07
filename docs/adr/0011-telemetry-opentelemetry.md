@@ -1,7 +1,8 @@
-# ADR-0011 — OpenTelemetry for traces and metrics
+# ADR-0011 — OpenTelemetry for tracing
 
 **Status:** Accepted
 **Date:** 2026-08-25
+**Amended:** 2026-09-07 — see Amendments
 
 ## Context
 
@@ -11,15 +12,25 @@ normal case rather than the exception.
 
 ## Decision
 
-OpenTelemetry traces and metrics, `otelhttp` instrumentation, W3C Trace Context
-propagated in and out, OTLP exporter defaulting to `none`. zap carries
-structured logs alongside, correlated by trace id.
+OpenTelemetry tracing, W3C Trace Context propagated in and out, OTLP exporter
+defaulting to `none`. zap carries structured logs alongside, correlated by trace
+id.
+
+The tracing middleware is **hand-rolled** against `go.opentelemetry.io/otel/trace`
+rather than mounted from `otelhttp`.
+
+**No metric signal is emitted from this process.** RED figures are computed
+downstream, from the spans, by a component outside this binary.
 
 ## Alternatives considered
 
 - **zap alone** — structured logs correlate within one process. Only a
   propagation standard makes one request followable across the chain, and the
   chain is the point.
+- **`otelhttp`** — the obvious way to instrument a `http.Handler`, and the
+  original decision. Rejected under Amendment 1 below.
+- **In-process metrics (Prometheus client, or an OTel meter)** — the original
+  decision. Rejected under Amendment 2 below.
 
 ## Consequences
 
@@ -27,3 +38,41 @@ The exporter defaults to `none` so a collector-less deploy still boots — a
 telemetry dependency that prevents startup is a telemetry dependency that gets
 removed. Dashboards and analytics over the exported data are out of scope for
 this service (an add-on, e.g. Obsrv, owns them).
+
+Hand-rolling the middleware means roughly thirty lines this repository owns and
+tests, in exchange for control of the instrumentation scope. Emitting no metrics
+means the participant's mandatory METRIC obligation is discharged elsewhere, and
+`docs/design/discover-and-publish.md` Task 24 is where that is tracked so it is
+not mistaken for solved.
+
+## Amendments
+
+**2026-09-07, by A23.** This ADR read "OpenTelemetry traces **and metrics**,
+`otelhttp` instrumentation". Both halves were wrong by the time Task 23 was
+specified, and the record is corrected here rather than left to contradict the
+plan — an accepted ADR disagreeing with a binding plan is a decision the next
+reader has to arbitrate.
+
+What changed is not the decision to adopt OpenTelemetry. It is two details
+inside it, and both moved for the same reason: tracing stopped being local
+debugging and became an interop contract with the Sunbird-Obsrv network
+telemetry spec, which a facilitator consumes.
+
+1. **`otelhttp` cannot be used.** The spec requires `scope.name` and
+   `scope.version` on every exported batch. The instrumentation scope is fixed
+   when the span is created and is immutable afterwards, so a span started by
+   `otelhttp` carries *that package's* name and version permanently and no later
+   call can correct it. This was not a consideration when the ADR was written,
+   because nothing then read the scope.
+
+2. **Metrics leave the process.** A stateless service behind N replicas
+   computing a counter in memory emits N partial counts that no consumer can
+   reassemble, because nothing on the wire says what N was.
+   `ref-impl-design.md` §Micro Observability puts metric computation in the tier
+   that has storage and aggregation for exactly this reason. The obligation is
+   real and mandatory for the participant — it is discharged by Task 24, over
+   the spans this ADR's tracing produces, not by a meter here.
+
+The wire shape those spans must have is `docs/design/opentelemetry.md`, which is
+binding on the shape of a span. This ADR remains the decision to use
+OpenTelemetry at all.

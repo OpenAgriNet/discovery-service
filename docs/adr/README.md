@@ -23,7 +23,7 @@ Start from [`0000-template.md`](0000-template.md).
 | [0008](0008-embeddings-behind-an-embedder-seam.md) | Embeddings behind an `Embedder` seam, `noop` by default | D8, A5 |
 | [0009](0009-layered-configuration-env-and-yaml.md) | Four-layer configuration, environment on top | D9, T1 |
 | [0010](0010-migrations-golang-migrate.md) | golang-migrate for schema migrations | D10 |
-| [0011](0011-telemetry-opentelemetry.md) | OpenTelemetry for traces and metrics | D11, T2 |
+| [0011](0011-telemetry-opentelemetry.md) | OpenTelemetry for tracing (amended by A23 — no in-process metrics, no `otelhttp`) | D11, T2 |
 | [0012](0012-which-interfaces-are-promises.md) | Which interfaces are promises and which are internal | T5 |
 | [0013](0013-protocol-version-coexistence.md) | Protocol version coexistence, recorded but not built | T5 |
 | [0014](0014-seams-that-ship-with-only-a-no-op.md) | `CatalogReplicator` and `Keyring`: what a seam must carry to ship | A7 |
