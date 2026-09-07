@@ -1098,4 +1098,19 @@ func TestTheCastsRefusalNamesTheCallerRatherThanTheDeployment(t *testing.T) {
 				"report as degraded, because degraded means the answer stands", err)
 		}
 	})
+
+	// The SECOND code, and it is not the parser's. `like_regex` compiles its
+	// pattern while the jsonpath is built, so a pattern that does not compile
+	// arrives as 2201B rather than 42601 — from a syntactically perfect
+	// expression, which is why matching the parser's code alone would leave
+	// this one a 500. Correct SQL/JSON path, uncompilable regex, same fault:
+	// the caller's to fix.
+	t.Run("a like_regex pattern that does not compile", func(t *testing.T) {
+		const uncompilable = `$.catalogs[*].resources[*] ? (@.name like_regex "[")`
+
+		_, err := repository.Search(context.Background(), filterFor(uncompilable), filterModes)
+		if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+			t.Errorf("err = %v, want it to wrap ErrInvalidFilterExpression", err)
+		}
+	})
 }
