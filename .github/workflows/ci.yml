@@ -14,9 +14,12 @@ name: CI
 # `${{ }}` expression, a $GITHUB_STEP_SUMMARY write, a `uses:` action. The
 # build, test, lint and scan logic lives in the Makefile, so a red check
 # reproduces locally by running the exact command the log shows.
+
+# Pull requests only. main moves solely by merging a PR, and that PR was
+# already verified by this same workflow at its merge commit — re-running the
+# identical checks on the push that lands it answers a question that was asked
+# and answered minutes earlier. A tag push is handled by ci-release.yml.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 # Least privilege at the workflow level; the jobs that need more declare it
@@ -30,10 +33,7 @@ permissions:
 # group and supersedes the run before it.
 concurrency:
   group: ci-${{ github.ref }}
-  # PRs only. On main every commit keeps its own recorded verdict — cancelling
-  # there would leave a trunk commit with a grey check and no way to tell
-  # afterwards whether it was ever green.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -65,11 +65,9 @@ jobs:
       - run: make lint
       - run: make test-ci
 
-      # Diff-scoped, never whole-repo: main only ever moves by PR merge, so a
-      # PR's own diff is already the gate that matters, and the repo's existing
-      # coverage is not what this PR can be asked to answer for. On a
-      # pull_request the base is the PR's target branch; on a push it is
-      # github.event.before, the commit main pointed at before this one landed.
+      # Diff-scoped, never whole-repo: the PR's own diff is the gate that
+      # matters, and the repo's existing coverage is not something this PR can
+      # be asked to answer for. The base is the PR's target branch.
       #
       # BASE_REF goes through env:, not string-interpolated into the run
       # script: `?=` in the Makefile means the environment wins, and nothing
@@ -81,7 +79,7 @@ jobs:
         id: coverage
         continue-on-error: true
         env:
-          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || github.event.before }}
+          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
         run: make cover-diff
 
       # cover-diff writes coverage-report.md on every exit path, including its
@@ -99,7 +97,6 @@ jobs:
       # pull-requests: write declared. Coverage is already gated below; a
       # comment that cannot post must never fail the job over that.
       - name: Find the existing coverage comment
-        if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: peter-evans/find-comment@v4
         id: find-coverage-comment
@@ -109,7 +106,6 @@ jobs:
           body-includes: "<!-- coverage-report -->"
 
       - name: Post the result to the PR
-        if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: peter-evans/create-or-update-comment@v5
         with:
@@ -152,7 +148,7 @@ jobs:
       # SARIF_REPORTS. One name, one meaning: the comment and the gate cannot
       # end up disagreeing about whether an image report was ever expected.
       - name: Decide whether the image can be scanned
-        run: echo "SCAN_IMAGE=${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}" >> "$GITHUB_ENV"
+        run: echo "SCAN_IMAGE=${{ github.event.pull_request.head.repo.full_name == github.repository }}" >> "$GITHUB_ENV"
 
       # Catches what the image scan structurally cannot: a vulnerable module
       # only the test suite imports, so it is never linked into the binary and
@@ -193,12 +189,10 @@ jobs:
       # One comment covering both scans, rendered from the SARIF already
       # written — no third and fourth scan.
       - name: Assemble the PR comment
-        if: github.event_name == 'pull_request'
         continue-on-error: true
         run: make trivy-report
 
       - name: Find the existing scan comment
-        if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: peter-evans/find-comment@v4
         id: find-scan-comment
@@ -208,7 +202,6 @@ jobs:
           body-includes: "<!-- sec-scan -->"
 
       - name: Post the scan report to the PR
-        if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: peter-evans/create-or-update-comment@v5
         with:
