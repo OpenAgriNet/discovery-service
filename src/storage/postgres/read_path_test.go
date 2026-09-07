@@ -1055,3 +1055,47 @@ func indexScanRows(node map[string]any) (int, bool) {
 	}
 	return 0, false
 }
+
+// The cast's refusal is classified, so the request path can tell a bad
+// expression from a bad deployment.
+//
+// TestAMalformedExpressionIsAnErrorFromTheCastAndNotAPage above pins that it is
+// an error at all. This pins WHOSE error it is: the two are indistinguishable
+// to src/discover otherwise, and it answers a 500 for anything it cannot
+// classify — which turns a dropped dot into "this service is broken, try
+// again", for a request that can never succeed.
+//
+// Both routes, because they are different code: with no ranked mode the filter
+// is the query and `filterOnly` returns the error; with one, every retriever
+// carries the same predicate and `fold` sees it fail. `fold` records a failed
+// mode as DEGRADED, so the classification has to survive a path whose whole
+// job is to turn an error into a header.
+func TestTheCastsRefusalNamesTheCallerRatherThanTheDeployment(t *testing.T) {
+	repository := filterCorpus(t)
+
+	// Malformed the way the issue's own report was: no `.` between the two
+	// subscripts. It passes the gate — rooted at $.catalogs, filter form, one
+	// root, an `==` for the indexability guard — and PostgreSQL's parser runs
+	// out of input on it.
+	const malformed = `$.catalogs[*]resources[*] ? (@.resourceAttributes.grade == "A")`
+
+	t.Run("filter only", func(t *testing.T) {
+		_, err := repository.Search(context.Background(), filterFor(malformed), filterModes)
+		if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+			t.Errorf("err = %v, want it to wrap ErrInvalidFilterExpression", err)
+		}
+	})
+
+	t.Run("beside a ranked mode", func(t *testing.T) {
+		query := filterFor(malformed)
+		query.Text = "soap"
+
+		_, err := repository.Search(context.Background(), query,
+			[]domain.Capability{domain.CapabilityLexical, domain.CapabilityJSONPath})
+		if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+			t.Errorf("err = %v, want it to wrap ErrInvalidFilterExpression — a mode "+
+				"that failed on the caller's own expression is not a mode to "+
+				"report as degraded, because degraded means the answer stands", err)
+		}
+	})
+}

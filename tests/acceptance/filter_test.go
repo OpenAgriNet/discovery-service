@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
+	"github.com/OpenAgriNet/discovery-service/src/domain"
 )
 
 // Scenario 18. A structured filter narrows the result, and the spelling that
@@ -93,5 +94,48 @@ func TestTheRFC9535SpellingOfTheSameFilterIsRefused(t *testing.T) {
 
 	if got := response.nack(t).Message.Error.Code; got != beckn.CodeSchemaInvalidJSONPath {
 		t.Errorf("the refusal is %s, want %s", got, beckn.CodeSchemaInvalidJSONPath)
+	}
+}
+
+// A filter the edge gate lets through and PostgreSQL cannot parse is the same
+// 400, from the other side of the query.
+//
+// The expression is the manufacturer filter above with ONE character removed:
+// the dot between `catalogs[*]` and `resources[*]`. It passes the gate in front
+// of the query because the gate is deliberately not a parser — it settles the
+// root and the predicate form, both of which this has — and PostgreSQL then
+// refuses the cast from inside the search, where every other failure is the
+// deployment's fault and a 500.
+//
+// A 500 is the wrong answer twice over. It tells the caller to retry a request
+// that can never succeed, and it puts a client typo in the log line that pages
+// whoever is on call.
+func TestAFilterPostgreSQLCannotParseIsTheCallersFaultNotAFiveHundred(t *testing.T) {
+	svc := twoManufacturers(t)
+
+	malformed := `$.catalogs[*]resources[*] ? ` +
+		`(@.resourceAttributes.packagedGoodsDeclaration.manufacturerOrPacker.name == "Hindustan Unilever Limited")`
+
+	response := svc.discoverResponse(t, filters("jsonpath", malformed))
+	if response.status != http.StatusBadRequest {
+		t.Fatalf("a filter PostgreSQL cannot parse answered %d, want 400 — the dropped "+
+			"dot is the caller's to fix, and a 5xx asks them to retry it unchanged",
+			response.status)
+	}
+
+	fault := response.nack(t).Message.Error
+	if fault.Code != beckn.CodeSchemaInvalidJSONPath {
+		t.Errorf("the refusal is %s, want %s — the same code the edge gate uses, because "+
+			"which side of the query noticed is not a distinction the caller can act on",
+			fault.Code, beckn.CodeSchemaInvalidJSONPath)
+	}
+	if fault.Details == nil || fault.Details.Path != "$.message.intent.filters.expression" {
+		t.Errorf("the refusal points at %+v, want $.message.intent.filters.expression",
+			fault.Details)
+	}
+	if fault.Message != domain.ErrInvalidFilterExpression.Error() {
+		t.Errorf("the refusal reads %q, want %q — the operation that was running and the "+
+			"SQLSTATE belong in the operator's log, not in the answer",
+			fault.Message, domain.ErrInvalidFilterExpression.Error())
 	}
 }

@@ -66,31 +66,56 @@ func (s *Service) Discover(
 
 	result, err := s.repo.Search(ctx, query, modes)
 	if err != nil {
-		// A page past the retrieval depth is the CALLER's mistake, and it has
-		// an answer of its own: MapIntent refuses the same bound against the
-		// same config.Search and mints SCH_INVALID_FORMAT at $['offset'], so a
-		// backend raising it must not turn the same request into a 500. Which
-		// of the two guards caught it is this service's business, not the
-		// caller's, and a 500 would also invite a retry of a request that
-		// cannot succeed.
-		//
-		// Matched here rather than left to the mapper alone because the mapper
-		// is the guard in FRONT: this is what answers when a caller reaches the
-		// repository by another route.
-		if errors.Is(err, domain.ErrRetrievalDepth) {
-			return nil, nil, apperrors.
-				Schema(beckn.CodeSchemaInvalidFormat, err.Error()).
-				At(jsonpath.Dot("$['offset']"))
-		}
-
-		logger.FromContext(ctx).Error("searching the catalogue failed", zap.Error(err))
-
-		// Not an empty page. A dead backend and a query that matched nothing
-		// read identically at the caller, and only one of them is an answer.
-		return nil, nil, apperrors.Internal()
+		return nil, nil, typedSearchFailure(ctx, err)
 	}
 
 	return render(result.Catalogs), append(degraded, result.Degraded...), nil
+}
+
+// typedSearchFailure says whose mistake a failed search was.
+//
+// Two of the store's errors are the CALLER's, and both have an answer of their
+// own; everything else is the deployment's and is a 500 with nothing about the
+// backend in it. Lifted out of Discover so that the classification has a name
+// and a place to grow, rather than living inside the happy path it interrupts.
+func typedSearchFailure(ctx context.Context, err error) error {
+	// A page past the retrieval depth: MapIntent refuses the same bound against
+	// the same config.Search and mints SCH_INVALID_FORMAT at $['offset'], so a
+	// backend raising it must not turn the same request into a 500. Which of the
+	// two guards caught it is this service's business, not the caller's, and a
+	// 500 would also invite a retry of a request that cannot succeed.
+	//
+	// Matched here rather than left to the mapper alone because the mapper is
+	// the guard in FRONT: this is what answers when a caller reaches the
+	// repository by another route.
+	if errors.Is(err, domain.ErrRetrievalDepth) {
+		return apperrors.
+			Schema(beckn.CodeSchemaInvalidFormat, err.Error()).
+			At(jsonpath.Dot("$['offset']"))
+	}
+
+	// An expression the store's own parser refused is the caller's mistake too,
+	// and it gets the same code the gate mints for one it refuses itself: which
+	// of the two caught them is not the caller's business.
+	//
+	// The sentinel's OWN text, never err.Error(). The backend wraps this with
+	// the operation it was running and with PostgreSQL's clause, and both are
+	// internals — `run the candidate retrieval` tells the caller nothing about
+	// their filter, and the clause moves when PostgreSQL is upgraded. They reach
+	// the operator through the log line instead.
+	if errors.Is(err, domain.ErrInvalidFilterExpression) {
+		logger.FromContext(ctx).Warn("the filter expression was refused by the store",
+			zap.Error(err))
+		return apperrors.
+			Schema(beckn.CodeSchemaInvalidJSONPath, domain.ErrInvalidFilterExpression.Error()).
+			At(jsonpath.Dot(filtersPath + "['expression']"))
+	}
+
+	logger.FromContext(ctx).Error("searching the catalogue failed", zap.Error(err))
+
+	// Not an empty page. A dead backend and a query that matched nothing read
+	// identically at the caller, and only one of them is an answer.
+	return apperrors.Internal()
 }
 
 // modesFor is the set of retrieval modes an intent asks for.

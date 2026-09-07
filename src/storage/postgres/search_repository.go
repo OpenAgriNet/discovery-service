@@ -2,10 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
@@ -128,7 +131,10 @@ func (s *SearchRepository) Search(
 
 	ranked, filtering, degraded := s.negotiate(modes)
 
-	lists, failed := fold(s.retrieve(ctx, query, ranked, scope))
+	lists, failed, fatal := fold(s.retrieve(ctx, query, ranked, scope))
+	if fatal != nil {
+		return domain.SearchResult{}, fatal
+	}
 	degraded = append(degraded, failed...)
 
 	if len(lists) == 0 && filtering {
@@ -179,7 +185,7 @@ func (s *SearchRepository) filterOnly(
 ) ([]string, error) {
 	ids, err := s.candidates.Retrieve(ctx, query, scope)
 	if err != nil {
-		return nil, fmt.Errorf("run the candidate retrieval: %w", err)
+		return nil, fmt.Errorf("run the candidate retrieval: %w", callersFilter(query, err))
 	}
 	return ids, nil
 }
@@ -195,15 +201,70 @@ func (s *SearchRepository) filterOnly(
 // was the count, which had to know that a short list meant "truncated" rather
 // than "the end"; the page itself never cared, because it is sliced from the
 // fusion either way.
-func fold(outcomes []outcome) (ranked [][]string, degraded []string) {
+func fold(outcomes []outcome) (ranked [][]string, degraded []string, fatal error) {
 	for _, result := range outcomes {
-		if result.err != nil {
+		switch {
+		// The one failure that is NOT the deployment's. Degraded means "this
+		// answer stands, one mode did not contribute", and it cannot mean that
+		// here: every mode binds the same attribute filter, so a mode that the
+		// expression broke is a mode all of them broke, and the siblings that
+		// appear to have answered answered a query the caller never asked for.
+		// Reported instead, so the request path can turn it into the refusal
+		// the caller can act on.
+		case errors.Is(result.err, domain.ErrInvalidFilterExpression):
+			return nil, nil, result.err
+		case result.err != nil:
 			degraded = append(degraded, string(result.mode))
-			continue
+		default:
+			ranked = append(ranked, result.ids)
 		}
-		ranked = append(ranked, result.ids)
 	}
-	return ranked, degraded
+	return ranked, degraded, nil
+}
+
+// callersFilter re-labels the store's refusal of the caller's own attribute
+// filter, and leaves every other error exactly as it was.
+//
+// This is the other half of the deal src/platform/jsonpath strikes: the gate in
+// front of the query is a gate and not a parser, so it settles the three shapes
+// PostgreSQL answers wrongly without complaining and leaves SYNTAX to
+// PostgreSQL — which reports it from inside the search, where every other
+// failure is the deployment's fault and a 500. Unlabelled, a dropped dot is a
+// 500 that invites the retry of a request that can never succeed.
+//
+// Two conditions, and both are load-bearing. The query must have carried a
+// filter, because with none there is no caller text in the statement to blame.
+// And the code must be one of the two PostgreSQL raises while turning text into
+// a jsonpath: 42601 from the parser, 2201B from a like_regex whose pattern does
+// not compile. Everything else — a dead connection, a missing index, a
+// cancelled deadline — stays the deployment's.
+//
+// What makes the first condition enough is that the ONLY text PostgreSQL parses
+// at runtime here is this expression. Every statement in this package is a
+// constant, so a syntax error in one would fail every request rather than the
+// filtered ones, and the suite would not reach this line. Deliberately NOT
+// keyed on PgError.Routine (jsonpath_yyerror, makeItemLikeRegex), which is
+// precise today and an internal symbol PostgreSQL may rename tomorrow.
+//
+// The sentinel goes in FRONT of the original error rather than replacing it:
+// the caller is told the sentinel's own text and nothing else, while the
+// operator's log keeps the SQLSTATE and the clause that failed.
+func callersFilter(query domain.SearchQuery, err error) error {
+	if err == nil || len(query.Filters) == 0 {
+		return err
+	}
+
+	var refusal *pgconn.PgError
+	if !errors.As(err, &refusal) {
+		return err
+	}
+
+	switch refusal.Code {
+	case pgerrcode.SyntaxError, pgerrcode.InvalidRegularExpression:
+		return fmt.Errorf("%w: %w", domain.ErrInvalidFilterExpression, err)
+	default:
+		return err
+	}
 }
 
 // negotiate splits the requested modes into the ranked ones this backend will
@@ -268,7 +329,8 @@ func (s *SearchRepository) retrieve(
 			// Each goroutine writes only its OWN element, so there is no
 			// shared write and no mutex. A channel here would buy nothing: the
 			// barrier below already waits for all of them.
-			slot.ids, slot.err = s.retrievers[slot.mode].Retrieve(ctx, query, scope)
+			ids, err := s.retrievers[slot.mode].Retrieve(ctx, query, scope)
+			slot.ids, slot.err = ids, callersFilter(query, err)
 		}(&outcomes[index])
 	}
 	waiting.Wait()
