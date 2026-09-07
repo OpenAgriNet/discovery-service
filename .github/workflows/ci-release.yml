@@ -1,0 +1,214 @@
+# Named "CI" on purpose, same as ci.yml: the check names GitHub reports are
+# "<workflow name> / <job name>", so this keeps them reading
+# "CI / Build Artifact (amd64)" and "CI / Publish Artifact".
+#
+# A separate file rather than two more jobs in ci.yml behind an `if:`. A job
+# whose `if:` evaluates false still posts a *skipped* check to the PR, with
+# `${{ matrix.* }}` left unexpanded in its name because the matrix leg never
+# materialised. A workflow whose trigger does not match simply does not exist
+# on that event, so a PR shows nothing from here at all.
+#
+# The one cost: the Actions sidebar lists two entries called "CI". Rename this
+# workflow if that ever matters more than the check names do.
+name: CI
+
+# Annotated tags only, per OAN convention: v{SemVer}, with an optional -rcN
+# pre-release suffix. These are GitHub filter patterns, not regexes — `+` and
+# `[]` work, so the digits are real digits and a branch-shaped tag like
+# `release/foo` cannot match. The bare spelling is admitted too, so a release
+# cut as 0.1.0 publishes rather than silently doing nothing.
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+# Least privilege at the workflow level; the two jobs add what they need. The
+# previous workflow granted id-token: write to everything for a Google Workload
+# Identity exchange that only happens when GOOGLE_ARTIFACT_REGISTRY_ENABLED is
+# set; it is declared per job below instead.
+permissions:
+  contents: read
+
+# Per tag, and deliberately never cancelled: a half-cancelled release can leave
+# arch tags pushed with no manifest stitching them, which is worse than two
+# releases queueing.
+concurrency:
+  group: ci-release-${{ github.ref }}
+  cancel-in-progress: false
+
+# The registry switches, read from repo variables (Settings > Secrets and
+# variables > Actions > Variables) so a registry is turned on without a
+# workflow edit. GHCR defaults on; the rest default off until their secrets
+# exist. The Makefile turns these into the actual repo paths — adding a
+# registry is one line there and one login step here.
+env:
+  GHCR_ENABLED: ${{ vars.GHCR_ENABLED != 'false' }}
+  DOCKERHUB_ENABLED: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
+  AZURE_CONTAINER_REGISTRY_ENABLED: ${{ vars.AZURE_CONTAINER_REGISTRY_ENABLED == 'true' }}
+  GOOGLE_ARTIFACT_REGISTRY_ENABLED: ${{ vars.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true' }}
+  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE }}
+  AZURE_REGISTRY_NAME: ${{ secrets.AZURE_REGISTRY_NAME }}
+  GCP_REGION: ${{ secrets.GCP_REGION }}
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GOOGLE_ARTIFACT_REPO: ${{ secrets.GOOGLE_ARTIFACT_REPO }}
+
+jobs:
+  build-artifact:
+    # One leg per architecture, on a runner of that architecture — not one leg
+    # with QEMU, which turns a few minutes of Go toolchain build into tens of
+    # them. Both runner labels are free for public repos, so the only cost of
+    # the second leg is that it is a second check.
+    name: Build Artifact (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # A release wants both legs' verdicts. Default fail-fast cancels arm64
+      # the moment amd64 fails, so a single-arch break hides the other arch's
+      # result and costs a full re-run to recover it. Publish Artifact needs
+      # both to have succeeded regardless, so nothing ships either way.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      # The push to a registry. Read is not enough.
+      packages: write
+      # Workload Identity Federation (google-github-actions/auth below)
+      # exchanges a GitHub OIDC token for Google credentials; without this the
+      # job cannot request that token and the GAR leg fails to authenticate.
+      id-token: write
+    steps:
+      # fetch-depth: 0 — VERSION comes from `git describe --tags`, which needs
+      # the tag objects, not just the commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/trivy-cache
+
+      # First, before the registry logins: this action replaces the Docker
+      # credential store wholesale, while `docker login` merges into it, so the
+      # reverse order would drop the registry credential on the floor.
+      - name: Log in to dhi.io
+        uses: ./.github/actions/dhi-login
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # GITHUB_TOKEN can be denied write_package when creating a brand-new
+      # package under a personal (non-org) namespace, even with this job's
+      # `packages: write` and the repo's default token permissions both set to
+      # write — a documented GHCR quirk. GHCR_PAT (classic PAT, write:packages)
+      # is the standard workaround; falls back to GITHUB_TOKEN when no such
+      # secret is set, which is enough once the package exists or for an
+      # org-owned repo.
+      - name: Log in to GHCR
+        if: env.GHCR_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Log in to Azure Container Registry
+        if: env.AZURE_CONTAINER_REGISTRY_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_NAME }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Authenticate to Google Cloud
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Configure Docker for Google Artifact Registry
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      # Builds the image into this runner's local Docker daemon and gates it on
+      # Trivy — exit 1 on a finding, not a report — so the exact bytes about to
+      # ship are scanned before they are tagged for or pushed to any registry.
+      # One scan covers every registry, because it is one image.
+      - run: make image-build ARCH=${{ matrix.arch }}
+
+      # Re-tags that same scanned image per enabled registry and pushes it. No
+      # rebuild and no re-scan, so what lands in the registry is what the gate
+      # above passed.
+      - run: make image-push ARCH=${{ matrix.arch }}
+
+  publish-artifact:
+    name: Publish Artifact
+    # No always() and no if-failure handling: `needs` alone means a failed or
+    # cancelled build leg skips this job, which is the point — a version tag
+    # must never resolve to only one architecture.
+    needs: build-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      # Checkout is for the Makefile and for the tag objects VERSION reads;
+      # this job builds nothing.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log in to GHCR
+        if: env.GHCR_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Log in to Azure Container Registry
+        if: env.AZURE_CONTAINER_REGISTRY_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_NAME }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Authenticate to Google Cloud
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Configure Docker for Google Artifact Registry
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      # The only step that creates the tag users actually pull: one manifest
+      # list per registry from the arch tags the build legs pushed, which is
+      # what lets `docker pull` resolve the right arch by itself. Then inspects
+      # it, so the log shows which platforms the published tag really resolves
+      # to rather than asserting it.
+      - run: make image-publish
