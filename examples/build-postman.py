@@ -250,20 +250,64 @@ pm.test("three resources and one provider were indexed", () => {
 REFUSAL_TEST = """
 const res = pm.response.json();
 
-// The same intent as case 06 written WITHOUT the ?(...) filter. PostgreSQL
-// runs it happily: `@?` is given a comparison, a comparison always yields an
-// item, and `false` is an item - so it answers true for EVERY row and the
-// caller receives the whole corpus formatted as a filtered page, with no
-// error anywhere. A 400 here is the feature, not a limitation.
+// __WHY__
 pm.test("HTTP 400", () => pm.response.to.have.status(400));
 
-pm.test("refused as SCH_INVALID_JSONPATH", () =>
-    pm.expect(res.message.error.code).to.eql("SCH_INVALID_JSONPATH"));
+pm.test("refused as __WANT_CODE__", () =>
+    pm.expect(res.message.error.code).to.eql("__WANT_CODE__"));
 
-pm.test("the fault names the expression", () =>
-    pm.expect(res.message.error.details.path)
-      .to.eql("$.message.intent.filters.expression"));
+// The PATH and not only the code. Each of these codes is minted in more than
+// one place, so the code alone does not say which check fired - and a fault
+// pointing at the wrong member is one the caller cannot act on.
+pm.test("the fault names __WANT_PATH__", () =>
+    pm.expect(res.message.error.details.path).to.eql("__WANT_PATH__"));
 """
+
+# file -> (name, expected code, expected path, why, note)
+REFUSE = [
+    (
+        "08-discover-invalid-jsonpath.json",
+        "08 Refusal - jsonpath with no ?(...) filter",
+        "SCH_INVALID_JSONPATH",
+        "$.message.intent.filters.expression",
+        "Case 06's intent written WITHOUT the ?(...) filter. PostgreSQL runs "
+        "it happily: `@?` is given a comparison, a comparison always yields "
+        "an item, and `false` is an item - so it answers true for EVERY row "
+        "and the caller receives the whole corpus formatted as a filtered "
+        "page, with no error anywhere. A 400 here is the feature.",
+        "Expected to FAIL with 400. See the test script for why this shape is "
+        "dangerous enough to refuse.",
+    ),
+    (
+        "17-discover-no-criterion.json",
+        "17 Refusal - an intent naming no criterion",
+        "SCH_INVALID_FORMAT",
+        "$.message.intent",
+        "None of textSearch, spatial or filters, and nothing further down "
+        "objects: no criterion asks for no retrieval mode, no retriever runs, "
+        "and the empty fusion ships as `catalogs: []` under a 200 - a page "
+        "identical to the honest empty one, over a corpus that has all three "
+        "resources. schemaContext is deliberately not a fourth criterion: it "
+        "narrows a search, it cannot drive one.",
+        "Expected to FAIL with 400. An empty page would be a plausible answer "
+        "to a search that never ran.",
+    ),
+    (
+        "18-discover-unparsable-jsonpath.json",
+        "18 Refusal - jsonpath PostgreSQL cannot parse",
+        "SCH_INVALID_JSONPATH",
+        "$.message.intent.filters.expression",
+        "Case 06's filter with ONE character removed - the dot before "
+        "`resources[*]`. The form gate passes it, because the root is right "
+        "and the ?(...) is there and that is all that gate decides, and "
+        "PostgreSQL then refuses the cast from INSIDE the search, where every "
+        "other failure is the deployment's fault and a 500. The same code as "
+        "08: which side of the query noticed is not a distinction the caller "
+        "can act on.",
+        "Expected to FAIL with 400 rather than 500 - the dropped dot is the "
+        "caller's to fix, and a 5xx asks them to retry it unchanged.",
+    ),
+]
 
 HEALTH_TEST = """
 pm.test("HTTP 200", () => pm.response.to.have.status(200));
@@ -332,13 +376,14 @@ def main():
         discover.append(request(name, "POST", "/discover",
                                 raw=body_of(filename), script=script, note=note))
 
-    refusals = [
-        request("08 Refusal - jsonpath with no ?(...) filter", "POST", "/discover",
-                raw=body_of("08-discover-invalid-jsonpath.json"),
-                script=REFUSAL_TEST,
-                note="Expected to FAIL with 400. See the test script for why "
-                     "this shape is dangerous enough to refuse.")
-    ]
+    refusals = []
+    for filename, name, code, path, why, note in REFUSE:
+        script = (REFUSAL_TEST
+                  .replace("__WANT_CODE__", code)
+                  .replace("__WANT_PATH__", path)
+                  .replace("__WHY__", why))
+        refusals.append(request(name, "POST", "/discover",
+                                raw=body_of(filename), script=script, note=note))
 
     collection = {
         "info": {

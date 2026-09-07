@@ -137,6 +137,29 @@ discover_case() {
   echo
 }
 
+# refusal_case <file> <label> <expected code> <expected path>
+#
+# The PATH is asserted and not only the code. A refusal that points at the
+# wrong member is one the caller cannot act on — and every code here is minted
+# in more than one place, so the code alone does not say which check fired.
+refusal_case() {
+  local file="$DIR/$1" label="$2" want="$3|$4" body got
+  printf '%s\n' "$label"
+  body="$(post /discover "$file")"
+  got="$(py '
+import json, sys
+res = json.loads(sys.argv[1])
+err = (res.get("message") or {}).get("error") or {}
+print("%s|%s" % (err.get("code"), (err.get("details") or {}).get("path")))
+' "$body")"
+  if [ "$(status)" = "400" ] && [ "$got" = "$want" ]; then
+    ok "400 $got"
+  else
+    bad "HTTP $(status) $got — want 400 ${want%|*} at ${want#*|}"
+  fi
+  echo
+}
+
 VILLAGE=res-wx-village-belagavi
 POINT=res-wx-point-dharwad
 ALERT=res-wx-alert-statewide
@@ -321,20 +344,26 @@ printf '%s\n' "=== REFUSALS"
 # The same intent as 06 written WITHOUT the ? (...) filter. PostgreSQL runs it
 # happily and `@?` answers true for every row, so the caller gets the entire
 # corpus formatted as a filtered page and no error. A 400 here is the feature.
-printf '%s\n' "08  jsonpath with no ?(...) -> 400 SCH_INVALID_JSONPATH"
-body="$(post /discover "$DIR/08-discover-invalid-jsonpath.json")"
-got="$(py '
-import json, sys
-res = json.loads(sys.argv[1])
-err = (res.get("message") or {}).get("error") or {}
-print("%s|%s" % (err.get("code"), (err.get("details") or {}).get("path")))
-' "$body")"
-if [ "$(status)" = "400" ] && [ "$got" = "SCH_INVALID_JSONPATH|\$.message.intent.filters.expression" ]; then
-  ok "400 $got"
-else
-  bad "HTTP $(status) $got — want 400 SCH_INVALID_JSONPATH at \$.message.intent.filters.expression"
-fi
-echo
+refusal_case 08-discover-invalid-jsonpath.json \
+  "08  jsonpath with no ?(...) -> 400 SCH_INVALID_JSONPATH" \
+  "SCH_INVALID_JSONPATH" "\$.message.intent.filters.expression"
+
+# An intent naming none of textSearch, spatial or filters. Nothing further down
+# objects: no criterion asks for no mode, no retriever runs, and the empty
+# fusion is served as `"catalogs": []` under a 200 — a page indistinguishable
+# from the honest empty one, over a corpus that HAS all three resources.
+refusal_case 17-discover-no-criterion.json \
+  "17  intent with no criterion -> 400 SCH_INVALID_FORMAT" \
+  "SCH_INVALID_FORMAT" "\$.message.intent"
+
+# Case 06's filter with ONE character removed — the dot before `resources[*]`.
+# The form gate passes it (the root is right and the ? (...) is there, which is
+# all that gate decides) and PostgreSQL refuses the cast from inside the search,
+# where every other failure is the deployment's and a 500. This is the case that
+# tells the caller to fix their expression instead of to retry it.
+refusal_case 18-discover-unparsable-jsonpath.json \
+  "18  jsonpath PostgreSQL cannot parse -> 400 SCH_INVALID_JSONPATH" \
+  "SCH_INVALID_JSONPATH" "\$.message.intent.filters.expression"
 
 printf '%s\n' "--- pagination"
 body="$(curl -sS -X POST "$BASE/discover?limit=1&offset=0" \
