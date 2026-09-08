@@ -1,0 +1,133 @@
+{
+  "$comment": [
+    "The interop contract: every attribute a component OTHER THAN THE EMITTER reads.",
+    "Vendored, and intended to be byte-identical in both repositories.",
+    "",
+    "Hand-authored, not generated, and deliberately so. A generator over beckn-onix",
+    "would have to AST-walk literal call sites in stdHandler.go and var declarations",
+    "in pluginMetrics.go, and a generator whose input is string literals ratifies",
+    "whatever was last typed — including a typo — the moment it is regenerated.",
+    "Fifteen reviewed rows is the right size for a file whose whole value is that a",
+    "human agreed to it.",
+    "",
+    "What this file catches: a rename inside one repository. What it does NOT catch:",
+    "both repositories holding stale copies of it, in which case our test passes",
+    "green and spans silently stop stitching. telemetry-seam.md 5g ranks the three",
+    "mitigations, and additive-only aliasing is the only one that removes the failure",
+    "mode rather than detecting it. Any claim that this file prevents cross-repo",
+    "drift is wrong.",
+    "",
+    "Explicitly NOT here: onix's onix_step_* and onix_plugin_* internals, which",
+    "nothing of ours reads; and our sender.unverified / sender.unidentified, which",
+    "are a policy the facilitator has not responded to. A key earns a row by being",
+    "read across a boundary, not by being important."
+  ],
+
+  "source": {
+    "repo": "https://github.com/beckn/beckn-onix",
+    "ref": "v1.8.2",
+    "$comment": [
+      "Pinned to a tag rather than a bare commit. v1.8.2 is the newest valid semver",
+      "on beckn-onix — its v2.0 tags are not valid semver and are unresolvable.",
+      "telemetry-seam.md open item 3 proposes moving this file's home to",
+      "network-telemetry-spec/schemas/, which both repositories already treat as",
+      "normative. Propose it; it does not block anything here."
+    ],
+    "vendored": "2026-09-09"
+  },
+
+  "attributes": [
+    {
+      "key": "eid",
+      "where": "resource",
+      "fact": "ResourceEID",
+      "note": "API for spans, METRIC for metrics, AUDIT — not LOG — for log records. The one Resource attribute that varies per signal."
+    },
+    {
+      "key": "producer",
+      "where": "resource",
+      "fact": "ResourceProducer",
+      "note": "The participant id, an FQDN. Distinct from service.name, which is not in this contract because it is ClickStack's grouping column and nothing across a boundary reads it."
+    },
+    {
+      "key": "domain",
+      "where": "resource",
+      "fact": "ResourceDomain",
+      "note": "The sector. Required by the spec on all three signals, which is why the Resource is constructed once."
+    },
+    {
+      "key": "network.id",
+      "where": "resource",
+      "fact": "ResourceNetworkID",
+      "note": "Ours rather than the spec's, but read by the network layer, so its spelling is no longer ours alone."
+    },
+    {
+      "key": "transaction_id",
+      "where": "span-alias",
+      "fact": "BecknTransactionID",
+      "note": "I1. beckn-onix's network collector rewrites trace_id from an attribute named literally this (otel-collector-network/config.yaml:23-25). A span spelled beckn.transactionId alone is never stitched to anything."
+    },
+    {
+      "key": "message_id",
+      "where": "span-alias",
+      "fact": "BecknMessageID",
+      "note": "I1, and a searchable tag rather than a join: the collector deliberately does not map it onto span_id, because several nodes emit spans for one Beckn message and identical span ids would corrupt the trace."
+    },
+    {
+      "key": "sender.id",
+      "where": "span",
+      "fact": "SenderID",
+      "note": "Optional here — participant identity was parked with Task 6 — and beckn-onix's filter/network_traces drops every span where it is nil (node/otel-collector-bap/config.yaml:29-33). That is U2, onix's bug to fix by filtering on transaction_id, which is what the pipeline downstream actually consumes. Do not synthesise a value to buy admission."
+    },
+    {
+      "key": "recipient.id",
+      "where": "span",
+      "fact": "RecipientID",
+      "note": "Who answered. beckn-onix's spans use this spelling (pluginMetrics.go:49, stdHandler.go:855); receiver.id appears there only on audit-log records and no collector pipeline reads it off a span, so there is no alias for it here. One capital letter from beckn.receiverId, which means the opposite — the caller's claim about who it addressed."
+    },
+    {
+      "key": "span_uuid",
+      "where": "span",
+      "fact": "SpanUUID",
+      "note": "Generated per span in a SpanProcessor's OnStart."
+    },
+    {
+      "key": "observedTimeUnixNano",
+      "where": "span",
+      "fact": "ObservedTimeUnixNano",
+      "note": "Unix nanos as a string. The spec's prose says ISO; its field name and examples say nanos, and the name wins."
+    },
+    {
+      "key": "http.method",
+      "where": "span",
+      "fact": "HTTPMethod",
+      "note": "Part of the spec's mandatory span profile, so a facilitator reads it."
+    },
+    {
+      "key": "http.host",
+      "where": "span",
+      "fact": "HTTPHost",
+      "note": "Part of the spec's mandatory span profile."
+    },
+    {
+      "key": "http.route",
+      "where": "span",
+      "fact": "HTTPRoute",
+      "note": "Both sides spell the key identically; the divergence is in the value. We emit the route template, the spec's prose says URL. That is a value-derivation decision recorded on the Definition, not a naming disagreement."
+    },
+    {
+      "key": "metric_uuid",
+      "where": "metric",
+      "fact": "",
+      "owner": "Task 25",
+      "note": "No Definition owns it yet. It stays in the contract because the contract is the interop surface, not our build order."
+    },
+    {
+      "key": "metric.code",
+      "where": "metric",
+      "fact": "",
+      "owner": "the OAN network — telemetry-seam.md open item 2",
+      "note": "Instrument.Code is empty on every Scope: Node row and a completeness failure on any Scope: Network one, so Task 24 fails loudly rather than inventing codes."
+    }
+  ]
+}
