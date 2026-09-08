@@ -38,8 +38,17 @@ than inventing values to get past them.
 **Tasks 25 and 26 were added by A25 and neither is blocked.** 25 is the
 node-operator metric set — distinct from Task 24, which is the facilitator's
 signal and is what the registry blocks; conflating them is why this service has
-no metrics at all today. 26 encodes the never-emitted list as a test. So the
-order after 23e is **25, then 26 once 23f unblocks**, not "wait for the network".
+no metrics at all today. 26 encodes the never-emitted list as a test.
+
+This paragraph used to say "neither is blocked" and then, one sentence later,
+"26 once 23f unblocks" — a contradiction inside a single paragraph, and the
+second half was the wrong one. `telemetry-seam.md` §5f settles it: the deny-list
+test asserts over the **serialised bytes** of the facilitator projection using an
+in-memory exporter, and an in-memory exporter is not 23f. It needs the projection
+to exist, which is 23d. **So the order after 23e is 25, then 26 — and 26 can move
+earlier, to directly after 23d, which is where it belongs.** Nothing about it
+waits on the network, and parking it behind 23f is what left OP11 as a rule
+nothing enforces for as long as it has been.
 
 A25 also changes two sub-tasks already in flight, and both changes are cheap only
 if made when that sub-task is built rather than after: **23a** stamps build

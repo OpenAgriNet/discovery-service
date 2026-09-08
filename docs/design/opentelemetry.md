@@ -321,7 +321,7 @@ answered the wrong questions.
 | OP8 | **Cardinality and cost.** Export here is always-on and unsampled. Defensible at Phase 1 volumes, not at network scale, and cheaper to decide before ingestion is paid for than after | **Decision 6** |
 | OP9 | **An SLO, so a latency number has a verdict attached.** "p95 is 300 ms" means nothing without a target, and the plan's 20 ms retrieval budget is an internal figure rather than a served-request objective | Decision 7 |
 | OP10 | **What pages a human.** An alert list falls out of OP1, OP3 and OP4, and out of nothing else | Task 25, once those exist |
-| OP11 | **The deny-list is testable.** Today it is a rule 23a–23e comply with and nothing enforces. A conformance test over the facilitator exporter is the only thing that turns it into a pin | 23f, plus **Task 26** |
+| OP11 | **The deny-list is testable.** Today it is a rule 23a–23e comply with and nothing enforces. A conformance test over the facilitator exporter is the only thing that turns it into a pin. It asserts over the exported **bytes**, regexing the deny-list across string *values* rather than key names — `Visibility` is closed-world over keys and the risk is in values: a caller-supplied `beckn.schemaContext` URI, a `status.message`, a `zap.Error(err)` carrying wrapped driver text | **Task 26**, and it needs only an in-memory exporter — so **23d**, not 23f |
 | OP12 | **Clock discipline.** Four layers, four clocks, one stitched trace: skew shows up as a child span starting before its parent, and as negative inter-layer deltas. Cheap to require, expensive to debug once someone is charting it | onix **U4** |
 
 ### What this changes in the plan
@@ -332,7 +332,7 @@ answered the wrong questions.
 | **23c** | Add the I1 alias attributes beside the `beckn.*` pair. Propagation (I3) was already in scope |
 | **23d** | Unchanged, and *smaller*: P7 moves to the provider adapter, so the H3-coarsening question raised against 23d is **withdrawn as a discovery-service concern**. See open question 11 |
 | **Task 25** (new) | **Node-operator metrics.** The saturation *levels* of OP3, Postgres dependency health, one liveness gauge, and a duration histogram conditional on Decision 6. Deliberately *not* Task 24: these are `onix_*`-style operational numbers for the node pipeline and are **not blocked** on the metric-code registry that blocks the facilitator's METRIC signal. Equally deliberately not a mirror of the spans — a metric that restates a span fact is the `duration_ms` mistake one signal up. What earns a metric here is a number the span layer cannot hold: a level between events, or a distribution that survives the sampler Decision 6 hands to deployments. Per-provider freshness and the alert list are **struck** — see Task 25's own section |
-| **Task 26** (new) | **Deny-list conformance test** — OP11 |
+| **Task 26** (new) | **Deny-list conformance test** — OP11. Asserted over exported bytes, not key names, and gated on 23d rather than 23f: an in-memory exporter is all it needs |
 
 Four items in onix, none of which this repo can land:
 
@@ -715,8 +715,11 @@ exists to permit.
 
 ## Divergences from the spec
 
-Every mandatory field above is emitted. These six are where we knowingly differ,
-collected here so a reviewer sees them in one place.
+Every mandatory field above is emitted. These nine are where we knowingly differ,
+collected here so a reviewer sees them in one place. It read "these six" while
+rows 7 and 8 sat unlisted in the example commentary below and row 9 was in no
+document at all — a divergence noted in passing is one that gets re-litigated as
+a bug.
 
 | | Divergence | Why |
 |---|---|---|
@@ -726,6 +729,9 @@ collected here so a reviewer sees them in one place.
 | 4 | **No METRIC signal from this binary** | Mandatory for the participant, but `ref-impl-design.md` places computation in micro-observability. Task 24 |
 | 5 | **`traceId` / `spanId` are OTLP hex**, not the spec's UUIDs | The spec's examples use dashed UUIDs — `d4ae9294-ab00-11ee-9db4-325096b39f47` — which are **not valid OTLP**: the protocol requires 16-byte and 8-byte hex. Design principle 2 says adopt OpenTelemetry, so the examples are wrong, not the protocol. **But a facilitator validating against those examples would reject every span we send.** Open question 9 |
 | 6 | **Event timestamps are `timeUnixNano`**, not the spec's `time` | Same root cause as 5, and found the same way: the spec's event shape names a field `time` carrying an ISO string, and OTLP span events carry `timeUnixNano`. This is not a field we choose — the SDK serialises it, so honouring the spec's spelling would mean rewriting the OTLP payload on the way out. Note the spec is already inconsistent with itself here in our favour: it insists on nanos for `observedTimeUnixNano` (divergence note under Span attributes). Open question 9 covers both |
+| 7 | **`status` is `{"code":"STATUS_CODE_OK"}`**, not the spec's `"Ok"` | Same root cause as 5 and 6 and the same answer: `status` is a **field on the OTLP `Span` message**, not an attribute, so no `attribute.KeyValue` can name it and no registry row can reach it. The SDK serialises the enum. This is the boundary `telemetry-seam.md` §1 draws — same value under two keys is a registry alias; a structural OTLP field serialised differently is the exporter's, and 23f is the only place it can be rewritten |
+| 8 | **`kind` is `SPAN_KIND_SERVER`**, not the spec's `Server` | Identical to 7 — an enum on the `Span` message. Both were already stated in the example commentary below as things "easy to get wrong by hand", which is how they escaped this table for so long: described accurately, filed as a formatting note rather than as a divergence a facilitator might reject on |
+| 9 | **`http.route` carries the route template**, where the spec's prose says URL | The only one of the nine that is a **value** divergence rather than a spelling or serialisation one, and the only one a registry row can hold. `/discover` is bounded and a URL is not, so the spec's reading makes `http.route` unusable as a metric label and leaks any query string the caller wrote into an always-on, unsampled export. We keep the template and record the reason on the `Definition` itself (`Note`), where the next reader meets it before "fixing" it toward the spec |
 
 ### The spec is prose only
 
@@ -755,7 +761,8 @@ The realistic default: Phase 1 ships `EMBEDDING_PROVIDER=noop` (A5), so
 illustrative, but every field name, enum spelling and timestamp is what the SDK
 actually emits and what a facilitator actually parses — including the ones that
 are easy to get wrong by hand: events carry `timeUnixNano` and not `time`
-(divergence 6), `status` is an object and `kind` an enum name, and every
+(divergence 6), `status` is an object and `kind` an enum name (divergences 7 and
+8, which is where they are now argued rather than only noted), and every
 timestamp in the block is nanos on one clock so the deltas below can be read off
 it. An earlier draft of this example had ISO event times a year adrift from the
 span's own start, which is exactly the fault 23d's monotonic-time assertion
@@ -987,18 +994,35 @@ survives, with no attribute defined to carry it, is the fact not surviving.
 - `sum` aggregation only, **non-monotonic** — the only kind this spec version allows.
 - `aggregationTemporality`: `1` delta, `2` cumulative.
 - Required per data point: `metric_uuid`, `observedTimeUnixNano`, `metric.code`.
-  Optional: `metric.category`, `label`, `granularity`, `frequency`.
-- **The same Resource attributes as the spans** — another reason `producer` and
-  `domain` must be settled once and shared across signals, not decided per signal.
+  Optional: **`metric.label`** (not `label` — an earlier draft here dropped the
+  prefix), `metric.category`, `granularity`, `frequency`.
+- Also Required and not previously listed here, because they sit on the metric
+  rather than on the data point and so were read past: **`name`** and **`unit`**
+  on the stream, and **`asDouble`**, **`startTimeUnixNano`** and
+  **`endTimeUnixNano`** per data point. Only the first two are ours to declare —
+  `telemetry-seam.md` puts them on `Instrument`. `asDouble` is the measurement
+  itself and the two timestamps are the periodic reader's collection window; a
+  table declaring either would be a table declaring the clock.
+- **The same Resource as the spans, with one attribute deliberately different:
+  `eid` is `METRIC` here, not `API`.** This paragraph read "the same Resource
+  attributes as the spans" and that was wrong by exactly one field — the one
+  field a consumer routes on. Everything else is shared, which is the reason
+  `producer` and `domain` are settled once at boot rather than per signal; `eid`
+  is the single exception and is therefore a registry row with a per-signal
+  projection rule, not a literal in `Init`.
 
 ---
 
 ## Build order
 
-A23 split Task 23 into six. One review gate between each.
+A23 split Task 23 into six. One review gate between each. **`telemetry-seam.md`
+adds a seventh in front of them, 23a0**, because the attribute registry every
+later sub-task reads sat in no task at all — 23a's Produces is `telemetry.go`,
+and an implementer starting there would find the plan does not describe the work.
 
 | | Sub-task | Files | Tests pin |
 |---|---|---|---|
+| **23a0** | The attribute registry | new `platform/telemetry/fact/` — `fact.go`, `registry.go`, `record.go`; `tests/architecture/boundary_test.go`; `tests/testdata/cross-layer-attributes.json` | Every `Key` has a complete `Definition`, with `Cardinality`, `Visibility` and `Kind` each refusing their `Unspecified` zero; `Signals&Label ⇒ Bounded ∧ len(Values)>0`; `Required ⇒ Signals&Resource`; no `Definition` names an OTLP structural field (`status`, `kind`, `traceId`…); the fifteen cross-layer keys match the vendored fixture byte for byte; `fact` imports nothing outside `context`, `iter`, `time`; controllers and `src/storage` import no OTel. **Emits nothing** — it is a table and its guards. Note this makes `fact/` a node 23b, 23c and 23d all edit, which partly re-couples the six gates A23 separated; concentrating that coupling in one reviewed sub-task is the point of doing it first |
 | **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go`, `container.go`, `server.go`, `Makefile` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
 | **23b** | The observation record | `middlewares/correlation.go`, `envelope.go`, `request_logger.go`, `trace.go` | Log output byte-identical before and after. **Changes no output**; acceptance is the existing suite passing with no test file edited — including `request_logger_test.go:181,207`, which mount `RequestLogger` with no `Trace` above. Also pins the adopt-or-allocate rule from both sides: `Trace` first, and `RequestLogger` alone |
 | **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds. **Plus I1**: `transaction_id` and `message_id` carry the same values as their `beckn.*` counterparts, asserted as equal in one test so the pair cannot drift. Two aliases, not three — `recipient.id` is already onix's span spelling and needs none, and **no `receiver.id` is emitted**; a test asserts the exported key set does not contain it |
@@ -1010,8 +1034,8 @@ Two tasks follow 23, and neither is blocked by what blocks 23f:
 
 | | Task | Files | Tests pin |
 |---|---|---|---|
-| **25** | **Node-operator metrics** — OP1..OP4, OP6, OP10 | new `platform/telemetry/metrics.go`; `storage/postgres/`, `middlewares/ratelimit.go`, `middlewares/envelope.go` | A rejected request increments its counter: a 429 from `RateLimit` and a body-ceiling refusal from `Envelope` are each **counted**, which neither is today because both short-circuit above the handler. Pool acquire-wait is observed under a pool deliberately sized to 1. Every instrument is registered under our own scope, not the global meter |
-| **26** | **Deny-list conformance** — OP11 | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it. Fixture-driven, so adding a denied field is a fixture line |
+| **25** | **Node-operator metrics** — OP1, OP3 and OP4, plus OP2 conditionally. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `project_label.go`; `storage/postgres/` | Pool acquire-wait and in-use are observed under a pool deliberately sized to 1 — a **level**, sampled on a clock, which is the whole of OP3 and the only part of it no span can carry. One liveness gauge, held to the standard of beating `/readyz` at something. Every instrument is registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up |
+| **26** | **Deny-list conformance** — OP11. Runnable **after 23d**, not after 23f | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it — and over its string *values*, not its keys, since the risk is a caller-supplied URI or a wrapped driver error and neither is a key `Visibility` can reach. Facilitator projection only: asserting it on the ClickStack stream would forbid the local analysis the split exists to permit. Fixture-driven, so adding a denied field is a fixture line, and it carries a vacuity guard — a conformance test that passes over zero inputs is a failure this repo has already met once |
 
 Notes that bite:
 
