@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-25
-**Amended:** 2026-09-07 — see Amendments
+**Amended:** 2026-09-07, 2026-09-08 — see Amendments
 
 ## Context
 
@@ -19,8 +19,10 @@ id.
 The tracing middleware is **hand-rolled** against `go.opentelemetry.io/otel/trace`
 rather than mounted from `otelhttp`.
 
-**No metric signal is emitted from this process.** RED figures are computed
-downstream, from the spans, by a component outside this binary.
+**The network's METRIC signal is not emitted from this process.** Its RED
+figures are computed downstream, from the spans, by a component outside this
+binary. **Node-operator metrics are emitted from this process** — the two are
+different obligations to different audiences, and Amendment 3 says why.
 
 ## Alternatives considered
 
@@ -30,7 +32,8 @@ downstream, from the spans, by a component outside this binary.
 - **`otelhttp`** — the obvious way to instrument a `http.Handler`, and the
   original decision. Rejected under Amendment 1 below.
 - **In-process metrics (Prometheus client, or an OTel meter)** — the original
-  decision. Rejected under Amendment 2 below.
+  decision. Rejected for the *network* signal under Amendment 2, reinstated for
+  the *operator* signal under Amendment 3.
 
 ## Consequences
 
@@ -40,10 +43,11 @@ removed. Dashboards and analytics over the exported data are out of scope for
 this service (an add-on, e.g. Obsrv, owns them).
 
 Hand-rolling the middleware means roughly thirty lines this repository owns and
-tests, in exchange for control of the instrumentation scope. Emitting no metrics
-means the participant's mandatory METRIC obligation is discharged elsewhere, and
-`docs/design/discover-and-publish.md` Task 24 is where that is tracked so it is
-not mistaken for solved.
+tests, in exchange for control of the instrumentation scope. Emitting no network
+metrics means the participant's mandatory METRIC obligation is discharged
+elsewhere, and `docs/design/discover-and-publish.md` Task 24 is where that is
+tracked so it is not mistaken for solved. Task 25 is the operator set that stays
+here.
 
 ## Amendments
 
@@ -72,6 +76,31 @@ telemetry spec, which a facilitator consumes.
    that has storage and aggregation for exactly this reason. The obligation is
    real and mandatory for the participant — it is discharged by Task 24, over
    the spans this ADR's tracing produces, not by a meter here.
+
+**2026-09-08, by A25.** Amendment 2 was read as "this service emits no metrics",
+and that is not what its argument supports. It is narrowed here rather than
+reversed.
+
+3. **Amendment 2 covers the network signal only.** The reasoning is that a
+   stateless replica cannot compute a windowed *network* aggregate — true, and
+   it is why Task 24 exists. It says nothing about the numbers a node operator
+   needs to keep this replica alive, which are per-replica by definition and so
+   have nothing to reassemble. Read as a blanket ban it produced a service with
+   three configured ceilings — the connection pool, the rate limiter, the body
+   size — and no way to see any of them approached, where a 429 is written by
+   middleware above the handler and therefore produces no span, no event and no
+   counter. The failure an operator most needs to see was the one made
+   unobservable. Task 25 emits that set, under our own scope, and is not blocked
+   by what blocks Task 24.
+
+4. **Propagation is not enough on its own.** "W3C Trace Context propagated in
+   and out" is necessary and does not by itself make this service visible to the
+   network. beckn-onix's collectors admit spans on one attribute spelling and
+   join them on another, so a correctly propagated span can still be dropped
+   after export or stitched to nothing — with no error reported anywhere. The
+   alias attributes that fix it are named in `opentelemetry.md` *The stack — who
+   answers what*; recorded here because "we propagate `traceparent`" is the
+   sentence that makes someone think the interop question is closed.
 
 The wire shape those spans must have is `docs/design/opentelemetry.md`, which is
 binding on the shape of a span. This ADR remains the decision to use

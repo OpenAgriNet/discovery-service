@@ -5,8 +5,10 @@ the only datastore; there is no spatial extension and no separate search engine.
 
 ## The plan is the spec
 
-`docs/design/discover-and-publish.md` is binding. It carries 23 dependency-ordered
+`docs/design/discover-and-publish.md` is binding. It carries 26 dependency-ordered
 tasks, 35 acceptance scenarios and the reasoning behind every schema decision.
+Tasks 24-26 were added after the original 23 — 24 by A23, 25 and 26 by A25 —
+so a stale "23 tasks" anywhere means that document, not this one, is behind.
 Work one task at a time, in numeric order.
 
 - **Global Constraints** (near the top) is inherited by every task. Read it once
@@ -127,4 +129,4 @@ if someone changes it back. A commit message that restates the diff is wasted.
 | `tests/` | `acceptance/`, `dbtest/`, `testdata/`, and `architecture/boundary_test.go` — the import-graph guard on the TRD §5 swap boundary |
 | `docs/design/` | The plan (`discover-and-publish.md`), the telemetry design (`opentelemetry.md`), the driver prompts (`implementation-prompts.md`), and `registry/` — the registry schema design. `schema-revision-proposal.md` is RESOLVED and kept only for the MEASUREMENTS behind A18 and A19, which do not fit in an amendment row — do not delete it as stale. Everything binding lives here |
 | `docs/design/registry/` | `README.md` states the three-adapter deployment topology (consumer / network / provider node) and one weather flow, then indexes four documents: `schemas.md` is the three entities field by field — a `Participant` is `oneOf` a Beckn `node` or an HTTP `upstream` — plus the five rules JSON Schema cannot express and the known gaps; `examples.md` the records to seed; `api.md` the registry's own REST surface; `usecases.md` six farmer questions, the weather one with real payloads. `schemas/` holds the machine-readable draft-07 files, **which are the contract** — when the prose and the JSON disagree, the JSON wins, and nothing checks that they agree: the `verify/` checkers and the BV adapter's `archive/` were both removed when this folder moved. Both are in git history. Binding on nothing here; `discover-and-publish.md` still wins |
-| `docs/adr/` | The 16 ADRs behind the plan — 0001 is superseded by 0016; 0011 is amended by A23, and 0012 and 0014 by the 2026-09-07 audit that found `registry.Keyring` was never built |
+| `docs/adr/` | The 16 ADRs behind the plan — 0001 is superseded by 0016; 0011 is amended by A23 and A25, and 0012 and 0014 by the 2026-09-07 audit that found `registry.Keyring` was never built |

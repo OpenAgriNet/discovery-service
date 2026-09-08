@@ -35,6 +35,19 @@ outside this repo, and building either on a guess produces data a facilitator
 will reject or misread. Run 23a-23e, then stop and report the two blockers rather
 than inventing values to get past them.
 
+**Tasks 25 and 26 were added by A25 and neither is blocked.** 25 is the
+node-operator metric set — distinct from Task 24, which is the facilitator's
+signal and is what the registry blocks; conflating them is why this service has
+no metrics at all today. 26 encodes the never-emitted list as a test. So the
+order after 23e is **25, then 26 once 23f unblocks**, not "wait for the network".
+
+A25 also changes two sub-tasks already in flight, and both changes are cheap only
+if made when that sub-task is built rather than after: **23a** stamps build
+identity onto the Resource it is already constructing, and **23c** emits
+`transaction_id`, `message_id` and `receiver.id` alongside the `beckn.*` pair,
+because beckn-onix's network collector joins on those spellings and drops or
+orphans anything else. See `opentelemetry.md` *The stack — who answers what*.
+
 ---
 
 ## Per-task prompt
@@ -103,7 +116,14 @@ Rules:
   23b.
 
 Read A23 in the Amendments table first — it is what restructured this task, and
-it names two things the older text got wrong.
+it names two things the older text got wrong. Then read A25, which adds one
+requirement to 23a: build identity on the Resource. `service.version` plus the
+build attributes, stamped through `-ldflags -X` in the Makefile, matching what
+beckn-onix already does — so "did the deploy break it" is answerable. This does
+not enlarge 23a's shape; the Resource is being constructed here anyway, and this
+is the cheapest moment it will ever be. Pin that an unstamped build reports
+`dev` rather than an empty string: an empty version is indistinguishable from a
+Resource field nobody set.
 
 Scope note: 23a builds the package, the Resource and the exporter. It starts no
 spans; `Trace` stays the no-op pass-through until 23c. So nothing observable
@@ -114,8 +134,12 @@ Domain empty must fail at boot rather than emit a non-conformant span later.
 Also read docs/design/opentelemetry.md — it is the single design document for
 telemetry here. Part 1 and Part 2 are the wire shape and carry the worked
 envelopes the attribute names come from; its Implementation section is 23a's own
-scope, and its Decisions table names the four things to settle before writing
-code.
+scope. Its Decisions table has seven rows; **1, 2 and 3 are 23a's to settle**
+(4 is already done, 5 belongs to 23f, 6 to 23c and 7 to Task 25). Read *Why —
+the questions this must answer* and *The stack — who answers what* for the
+reason any of this exists and for which layer answers what — three of the
+network's questions cannot be answered from this service at all, and knowing
+which three stops you inventing attributes to reach them.
 
 Note before you start: `src/platform/telemetry/` exists but holds only a
 `.gitkeep`. ADR-0011 is the accepted decision and describes the shape; the OTel
@@ -151,6 +175,8 @@ makes them direct.
 | 22 | Structured Attribute Filtering | *Phase 1, per the doc's Open Items table* — do not skip unless you've deliberately decided to push it to Phase 2. Validation + rebase live in `src/platform/jsonpath/subset.go` (backend-agnostic, beside `Canonicalise`); the backend only binds it — `storage/postgres/retrievers.go` passes the accepted expression as one parameter and `queries/discover.sql` casts and executes it. A18 left nothing for a `postgres/jsonpath.go` to hold, so none was created |
 | 23 | OpenTelemetry Tracing | **Six sub-tasks (A23), one review gate each.** **23a** foundation — the `telemetry` package, the Resource's five mandatory attributes, the OTLP exporter, `Producer`/`Domain` config; boots only, starts no spans. **23b** the observation record — `correlation` generalises from `[]zap.Field` to a timestamped fact record; a pure refactor whose acceptance criterion is that every existing test passes *unchanged*. **23c** the span — replaces Task 8's no-op `Trace` body and drops its `trace` entry from `X-Beckn-Chain`; **hand-rolled, not `otelhttp`**, because the spec requires `scope.name`/`version` and the instrumentation scope is immutable once the span exists. Task 20's order assertion moves here. **23d** events — the spec's own `request_info`/`retrieval_info`/`response_info`/`error`, projected from the record; controllers call `record()` and never import telemetry; event times must be strictly increasing. **23e** `trace_id`/`span_id` log fields. **23f BLOCKED** — the facilitator exporter and its deny-list, gated on the `domain` string (O1), the `producer` registry (O2) and the id/timestamp format the facilitator validates (O4) |
 | 24 | Metrics Exporter | **BLOCKED, and probably not this repo.** The OTLP METRIC signal the spec requires of participants. Not in this binary: a stateless service behind N replicas emits N partial counts nobody can reassemble, so `ref-impl-design.md` puts computation in the tier with storage. Aggregates over Task 23's spans — cannot precede it, needs no new instrumentation in `src/`. Gated on a metrics registry that does not exist for OAN; `metric.code` is defined there and invented codes will not match |
+| 25 | Node-Operator Metrics | **Not blocked, and not Task 24.** Task 24 is the facilitator's METRIC signal, gated on a `metric.code` registry; this is the `onix_*`-style operational set a node operator needs to run the thing — RED per action, the three saturation ceilings (`DATABASE_MAX_CONNS`, `RATE_LIMIT_RPS`/`BURST`, `SERVER_MAX_REQUEST_BODY_BYTES`), dependency health and per-provider freshness. Conflating the two is why this service has no metrics at all today. Tests pin that a **rejected** request is counted: a 429 from `RateLimit` and a body-ceiling refusal from `Envelope` short-circuit above the handler and produce no span, so the failure an operator most needs to see is currently invisible. See `opentelemetry.md` **OP1–OP4, OP6, OP10**; needs Decision 7 (the SLO) |
+| 26 | Deny-List Conformance | The never-emitted list is a rule five sub-tasks comply with and nothing enforces. One fixture-driven test over the **facilitator exporter's output** — a span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves it with none of them — asserted over the exported payload, not over the code that builds it, so a future attribute added anywhere is caught. Follows 23f, since 23f builds the exporter it asserts against. `opentelemetry.md` **OP11** |
 
 ---
 

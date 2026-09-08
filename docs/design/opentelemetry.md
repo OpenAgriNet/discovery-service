@@ -68,7 +68,9 @@ not yet decided:
 
 ### What the design answers
 
-Verdicts only. The reasoning behind every **No** lives in *Open questions —
+Verdicts for **this service alone** — *The stack* below says which layer answers
+the ones that are No here, and for four of them the answer is not "nobody".
+The reasoning behind every **No** lives in *Open questions —
 network level* at the foot of this document and is not restated here: a second
 copy is a second thing to keep true, and it is the copy that rots.
 
@@ -110,8 +112,161 @@ Three items run on their own clocks.
 | When | What |
 |---|---|
 | Now, and cheap | The literal `domain` and `producer` values (open questions 2 and 3). 23a creates the config field and the boot refusal either way, so it is not blocked — but `Agriculture` is a placeholder, and every OAN component must emit an identical string or grouping splits across the network |
-| Before **23d** | P7. The service already computes **H3 covers** (`src/indexing/`), so a coarse cell — resolution 3-4, roughly 100 km — would give location-grained performance without emitting a farmer's point. Crop is harder: it lives inside `filters.expression`. A **policy decision, not an implementation one**; open question 11 records it rather than taking it |
-| Not Task 23 at all | S2, S6, S9. Closing them needs the `select` leg (a different node — see `docs/design/registry/`) or an explicit feedback signal. Either is a new network contract, and no attribute added here substitutes for one |
+| ~~Before **23d**~~ — **resolved** | P7 was going to force an H3-coarsening policy call here. It does not: *The stack* places P7 on the provider adapter, where location and commodity are already call-plan fields and no deny-list has to widen. The coarse-cell idea stays on record in open question 11 as the fallback if that layer cannot deliver |
+| Not Task 23 at all | S2, S6, S9. No attribute added here substitutes for one. They belong to the **experience-layer adapter**, which already emits traces — see *The stack* and onix **U3**. An earlier draft of this row called that a new network contract; it is not, the layer exists |
+## The stack — who answers what
+
+This service is one node. The other three layers run **beckn-onix** adapters,
+which already emit OTel traces, metrics and audit logs through their `otelsetup`
+plugin. Any plan that treats Task 23 as the whole answer to the questions above
+is wrong by construction: most of them are answered somewhere else, and three of
+them cannot be answered here at all.
+
+```
+Experience layer   [onix adapter]          traces ✓  metrics ✓  audit ✓
+                        │ W3C traceparent
+Network layer      [onix adapter]          traces ✓  metrics ✓  audit ✓
+                   [discovery-service]     traces — Task 23    metrics — Tasks 24 / 25
+                        │ W3C traceparent
+Provider layer     [onix adapter]          traces ✓  metrics ✓  audit ✓
+                        └── upstream.go:631 ──► IMD · Agmarknet Vistaar
+                                                 NOT INSTRUMENTED
+```
+
+Everything claimed about onix below is from
+`beckn-onix/pkg/plugin/implementation/otelsetup/OBSERVABILITY.md` and the
+collector configs under `beckn-onix/install/network-observability/`, read at
+commit `076500e`. Where this document and that one disagree about a *cross-layer*
+attribute, that one wins — it has three deployed adapters and two collector
+configs already keyed on its spelling, and we have none.
+
+### What onix already provides
+
+| | |
+|---|---|
+| Traces | One `SpanKindServer` request span per adapter, one child span per configured step, plus key-management and cache spans. Scope `beckn-onix` v2.0.0 |
+| Metrics | `onix_http_request_count`, `onix_step_execution_duration_seconds`, `onix_step_errors_total`, `onix_plugin_execution_duration_seconds`, `onix_plugin_errors_total`, `onix_cache_*`, `onix_routing_decisions_total`, `onix_plugin_info` |
+| Audit logs | One structured record per request, masked per `config/audit-fields.yaml` |
+| Propagation | W3C `traceparent` / `tracestate` read on every inbound request, written on every outbound one |
+| Collector | Two pipelines per node — the full stream to the node operator, a filtered subset to a network-level collector |
+| Build identity | `service.version` and three `onix.build.*` from `-ldflags`, on the Resource, so every signal names the build that produced it |
+
+The last row is a gap on our side, not theirs — **OP5**.
+
+### Question ownership
+
+Which layer answers each question from the tree. The verdict table above asks
+*can this service answer it*; this one asks *who does*, and the two are different
+questions with different answers.
+
+| | Question | Answered at | By what |
+|---|---|---|---|
+| S1 | What are they seeking | Experience, then here | The experience adapter holds the user's actual request; here it narrows to `beckn.schemaContext` / `beckn.schemaType` |
+| S2 S6 S9 | Satisfied · accurate · relevant | **Experience adapter, and nowhere else** | Needs what the user did *after* the answer. Not a discovery-service question, and no attribute added here substitutes for one. onix **U3** |
+| S3 S4 | Response time | Every layer, per hop | Span duration; the sum is the trace |
+| S5 | Time to address the query | The network collector | Only once all four layers stitch — **I1**–**I3** |
+| S7 | What was the source | Here | `result.provider_ids` |
+| S8 | Who added the source | Here | `publish.bpp_ids` |
+| S10 | How many seekers | Experience adapter | It has the user. We have an optional, unverified claim |
+| P1 P3 | Requests a provider gets and serves | **Provider adapter** | Its request span is the provider's actual traffic. Ours counts only the discovers their catalog answered |
+| P2 | Which channel | Here, and the network adapter | `network.id` |
+| P4 P5 | Failures and their cause | Every layer | Ours: the `error` event |
+| P6 | Where concentrated | Per **provider** here; per **place**, provider adapter | onix **U1** |
+| P7 | Performance on the basic unit | **Provider adapter** | There, location and commodity are call-plan fields. Here they are a coordinate and a JSONPath expression we refuse to emit |
+| P8 | Time a provider takes to serve | **Provider adapter, at the upstream call** | Not instrumented today. onix **U1** |
+| P9 | How many providers | The registry | A `SELECT`, not a span |
+
+Two corrections this makes to the verdict table's framing, worth stating rather
+than leaving a reader to notice. **S2/S6/S9 are not blocked on a new network
+contract** — the experience-layer adapter is that contract, and it already emits
+traces. And **P7 is not refused by the stack**, only by this service: the layer
+that already holds the commodity as a first-class field can answer it without
+anyone widening a deny-list.
+
+### The interop contract
+
+Three things must be true for one transaction to be readable across four layers.
+**None is optional.** A span that fails I1 or I2 exports successfully, costs money
+to store, and is invisible to the network observer — the worst of the three
+available outcomes, because nothing anywhere reports an error.
+
+**I1 — join keys take onix's spelling.** The network collector rewrites
+`trace_id` from an attribute named literally `transaction_id`
+(`network/otel-collector-network/config.yaml:23-25`). We specified
+`beckn.transactionId`. A span spelled our way is never stitched to anything.
+Emit `transaction_id` and `message_id` beside the `beckn.*` pair, and
+`receiver.id` beside `recipient.id`.
+
+This bends the no-second-copy rule that *No duration attribute* applies, and does
+so knowingly. The two cases differ in the way that matters: a `duration_ms`
+attribute is free to disagree with the span it duplicates, whereas both spellings
+here are written from one value at one call site and cannot. Renaming four
+attributes in one service is cheaper than renaming them in three adapters and
+every collector config, and that is the entire argument.
+
+**I2 — the network filter currently drops us.** `filter/network_traces` drops
+every span where `attributes["sender.id"] == nil`
+(`node/otel-collector-bap/config.yaml:29-33`). `senderId` is optional in this
+phase and absent on most requests (divergence 1), so our spans would be dropped
+*after* export.
+
+This is **already inconsistent inside onix**, independent of us: the filter admits
+on `sender.id` while the rewrite joins on `transaction_id`. A span carrying one
+and not the other either passes the filter and fails to stitch, or would have
+stitched perfectly and is dropped. The fix is onix's — **U2**, filter on
+`transaction_id != nil`, which is what the pipeline downstream actually consumes.
+
+Until U2 lands we could buy admission by emitting a `sender.id`. **Do not.**
+Divergence 1 refuses that for a reason that has not changed: missing from a
+dashboard is recoverable, and poisoning the network's only cross-participant
+identity join is not.
+
+**I3 — trace context in and out.** Already 23c's scope — inbound `traceparent`
+joined rather than replaced, outbound injected on both clients. Recorded here
+because 23c is what makes this service a participant in a trace rather than the
+author of an orphan.
+
+### Operator expectations — beyond the tree
+
+The tree is the network's questions. These are what anyone *running* the thing
+asks on day one, and their absence is what makes a telemetry rollout feel like it
+answered the wrong questions.
+
+| | Expectation, and where it stands | Lands in |
+|---|---|---|
+| OP1 | **Is the node up and serving?** Span rate is a proxy, and a poor one: a node that stopped receiving looks exactly like a network that went quiet | Task 25 |
+| OP2 | **Rate, errors, duration per action.** Derivable from spans the moment 23c lands. Needs aggregation, not instrumentation | Task 25 |
+| OP3 | **Saturation — is it about to fall over?** Three ceilings exist and **not one is observable**: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). A 429 is written by middleware *above* the handler, so it produces no span, no event and no counter — the failure mode an operator most needs to see is the one that is currently invisible | **Task 25** |
+| OP4 | **Dependency health** — Postgres acquire-wait and query latency; Ollama when semantic is on. `retrieval.embedding_ms` covers Ollama only while it is enabled, and nothing covers Postgres | Task 25 |
+| OP5 | **Which build is running?** onix stamps `service.version` and three `onix.build.*`. We have no version variable and no `-ldflags` in the Makefile, so *did the deploy break it* is unanswerable here | **23a** — the Resource is already being constructed; this is the cheapest moment it will ever be |
+| OP6 | **Data freshness per provider.** In agriculture a stale weather catalog is worse than an absent one: it answers confidently and wrongly. Derivable from publish spans keyed on `publish.bpp_ids` | Task 25 |
+| OP7 | **Is the telemetry itself working?** Trace completeness — the share of transactions carrying spans from every layer that should have handled them. Catches a layer silently dropping out, which every other dashboard renders as "traffic went down" | onix **U4**, at the network collector |
+| OP8 | **Cardinality and cost.** Export here is always-on and unsampled. Defensible at Phase 1 volumes, not at network scale, and cheaper to decide before ingestion is paid for than after | **Decision 6** |
+| OP9 | **An SLO, so a latency number has a verdict attached.** "p95 is 300 ms" means nothing without a target, and the plan's 20 ms retrieval budget is an internal figure rather than a served-request objective | Decision 7 |
+| OP10 | **What pages a human.** An alert list falls out of OP1, OP3 and OP4, and out of nothing else | Task 25, once those exist |
+| OP11 | **The deny-list is testable.** Today it is a rule 23a–23e comply with and nothing enforces. A conformance test over the facilitator exporter is the only thing that turns it into a pin | 23f, plus **Task 26** |
+| OP12 | **Clock discipline.** Four layers, four clocks, one stitched trace: skew shows up as a child span starting before its parent, and as negative inter-layer deltas. Cheap to require, expensive to debug once someone is charting it | onix **U4** |
+
+### What this changes in the plan
+
+| Task | Change |
+|---|---|
+| **23a** | Add build identity to the Resource — OP5. `-ldflags -X` in the Makefile and a `version` variable, matching what onix already does. This does not enlarge 23a's shape: the Resource is being built there anyway |
+| **23c** | Add the I1 alias attributes beside the `beckn.*` pair. Propagation (I3) was already in scope |
+| **23d** | Unchanged, and *smaller*: P7 moves to the provider adapter, so the H3-coarsening question raised against 23d is **withdrawn as a discovery-service concern**. See open question 11 |
+| **Task 25** (new) | **Node-operator metrics.** RED per action, the three saturation ceilings of OP3, dependency health, freshness. Deliberately *not* Task 24: these are `onix_*`-style operational metrics for the node pipeline and are **not blocked** on the metric-code registry that blocks the facilitator's METRIC signal. Conflating the two is what has so far left this service with no metrics at all |
+| **Task 26** (new) | **Deny-list conformance test** — OP11 |
+
+Four items in onix, none of which this repo can land:
+
+| | Work | Why it is theirs |
+|---|---|---|
+| **U1** | Instrument `internal/upstream` — a client span and a duration metric per attempt | `upstream.go:631` is the only place an external provider is called, and that package imports no OTel at all. Answers P8, and P1/P3/P6/P7 for real providers |
+| **U2** | Filter the network trace pipeline on `transaction_id`, not `sender.id` | Fixes an inconsistency that predates us, and is what admits our spans — **I2** |
+| **U3** | Outcome events at the experience layer | The only place S2, S6 and S9 can be answered |
+| **U4** | Trace completeness and clock skew at the network collector | OP7 and OP12 are network-level by definition |
+
+---
 
 ## What we emit
 
@@ -754,12 +909,19 @@ A23 split Task 23 into six. One review gate between each.
 
 | | Sub-task | Files | Tests pin |
 |---|---|---|---|
-| **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go`, `container.go`, `server.go` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans |
+| **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go`, `container.go`, `server.go`, `Makefile` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
 | **23b** | The observation record | `middlewares/correlation.go`, `envelope.go`, `request_logger.go`, `trace.go` | Log output byte-identical before and after. **Changes no output**; acceptance is the existing suite passing with no test file edited — including `request_logger_test.go:181,207`, which mount `RequestLogger` with no `Trace` above. Also pins the adopt-or-allocate rule from both sides: `Trace` first, and `RequestLogger` alone |
-| **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds |
+| **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds. **Plus I1**: `transaction_id`, `message_id` and `receiver.id` carry the same values as their `beckn.*` counterparts, asserted as equal in one test so the pair cannot drift |
 | **23d** | Events | `discover/controller.go`, `publish/controller.go`, `response_writer.go` | Event times strictly increasing, none equal to span end; a master publish reports `MASTER`; `error` category matches `X-Beckn-Error-Type` byte for byte; `retrieval.embedding_ms` absent — not zero — under `noop`; `result.provider_ids` is DISTINCT and bounded at 16, so a 200-catalog answer from one provider emits one id; `beckn.schemaContext` is absent rather than empty when the seeker sent no predicate |
 | **23e** | Trace/log correlation | `logger/logger.go`, `trace.go` | `trace_id`/`span_id` present once a span exists, **absent not empty** when exporter is `none` |
 | **23f** | Facilitator stream + redaction | `telemetry/redact.go` | **BLOCKED** on open questions 2, 3 and 9 — the plan's **O1**, **O2** and **O4**. Also where `scope_uuid` and `count` land, since both need the custom exporter this sub-task builds |
+
+Two tasks follow 23, and neither is blocked by what blocks 23f:
+
+| | Task | Files | Tests pin |
+|---|---|---|---|
+| **25** | **Node-operator metrics** — OP1..OP4, OP6, OP10 | new `platform/telemetry/metrics.go`; `storage/postgres/`, `middlewares/ratelimit.go`, `middlewares/envelope.go` | A rejected request increments its counter: a 429 from `RateLimit` and a body-ceiling refusal from `Envelope` are each **counted**, which neither is today because both short-circuit above the handler. Pool acquire-wait is observed under a pool deliberately sized to 1. Every instrument is registered under our own scope, not the global meter |
+| **26** | **Deny-list conformance** — OP11 | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it. Fixture-driven, so adding a denied field is a fixture line |
 
 Notes that bite:
 
@@ -799,6 +961,14 @@ each sub-task.
 | 4 | ~~**ADR-0011 contradicts A23**~~ — **DONE.** It read "traces **and metrics**" and "`otelhttp` instrumentation", both rejected by A23 | Amended in place, with an Amendments section recording what changed and why. Two committed documents disagreeing is a defect rather than a choice, so it was not left for 23a to carry |
 | 5 | **Where is the deny-list enforced — in Go, or in the collector?** "Two exporters" can mean two `TracerProvider`s in-process, or one export to our local collector which fans out to the facilitator through a filter processor. The collector route is the standard OTel pattern and needs no Go code; the in-process route is the only one a Go conformance test can assert against | **Enforce in Go**, on a second exporter. A privacy rule enforced only in YAML is one a deployment can silently drop, and the doc's conformance test assumes an in-process seam. Decide before 23f — it defines 23f's scope |
 
+Two more, raised by *The stack* rather than by the SDK. Neither blocks 23a, and
+both are cheaper to answer before the thing they govern is built than after:
+
+| | Decision | Recommendation | Needed by |
+|---|---|---|---|
+| 6 | **Sampling — what fraction of spans is exported?** Today's design is always-on and unsampled. That is defensible at Phase 1 volumes and indefensible at network scale, and the cost lands on whoever pays for ingestion, who is not us. **OP8** | **`AlwaysSample` in Phase 1, behind `OTEL_TRACES_SAMPLER`** so the decision is a deployment's rather than a rebuild's, with `ParentBased` so a sampled transaction stays whole across four layers. A per-node sampler that ignores the parent produces traces with holes, which are worse than no traces because they read as dropped hops | Before **23c** — the sampler is a `TracerProvider` option, and retrofitting `ParentBased` after dashboards exist means every historical rate changes meaning |
+| 7 | **What is the served-request SLO?** The plan's 20 ms retrieval budget is an internal figure covering one phase of one path. Without an end-to-end objective a p95 is a number with no verdict attached, and OP10's alert list has nothing to fire on. **OP9** | **Do not invent one here.** It is the network's to set, and a target this document picks becomes a target someone charts. Ask for it as one number per action, at the served-response boundary, and record it beside the metrics that measure it | Before **Task 25** |
+
 ## Open questions — network level
 
 | | Question |
@@ -813,5 +983,5 @@ each sub-task.
 | 8 | **Per-mode retrieval timing** — worth emitting? Today a slow `lexical` and a slow `spatial` look the same in aggregate. `retrieval.embedding_ms` now covers the one phase that leaves the process; this question is what remains, and the merge step holds the per-mode results so it is cheap. Still more than the spec asks |
 | 9 | **Which trace id format, and which event timestamp field, does the facilitator validate?** The spec's examples use dashed UUIDs and an ISO `time`; OTLP requires hex ids and `timeUnixNano`, which is what any OTel SDK emits (divergences 5 and 6). If the facilitator was built against the examples it will reject conformant spans — from every participant, not just us. **This needs answering before 23f, and it is the spec's bug to fix, not ours.** Carried into the plan's Open Items as **O4**, because a blocker recorded only in this document is one the plan's own blocker table does not know about |
 | 10 | **Will the spec publish real schemas?** `schemas/` and `examples/` are empty placeholders. Until they are filled there is no conformance target, and every participant is interpreting prose independently — which is how five participants end up with five `domain` strings |
-| 11 | **P6 (per place) and P7.** **Performance "on the basic unit" — weather by location, mandi by location and crop — is asked for by the network and refused by this design.** Coordinates and `filters.expression` are both on the never-emitted list, so no per-location or per-crop breakdown is derivable today. There is a middle path this document does not yet take: the service already computes **H3 covers** (`src/indexing/`), so a coarse cell — resolution 3-4, roughly 100 km — would give location-grained performance without emitting a farmer's point. Crop is harder, because it lives inside the filter expression. **This is a policy decision, not an implementation one**, and it is recorded rather than taken: the deny-list exists for a reason and widening it is the network's call |
-| 12 | **S2, S6 and S9.** **Relevance and accuracy cannot be answered from this service at all, and no attribute will fix it.** "Was it relevant?" needs to know what happened *after* the response — a select, a click, a farmer acting on it. This service is one synchronous hop that never learns the outcome; `result.empty` says a query went unmet, never that a non-empty answer was any good. Closing it needs the `select` leg (a different node — see `docs/design/registry/`) or an explicit feedback signal, either of which is a new network contract. **Named here so it is not mistaken for something Task 23 forgot** |
+| 11 | **P6 (per place) and P7 — largely resolved by *The stack*, and left open only for this service.** The provider adapter holds location and commodity as first-class call-plan fields, so it answers both without anyone widening a deny-list; that is onix **U1**, and it is why the H3 policy call this row used to force before 23d is **withdrawn**. What remains genuinely open is only the narrower question below — whether *this* service should also carry a coarse geography, for the discovers that never reach a provider. **Performance "on the basic unit" — weather by location, mandi by location and crop — is asked for by the network and refused by this design.** Coordinates and `filters.expression` are both on the never-emitted list, so no per-location or per-crop breakdown is derivable today. There is a middle path this document does not yet take: the service already computes **H3 covers** (`src/indexing/`), so a coarse cell — resolution 3-4, roughly 100 km — would give location-grained performance without emitting a farmer's point. Crop is harder, because it lives inside the filter expression. **This is a policy decision, not an implementation one**, and it is recorded rather than taken: the deny-list exists for a reason and widening it is the network's call |
+| 12 | **S2, S6 and S9.** **Relevance and accuracy cannot be answered from this service at all, and no attribute will fix it.** "Was it relevant?" needs to know what happened *after* the response — a select, a click, a farmer acting on it. This service is one synchronous hop that never learns the outcome; `result.empty` says a query went unmet, never that a non-empty answer was any good. Closing it needs the `select` leg (a different node — see `docs/design/registry/`) or an explicit feedback signal, either of which is a new network contract *for this service*. **Resolved elsewhere in the stack**: the experience-layer adapter sees the user, already emits traces, and is where the outcome event belongs — onix **U3**. So the answer is not "nobody", it is "not here". **Named here so it is not mistaken for something Task 23 forgot** |
