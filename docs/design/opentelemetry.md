@@ -363,7 +363,7 @@ answered the wrong questions.
 | | Expectation, and where it stands | Lands in |
 |---|---|---|
 | OP1 | **Is the node up and serving?** Span rate is a proxy, and a poor one: a node that stopped receiving looks exactly like a network that went quiet | Task 25 |
-| OP2 | **Rate, errors, duration per action.** Derivable from spans the moment 23c lands. Needs aggregation, not instrumentation | Task 25 |
+| OP2 | **Rate, errors, duration per action.** Derivable from spans the moment 23c lands. Needs aggregation, not instrumentation — the `spanmetrics` connector, no Go at all; see *How the derivation happens* under **Metrics** | **Collector config**, not Task 25 |
 | OP3 | **Saturation — is it about to fall over?** Three ceilings exist and not one has a *level* anyone can see: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). The refusals themselves are already visible — `Trace` is index 1 in `router.go:134-141`, above both `Envelope` and `RateLimit`, so a 429 and a body-ceiling refusal each produce a span, a status off the record and, post-23d, an `error` event from the one `logNack` they both pass through. What no span can carry is the pool sitting at 30 of 32 for ten minutes while every request succeeds: a ceiling is a **level**, a span is an **event**, and the distance to a ceiling is observable only by sampling it on a clock. That is the whole of OP3 and it is enough | **Task 25** |
 | OP4 | **Dependency health** — Postgres acquire-wait and query latency; Ollama when semantic is on. `retrieval.embedding_ms` covers Ollama only while it is enabled, and nothing covers Postgres | Task 25 |
 | OP5 | **Which build is running?** onix stamps `service.version` and three `onix.build.*`. We have no version variable and no `-ldflags` in the Makefile, so *did the deploy break it* is unanswerable here | **23a** — the Resource is already being constructed; this is the cheapest moment it will ever be |
@@ -371,7 +371,7 @@ answered the wrong questions.
 | OP7 | **Is the telemetry itself working?** Trace completeness — the share of transactions carrying spans from every layer that should have handled them. Catches a layer silently dropping out, which every other dashboard renders as "traffic went down" | onix **U4**, at the network collector |
 | OP8 | **Cardinality and cost.** Export here is always-on and unsampled. Defensible at Phase 1 volumes, not at network scale, and cheaper to decide before ingestion is paid for than after | **Decision 6** |
 | OP9 | **An SLO, so a latency number has a verdict attached.** "p95 is 300 ms" means nothing without a target, and the plan's 20 ms retrieval budget is an internal figure rather than a served-request objective | Decision 7 |
-| OP10 | **What pages a human.** An alert list falls out of OP1, OP3 and OP4, and out of nothing else | Task 25, once those exist |
+| OP10 | **What pages a human.** An alert list falls out of OP1, OP3 and OP4 — the three levels — plus OP2's error rate once the connector runs. Out of nothing else | Task 25 for the levels; the error-rate alert needs no code |
 | OP11 | **The deny-list is testable.** Today it is a rule 23a–23e comply with and nothing enforces. A conformance test over the facilitator exporter is the only thing that turns it into a pin. It asserts over the exported **bytes**, regexing the deny-list across string *values* rather than key names — `Visibility` is closed-world over keys and the risk is in values: a caller-supplied `beckn.schemaContext` URI, a `status.message`, a `zap.Error(err)` carrying wrapped driver text | **Task 26**, and it needs only an in-memory exporter — so **23d**, not 23f |
 | OP12 | **Clock discipline.** Four layers, four clocks, one stitched trace: skew shows up as a child span starting before its parent, and as negative inter-layer deltas. Cheap to require, expensive to debug once someone is charting it | onix **U4** |
 
@@ -473,7 +473,7 @@ permanently.
 | `sender.id` | `context.senderId`, **when present** — one field on both paths, and unverified. See below |
 | `sender.unidentified` | `true` when the envelope carried no `senderId` — see below |
 | `sender.unverified` | `true` whenever `sender.id` is set in this phase — see below |
-| `recipient.id` | `APP_SUBSCRIBER_ID`, the same value as `producer`. **Ours, never the caller's `receiverId`** — a caller can address anyone; this attribute has to say who actually answered. Constant on every span this binary emits, because we only ever receive: `on_discover` is a response action returned inline in the 200 body and async dispatch is out of scope (`beckn/actions.go:23-24`), so we are never the sender. **We therefore need none of onix's direction machinery** — no `deriveDirection`, no `selfID`/`remoteID` swap (`stdHandler.go:845-855`); that exists for an adapter that both calls and answers, and copying it here would import a case that cannot arise |
+| `recipient.id` | `APP_SUBSCRIBER_ID`, the same value as `producer`. **Ours, never the caller's `receiverId`** — a caller can address anyone; this attribute has to say who actually answered. Constant on every span this binary emits, because we only ever receive: `on_discover` is a response action returned inline in the 200 body and async dispatch is out of scope (`beckn/actions.go:23-24`), so we are never the sender. **We therefore need none of onix's direction machinery** — no `deriveDirection`, no `selfID`/`remoteID` swap (`stdHandler.go:845-855`); that exists for an adapter that both calls and answers, and copying it here would import a case that cannot arise. **The value is configuration, not a registry lookup, and the deployment convention for it already exists** — onix's `selfID` is `h.SubscriberID`, filled from `subscriberId:` in the adapter YAML, which `helmcharts/quick-start/config/adapters/network.yaml.tmpl:71` populates from `__NETWORK_SUBSCRIBER_ID__` and `.env.example:130` sets. Three siblings are already there — `EXP_`, `NETWORK_`, `PROVIDER_SUBSCRIBER_ID` — beside `APP_NETWORK_ID`, which the quick-start README:125 records as ours. `APP_SUBSCRIBER_ID` is the fourth line in that file under the prefix this service already uses, so the name is confirmed by convention rather than chosen here. **Nothing sets it today**, which is why 23a makes it optional with no default and `recipient.unidentified` exists |
 | `recipient.unidentified` | `true` when `APP_SUBSCRIBER_ID` is unset, with `recipient.id` omitted — the same shape as `sender.unidentified`, for the same reason: the spec marks it Required and we refuse to invent an identity. **Never fall back to `context.receiverId`.** Today the controllers echo it, so the fallback would make `recipient.id` and `beckn.receiverId` hold one value and the misaddressing query below would silently always return nothing — the bug staying invisible until Task 6 stops the echo |
 | `span_uuid` | Generated per span, by a `SpanProcessor`'s `OnStart` |
 | ~~`parent_id`~~ | **Not emitted.** onix builds one from `role + subscriberID + pod name`; two of those three do not survive here. There is no role — OAN uses `senderId`/`receiverId` and not `bapId`/`bppId`, so a participant carries no type — and `subscriberID` is already `recipient.id`. What remains is pod identity, which belongs on the **Resource**, not on every span: it is constant for the process lifetime, so a per-span copy pays thousands of times a second to say one thing. `OTEL_RESOURCE_ATTRIBUTES=k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(NS)` from the chart's downward API is standard semconv, needs no code, and the SDK merges it into the Resource `Init` builds — so it lands on spans, logs and metrics at once. Not a divergence: `parent_id` is onix-local and appears nowhere in the spec |
@@ -1044,6 +1044,62 @@ which they did not in the first draft of this document: `retrieval.modes_degrade
 and `retrieval.embedding_ms`, both on `retrieval_info`. A promise that a fact
 survives, with no attribute defined to carry it, is the fact not surviving.
 
+### How the derivation happens — `spanmetrics`, not a counter
+
+"Derivable from the spans" above was a claim with no mechanism attached, which
+is how a derivation quietly becomes a counter someone adds later. The mechanism
+is the collector's **`spanmetrics` connector**: it consumes the trace stream and
+emits a request count and a latency histogram, with the label set named in its
+`dimensions` list. For success versus failure per API that list is
+`beckn.action` and the span's own status — nothing else is needed, because
+*Rate, errors, duration* is exactly what the connector was built to produce.
+
+**This is why OP2 leaves Task 25 and needs no Go.** Everything it requires is
+already deployed:
+
+| Needed | Already there |
+|---|---|
+| A collector build carrying the connector — `spanmetrics` is contrib, not core | Every collector in `beckn-onix/install/network-observability` runs `otel/opentelemetry-collector-contrib` |
+| A metrics pipeline and a scrape target | `metrics/app` → `prometheus` at `:8889` in `node/otel-collector-bap/config-full.yaml`, with `prometheus-node` and `grafana-node` beside it in `docker-compose.with-telemetry.yml` |
+| Spans with an action and a status on them | 23c and 23d. **The connector cannot precede them** |
+
+So the change is a `connectors:` block, the connector added as a second exporter
+on the existing `traces/app` pipeline, and one `metrics/spanmetrics` pipeline
+reading from it. No new instrument, no `fact.Instrument` row, no import.
+
+Three things this pins, each of which is a way to get it wrong:
+
+- **Declare the stream names explicitly.** The connector's defaults have been
+  renamed across collector releases and every config here pins `:latest`, so a
+  default-named dashboard breaks on an image pull. Set `namespace` and treat the
+  resulting names as the contract.
+- **It stays node-local, and that is correct.** `filter/network_metrics` drops
+  every metric not named `onix_http_request_count`, so a connector-derived
+  stream never reaches the facilitator. This is an **operator** dashboard, not
+  the spec's `METRIC` signal — the filter is what keeps the low-code choice from
+  leaking into a stream that has a registry and a `metric.code` it would fail to
+  supply. Do not widen the filter to admit it.
+- **Cardinality is the connector's now, and the ceiling still applies.** Each
+  `dimensions` entry multiplies the series count exactly as a `Label` bit does,
+  but sits in YAML where `fact`'s guards cannot see it. Every dimension must
+  name a `fact.Key` that already carries `Bounded`; `sender.id` is the obvious
+  tempting addition and the one that makes the series count grow with the
+  participant list. Task 24's dashboard work owns keeping the two in step —
+  nothing enforces it, and that is the honest status.
+
+**Why this cannot be the `METRIC` signal, stated once so nobody tries.** The
+spec permits exactly one aggregation: "only the 'sum' aggregation and
+non-monotonic only" (`otel-specification.md:437`). `spanmetrics` emits a
+**monotonic** counter and a **histogram**, and Task 25's three instruments are a
+gauge and a histogram — every node-local stream in this design is outside the
+spec's METRIC profile on aggregation type alone, before `metric.code` is even
+reached. That is not a defect in either; it is the split `ref-impl-design.md`
+describes, with node-operator observability on one side and the network's
+business metrics on the other. It does mean the boundary has to be *enforced*
+rather than assumed, and `filter/network_metrics` is the thing enforcing it.
+Anyone reading "we ship gauges but the spec says sum-only" as a bug has found
+the boundary, not the bug.
+
 ### Shape, when it is unblocked
 
 - `sum` aggregation only, **non-monotonic** — the only kind this spec version allows.
@@ -1078,7 +1134,7 @@ and an implementer starting there would find the plan does not describe the work
 | | Sub-task | Files | Tests pin |
 |---|---|---|---|
 | **23a0** | The attribute registry | new `platform/telemetry/fact/` — `fact.go`, `registry.go`, `record.go`; `tests/architecture/boundary_test.go`; `tests/testdata/cross-layer-attributes.json` | Every `Key` has a complete `Definition`, with `Cardinality`, `Visibility` and `Kind` each refusing their `Unspecified` zero; `Signals&Label ⇒ Bounded ∧ len(Values)>0`; `Required ⇒ Signals&Resource`; no `Definition` names an OTLP structural field (`status`, `kind`, `traceId`…); the fifteen cross-layer keys match the vendored fixture byte for byte; `fact` imports nothing outside `context`, `iter`, `time`; controllers and `src/storage` import no OTel. **Emits nothing** — it is a table and its guards. Note this makes `fact/` a node 23b, 23c and 23d all edit, which partly re-couples the six gates A23 separated; concentrating that coupling in one reviewed sub-task is the point of doing it first |
-| **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go` (adds `APP_SUBSCRIBER_ID`, optional, no default — see `recipient.id`), `container.go`, `server.go`, `Makefile` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
+| **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go` (adds `APP_SUBSCRIBER_ID`, optional, no default — see `recipient.id`; **one field beside the existing `Network string \`env:"APP_NETWORK_ID"\`` at `config.go:57`**, not a new block), `container.go`, `server.go`, `Makefile`. Plus one line in `helmcharts/quick-start/.env.example` beside the three `*_SUBSCRIBER_ID` keys already at `:129-131` — a different repo, so it is a companion PR and not a file this task edits | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
 | **23b** | The observation record | `middlewares/correlation.go`, `envelope.go`, `request_logger.go`, `trace.go` | Log output byte-identical before and after. **Changes no output**; acceptance is the existing suite passing with no test file edited — including `request_logger_test.go:181,207`, which mount `RequestLogger` with no `Trace` above. Also pins the adopt-or-allocate rule from both sides: `Trace` first, and `RequestLogger` alone |
 | **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds. **Plus I1**: `transaction_id` and `message_id` carry the same values as their `beckn.*` counterparts, asserted as equal in one test so the pair cannot drift. Two aliases, not three — `recipient.id` is already onix's span spelling and needs none, and **no `receiver.id` is emitted**; a test asserts the exported key set does not contain it |
 | **23d** | Events | `discover/controller.go`, `publish/controller.go`, `response_writer.go` | Event times strictly increasing, none equal to span end; a master publish reports `MASTER`; `error` category matches `X-Beckn-Error-Type` byte for byte; `retrieval.embedding_ms` absent — not zero — under `noop`; `result.provider_ids` is DISTINCT and bounded at 16, so a 200-catalog answer from one provider emits one id; `beckn.schemaContext` is absent rather than empty when the seeker sent no predicate |
@@ -1089,7 +1145,7 @@ Two tasks follow 23, and neither is blocked by what blocks 23f:
 
 | | Task | Files | Tests pin |
 |---|---|---|---|
-| **25** | **Node-operator metrics** — OP1, OP3 and OP4, plus OP2 conditionally. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `project_label.go`; `storage/postgres/` | Pool acquire-wait and in-use are observed under a pool deliberately sized to 1 — a **level**, sampled on a clock, which is the whole of OP3 and the only part of it no span can carry. One liveness gauge, held to the standard of beating `/readyz` at something. Every instrument is registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up |
+| **25** | **Node-operator metrics** — OP1, OP3 and OP4. **Three instruments, and no more.** OP2 also left this row: it is `spanmetrics` in the collector, not a counter here, so "conditionally" is now decided and the condition is *no*. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `project_label.go`; `storage/postgres/` | Pool acquire-wait and in-use are observed under a pool deliberately sized to 1 — a **level**, sampled on a clock, which is the whole of OP3 and the only part of it no span can carry. One liveness gauge, held to the standard of beating `/readyz` at something. Every instrument is registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters, and no request counters either.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up. The test that pins this is a count: three instruments registered, so a fourth arrives with a reviewer attached |
 | **26** | **Deny-list conformance** — OP11. Runnable **after 23d**, not after 23f | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it — and over its string *values*, not its keys, since the risk is a caller-supplied URI or a wrapped driver error and neither is a key `Visibility` can reach. Facilitator projection only: asserting it on the ClickStack stream would forbid the local analysis the split exists to permit. Fixture-driven, so adding a denied field is a fixture line, and it carries a vacuity guard — a conformance test that passes over zero inputs is a failure this repo has already met once |
 
 Notes that bite:

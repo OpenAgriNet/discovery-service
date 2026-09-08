@@ -132,6 +132,32 @@ a span, a status and an `error` event — `Trace` is index 1 in
 them is the `duration_ms` mistake one signal up. **OP6 and OP10 are struck** as
 derivable from publish spans.
 
+**And no request counters.** Discover and publish call counts, success/failure
+split and latency percentiles are *not* in this table, and the reason is a
+mechanism rather than a preference: the collector's **`spanmetrics` connector**
+consumes the trace stream and emits exactly those, with `dimensions` set to
+`beckn.action` and the span status. That is a `connectors:` block plus one
+pipeline in `node/otel-collector-bap/config-full.yaml` — **no Go, no fourth
+instrument, no `fact.Instrument` row**. Every prerequisite is already deployed:
+each collector in `beckn-onix/install/network-observability` runs
+`otel/opentelemetry-collector-contrib` (the connector is contrib, not core), and
+`config-full.yaml` already exports `metrics/app` to `prometheus` at `:8889`
+with `prometheus-node` and `grafana-node` alongside it in
+`docker-compose.with-telemetry.yml`. It cannot run before 23c and 23d, because
+it aggregates over attributes those sub-tasks put on the span.
+
+Three ways to get that wrong: the connector's default stream names have been
+renamed across releases and every config here pins `:latest`, so set `namespace`
+and treat those names as the contract; the derived stream stays **node-local**,
+because `filter/network_metrics` drops every metric not named
+`onix_http_request_count` — correct, since this is an operator dashboard and not
+the spec's `METRIC` signal, so do not widen the filter to admit it; and each
+`dimensions` entry multiplies series exactly as a `Label` bit does but sits in
+YAML where `fact`'s guards cannot see it, so every dimension must name a key
+already marked `Bounded`. `sender.id` is the tempting one and the one that makes
+the series count grow with the participant list — §3.4 is that same mistake
+already shipped.
+
 `metric.code` is **absent** — it needs a network metrics registry OAN does not
 have (open question 7). So `Instrument.Code` empty is legal for a node metric and
 fatal for a facilitator one. See §3 for what onix does instead.
@@ -297,14 +323,33 @@ retention and access control from the other.
   open question 7 — otherwise two participants naming the same metric differently
   both pass.
 - `recipient.id` semantics: the spec's prose ("expected to be the recipient",
-  `otel-specification.md:299`) describes the *addressed* recipient; both
-  implementations self-declare. Divergence 10, with open question 9.
+  `otel-specification.md:299`) describes the *addressed* recipient; neither
+  implementation reads it off the envelope. **onix resolves it by direction, not
+  by self-declaration** — `resolveDirection` (`stdHandler.go:843-850`) returns
+  `(selfID, remoteID)` when calling and `(remoteID, selfID)` when receiving, so
+  `recipient.id` is onix's own id only on the inbound leg. Ours is constant,
+  which agrees with onix in the only direction we have. An earlier version of
+  this line said "both implementations self-declare" — true of us, and true of
+  onix only half the time. Divergence 10, with open question 9.
+
+  Worth naming because it is the part that needs no registry: `selfID` is
+  `h.SubscriberID`, a **configured** value — `subscriberId:` in the adapter YAML,
+  filled from `__NETWORK_SUBSCRIBER_ID__` in
+  `helmcharts/quick-start/config/adapters/network.yaml.tmpl:71` and set in
+  `.env.example:130`. Identity-of-self is config; only *verifying a remote* id
+  needs the registry. §3.3's drift is a naming inconsistency, not a missing
+  lookup.
 
 ### 3.8 Ours to do
 
 Add `http.method` and the recipient key to
 `tests/testdata/cross-layer-attributes.json`. It holds fifteen keys and neither
 is among them, because neither was thought of as a join key.
+
+Wire the `spanmetrics` connector into `node/otel-collector-bap/config-full.yaml`
+once 23d lands — §1.4. It lives in a repo we do not own, so it is a PR against
+beckn-onix rather than a sub-task here, and it is the only item on this list that
+buys a dashboard without a line of Go.
 
 ---
 
