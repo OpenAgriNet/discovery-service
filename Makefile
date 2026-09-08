@@ -448,7 +448,7 @@ image-build:
 # gated. One arch-suffixed tag each; nothing binds the plain version tag until
 # image-publish has every arch.
 image-push: require-image-repos
-	@for repo in $(IMAGE_REPOS); do \
+	@set -e; for repo in $(IMAGE_REPOS); do \
 		dest="$$repo:$(VERSION)-$(ARCH)"; \
 		echo "==> $$dest"; \
 		docker tag $(RELEASE_IMAGE) "$$dest"; \
@@ -465,7 +465,7 @@ image-push: require-image-repos
 # (v0.0.1-rc1-3-gabc1234) — neither is what someone who asked for no tag at all
 # should get, so the single `*-*` case covers both.
 image-publish: require-image-repos
-	@for repo in $(IMAGE_REPOS); do \
+	@set -e; for repo in $(IMAGE_REPOS); do \
 		tags="-t $$repo:$(VERSION)"; \
 		case "$(VERSION)" in \
 			*-*) echo "$(VERSION) is not a plain release — not moving :latest";; \
@@ -586,7 +586,7 @@ $(ACTIONLINT):
 # aquasecurity itself recommends over building from source for exactly this.
 $(TRIVY):
 	@mkdir -p $(BIN_DIR)
-	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
+	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | \
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
 .PHONY: help build test test-short test-ci cover cover-total cover-report \
