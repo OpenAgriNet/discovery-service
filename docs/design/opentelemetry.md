@@ -98,7 +98,7 @@ copy is a second thing to keep true, and it is the copy that rots.
 | S5 | … to address the query | **Partial** | Our hop only. End to end needs `traceparent` forwarded by the adapter and the experience layer — open question 4 |
 | S6 | Accuracy | **No** | Open question 12 |
 | S7 | What was the source | **Yes** | `result.provider_ids` on `response_info` |
-| S8 | Who added the source | **Yes** | `publish.bpp_ids` on the publish `request_info` |
+| S8 | Who added the source | **Yes** | `publish.provider_ids` on the publish `request_info` |
 | S9 | Was it relevant | **No** | Open question 12 |
 | S10 | How many seekers | **No** | `sender.id` is optional, unverified and often absent; blocked on Task 6, which is parked. `sender.unidentified` measures the size of the hole — the *unattributable request share* candidate under *Metrics* |
 | P1 | Requests a provider is getting | **Partial** | Span count by `result.provider_ids` is *discovers their catalog answered*, not their inbound traffic. See the scope warning |
@@ -106,7 +106,7 @@ copy is a second thing to keep true, and it is the copy that rots.
 | P3 | Requests they can serve | **Partial** | Non-empty share by provider id |
 | P4 | How many failures | **Yes** | `status = Error`, `error_type`, and the `error` event |
 | P5 | What caused them | **Yes** | The `error` event — `code`, `type`, `path` |
-| P6 | Where concentrated | **Partial** | Per **provider**, yes: `error_type` grouped by `result.provider_ids` / `publish.bpp_ids`. Per **place**, no — coordinates are on the never-emitted list. Open question 11 |
+| P6 | Where concentrated | **Partial** | Per **provider**, yes: `error_type` grouped by `result.provider_ids` / `publish.provider_ids`. Per **place**, no — coordinates are on the never-emitted list. Open question 11 |
 | P7 | Performance on the basic unit | **No — refused** | Open question 11. The most consequential refusal in this document, and the only one with a middle path already identified |
 | P8 | Time they take to serve | **Partial** | Our latency, yes. An upstream provider's latency is invisible — nothing is called synchronously on the read path. `retrieval.embedding_ms` is the one external hop broken out, and it is Ollama, not a provider |
 | P9 | How many providers | **No — not telemetry** | Spans count who *served*, never who *exists*: a provider matched by nothing emits no span in any window. This is a `SELECT count(DISTINCT …)`, and saying so is the answer rather than conceding a gap |
@@ -181,7 +181,7 @@ questions with different answers.
 | S3 S4 | Response time | Every layer, per hop | Span duration; the sum is the trace |
 | S5 | Time to address the query | The network collector | Only once all four layers stitch — **I1**–**I3** |
 | S7 | What was the source | Here | `result.provider_ids` |
-| S8 | Who added the source | Here | `publish.bpp_ids` |
+| S8 | Who added the source | Here | `publish.provider_ids` |
 | S10 | How many seekers | Experience adapter | It has the user. We have an optional, unverified claim |
 | P1 P3 | Requests a provider gets and serves | **Provider adapter** | Its request span is the provider's actual traffic. Ours counts only the discovers their catalog answered |
 | P2 | Which channel | Here, and the network adapter | `network.id` |
@@ -367,7 +367,7 @@ answered the wrong questions.
 | OP3 | **Saturation — is it about to fall over?** Three ceilings exist and not one has a *level* anyone can see: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). The refusals themselves are already visible — `Trace` is index 1 in `router.go:134-141`, above both `Envelope` and `RateLimit`, so a 429 and a body-ceiling refusal each produce a span, a status off the record and, post-23d, an `error` event from the one `logNack` they both pass through. What no span can carry is the pool sitting at 30 of 32 for ten minutes while every request succeeds: a ceiling is a **level**, a span is an **event**, and the distance to a ceiling is observable only by sampling it on a clock. That is the whole of OP3 and it is enough | **Task 25** |
 | OP4 | **Dependency health** — Postgres acquire-wait and query latency; Ollama when semantic is on. `retrieval.embedding_ms` covers Ollama only while it is enabled, and nothing covers Postgres | Task 25 |
 | OP5 | **Which build is running?** onix stamps `service.version` and three `onix.build.*`. We have no version variable and no `-ldflags` in the Makefile, so *did the deploy break it* is unanswerable here | **23a** — the Resource is already being constructed; this is the cheapest moment it will ever be |
-| OP6 | **Data freshness per provider.** In agriculture a stale weather catalog is worse than an absent one: it answers confidently and wrongly. Derivable from publish spans keyed on `publish.bpp_ids` | Task 25 |
+| OP6 | **Data freshness per provider.** In agriculture a stale weather catalog is worse than an absent one: it answers confidently and wrongly. Derivable from publish spans keyed on `publish.provider_ids` | Task 25 |
 | OP7 | **Is the telemetry itself working?** Trace completeness — the share of transactions carrying spans from every layer that should have handled them. Catches a layer silently dropping out, which every other dashboard renders as "traffic went down" | onix **U4**, at the network collector |
 | OP8 | **Cardinality and cost.** Export here is always-on and unsampled. Defensible at Phase 1 volumes, not at network scale, and cheaper to decide before ingestion is paid for than after | **Decision 6** |
 | OP9 | **An SLO, so a latency number has a verdict attached.** "p95 is 300 ms" means nothing without a target, and the plan's 20 ms retrieval budget is an internal figure rather than a served-request objective | Decision 7 |
@@ -684,7 +684,7 @@ nowhere.
 | Attribute | Meaning |
 |---|---|
 | `result.catalog_count` | How many catalogs came back |
-| `result.provider_ids` | The distinct `Catalog.bppId` of what was returned — **whose** data answered this query |
+| `result.provider_ids` | The distinct provider-node id of what was returned — **whose** data answered this query. Read off `Catalog.BppID`. **OAN does not use `bap`/`bpp` terminology, so no attribute here repeats it** — the struct field keeps the spelling only because `Catalog` (`beckn-v2.0.0.yaml:2759-2803`) closes with `additionalProperties: false`, which rejects any replacement name; the spec's own reason, backward compatibility with existing integrations (`:35`), is not ours. See the plan's note on that field — renaming it is a schema amendment, not a rename |
 | `result.empty` | True when zero. The most valuable signal this service gives the network: somebody asked and nobody serves it |
 
 **`result.provider_ids` is the answer to “what was the source”, and without it
@@ -719,7 +719,7 @@ and the `error` event on the same span carries the refusal.
 
 | Attribute | Meaning |
 |---|---|
-| `publish.bpp_ids` | The distinct `Catalog.bppId` being published — **who added the source**. Same bound and same reasoning as `result.provider_ids` |
+| `publish.provider_ids` | The distinct provider-node id of what is being published — **who added the source**. Same bound and same reasoning as `result.provider_ids`, and the same name stem on purpose: both read the same struct field, so one name for one concept makes the join between "who published it" and "whose data answered" obvious instead of something a reader has to work out. This attribute was `publish.bpp_ids`; OAN does not use `bap`/`bpp` terminology, and telemetry names are **ours**, so it follows OAN. The struct field it reads keeps the protocol's spelling for the schema reason given above, which is a constraint rather than an endorsement |
 | `publish.catalog_count`, `publish.resource_count`, `publish.offer_count` | Payload volume |
 | `publish.update_modes` | `FULL` / `MERGE` — a `FULL` republish deletes what it does not mention |
 | `publish.catalog_types` | As sent. `MASTER` appears even though refused |
@@ -1031,10 +1031,10 @@ Task 23.
 | failure percent, split by category | `status = Error`, `error_type` |
 | **unmet demand rate** | `result.empty` — the one metric no other participant can produce |
 | degraded-mode rate, per mode | `retrieval.modes_degraded` |
-| catalog freshness per provider | time since that provider's last `publish` `request_info`, keyed on `publish.bpp_ids` |
-| publish volume per provider | `publish.resource_count` by `publish.bpp_ids` |
+| catalog freshness per provider | time since that provider's last `publish` `request_info`, keyed on `publish.provider_ids` |
+| publish volume per provider | `publish.resource_count` by `publish.provider_ids` |
 | **provider serve share** | distinct `result.provider_ids` per span — which sources actually answer, and which never do |
-| per-provider failure concentration | `error_type` grouped by `result.provider_ids` / `publish.bpp_ids` |
+| per-provider failure concentration | `error_type` grouped by `result.provider_ids` / `publish.provider_ids` |
 | unattributable request share | `sender.unidentified` — the number that argues for finishing Task 6 |
 
 Two names from the original Task 23 — `search_degraded_modes` and

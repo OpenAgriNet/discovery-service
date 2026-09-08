@@ -50,7 +50,7 @@ func TestTheDiscoverPredicatesReachTheirIndexes(t *testing.T) {
 		{
 			name:  "the scope gate",
 			sql:   `SELECT 1 FROM resources r WHERE ($1::text[] IS NULL OR r.visible_to && $1::text[])`,
-			arg:   []string{"bap.example.com"},
+			arg:   []string{"local-network"},
 			index: "idx_resources_visible_to",
 			why:   "every read carries the scope gate, including count(*)",
 		},

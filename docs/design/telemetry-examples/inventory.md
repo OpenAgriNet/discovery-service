@@ -83,7 +83,7 @@ collapses every timestamp and the phase breakdown silently becomes zeros.
 | `request_info` (discover) | `intent.kinds` · `intent.filter_type` · `intent.spatial_ops` · `intent.scoped` |
 | `retrieval_info` | `retrieval.modes_run` · `retrieval.modes_degraded` (**array of degraded mode names, not a bool**) · `retrieval.embedding_ms` (**present only when one was computed** — absent under `noop`, i.e. every Phase 1 deployment) |
 | `response_info` | `result.catalog_count` · `result.provider_ids` (**distinct**, bounded at 16) · `result.providersTruncated` · `result.empty` |
-| `request_info` (publish) | `publish.bpp_ids` · `publish.catalog_count` · `publish.resource_count` · `publish.offer_count` · `publish.update_modes` · `publish.catalog_types` · `publish.visible_to` · `publish.validity_present`. **Fires at intake, before the A1 MASTER refusal** |
+| `request_info` (publish) | `publish.provider_ids` · `publish.catalog_count` · `publish.resource_count` · `publish.offer_count` · `publish.update_modes` · `publish.catalog_types` · `publish.visible_to` · `publish.validity_present`. **Fires at intake, before the A1 MASTER refusal** |
 | `error` | `type` · `code` · `msg` · `path` — **unprefixed**, unlike the span's `error_type` |
 
 Event names use **underscores**: `request_info`, `retrieval_info`,

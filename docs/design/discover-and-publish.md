@@ -5071,14 +5071,36 @@ behavioural pin still holds.
   cannot disagree.
 - The shape of the question travels, never its content: retrieval mode names,
   operator names, counts and booleans — no query text, no coordinates, no bodies.
-- **Participant identity travels as `bppId`, never as `provider`.**
-  `result.provider_ids` on `response_info` and `publish.bpp_ids` on
+- **Participant identity travels as the provider-node id, never as `provider`.**
+  `result.provider_ids` on `response_info` and `publish.provider_ids` on
   `request_info` are what let a network ask *whose data answered this* and *who
   added this source* — questions the span could not express at all while it
   carried a catalog count and no identity. `Catalog.BppID`
   (`src/beckn/types.go:102`) survives A24 precisely because it describes the
   document rather than claiming who sent it; `Catalog.Provider` is
   `json.RawMessage` and emitting it would put descriptor content on a span.
+
+  **Both attributes read that field and neither repeats its name.** OAN does not
+  use `bap`/`bpp` terminology — it is a new network, so the spec's own
+  "backward compatibility with existing integrations"
+  (`tests/testdata/beckn-v2.0.0.yaml:35`) is a reason that does not apply to us,
+  and it is not the reason cited here. Everything OAN owns follows OAN:
+  `senderId`/`receiverId` in place of `bapId`/`bppId` in `context`
+  (`src/beckn/types.go:44-52` — the latter are ignored rather than modelled), and
+  telemetry attribute names, which is why the earlier `publish.bpp_ids` is now
+  `publish.provider_ids`.
+
+  **What blocks renaming the catalog field is mechanical, not sentimental.**
+  `Catalog` at `:2759-2803` declares `bppId` and closes the object with
+  `additionalProperties: false`, with `required: [id, descriptor, provider]`. So
+  `bppId` is already *optional* — nothing forces a publisher to send it — but a
+  differently-named replacement such as `providerNodeId` is **rejected by the
+  schema**, and the schema is the source of truth (CLAUDE.md). Renaming it is
+  therefore an amendment to `beckn-v2.0.0.yaml` plus a migration of stored
+  catalogs, `examples/`, the Postman collection and the `verify`/`audit`
+  baselines — a protocol change for OAN's profile to make deliberately, not a
+  field rename. **Open item**, and until it is decided the field keeps the
+  spelling the schema will accept while no name we choose repeats it.
 
 **Tests pin:** event times are **strictly increasing and none equals the span's
 end time** — the cheapest way to catch events batched at handler exit, which no

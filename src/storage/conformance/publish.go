@@ -16,7 +16,7 @@ import (
 // Spelled once because two of these cases turn on the empty-VisibleTo fail-safe
 // resolving to exactly this value, and a fixture carrying its own copy would
 // pass against a backend that defaulted to something else entirely.
-const network = "bap.example.com"
+const network = "local-network"
 
 // PublishCases is the write-path suite: everything UpsertCatalog must do that
 // can be seen through the ports.

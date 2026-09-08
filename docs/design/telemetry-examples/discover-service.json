@@ -305,7 +305,7 @@
             "timeUnixNano": "1756296300006000000",
             "$comment": "Fired AT INTAKE, before the A1 MASTER refusal — so a refused publish still reports what was attempted.",
             "attributes": [
-              { "key": "publish.bpp_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" } ] } } },
+              { "key": "publish.provider_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" } ] } } },
               { "key": "publish.catalog_count", "value": { "intValue": 2 } },
               { "key": "publish.resource_count", "value": { "intValue": 47 } },
               { "key": "publish.offer_count", "value": { "intValue": 12 } },
@@ -319,7 +319,7 @@
       },
       "$watchFor": [
         "publish.update_modes FULL is the destructive one — a FULL republish deletes what it does not mention. Worth an alert when it appears unexpectedly for a provider that normally sends MERGE.",
-        "publish.validity_present is the freshness signal, and it is the honest one: it says a validity window was SET, not that the data is fresh. Actual freshness is time-since-last-publish keyed on publish.bpp_ids, which is a query over these spans and not an attribute (OP6 — struck from Task 25, derivable).",
+        "publish.validity_present is the freshness signal, and it is the honest one: it says a validity window was SET, not that the data is fresh. Actual freshness is time-since-last-publish keyed on publish.provider_ids, which is a query over these spans and not an attribute (OP6 — struck from Task 25, derivable).",
         "publish.catalog_types reads REGULAR on essentially every span that exists, because A1 refuses MASTER at intake and C9's inference is deliberately not honoured (an absent directive is REGULAR). It is emitted anyway so the MASTER case is visible at all — see the next scenario."
       ]
     },
@@ -339,7 +339,7 @@
           {
             "name": "request_info",
             "attributes": [
-              { "key": "publish.bpp_ids", "value": { "arrayValue": { "values": [ { "stringValue": "agmarknet.gov.in" } ] } } },
+              { "key": "publish.provider_ids", "value": { "arrayValue": { "values": [ { "stringValue": "agmarknet.gov.in" } ] } } },
               { "key": "publish.catalog_count", "value": { "intValue": 1 } },
               { "key": "publish.resource_count", "value": { "intValue": 3 } },
               { "key": "publish.update_modes", "value": { "arrayValue": { "values": [ { "stringValue": "MERGE" } ] } } },
@@ -373,7 +373,7 @@
           {
             "name": "request_info",
             "attributes": [
-              { "key": "publish.bpp_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" } ] } } },
+              { "key": "publish.provider_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" } ] } } },
               { "key": "publish.catalog_count", "value": { "intValue": 1 } },
               { "key": "publish.catalog_types", "value": { "arrayValue": { "values": [ { "stringValue": "MASTER" } ] } } }
             ]
