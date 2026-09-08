@@ -32,9 +32,8 @@ const MaxCollectionDepthForTests = maxCollectionDepth
 // h3_test.go, which checks the same thing through CoverQuery's public
 // surface; this pins ringsFor's own return value directly.
 func TestRingsForANonPositiveDistanceIsZeroRingsAndSized(t *testing.T) {
-	const resolution = 8 // matches h3_test.go's res; not visible across the package/package_test split
 	for _, distance := range []float64{0, -5} {
-		rings, sized := ringsFor(distance, resolution)
+		rings, sized := ringsFor(distance, DefaultTestResolution)
 		if !sized || rings != 0 {
 			t.Errorf("ringsFor(%g) = (%d, %v), want (0, true)", distance, rings, sized)
 		}

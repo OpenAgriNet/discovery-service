@@ -17,8 +17,10 @@ import (
 // res is the resolution every test here covers at. It matches the shipped
 // default of GEO_RESOLUTION_CELLS rather than reading config, because these
 // tests pin geometry and a deployment that retunes the resolution must not
-// silently change what they assert.
-const res = 8
+// silently change what they assert. Aliased to geo.DefaultTestResolution — the
+// one value the rest of the repo's fixtures also build against, under their
+// own local names — rather than restated as its own literal 8.
+const res = geo.DefaultTestResolution
 
 // shaped builds a stored geometry from a GeoJSON body, the way the publish
 // walker hands them over.

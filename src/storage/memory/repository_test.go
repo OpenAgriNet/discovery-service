@@ -5,15 +5,10 @@ import (
 	"testing"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/storage/conformance"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
 )
-
-// resolution is the H3 resolution these fixtures cover at, and it must be the
-// one the Postgres suite uses: the conformance cases compare the two backends'
-// answers to the same spatial query, and two backends covering at different
-// resolutions produce cell sets that never intersect.
-const resolution = 8
 
 // The skeleton's only pin, and it is a compile-time one: this backend has no
 // behaviour yet, so there is nothing to assert about its answers. What there IS
@@ -26,7 +21,7 @@ var (
 )
 
 func TestNewReturnsAnEmptyStore(t *testing.T) {
-	store := memory.New(resolution)
+	store := memory.New(geo.DefaultTestResolution)
 
 	_, err := store.GetCatalog(t.Context(), "nothing-published")
 	if !errors.Is(err, domain.ErrCatalogNotFound) {
@@ -39,7 +34,7 @@ func TestNewReturnsAnEmptyStore(t *testing.T) {
 // GetCatalogRow's merge path, and the memory twin has no equivalent caller —
 // so it is checked directly here: the found case and ErrCatalogNotFound.
 func TestListingResourcesOfAnUnknownCatalogIsErrCatalogNotFound(t *testing.T) {
-	store := memory.New(resolution)
+	store := memory.New(geo.DefaultTestResolution)
 
 	if _, err := store.ListCatalogResources(t.Context(), "nothing-published"); !errors.Is(err, domain.ErrCatalogNotFound) {
 		t.Fatalf("a fresh store answered ListCatalogResources with %v, want domain.ErrCatalogNotFound", err)
@@ -47,7 +42,7 @@ func TestListingResourcesOfAnUnknownCatalogIsErrCatalogNotFound(t *testing.T) {
 }
 
 func TestListingResourcesReturnsThePublishedOnes(t *testing.T) {
-	store := memory.New(resolution)
+	store := memory.New(geo.DefaultTestResolution)
 
 	if _, err := store.UpsertCatalog(t.Context(), domain.CatalogPatch{
 		ID:        "c1",
@@ -75,7 +70,7 @@ func TestListingResourcesReturnsThePublishedOnes(t *testing.T) {
 // pinned by the conformance suite; this is the one combination — an
 // UNRANKED mode this backend lacks — nothing else here reaches.
 func TestSearchDegradesAFilterModeThisBackendLacks(t *testing.T) {
-	store := memory.New(resolution)
+	store := memory.New(geo.DefaultTestResolution)
 
 	result, err := store.Search(t.Context(), domain.SearchQuery{}, []domain.Capability{domain.CapabilityJSONPath})
 	if err != nil {
@@ -93,7 +88,7 @@ func TestSearchDegradesAFilterModeThisBackendLacks(t *testing.T) {
 // drifting on semantics neither SQL nor a map can claim as its own.
 func TestMemorySatisfiesThePublishConformanceSuite(t *testing.T) {
 	conformance.Run(t, func(*testing.T) conformance.Backends {
-		store := memory.New(resolution)
+		store := memory.New(geo.DefaultTestResolution)
 		return conformance.Backends{Catalogs: store, Search: store}
 	}, conformance.PublishCases())
 }
@@ -106,7 +101,7 @@ func TestMemorySatisfiesThePublishConformanceSuite(t *testing.T) {
 // resolution from the store fails by matching nothing rather than by erroring.
 func TestMemorySatisfiesTheDiscoverConformanceSuite(t *testing.T) {
 	conformance.Run(t, func(*testing.T) conformance.Backends {
-		store := memory.New(resolution)
+		store := memory.New(geo.DefaultTestResolution)
 		return conformance.Backends{Catalogs: store, Search: store}
-	}, conformance.DiscoverCases(resolution))
+	}, conformance.DiscoverCases(geo.DefaultTestResolution))
 }

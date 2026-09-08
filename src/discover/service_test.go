@@ -17,14 +17,11 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/discover"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
 )
-
-// indexResolution is the H3 resolution the memory backend covers with, matching
-// settings().Geo.ResolutionCells.
-const indexResolution = 8
 
 // stubRepo answers with whatever it was built to answer and records what it was
 // asked.
@@ -506,7 +503,7 @@ func TestARenderedCatalogCarriesItsDocumentsVerbatim(t *testing.T) {
 // Two resources, one offer naming only the second. A search that matches only
 // the first must not carry it.
 func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
-	repo := memory.New(indexResolution)
+	repo := memory.New(geo.DefaultTestResolution)
 
 	if _, err := repo.UpsertCatalog(t.Context(), domain.CatalogPatch{
 		ID:        "c1",

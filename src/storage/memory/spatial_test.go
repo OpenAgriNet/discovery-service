@@ -1,3 +1,8 @@
+// This file is package memory, not memory_test: the spatial stage is not
+// part of this backend's port — it is how the port is going to be met.
+// Exporting it to test it would put a function in the package's API that
+// exists only for its own Search.
+
 package memory
 
 import (
@@ -8,17 +13,12 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/storage/conformance"
 )
 
-// An internal test, because the spatial stage is not part of this backend's
-// port — it is how the port is going to be met. Exporting it to test it would
-// put a function in the package's API that exists only for its own Search.
-const testResolution = 8
-
 // filterFor reduces a conformance case's constraint to the SpatialFilter a
 // backend receives, exactly as the mapper will.
 func filterFor(t *testing.T, spatial conformance.SpatialCase) domain.SpatialFilter {
 	t.Helper()
 
-	full, cover, err := geo.CoverQuery(spatial.Query, spatial.Op, spatial.DistanceM, testResolution)
+	full, cover, err := geo.CoverQuery(spatial.Query, spatial.Op, spatial.DistanceM, geo.DefaultTestResolution)
 	if err != nil {
 		t.Fatalf("CoverQuery: %v", err)
 	}
@@ -42,7 +42,7 @@ func filterFor(t *testing.T, spatial conformance.SpatialCase) domain.SpatialFilt
 func coverFor(t *testing.T, geometry domain.Geometry) geo.Cover {
 	t.Helper()
 
-	cover, err := geo.CoverGeometry(geometry, testResolution)
+	cover, err := geo.CoverGeometry(geometry, geo.DefaultTestResolution)
 	if err != nil {
 		t.Fatalf("CoverGeometry: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestMatchesGeometryUnderNoneAndAll(t *testing.T) {
 
 	near := conformance.PointGeometryAt(0, center)
 	away := conformance.PointGeometryAt(0, far)
-	r := New(testResolution)
+	r := New(geo.DefaultTestResolution)
 
 	mixed := domain.Resource{Geometries: []domain.Geometry{near, away}}
 	if r.matchesGeometry(domain.Catalog{}, mixed, domain.SearchQuery{Spatial: &none}) {
@@ -247,7 +247,7 @@ func TestShapeMatchesOfAnUncoverableShapeIsFalse(t *testing.T) {
 	broken := domain.Geometry{Type: "Point", GeoJSON: []byte("not geojson")}
 	filter := domain.SpatialFilter{Op: domain.OpIntersects, Quantifier: domain.QuantifierAny}
 
-	r := New(testResolution)
+	r := New(geo.DefaultTestResolution)
 	if r.shapeMatches(filter)(broken) {
 		t.Error("a shape that will not cover was matched rather than dropped")
 	}

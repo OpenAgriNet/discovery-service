@@ -11,14 +11,10 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/publish"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
 )
-
-// indexResolution is the H3 resolution the in-memory store covers at. Any value
-// works here — nothing in this file asserts on cells — but it must be one, and
-// naming it stops a bare literal reading as significant.
-const indexResolution = 8
 
 // recordingReplicator is the A7 seam under observation.
 //
@@ -64,7 +60,7 @@ type recordingRepo struct {
 }
 
 func newRepo() *recordingRepo {
-	return &recordingRepo{Repository: memory.New(indexResolution)}
+	return &recordingRepo{Repository: memory.New(geo.DefaultTestResolution)}
 }
 
 func (r *recordingRepo) UpsertCatalog(

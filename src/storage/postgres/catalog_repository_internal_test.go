@@ -13,13 +13,10 @@ import (
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
-
-// testResolution mirrors postgres_test's own `resolution` constant, which
-// this file cannot see — it lives in package postgres_test.
-const testResolution = 8
 
 // UpsertCatalog wraps pool.Begin's own failure — reached by closing a pool of
 // this test's OWN, never the package's shared one: dbtest.NewPostgres hands
@@ -42,7 +39,7 @@ func TestUpsertCatalogWrapsAFailureToBeginTheTransaction(t *testing.T) {
 	}
 	pool.Close()
 
-	repo := NewCatalogRepository(pool, testResolution)
+	repo := NewCatalogRepository(pool, geo.DefaultTestResolution)
 	_, err = repo.UpsertCatalog(context.Background(), republishPatch("cat-closed-pool"), domain.UpdateModeFull, noopDerive)
 	if err == nil || !strings.Contains(err.Error(), "begin the publish transaction") {
 		t.Errorf("err = %v, want it naming the begin", err)
@@ -143,7 +140,7 @@ func beginTx(t *testing.T, pool dbtest.Pool) pgx.Tx {
 func seedCatalog(t *testing.T, pool dbtest.Pool, id string) {
 	t.Helper()
 
-	repo := NewCatalogRepository(pool, testResolution)
+	repo := NewCatalogRepository(pool, geo.DefaultTestResolution)
 	if _, err := repo.UpsertCatalog(context.Background(), republishPatch(id), domain.UpdateModeFull, noopDerive); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -189,7 +186,7 @@ func TestWriteNamesWhicheverOfItsMergeModeQueriesFailed(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
 			tx := beginTx(t, pool)
-			repo := &CatalogRepository{queries: gen.New(nil), resolution: testResolution}
+			repo := &CatalogRepository{queries: gen.New(nil), resolution: geo.DefaultTestResolution}
 
 			_, err := repo.write(context.Background(), &txFailsAt{Tx: tx, n: testCase.call},
 				republishPatch("cat-merge-fail"), domain.UpdateModeMerge, noopDerive)
@@ -230,7 +227,7 @@ func TestWriteNamesWhicheverOfItsFullModeQueriesFailed(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
 			tx := beginTx(t, pool)
-			repo := &CatalogRepository{queries: gen.New(nil), resolution: testResolution}
+			repo := &CatalogRepository{queries: gen.New(nil), resolution: geo.DefaultTestResolution}
 
 			_, err := repo.write(context.Background(), &txFailsAt{Tx: tx, n: testCase.call},
 				republishPatch("cat-full-fail"), domain.UpdateModeFull, noopDerive)
@@ -340,7 +337,7 @@ func TestListCatalogResourcesNamesItsOwnQueryFailure(t *testing.T) {
 // lets a caller tell "absent" from "the read broke".
 func TestGetCatalogOfAnAbsentCatalogIsErrCatalogNotFound(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repo := NewCatalogRepository(pool, testResolution)
+	repo := NewCatalogRepository(pool, geo.DefaultTestResolution)
 
 	_, err := repo.GetCatalog(context.Background(), "does-not-exist")
 	if !errors.Is(err, domain.ErrCatalogNotFound) {
@@ -370,7 +367,7 @@ func TestGeometryFaultNamesTheSourcePath(t *testing.T) {
 // so this is reached directly rather than through a real publish, which the
 // mapper's own validation would refuse before storage ever sees it.
 func TestCoverGeometriesFaultsAShapeThatWillNotDecode(t *testing.T) {
-	repo := &CatalogRepository{resolution: testResolution}
+	repo := &CatalogRepository{resolution: geo.DefaultTestResolution}
 	merged := domain.Catalog{
 		ID:         "cat-bad-geo",
 		Geometries: []domain.Geometry{{SourcePath: "$.provider.availableAt[0].geo", GeoJSON: []byte("not json")}},
@@ -393,7 +390,7 @@ func TestCoverGeometriesFaultsAShapeThatWillNotDecode(t *testing.T) {
 // it (a single H3 cell) but boundsOf's own guard against MaxLat >= 90 refuses
 // the box.
 func TestCoverGeometriesFaultsAShapeAtThePoleAsUnbounded(t *testing.T) {
-	repo := &CatalogRepository{resolution: testResolution}
+	repo := &CatalogRepository{resolution: geo.DefaultTestResolution}
 	merged := domain.Catalog{
 		ID: "cat-pole-geo",
 		Geometries: []domain.Geometry{{

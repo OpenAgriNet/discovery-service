@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
@@ -95,7 +96,7 @@ func buildableConfig(t *testing.T) config.Config {
 	cfg.Database.URL = dbtest.DSN(t)
 	cfg.Database.MaxConns = 4
 	cfg.Database.MinConns = 1
-	cfg.Geo.ResolutionCells = 8
+	cfg.Geo.ResolutionCells = geo.DefaultTestResolution
 	cfg.Search.DefaultPageSize = 20
 	cfg.Search.MaxPageSize = 100
 	cfg.Search.MaxCandidatesPerMode = 500

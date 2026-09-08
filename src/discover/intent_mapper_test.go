@@ -8,6 +8,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/discover"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
@@ -20,7 +21,7 @@ func settings() config.Config {
 			MaxCandidatesPerMode: 500,
 			MaxRadiusMeters:      200000,
 		},
-		Geo: config.Geo{ResolutionCells: 8},
+		Geo: config.Geo{ResolutionCells: geo.DefaultTestResolution},
 	}
 }
 

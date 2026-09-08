@@ -154,7 +154,7 @@ func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture
 	t.Helper()
 
 	pool := dbtest.NewPostgres(t)
-	writer := postgres.NewCatalogRepository(pool, resolution)
+	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 
 	for _, fixture := range fixtures {
 		visibleTo := fixture.visibleTo
@@ -484,7 +484,7 @@ func TestARetrieverNeverReturnsMoreThanItsCap(t *testing.T) {
 	resources := kharifLots(depth + 4)
 
 	pool := dbtest.NewPostgres(t)
-	writer := postgres.NewCatalogRepository(pool, resolution)
+	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	if _, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
 		ID: "cat-cap", NetworkID: "bap.example.com", Active: true, ProtocolVersion: beckn.Version,
 		VisibleTo: []string{"bap.example.com"}, Resources: resources,
@@ -702,7 +702,7 @@ func within(t *testing.T, lat, lon, metres float64) *domain.SpatialFilter {
 	t.Helper()
 
 	shape := pointAt("", "", lat, lon)
-	full, cover, err := geo.CoverQuery(shape, domain.OpDWithin, metres, resolution)
+	full, cover, err := geo.CoverQuery(shape, domain.OpDWithin, metres, geo.DefaultTestResolution)
 	if err != nil {
 		t.Fatalf("cover the query geometry: %v", err)
 	}
