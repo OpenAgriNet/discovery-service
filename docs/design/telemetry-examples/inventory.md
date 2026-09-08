@@ -233,8 +233,15 @@ and **once propagation is fixed the rewrite becomes actively wrong**. Order
 matters — inject first, then retire the processor. Fixing one without the other
 is worse than fixing neither.
 
-Fix: an `otelhttp` round-tripper, or an inject before the outbound request. It is
-the prerequisite for any cross-participant latency attribution.
+**The fix is one line and the seam already exists.** `newHTTPClient`
+(`stdHandler.go:75`) is the single construction point for the protocol client —
+called once at `:117` — and at `:94-98` it already composes a
+`definition.TransportWrapper` around the transport. So it is either
+`finalTransport = otelhttp.NewTransport(finalTransport)` at `:98`, or a
+`TransportWrapper` implementation with **zero** changes to core. Wrapping
+`upstream.go:203`'s client the same way closes §3.2 in the same edit. Cost: two
+wrapped transports plus one dependency (`otelhttp` is not yet in onix's
+`go.mod`).
 
 ### 3.2 No span around the external provider call
 
