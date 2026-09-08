@@ -481,6 +481,18 @@ func TestValidateConstraintReportsEveryFaultNotJustTheFirst(t *testing.T) {
 	if len(fatal) != 4 {
 		t.Fatalf("fatal = %s, want 4 — one per bad field, not just the first", codesOf(fatal))
 	}
+
+	const at = "$['message']['intent']['spatial'][0]"
+	wantPaths := []string{at + "['op']", at + "['srid']", at + "['quantifier']", at + "['geometry']"}
+	for i, fault := range fatal {
+		if fault.Code != string(beckn.CodeSchemaInvalidFormat) {
+			t.Errorf("fault %d: code = %q, want %q", i, fault.Code, beckn.CodeSchemaInvalidFormat)
+		}
+		if fault.Path != wantPaths[i] {
+			t.Errorf("fault %d: path = %q, want %q — a count of 4 the wrong shape would also "+
+				"pass this test without checking which fields actually faulted", i, fault.Path, wantPaths[i])
+		}
+	}
 }
 
 // mapPage's own boundary: `>` refuses, so a page landing EXACTLY on the

@@ -255,11 +255,12 @@ func TestTwoUnavailableModesAreBothNamedInTheRefusal(t *testing.T) {
 	}
 }
 
-// The degraded header joins every missing mode with a bare comma — checked
-// with two, since one mode alone cannot tell a Join from a bare concatenation,
-// and the header's separator is not the same one negotiate's error message
-// uses (", " there, "," here).
-func TestTwoDegradedModesAreBothNamedInTheHeader(t *testing.T) {
+// Discover's own return value, not the header it becomes — checked with two
+// modes, since one alone cannot tell an ordered slice from any other shape.
+// TestTheDegradedHeaderJoinsMultipleModesWithACommaAndNoSpace (controller_test.go)
+// is what pins the header string itself, including its separator, which is
+// not the one negotiate's error message uses (", " there, "," in the header).
+func TestTwoDegradedModesAreBothReturned(t *testing.T) {
 	repo := &stubRepo{capabilities: domain.Capabilities{domain.CapabilityLexical: true, domain.CapabilityFuzzy: true}}
 
 	_, degraded, err := discover.NewService(repo, settings()).Discover(
