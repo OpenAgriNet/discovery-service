@@ -2,19 +2,89 @@ package app
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
 
+// repoCommonYAML is config/common.yaml from this package's directory — the
+// file this whole file's hardcoded values are meant to mirror.
+const repoCommonYAML = "../../config/common.yaml"
+
+// TestBuildableConfigMatchesCommonYAML pins the subset of buildableConfig's
+// values that common.yaml itself sets a review-and-commit answer for. Without
+// this, a change to common.yaml keeps this whole file silently testing the
+// OLD shape — buildableConfig has no other tie back to the file it claims to
+// mirror. Fields common.yaml leaves to instance.yaml/the environment (the
+// network id, the DSN, geo resolution, rate limits, request-body ceiling,
+// embedding dimensions) are deployment-specific and are not checked here.
+func TestBuildableConfigMatchesCommonYAML(t *testing.T) {
+	document, err := os.ReadFile(repoCommonYAML)
+	if err != nil {
+		t.Fatalf("read %s: %v", repoCommonYAML, err)
+	}
+
+	var common struct {
+		App struct {
+			DefaultTimezone string `yaml:"defaultTimezone"`
+		} `yaml:"app"`
+		Search struct {
+			MaxRadiusMeters      int `yaml:"maxRadiusMeters"`
+			DefaultPageSize      int `yaml:"defaultPageSize"`
+			MaxPageSize          int `yaml:"maxPageSize"`
+			MaxCandidatesPerMode int `yaml:"maxCandidatesPerMode"`
+		} `yaml:"search"`
+		Embeddings struct {
+			Provider string `yaml:"provider"`
+		} `yaml:"embeddings"`
+		Validation struct {
+			EnableL1Schema bool `yaml:"enableL1Schema"`
+		} `yaml:"validation"`
+	}
+	if err := yaml.Unmarshal(document, &common); err != nil {
+		t.Fatalf("parse %s: %v", repoCommonYAML, err)
+	}
+
+	cfg := buildableConfig(t)
+	if cfg.App.DefaultTimezone != common.App.DefaultTimezone {
+		t.Errorf("App.DefaultTimezone = %q, common.yaml says %q", cfg.App.DefaultTimezone, common.App.DefaultTimezone)
+	}
+	if cfg.Search.MaxRadiusMeters != common.Search.MaxRadiusMeters {
+		t.Errorf("Search.MaxRadiusMeters = %d, common.yaml says %d", cfg.Search.MaxRadiusMeters, common.Search.MaxRadiusMeters)
+	}
+	if cfg.Search.DefaultPageSize != common.Search.DefaultPageSize {
+		t.Errorf("Search.DefaultPageSize = %d, common.yaml says %d", cfg.Search.DefaultPageSize, common.Search.DefaultPageSize)
+	}
+	if cfg.Search.MaxPageSize != common.Search.MaxPageSize {
+		t.Errorf("Search.MaxPageSize = %d, common.yaml says %d", cfg.Search.MaxPageSize, common.Search.MaxPageSize)
+	}
+	if cfg.Search.MaxCandidatesPerMode != common.Search.MaxCandidatesPerMode {
+		t.Errorf("Search.MaxCandidatesPerMode = %d, common.yaml says %d", cfg.Search.MaxCandidatesPerMode, common.Search.MaxCandidatesPerMode)
+	}
+	if cfg.Embeddings.Provider != common.Embeddings.Provider {
+		t.Errorf("Embeddings.Provider = %q, common.yaml says %q", cfg.Embeddings.Provider, common.Embeddings.Provider)
+	}
+	if cfg.Validation.EnableL1Schema != common.Validation.EnableL1Schema {
+		t.Errorf("Validation.EnableL1Schema = %v, common.yaml says %v", cfg.Validation.EnableL1Schema, common.Validation.EnableL1Schema)
+	}
+}
+
 // buildableConfig is the smallest config Build accepts, pointed at a real
 // (migrated) Postgres and the pinned spec fixture rather than the network —
 // the same fixture router_test.go's testApp reads, since Build and testApp
 // have to agree on what "a working App" means.
+//
+// The values below are not read from config/common.yaml (Load reads it
+// relative to the process working directory, which a go test binary does not
+// share with a deployed container) — TestBuildableConfigMatchesCommonYAML
+// pins the subset common.yaml itself answers, so a change there fails loudly
+// here instead of leaving this file silently testing the old shape.
 func buildableConfig(t *testing.T) config.Config {
 	t.Helper()
 
@@ -119,24 +189,47 @@ func TestBuildWrapsASpecThatCanBeNeitherFetchedNorCached(t *testing.T) {
 	}
 }
 
+// selectionDimensions is deliberately not the suite-wide 768 (embeddings_test.go
+// and elsewhere): these cases pin WHICH constructor newEmbedder/writeEmbedder
+// picks, never a vector's contents, so any positive width is equivalent —
+// named to say so rather than reading as an unexplained departure from 768.
+const selectionDimensions = 8
+
 // newEmbedder is the EMBEDDING_PROVIDER selector (Q4): noop answers nil
 // rather than a Noop value, which is the whole contract with
 // NewSearchRepository — a Noop there would declare a capability that can only
 // return zero rows.
 func TestNewEmbedderSelectsByProvider(t *testing.T) {
-	if embedder, err := newEmbedder(config.Embeddings{Provider: "noop"}); err != nil || embedder != nil {
-		t.Errorf("noop: newEmbedder = %v, %v, want nil, nil", embedder, err)
+	cases := []struct {
+		name       string
+		cfg        config.Embeddings
+		wantErr    bool
+		wantNonNil bool
+	}{
+		{name: "noop", cfg: config.Embeddings{Provider: "noop"}, wantNonNil: false},
+		{name: "hashing", cfg: config.Embeddings{Provider: "hashing", Dimensions: selectionDimensions}, wantNonNil: true},
+		{name: "ollama", cfg: config.Embeddings{
+			Provider: "ollama", Model: "m", Endpoint: "http://x", Dimensions: selectionDimensions,
+		}, wantNonNil: true},
+		{name: "unknown provider", cfg: config.Embeddings{Provider: "not-a-provider"}, wantErr: true},
 	}
-	if embedder, err := newEmbedder(config.Embeddings{Provider: "hashing", Dimensions: 8}); err != nil || embedder == nil {
-		t.Errorf("hashing: newEmbedder = %v, %v, want a non-nil Hashing", embedder, err)
-	}
-	if embedder, err := newEmbedder(
-		config.Embeddings{Provider: "ollama", Model: "m", Endpoint: "http://x", Dimensions: 8},
-	); err != nil || embedder == nil {
-		t.Errorf("ollama: newEmbedder = %v, %v, want a non-nil Ollama", embedder, err)
-	}
-	if _, err := newEmbedder(config.Embeddings{Provider: "not-a-provider"}); err == nil {
-		t.Error("an unknown provider was accepted; want an error")
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			embedder, err := newEmbedder(testCase.cfg)
+			if testCase.wantErr {
+				if err == nil {
+					t.Error("an unknown provider was accepted; want an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("newEmbedder: %v", err)
+			}
+			if got := embedder != nil; got != testCase.wantNonNil {
+				t.Errorf("newEmbedder = %v, want non-nil %v", embedder, testCase.wantNonNil)
+			}
+		})
 	}
 }
 
@@ -145,11 +238,20 @@ func TestNewEmbedderSelectsByProvider(t *testing.T) {
 // explicit noop and an unknown (therefore erroring) provider fall back to the
 // real Noop rather than propagating nil or the error.
 func TestWriteEmbedderIsNeverNil(t *testing.T) {
-	if embedder := writeEmbedder(config.Embeddings{Provider: "noop", Dimensions: 8}); embedder == nil {
-		t.Error("noop: writeEmbedder = nil, want the real Noop")
+	cases := []struct {
+		name string
+		cfg  config.Embeddings
+	}{
+		{name: "noop", cfg: config.Embeddings{Provider: "noop", Dimensions: selectionDimensions}},
+		{name: "unknown provider", cfg: config.Embeddings{Provider: "not-a-provider", Dimensions: selectionDimensions}},
 	}
-	if embedder := writeEmbedder(config.Embeddings{Provider: "not-a-provider", Dimensions: 8}); embedder == nil {
-		t.Error("unknown provider: writeEmbedder = nil, want it to fall back to Noop rather than propagate nil")
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if embedder := writeEmbedder(testCase.cfg); embedder == nil {
+				t.Error("writeEmbedder = nil, want the real Noop")
+			}
+		})
 	}
 }
 

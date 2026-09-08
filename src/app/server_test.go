@@ -8,14 +8,18 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // Run wires net.Listen and the real signal-cancellable context ahead of
 // serve, which every other test in this file drives directly with a
-// hand-built listener. This is Run's own happy path — the actual production
-// entrypoint, not merely serve one layer down.
-func TestRunOpensTheConfiguredPortAndServesUntilCancelled(t *testing.T) {
-	application := testApp(t, livePool{}, zap.NewNop())
+// hand-built listener. This pins only that Run returns cleanly once
+// cancelled — TestRunReturnsAListenFailureRatherThanPanicking below pins the
+// listen step, and serve's own tests pin the request-draining behaviour.
+func TestRunReturnsNilAfterACleanShutdown(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	application := testApp(t, livePool{}, zap.New(core))
 	application.Config.Server.Port = 0 // the kernel picks a free one
 	application.Config.Server.ShutdownTimeout = time.Second
 
@@ -23,7 +27,16 @@ func TestRunOpensTheConfiguredPortAndServesUntilCancelled(t *testing.T) {
 	served := make(chan error, 1)
 	go func() { served <- Run(ctx, application) }()
 
-	time.Sleep(50 * time.Millisecond) // give Run time to bind and start serving
+	// Waits for Run's own "listening" log line rather than sleeping a fixed
+	// duration: a fixed sleep is a guess about scheduler latency that a loaded
+	// CI box can miss, cancelling before Run has bound.
+	deadline := time.Now().Add(5 * time.Second)
+	for logs.FilterMessage("listening").Len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Run never logged that it was listening")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
 
 	if err := <-served; err != nil {
@@ -49,18 +62,27 @@ func TestRunReturnsAListenFailureRatherThanPanicking(t *testing.T) {
 	application := testApp(t, livePool{}, zap.NewNop())
 	application.Config.Server.Port = address.Port
 
-	if err := Run(context.Background(), application); err == nil {
+	// A cancellable context: if the listen-collision premise above ever stops
+	// holding, this fails in seconds instead of hanging the package for
+	// go test's 10-minute panic timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := Run(ctx, application); err == nil {
 		t.Error("Run answered nil while the configured port was already in use")
 	}
 }
 
 // listenLocal opens a listener on a port the kernel picks, so the suite never
 // collides with a developer's own service on 8080 and two of these can run in
-// parallel.
+// parallel. The wildcard bind matches what Run itself asks for
+// (net.JoinHostPort("", port) in server.go) — TestRunReturnsAListenFailureRatherThanPanicking
+// needs to hold the exact address Run will collide with, and a loopback-only
+// bind does not collide with a wildcard one.
 func listenLocal(t *testing.T) net.Listener {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
