@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
@@ -19,13 +18,18 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres"
-	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
 
 // The read path against a real PostgreSQL. Everything here turns on behaviour
 // the SQL source test cannot see: the source test proves a clause is PRESENT,
 // these prove it means what it was written to mean.
+
+// columnDimensions is the embedding column's fixed width (config/common.yaml's
+// EMBEDDING_DIMENSIONS default) — named rather than repeated as a bare 768 at
+// every site in this file that has to agree with the schema, not with each
+// other.
+const columnDimensions = 768
 
 // searchConfig is the config every repository below is built with, with a small
 // candidate cap so the pagination-depth and cap-reporting cases can reach it
@@ -97,7 +101,7 @@ func deriveVectors(ids ...string) domain.DeriveFunc {
 			if !slices.Contains(ids, merged.Resources[index].ID) {
 				continue
 			}
-			vector := make([]float32, 768)
+			vector := make([]float32, columnDimensions)
 			for position := range vector {
 				vector[position] = float32(position%7) / 7
 			}
@@ -445,7 +449,7 @@ func (unreachable) Embed(context.Context, string) ([]float32, error) {
 	return nil, errors.New("the embedding service is unreachable")
 }
 
-func (unreachable) Dimensions() int { return 768 }
+func (unreachable) Dimensions() int { return columnDimensions }
 
 // ---------------------------------------------------------------------------
 // the retrieval depth
@@ -539,7 +543,7 @@ func TestSemanticIsACapabilityOnlyWhenAnEmbedderIsConfigured(t *testing.T) {
 		t.Error("a repository with no embedder declared the semantic capability")
 	}
 
-	with := postgres.NewSearchRepository(pool, searchConfig(), embeddings.NewHashing(768))
+	with := postgres.NewSearchRepository(pool, searchConfig(), embeddings.NewHashing(columnDimensions))
 	if !with.Capabilities().Has(domain.CapabilitySemantic) {
 		t.Error("a repository holding an embedder did not declare the semantic capability")
 	}
@@ -554,7 +558,7 @@ func TestFuzzyRetrieverNamesItsOwnQueryFailure(t *testing.T) {
 		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
 	}})
 
-	retriever := postgres.NewFuzzyRetriever(&queryFailsAfter{DBTX: pool, n: 1}, 10)
+	retriever := postgres.NewFuzzyRetriever(&postgres.DBTXFailsAt{DBTX: pool, N: 1}, 10)
 	_, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: "kharif"}, domain.Scope{})
 	if err == nil || !strings.Contains(err.Error(), "fuzzy retriever") {
 		t.Errorf("err = %v, want it naming the fuzzy retriever", err)
@@ -566,19 +570,19 @@ func TestFuzzyRetrieverNamesItsOwnQueryFailure(t *testing.T) {
 // distinct from TestAModeThatFailsIsDegradedAndThePageIsWhatTheOthersFound's
 // case, which is a real embedder at the WRONG column width rather than one
 // that lies about its own output.
-type wrongWidth struct{ claims int }
+type wrongWidth struct{ declaredDimensions int }
 
 func (w wrongWidth) Embed(context.Context, string) ([]float32, error) {
-	return make([]float32, w.claims+1), nil
+	return make([]float32, w.declaredDimensions+1), nil
 }
 
-func (w wrongWidth) Dimensions() int { return w.claims }
+func (w wrongWidth) Dimensions() int { return w.declaredDimensions }
 
 // The dimension guard runs in Go, before the statement, so a provider that
 // lies about its own output degrades the mode with a clear cause rather than
 // reaching pgvector and failing as a storage error three layers away from it.
 func TestAQueryEmbedderThatLiesAboutItsWidthDegradesTheMode(t *testing.T) {
-	repository, _ := publish(t, wrongWidth{claims: 768}, readFixture{
+	repository, _ := publish(t, wrongWidth{declaredDimensions: columnDimensions}, readFixture{
 		catalog:   "cat-lying-embedder",
 		resources: []domain.ResourcePatch{searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot")},
 	})
@@ -600,7 +604,7 @@ func TestAQueryEmbedderThatLiesAboutItsWidthDegradesTheMode(t *testing.T) {
 // was pointed at — Hashing embeds both the corpus and the query, so two texts
 // sharing every token land in the same bucket on both sides.
 func TestSemanticRetrieverFindsTheResourceItWasEmbeddedFor(t *testing.T) {
-	hashing := embeddings.NewHashing(768)
+	hashing := embeddings.NewHashing(columnDimensions)
 	embedByText := func(merged *domain.Catalog, touched []string) []domain.Fault {
 		if faults := deriveSearchable(merged, touched); faults != nil {
 			return faults
@@ -649,7 +653,7 @@ func TestSemanticRetrieverWithNoTextEmbedsNothing(t *testing.T) {
 		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
 	}})
 
-	retriever := postgres.NewSemanticRetriever(pool, embeddings.NewHashing(768), 10)
+	retriever := postgres.NewSemanticRetriever(pool, embeddings.NewHashing(columnDimensions), 10)
 	if _, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: ""}, domain.Scope{}); err != nil {
 		t.Errorf("Retrieve with no text: %v, want no error", err)
 	}
@@ -965,29 +969,11 @@ func TestHydrateOfAGateRefusedPageReturnsNoCatalogs(t *testing.T) {
 	}
 }
 
-// queryFailsAfter wraps a real gen.DBTX and fails the Nth call to Query, so a
-// specific query inside a multi-query method (Hydrate runs four) can be made
-// to fail without the ones before it succeeding by luck rather than by
-// isolation.
-type queryFailsAfter struct {
-	gen.DBTX
-	calls int
-	n     int
-}
-
-func (f *queryFailsAfter) Query(
-	ctx context.Context, sql string, args ...interface{},
-) (pgx.Rows, error) {
-	f.calls++
-	if f.calls == f.n {
-		return nil, errors.New("boom")
-	}
-	return f.DBTX.Query(ctx, sql, args...)
-}
-
 // Hydrate wraps each of its four queries in its own fmt.Errorf, naming what it
 // was doing — checked one at a time, since a shared "query failed" message
-// would pass whichever query actually broke.
+// would pass whichever query actually broke. postgres.DBTXFailsAt (exported
+// from catalog_repository_internal_test.go for exactly this reason) is used
+// rather than a second wrapper written against the same gen.DBTX interface.
 func TestHydrateNamesWhicheverOfItsFourQueriesFailed(t *testing.T) {
 	_, pool := publish(t, nil, readFixture{
 		catalog: "cat-hydrate-fail",
@@ -998,8 +984,8 @@ func TestHydrateNamesWhicheverOfItsFourQueriesFailed(t *testing.T) {
 	id := domain.ResourceKey("cat-hydrate-fail", "wheat")
 
 	cases := []struct {
-		call    int
-		wantsay string
+		call int
+		want string
 	}{
 		{1, "resources"},
 		{2, "catalogs"},
@@ -1007,11 +993,13 @@ func TestHydrateNamesWhicheverOfItsFourQueriesFailed(t *testing.T) {
 		{4, "offers"},
 	}
 	for _, testCase := range cases {
-		hydrator := postgres.NewHydrator(&queryFailsAfter{DBTX: pool, n: testCase.call})
-		_, err := hydrator.Hydrate(context.Background(), []string{id}, domain.Scope{})
-		if err == nil || !strings.Contains(err.Error(), testCase.wantsay) {
-			t.Errorf("query %d failing: err = %v, want it naming %q", testCase.call, err, testCase.wantsay)
-		}
+		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
+			hydrator := postgres.NewHydrator(&postgres.DBTXFailsAt{DBTX: pool, N: testCase.call})
+			_, err := hydrator.Hydrate(context.Background(), []string{id}, domain.Scope{})
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("err = %v, want it naming %q", err, testCase.want)
+			}
+		})
 	}
 }
 
@@ -1022,7 +1010,7 @@ func TestScopeFilterNamesItsOwnQueryFailure(t *testing.T) {
 	}})
 	id := domain.ResourceKey("cat-scope-fail", "wheat")
 
-	hydrator := postgres.NewHydrator(&queryFailsAfter{DBTX: pool, n: 1})
+	hydrator := postgres.NewHydrator(&postgres.DBTXFailsAt{DBTX: pool, N: 1})
 	_, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{})
 	if err == nil || !strings.Contains(err.Error(), "scope gate") {
 		t.Errorf("err = %v, want it naming the scope gate", err)

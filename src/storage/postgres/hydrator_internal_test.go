@@ -90,8 +90,9 @@ func (r stubRetriever) Retrieve(context.Context, domain.SearchQuery, domain.Scop
 }
 
 // failingHydrator's Hydrate always errors — the fault Search.Hydrate wraps
-// with nothing else, unlike ScopeFilter and Hydrate's own four queries above,
-// which each name what they were doing.
+// with nothing else, unlike ScopeFilter's own query and Hydrate's own four
+// queries (read_path_test.go, package postgres_test — a different file and a
+// different package from this one), each of which names what it was doing.
 type failingHydrator struct{}
 
 func (failingHydrator) ScopeFilter(context.Context, []string, domain.Scope) ([]string, error) {

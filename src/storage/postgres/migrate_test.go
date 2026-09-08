@@ -131,10 +131,12 @@ func TestMigrateIsANoOpTheSecondTime(t *testing.T) {
 	}
 }
 
-// The DSN arrives from DATABASE_URL, and an operator who mistypes it should be
-// told so at boot rather than discover a half-applied schema.
 // A host nothing is listening on is what makes opening the migrator itself
 // fail, distinct from a migration failing once it is open.
+//
+// Dials 127.0.0.1:1 directly rather than through skipIfShort: a documentation
+// address (RFC 5737) would time out instead of refusing, and loopback is the
+// one address guaranteed to refuse a connection instantly wherever this runs.
 func TestMigrateWrapsAFailureToOpenTheMigrator(t *testing.T) {
 	err := postgres.Migrate("postgres://user:pass@127.0.0.1:1/db")
 	if err == nil || !strings.Contains(err.Error(), "open the migrator") {
@@ -163,6 +165,8 @@ func TestMigrateWrapsAFailureToApplyAMigration(t *testing.T) {
 	}
 }
 
+// The DSN arrives from DATABASE_URL, and an operator who mistypes it should be
+// told so at boot rather than discover a half-applied schema.
 func TestMigrateRefusesAConnectionStringItCannotParse(t *testing.T) {
 	if err := postgres.Migrate("postgres://user:pass@%%%/db"); err == nil {
 		t.Error("Migrate accepted a connection string that is not a URL")

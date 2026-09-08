@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -83,7 +84,7 @@ type txFailsAt struct {
 	n     int
 }
 
-var errBoom = errors.New("boom")
+var ErrBoom = errors.New("boom")
 
 func (f *txFailsAt) hit() bool {
 	f.calls++
@@ -92,28 +93,28 @@ func (f *txFailsAt) hit() bool {
 
 func (f *txFailsAt) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if f.hit() {
-		return pgconn.CommandTag{}, errBoom
+		return pgconn.CommandTag{}, ErrBoom
 	}
 	return f.Tx.Exec(ctx, sql, args...)
 }
 
 func (f *txFailsAt) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if f.hit() {
-		return nil, errBoom
+		return nil, ErrBoom
 	}
 	return f.Tx.Query(ctx, sql, args...)
 }
 
 func (f *txFailsAt) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if f.hit() {
-		return errRow{errBoom}
+		return errRow{ErrBoom}
 	}
 	return f.Tx.QueryRow(ctx, sql, args...)
 }
 
 func (f *txFailsAt) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
 	if f.hit() {
-		return errBatchResults{errBoom}
+		return errBatchResults{ErrBoom}
 	}
 	return f.Tx.SendBatch(ctx, b)
 }
@@ -143,12 +144,7 @@ func seedCatalog(t *testing.T, pool dbtest.Pool, id string) {
 	t.Helper()
 
 	repo := NewCatalogRepository(pool, testResolution)
-	patch := domain.CatalogPatch{
-		ID: id, NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version, VisibleTo: []string{"n1"},
-		Resources: []domain.ResourcePatch{{ID: "r1", Document: []byte(`{"id":"r1"}`)}},
-		Offers:    []domain.OfferPatch{{ID: "o1", ResourceIDs: []string{"r1"}, Document: []byte(`{"id":"o1"}`)}},
-	}
-	if _, err := repo.UpsertCatalog(context.Background(), patch, domain.UpdateModeFull, noopDerive); err != nil {
+	if _, err := repo.UpsertCatalog(context.Background(), republishPatch(id), domain.UpdateModeFull, noopDerive); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }
@@ -175,8 +171,8 @@ func TestWriteNamesWhicheverOfItsMergeModeQueriesFailed(t *testing.T) {
 	seedCatalog(t, pool, "cat-merge-fail")
 
 	cases := []struct {
-		call    int
-		wantsay string
+		call int
+		want string
 	}{
 		{1, "lock the catalog row"},
 		{2, "load the stored resources"},
@@ -191,17 +187,19 @@ func TestWriteNamesWhicheverOfItsMergeModeQueriesFailed(t *testing.T) {
 		{11, "rebuild the filter composites"},
 	}
 	for _, testCase := range cases {
-		tx := beginTx(t, pool)
-		repo := &CatalogRepository{queries: gen.New(nil), resolution: testResolution}
+		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
+			tx := beginTx(t, pool)
+			repo := &CatalogRepository{queries: gen.New(nil), resolution: testResolution}
 
-		_, err := repo.write(context.Background(), &txFailsAt{Tx: tx, n: testCase.call},
-			republishPatch("cat-merge-fail"), domain.UpdateModeMerge, noopDerive)
-		if rollbackErr := tx.Rollback(context.Background()); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-			t.Fatalf("rollback: %v", rollbackErr)
-		}
-		if err == nil || !strings.Contains(err.Error(), testCase.wantsay) {
-			t.Errorf("call %d failing: err = %v, want it naming %q", testCase.call, err, testCase.wantsay)
-		}
+			_, err := repo.write(context.Background(), &txFailsAt{Tx: tx, n: testCase.call},
+				republishPatch("cat-merge-fail"), domain.UpdateModeMerge, noopDerive)
+			if rollbackErr := tx.Rollback(context.Background()); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+				t.Fatalf("rollback: %v", rollbackErr)
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("err = %v, want it naming %q", err, testCase.want)
+			}
+		})
 	}
 }
 
@@ -212,8 +210,8 @@ func TestWriteNamesWhicheverOfItsFullModeQueriesFailed(t *testing.T) {
 	seedCatalog(t, pool, "cat-full-fail")
 
 	cases := []struct {
-		call    int
-		wantsay string
+		call int
+		want string
 	}{
 		{1, "lock the catalog row"},
 		{2, "write the catalog row"},
@@ -230,52 +228,60 @@ func TestWriteNamesWhicheverOfItsFullModeQueriesFailed(t *testing.T) {
 		{13, "rebuild the filter composites"},
 	}
 	for _, testCase := range cases {
-		tx := beginTx(t, pool)
-		repo := &CatalogRepository{queries: gen.New(nil), resolution: testResolution}
+		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
+			tx := beginTx(t, pool)
+			repo := &CatalogRepository{queries: gen.New(nil), resolution: testResolution}
 
-		_, err := repo.write(context.Background(), &txFailsAt{Tx: tx, n: testCase.call},
-			republishPatch("cat-full-fail"), domain.UpdateModeFull, noopDerive)
-		if rollbackErr := tx.Rollback(context.Background()); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-			t.Fatalf("rollback: %v", rollbackErr)
-		}
-		if err == nil || !strings.Contains(err.Error(), testCase.wantsay) {
-			t.Errorf("call %d failing: err = %v, want it naming %q", testCase.call, err, testCase.wantsay)
-		}
+			_, err := repo.write(context.Background(), &txFailsAt{Tx: tx, n: testCase.call},
+				republishPatch("cat-full-fail"), domain.UpdateModeFull, noopDerive)
+			if rollbackErr := tx.Rollback(context.Background()); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+				t.Fatalf("rollback: %v", rollbackErr)
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("err = %v, want it naming %q", err, testCase.want)
+			}
+		})
 	}
 }
 
-// dbtxFailsAt is the gen.DBTX-level twin of txFailsAt, for the three reads
+// DBTXFailsAt is the gen.DBTX-level twin of txFailsAt, for the three reads
 // that run outside any transaction: DeleteCatalog, GetCatalog and
 // ListCatalogResources build their *gen.Queries straight from the repository's
 // own pool rather than from WithTx.
-type dbtxFailsAt struct {
+//
+// Exported (unlike txFailsAt, which stays package-private since nothing
+// outside package postgres drives write() directly) because read_path_test.go
+// is package postgres_test and needs it too — sharing this one collapses what
+// was a second, near-identical wrapper (queryFailsAfter) written against the
+// same interface for the same reason.
+type DBTXFailsAt struct {
 	gen.DBTX
 	calls int
-	n     int
+	N     int
 }
 
-func (f *dbtxFailsAt) hit() bool {
+func (f *DBTXFailsAt) hit() bool {
 	f.calls++
-	return f.calls == f.n
+	return f.calls == f.N
 }
 
-func (f *dbtxFailsAt) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (f *DBTXFailsAt) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if f.hit() {
-		return pgconn.CommandTag{}, errBoom
+		return pgconn.CommandTag{}, ErrBoom
 	}
 	return f.DBTX.Exec(ctx, sql, args...)
 }
 
-func (f *dbtxFailsAt) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+func (f *DBTXFailsAt) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if f.hit() {
-		return nil, errBoom
+		return nil, ErrBoom
 	}
 	return f.DBTX.Query(ctx, sql, args...)
 }
 
-func (f *dbtxFailsAt) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+func (f *DBTXFailsAt) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if f.hit() {
-		return errRow{errBoom}
+		return errRow{ErrBoom}
 	}
 	return f.DBTX.QueryRow(ctx, sql, args...)
 }
@@ -283,7 +289,7 @@ func (f *dbtxFailsAt) QueryRow(ctx context.Context, sql string, args ...any) pgx
 // DeleteCatalog wraps Exec's own failure.
 func TestDeleteCatalogNamesItsOwnQueryFailure(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repo := &CatalogRepository{queries: gen.New(&dbtxFailsAt{DBTX: pool, n: 1})}
+	repo := &CatalogRepository{queries: gen.New(&DBTXFailsAt{DBTX: pool, N: 1})}
 
 	err := repo.DeleteCatalog(context.Background(), "whatever")
 	if err == nil || !strings.Contains(err.Error(), "delete catalog") {
@@ -298,8 +304,8 @@ func TestGetCatalogNamesWhicheverOfItsFourReadsFailed(t *testing.T) {
 	seedCatalog(t, pool, "cat-get-fail")
 
 	cases := []struct {
-		call    int
-		wantsay string
+		call int
+		want string
 	}{
 		{1, "read catalog"},
 		{2, "list the resources"},
@@ -307,19 +313,21 @@ func TestGetCatalogNamesWhicheverOfItsFourReadsFailed(t *testing.T) {
 		{4, "read the geometries"},
 	}
 	for _, testCase := range cases {
-		repo := &CatalogRepository{queries: gen.New(&dbtxFailsAt{DBTX: pool, n: testCase.call})}
+		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
+			repo := &CatalogRepository{queries: gen.New(&DBTXFailsAt{DBTX: pool, N: testCase.call})}
 
-		_, err := repo.GetCatalog(context.Background(), "cat-get-fail")
-		if err == nil || !strings.Contains(err.Error(), testCase.wantsay) {
-			t.Errorf("call %d failing: err = %v, want it naming %q", testCase.call, err, testCase.wantsay)
-		}
+			_, err := repo.GetCatalog(context.Background(), "cat-get-fail")
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("err = %v, want it naming %q", err, testCase.want)
+			}
+		})
 	}
 }
 
 // ListCatalogResources's own failure, isolated from GetCatalog's use of it.
 func TestListCatalogResourcesNamesItsOwnQueryFailure(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repo := &CatalogRepository{queries: gen.New(&dbtxFailsAt{DBTX: pool, n: 1})}
+	repo := &CatalogRepository{queries: gen.New(&DBTXFailsAt{DBTX: pool, N: 1})}
 
 	_, err := repo.ListCatalogResources(context.Background(), "whatever")
 	if err == nil || !strings.Contains(err.Error(), "list the resources") {
@@ -344,7 +352,7 @@ func TestGetCatalogOfAnAbsentCatalogIsErrCatalogNotFound(t *testing.T) {
 // publisher fixing a bad polygon needs to know WHICH availableAt entry it was.
 func TestGeometryFaultNamesTheSourcePath(t *testing.T) {
 	shape := domain.Geometry{SourcePath: "$.provider.availableAt[2].geo", TargetPath: "$.provider.availableAt[*].geo"}
-	fault := geometryFault(shape, errBoom)
+	fault := geometryFault(shape, ErrBoom)
 
 	if fault.Path != shape.SourcePath {
 		t.Errorf("Path = %q, want the SourcePath %q", fault.Path, shape.SourcePath)
