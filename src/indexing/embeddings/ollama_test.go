@@ -158,6 +158,32 @@ func TestOllamaHonoursACancelledContext(t *testing.T) {
 	}
 }
 
+// A response that answers 200 but is not valid JSON — a server on the
+// endpoint that isn't Ollama at all, or a proxy's own error page dressed as
+// a success — must be caught by the decode rather than misread as a vector.
+func TestOllamaReportsAnUnreadableBody(t *testing.T) {
+	embedder, _ := serving(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if _, err := writer.Write([]byte("<html>not json</html>")); err != nil {
+			t.Errorf("write the stub response: %v", err)
+		}
+	})
+
+	if _, err := embedder.Embed(context.Background(), "rice"); err == nil {
+		t.Error("an unparseable body was read as a successful embedding")
+	}
+}
+
+// An endpoint that cannot become a valid request URL is refused before any
+// network call, the same way a malformed request never reaches send.
+func TestOllamaRefusesAnEndpointThatCannotBuildARequest(t *testing.T) {
+	embedder := embeddings.NewOllama("http://\x7f", model, dimensions, time.Second)
+
+	if _, err := embedder.Embed(context.Background(), "rice"); err == nil {
+		t.Error("an unbuildable request URL was silently sent")
+	}
+}
+
 // Ollama satisfies the seam. Asserted here rather than in the provider table,
 // because constructing it there would stand a live http.Client up in a test
 // that never makes a request.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // sameJSON compares two documents by value rather than by byte, so a case is
@@ -148,4 +149,72 @@ func TestMergePatchLeavesItsInputsAlone(t *testing.T) {
 	if string(patch) != patchBefore {
 		t.Errorf("patch = %s, want it unchanged at %s", patch, patchBefore)
 	}
+}
+
+// The two decode-failure branches MergePatch's own doc comment names, neither
+// reachable from a validated request but both stated as a deliberate contract
+// rather than left to whatever json.Unmarshal happens to do.
+func TestMergePatchOfUnreadableJSONChangesNothing(t *testing.T) {
+	target := json.RawMessage(`{"a":1}`)
+
+	got := MergePatch(target, json.RawMessage(`not json`))
+	if !sameJSON(t, got, target) {
+		t.Errorf("MergePatch = %s, want the target unchanged when the patch will not decode", got)
+	}
+}
+
+// An unreadable target reads as "not an object" — the RFC's own branch for a
+// scalar — so the patch replaces it wholesale rather than the merge failing.
+func TestMergePatchOfAnUnreadableTargetReadsAsNotAnObject(t *testing.T) {
+	patch := json.RawMessage(`{"a":1}`)
+
+	got := MergePatch(json.RawMessage(`not json`), patch)
+	if !sameJSON(t, got, patch) {
+		t.Errorf("MergePatch = %s, want the patch alone — an unreadable target is read as absent", got)
+	}
+}
+
+// patchedDate's three tri-state branches: unset keeps the stored bound, an
+// explicit null clears it to the zero time (the same value an unset column
+// reads back as), and a value replaces it.
+func TestPatchedDateTriState(t *testing.T) {
+	stored := timeMust(t, "2026-01-01T00:00:00Z")
+	value := timeMust(t, "2026-06-01T00:00:00Z")
+
+	if got := patchedDate(stored, Nullable[time.Time]{}); !got.Equal(stored) {
+		t.Errorf("unset: patchedDate = %v, want the stored bound %v", got, stored)
+	}
+	if got := patchedDate(stored, Nullable[time.Time]{Set: true, Null: true}); !got.IsZero() {
+		t.Errorf("explicit null: patchedDate = %v, want the zero time", got)
+	}
+	if got := patchedDate(stored, Nullable[time.Time]{Set: true, Value: value}); !got.Equal(value) {
+		t.Errorf("value: patchedDate = %v, want %v", got, value)
+	}
+}
+
+// patchedTimeOfDay's own tri-state, where cleared is nil rather than the zero
+// time — 00:00:00 is a real bound and cannot double as the absence.
+func TestPatchedTimeOfDayTriState(t *testing.T) {
+	stored := &TimeOfDay{Hour: 9}
+	value := TimeOfDay{Hour: 17}
+
+	if got := patchedTimeOfDay(stored, Nullable[TimeOfDay]{}); got != stored {
+		t.Errorf("unset: patchedTimeOfDay = %v, want the stored pointer %v", got, stored)
+	}
+	if got := patchedTimeOfDay(stored, Nullable[TimeOfDay]{Set: true, Null: true}); got != nil {
+		t.Errorf("explicit null: patchedTimeOfDay = %v, want nil", got)
+	}
+	if got := patchedTimeOfDay(stored, Nullable[TimeOfDay]{Set: true, Value: value}); got == nil || *got != value {
+		t.Errorf("value: patchedTimeOfDay = %v, want %v", got, value)
+	}
+}
+
+func timeMust(t *testing.T, literal string) time.Time {
+	t.Helper()
+
+	instant, err := time.Parse(time.RFC3339, literal)
+	if err != nil {
+		t.Fatalf("parse %q: %v", literal, err)
+	}
+	return instant
 }

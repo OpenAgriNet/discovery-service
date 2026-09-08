@@ -2,6 +2,7 @@ package publish_test
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -406,5 +407,173 @@ func TestAnAbsentProtocolVersionFallsBackToTheBuildsOwn(t *testing.T) {
 	}
 	if patch.ProtocolVersion != beckn.Version {
 		t.Errorf("ProtocolVersion = %q, want %q", patch.ProtocolVersion, beckn.Version)
+	}
+}
+
+// catalogID prefers the directive's id, but every other test in this file
+// builds a directive whose CatalogID already equals the catalog's own — this
+// is the only one where the directive's is empty, so the fallback to the
+// body's own id is the branch actually taken.
+func TestAnEmptyDirectiveCatalogIDFallsBackToTheBodys(t *testing.T) {
+	patch, fatal, _ := publish.MapCatalog(
+		beckn.Catalog{ID: "c1"}, beckn.PublishDirective{}, network, time.UTC, beckn.Version)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+	if patch.ID != "c1" {
+		t.Errorf("ID = %q, want the catalog's own c1", patch.ID)
+	}
+}
+
+// A catalog whose Raw does not decode as a JSON object — reachable only by a
+// caller building beckn.Catalog directly rather than through json.Unmarshal,
+// which is exactly the contract protocolVersion's own doc comment describes:
+// MapCatalog has no one particular gate it works behind.
+func TestACatalogRawThatIsNotAnObjectIsFatal(t *testing.T) {
+	patch, fatal, _ := publish.MapCatalog(
+		beckn.Catalog{ID: "c1", Raw: json.RawMessage(`[1,2,3]`)},
+		beckn.PublishDirective{CatalogID: "c1"}, network, time.UTC, beckn.Version)
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %v, want exactly one", fatal)
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("Code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+	if patch.Document != nil {
+		t.Errorf("Document = %s, want nothing stored", patch.Document)
+	}
+}
+
+// resourceDocument's fallback — json.Marshal(resource) rather than Raw — is
+// reached only by a resource built in Go rather than decoded off the wire,
+// since UnmarshalJSON always sets Raw. Every resource fixture in this file
+// until now went through mapOne's json.Unmarshal, so the fallback itself was
+// never exercised: this constructs the catalog directly instead.
+func TestAResourceBuiltInGoFallsBackToMarshallingItsFields(t *testing.T) {
+	patch, fatal, _ := publish.MapCatalog(
+		beckn.Catalog{ID: "c1", Resources: []beckn.Resource{{ID: "r1"}}},
+		beckn.PublishDirective{CatalogID: "c1"}, network, time.UTC, beckn.Version)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+	if len(patch.Resources) != 1 || string(patch.Resources[0].Document) != `{"id":"r1"}` {
+		t.Errorf("Document = %s, want the fields marshalled since there is no Raw", patch.Resources[0].Document)
+	}
+}
+
+// The other half of the fallback: a hand-built resource whose Descriptor is
+// not valid JSON fails to marshal, and the resource is stored with no
+// document rather than the mapper crashing or the catalog refusing whole —
+// mapResources does not check resourceDocument's return for an error.
+func TestAResourceBuiltInGoWithUnmarshallableFieldsStoresNoDocument(t *testing.T) {
+	patch, fatal, _ := publish.MapCatalog(
+		beckn.Catalog{ID: "c1", Resources: []beckn.Resource{
+			{ID: "r1", Descriptor: json.RawMessage(`{not valid`)},
+		}},
+		beckn.PublishDirective{CatalogID: "c1"}, network, time.UTC, beckn.Version)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none — mapResources does not inspect resourceDocument's result", fatal)
+	}
+	if len(patch.Resources) != 1 || patch.Resources[0].Document != nil {
+		t.Errorf("Document = %s, want nil", patch.Resources[0].Document)
+	}
+}
+
+// An offer with no id is fatal, the same as a resource with no id — offers
+// merge by id too.
+func TestAnOfferWithNoIDIsFatal(t *testing.T) {
+	patch, fatal, _ := mapOne(t, `{"id":"c1","offers":[{"id":"o1"},{"price":{"value":"10"}}]}`)
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %v, want exactly one", fatal)
+	}
+	if !strings.Contains(fatal[0].Path, "offers") {
+		t.Errorf("fault Path = %q, want it to name the offer", fatal[0].Path)
+	}
+	if len(patch.Offers) != 0 {
+		t.Errorf("Offers = %v, want nothing stored — the whole catalog is refused", patch.Offers)
+	}
+}
+
+// resolvedResourceIDs' other half: an offer that DID name resource ids passes
+// them through unchanged. TestAnOffersResourceIDsAreResolvedToTheCatalogWideDefault
+// covers only the absent case.
+func TestAnOffersOwnResourceIDsPassThroughUnchanged(t *testing.T) {
+	patch, fatal, _ := mapOne(t, `{"id":"c1","offers":[{"id":"o1","resourceIds":["wheat"]}]}`)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+	if len(patch.Offers) != 1 || !slices.Equal(patch.Offers[0].ResourceIDs, []string{"wheat"}) {
+		t.Errorf("ResourceIDs = %v, want [wheat]", patch.Offers[0].ResourceIDs)
+	}
+}
+
+// validity ITSELF of the wrong JSON type is fatal — every other unreadable-
+// validity case in this file names a bad SUB-member; this is the container.
+func TestAValidityThatIsNotAnObjectIsFatal(t *testing.T) {
+	_, fatal, _ := mapOne(t, `{"id":"c1","validity":"not-an-object"}`)
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %v, want exactly one", fatal)
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("Code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+}
+
+// A validity that is nothing but whitespace is neither absent, an explicit
+// null, nor a readable period — isJSONNull's own whitespace-skipping loop
+// runs out without finding 'n' or anything else, and what follows is the same
+// unreadable-shape fault a wrong JSON type gets.
+//
+// A whitespace-only Validity RawMessage also fails WithoutChildren's own
+// re-marshal (it is not, on its own, valid JSON either), so this fatals
+// twice over — asserted by finding the validity fault among them rather than
+// by an exact count, since that second fault belongs to a different branch.
+func TestAWhitespaceOnlyValidityIsFatal(t *testing.T) {
+	_, fatal, _ := publish.MapCatalog(
+		beckn.Catalog{ID: "c1", Validity: json.RawMessage("   ")},
+		beckn.PublishDirective{CatalogID: "c1"}, network, time.UTC, beckn.Version)
+
+	found := false
+	for _, f := range fatal {
+		if strings.Contains(f.Message, "time period") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fatal = %v, want one fault naming validity as not a time period", fatal)
+	}
+}
+
+// isJSONNull's whitespace-skipping loop, the other side: leading whitespace
+// before the literal null is still the explicit delete, not an unreadable
+// shape. Only reachable by building the RawMessage directly — a real decode
+// never captures leading whitespace inside a token.
+func TestLeadingWhitespaceBeforeNullIsStillTheExplicitClear(t *testing.T) {
+	patch, fatal, _ := publish.MapCatalog(
+		beckn.Catalog{ID: "c1", Validity: json.RawMessage(" null")},
+		beckn.PublishDirective{CatalogID: "c1"}, network, time.UTC, beckn.Version)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %v, want none", fatal)
+	}
+	if patch.Validity == nil || !patch.Validity.StartDate.Null {
+		t.Errorf("Validity = %#v, want the explicit clear on all four members", patch.Validity)
+	}
+}
+
+// scalar's own two failure modes, distinct from instant/clock's parse
+// failures TestAnUnreadableValidityIsFatal already covers: a member that is
+// not a JSON string at all, and one that is an empty string.
+func TestAValidityMemberOfTheWrongTypeOrEmptyIsFatal(t *testing.T) {
+	for _, body := range []string{
+		`{"id":"c1","validity":{"startDate":123}}`,
+		`{"id":"c1","validity":{"startDate":""}}`,
+	} {
+		_, fatal, _ := mapOne(t, body)
+		if len(fatal) != 1 {
+			t.Fatalf("%s: fatal = %v, want exactly one", body, fatal)
+		}
+		if !strings.Contains(fatal[0].Message, "non-empty string") {
+			t.Errorf("%s: Message = %q, want it to name the expected shape", body, fatal[0].Message)
+		}
 	}
 }

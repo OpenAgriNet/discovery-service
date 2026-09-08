@@ -1,3 +1,8 @@
+// This file is package memory, not memory_test: the spatial stage is not
+// part of this backend's port — it is how the port is going to be met.
+// Exporting it to test it would put a function in the package's API that
+// exists only for its own Search.
+
 package memory
 
 import (
@@ -8,17 +13,12 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/storage/conformance"
 )
 
-// An internal test, because the spatial stage is not part of this backend's
-// port — it is how the port is going to be met. Exporting it to test it would
-// put a function in the package's API that exists only for its own Search.
-const testResolution = 8
-
 // filterFor reduces a conformance case's constraint to the SpatialFilter a
 // backend receives, exactly as the mapper will.
 func filterFor(t *testing.T, spatial conformance.SpatialCase) domain.SpatialFilter {
 	t.Helper()
 
-	full, cover, err := geo.CoverQuery(spatial.Query, spatial.Op, spatial.DistanceM, testResolution)
+	full, cover, err := geo.CoverQuery(spatial.Query, spatial.Op, spatial.DistanceM, geo.DefaultTestResolution)
 	if err != nil {
 		t.Fatalf("CoverQuery: %v", err)
 	}
@@ -42,7 +42,7 @@ func filterFor(t *testing.T, spatial conformance.SpatialCase) domain.SpatialFilt
 func coverFor(t *testing.T, geometry domain.Geometry) geo.Cover {
 	t.Helper()
 
-	cover, err := geo.CoverGeometry(geometry, testResolution)
+	cover, err := geo.CoverGeometry(geometry, geo.DefaultTestResolution)
 	if err != nil {
 		t.Fatalf("CoverGeometry: %v", err)
 	}
@@ -175,5 +175,80 @@ func TestADeclinedQueryCoverStillRunsTheBox(t *testing.T) {
 	}
 	if matchesSpatial(stored, nil, far) {
 		t.Error("a declined cover matched a geometry outside the query box; the box must still run")
+	}
+}
+
+// A nil box, on either side, is "no box" and cannot reject anything — a
+// declined cover or a declined query cover, not an empty box that meets
+// nothing. Neither existing box test leaves Bounds nil.
+func TestANilBoxMeetsAnything(t *testing.T) {
+	box := &domain.BBox{MinLat: 12.9, MaxLat: 13.0, MinLon: 77.5, MaxLon: 77.7}
+
+	if !boxesMeet(nil, box) {
+		t.Error("a nil stored box rejected a query box; a declined cover cannot reject anything")
+	}
+	if !boxesMeet(box, nil) {
+		t.Error("a nil query box was rejected; a declined query cover cannot reject anything")
+	}
+	if !boxesMeet(nil, nil) {
+		t.Error("two nil boxes were read as not meeting")
+	}
+}
+
+// The quantifiers over a resource with several shapes, some matching and some
+// not — the case a single-shape fixture cannot tell apart from "the whole
+// resource matched" or "it didn't". Neither existing spatial test sets
+// Quantifier to NONE or ALL, so matchesGeometry's own branches for both are
+// otherwise unexercised here (the acceptance suite pins them against
+// Postgres; this pins the memory backend's own answer).
+func TestMatchesGeometryUnderNoneAndAll(t *testing.T) {
+	center := domain.GeoPoint{Lat: 12.9716, Lon: 77.5946}
+	far := domain.GeoPoint{Lat: center.Lat + 5, Lon: center.Lon + 5}
+
+	filter := filterFor(t, conformance.SpatialCase{
+		Query: conformance.PointGeometryAt(0, center), Op: domain.OpDWithin, DistanceM: 1000,
+	})
+	none := filter
+	none.Quantifier = domain.QuantifierNone
+	all := filter
+	all.Quantifier = domain.QuantifierAll
+
+	near := conformance.PointGeometryAt(0, center)
+	away := conformance.PointGeometryAt(0, far)
+	r := New(geo.DefaultTestResolution)
+
+	mixed := domain.Resource{Geometries: []domain.Geometry{near, away}}
+	if r.matchesGeometry(domain.Catalog{}, mixed, domain.SearchQuery{Spatial: &none}) {
+		t.Error("NONE matched a resource where one of its two shapes matched")
+	}
+	if r.matchesGeometry(domain.Catalog{}, mixed, domain.SearchQuery{Spatial: &all}) {
+		t.Error("ALL matched a resource where only one of its two shapes matched")
+	}
+
+	everyShapeNear := domain.Resource{Geometries: []domain.Geometry{near, near}}
+	if !r.matchesGeometry(domain.Catalog{}, everyShapeNear, domain.SearchQuery{Spatial: &all}) {
+		t.Error("ALL did not match a resource whose every shape matched")
+	}
+	if r.matchesGeometry(domain.Catalog{}, everyShapeNear, domain.SearchQuery{Spatial: &none}) {
+		t.Error("NONE matched a resource whose every shape matched")
+	}
+
+	// NOT EXISTS(NOT matches) over no shapes at all is vacuously true — the
+	// same answer the SQL's EXISTS gives a resource with no geometry.
+	noShapes := domain.Resource{}
+	if !r.matchesGeometry(domain.Catalog{}, noShapes, domain.SearchQuery{Spatial: &all}) {
+		t.Error("ALL over a resource with no shapes at all must be vacuously true")
+	}
+}
+
+// A shape that will not cover — accepted at publish time, unreadable now —
+// drops out of the spatial answer rather than erroring the whole search.
+func TestShapeMatchesOfAnUncoverableShapeIsFalse(t *testing.T) {
+	broken := domain.Geometry{Type: "Point", GeoJSON: []byte("not geojson")}
+	filter := domain.SpatialFilter{Op: domain.OpIntersects, Quantifier: domain.QuantifierAny}
+
+	r := New(geo.DefaultTestResolution)
+	if r.shapeMatches(filter)(broken) {
+		t.Error("a shape that will not cover was matched rather than dropped")
 	}
 }

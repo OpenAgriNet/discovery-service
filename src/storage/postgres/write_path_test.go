@@ -14,6 +14,7 @@ import (
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
@@ -135,7 +136,7 @@ func resourceXmin(t *testing.T, pool *pgxpool.Pool, catalogID, resourceID string
 // functional test and visible in bloat a quarter later.
 func TestEveryResourceRowIsWrittenForAReason(t *testing.T) {
 	pool := dedicatedPool(t, nil)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
@@ -182,7 +183,7 @@ func TestEveryResourceRowIsWrittenForAReason(t *testing.T) {
 // costs two GIN insertions per row per publish.
 func TestARepublishThatChangesNothingWritesNothing(t *testing.T) {
 	pool := dedicatedPool(t, nil)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	patch := domain.CatalogPatch{
@@ -265,7 +266,7 @@ func (r *roundTrips) read() int {
 func TestTheStatementCountDoesNotGrowWithTheCatalog(t *testing.T) {
 	counter := &roundTrips{}
 	pool := dedicatedPool(t, counter)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	publish := func(catalogID string, resources int) int {
@@ -299,7 +300,7 @@ func TestTheStatementCountDoesNotGrowWithTheCatalog(t *testing.T) {
 // rather than as a publisher whose publish failed.
 func TestAMidTransactionFailureLeavesNoPartialCatalog(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	// `CHECK (id <> '')` on resources. The check is the schema's, not this
@@ -329,7 +330,7 @@ func TestAMidTransactionFailureLeavesNoPartialCatalog(t *testing.T) {
 // nothing.
 func TestOnlyTouchedResourcesAreRewritten(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	patch := domain.CatalogPatch{ID: "c1", NetworkID: "n1", Active: true, ProtocolVersion: beckn.Version}
@@ -411,7 +412,7 @@ func TestOnlyTouchedResourcesAreRewritten(t *testing.T) {
 // observable from here.
 func TestAFullRepublishDeletesAnOfferWhoseResourcesAreGone(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
@@ -471,7 +472,7 @@ func TestAFullRepublishDeletesAnOfferWhoseResourcesAreGone(t *testing.T) {
 // that production produces the first time two publishers share a catalog.
 func TestTwoConcurrentRepublishesBothSurvive(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	seed := domain.CatalogPatch{
@@ -552,7 +553,7 @@ func shareShape(merged *domain.Catalog, _ []string) []domain.Fault {
 
 func TestASharedGeometrySurvivesARepublishNamingOneOwner(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	patch := domain.CatalogPatch{
@@ -682,7 +683,7 @@ func idsUnder(t *testing.T, block map[string]any, member string) []string {
 // predicate crossing all three levels answerable against ONE jsonb value.
 func TestFilterDocCarriesThisResourceAloneWithItsCatalogAndItsOffers(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 
 	patch := domain.CatalogPatch{
 		ID:              "c1",
@@ -772,7 +773,7 @@ func TestFilterDocCarriesThisResourceAloneWithItsCatalogAndItsOffers(t *testing.
 // silently, because the resource documents inside them are still correct.
 func TestACatalogOnlyRepublishRefreshesEveryFilterDoc(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{
@@ -812,7 +813,7 @@ func TestACatalogOnlyRepublishRefreshesEveryFilterDoc(t *testing.T) {
 // resource, and wrong for exactly this one.
 func TestAnOfferOnlyRepublishRefreshesTheCompositesItNames(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
-	repository := postgres.NewCatalogRepository(pool, resolution)
+	repository := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	ctx := context.Background()
 
 	first := domain.CatalogPatch{

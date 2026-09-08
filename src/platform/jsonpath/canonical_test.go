@@ -81,6 +81,9 @@ func TestCanonicaliseRefusesWhatItCannotRead(t *testing.T) {
 		"$.catalogs[01]",              // an index with a leading zero
 		"$.catalogs[-1]",              // a negative index
 		`$['cat\'alogs']`,             // an escaped quote, which this subset does not read
+		"$[0",                         // a bracket segment with no closing ]
+		"$['cat!alog']",               // a quoted name with a byte this subset does not carry
+		"$.cat!alog",                  // the same, in dot form
 	}
 
 	for _, path := range unreadable {

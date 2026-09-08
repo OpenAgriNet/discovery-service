@@ -65,6 +65,28 @@ func mayImportTheDriver(path string) bool {
 		strings.HasPrefix(path, filepath.Join("tests", "dbtest")+string(filepath.Separator))
 }
 
+// dbtestOnly is tests/dbtest itself: whether a package requires a real
+// PostgreSQL to run at all, which is a stronger claim than merely being
+// allowed to talk to one. Nothing here marks a Go test as "integration" —
+// no build tag, no file suffix — so this allow-list IS the boundary; a
+// package added to it is a package that now starts a testcontainer on every
+// `go test`.
+var dbtestOnly = []string{
+	modulePath + "/tests/dbtest",
+}
+
+// mayImportDbtest names every package that has already made that trade.
+// src/app earns its place through container_test.go, Build's own happy-path
+// test — the composition root is where "does everything really wire
+// together against a real database" has to be answered, the same way it
+// already owns the adapter and the driver above.
+func mayImportDbtest(path string) bool {
+	return mayImportTheAdapter(path) ||
+		strings.HasPrefix(path, filepath.Join("src", "app")+string(filepath.Separator)) ||
+		strings.HasPrefix(path, filepath.Join("tests", "acceptance")+string(filepath.Separator)) ||
+		strings.HasPrefix(path, filepath.Join("tests", "dbtest")+string(filepath.Separator))
+}
+
 // TestNothingButTheAdapterImportsPostgres walks every package in the module.
 //
 // Its twin, src/domain/purity_test.go, protects the contract; this protects
@@ -126,6 +148,7 @@ func checkFile(t *testing.T, fileSet *token.FileSet, path string) {
 	}{
 		{driverOnly, mayImportTheDriver(relative), "src/storage/postgres/**, src/app/container.go and tests/dbtest/**"},
 		{adapterOnly, mayImportTheAdapter(relative), "src/storage/postgres/** and src/app/container.go"},
+		{dbtestOnly, mayImportDbtest(relative), "src/storage/postgres/**, src/app/**, tests/acceptance/** and tests/dbtest/**"},
 	}
 
 	for _, imported := range file.Imports {

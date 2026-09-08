@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
+
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
@@ -121,6 +123,215 @@ func TestADocumentMissingAServedPathFailsToCompile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "/discover") {
 		t.Errorf("error = %q, want it to name the missing path", err)
+	}
+}
+
+// discoverPathBlock returns /discover's own path item, from its "  /discover:"
+// key up to (not including) the next top-level path key — computed from the
+// live fixture rather than copied out of it, so a reindentation of the YAML
+// elsewhere in the document cannot silently desync a hand-maintained verbatim
+// copy from what the fixture actually contains. The block is what lets a
+// targeted edit ("requestBody:" -> renamed, say) land only inside /discover:
+// every other served path has its own requestBody at the same relative
+// offset, so an unscoped replace could hit any of them.
+func discoverPathBlock(t *testing.T, document string) string {
+	t.Helper()
+
+	const key = "\n  /discover:\n"
+	start := strings.Index(document, key)
+	if start < 0 {
+		t.Fatal("the fixture has no /discover path")
+	}
+	start++ // keep the block's own leading newline out of the match
+
+	afterKey := start + len(key) - 1
+	next := strings.Index(document[afterKey:], "\n  /")
+	if next < 0 {
+		t.Fatal("could not find the path following /discover")
+	}
+	return document[start : afterKey+next]
+}
+
+// A path with no requestBody at all — requestSchema's own refusal, not the
+// "path missing" one TestADocumentMissingAServedPathFailsToCompile pins.
+func TestAServedPathWithNoRequestBodyFailsToCompile(t *testing.T) {
+	document := string(specDocument(t))
+	block := discoverPathBlock(t, document)
+	edited := strings.Replace(block, "requestBody:", "requestBodyRenamed:", 1)
+	document = strings.Replace(document, block, edited, 1)
+
+	_, err := NewSpecIndex([]byte(document))
+	if err == nil {
+		t.Fatal("a /discover with no requestBody compiled clean")
+	}
+	if !strings.Contains(err.Error(), "no request body") {
+		t.Errorf("error = %q, want it to name the missing request body", err)
+	}
+}
+
+// A requestBody present with no application/json content — requestSchema's
+// third refusal.
+func TestAServedPathWithNoJSONContentFailsToCompile(t *testing.T) {
+	document := string(specDocument(t))
+	block := discoverPathBlock(t, document)
+	edited := strings.Replace(block, "application/json:", "application/xml:", 1)
+	document = strings.Replace(document, block, edited, 1)
+
+	_, err := NewSpecIndex([]byte(document))
+	if err == nil {
+		t.Fatal("a /discover with no application/json content compiled clean")
+	}
+	if !strings.Contains(err.Error(), "application/json") {
+		t.Errorf("error = %q, want it to name the missing media type", err)
+	}
+}
+
+// canonicalAction's own fallback: a schema with no `context` property at all
+// falls back to the action it is indexed under, rather than panicking on a
+// nil dereference.
+func TestCanonicalActionWithNoContextPropertyFallsBackToTheIndexedName(t *testing.T) {
+	schema := &openapi3.SchemaRef{Value: &openapi3.Schema{Properties: openapi3.Schemas{}}}
+
+	if got := canonicalAction(schema, "myAction"); got != "myAction" {
+		t.Errorf("canonicalAction = %q, want the indexed name %q", got, "myAction")
+	}
+}
+
+// A context schema whose AllOf carries an unresolved $ref (Value == nil,
+// skipped rather than dereferenced) and branches naming no action const at
+// all falls back the same way — the walk exhausts every branch and finds
+// nothing to declare.
+func TestCanonicalActionSkipsAnUnresolvedBranchAndFallsBack(t *testing.T) {
+	context := &openapi3.SchemaRef{Value: &openapi3.Schema{
+		AllOf: openapi3.SchemaRefs{
+			{Ref: "#/components/schemas/Unresolved"}, // Value is nil
+			{Value: &openapi3.Schema{}},              // resolved, but names no action
+		},
+	}}
+	schema := &openapi3.SchemaRef{Value: &openapi3.Schema{Properties: openapi3.Schemas{"context": context}}}
+
+	if got := canonicalAction(schema, "myAction"); got != "myAction" {
+		t.Errorf("canonicalAction = %q, want the indexed name %q", got, "myAction")
+	}
+}
+
+// loadFromRegistry's two configuration refusals, neither of which involves a
+// network call.
+func TestLoadFromRegistryRefusesAnUnconfiguredURLOrFetcher(t *testing.T) {
+	asked := 0
+
+	if _, err := loadFromRegistry(context.Background(), config.Validation{}, fetchOK(t, &asked)); err == nil {
+		t.Error("loadFromRegistry with no SpecURL configured succeeded")
+	}
+	if _, err := loadFromRegistry(context.Background(),
+		config.Validation{SpecURL: "https://spec.example/beckn.yaml"}, nil); err == nil {
+		t.Error("loadFromRegistry with no fetcher succeeded")
+	}
+	if asked != 0 {
+		t.Errorf("the fetcher was asked %d times; neither refusal reaches it", asked)
+	}
+}
+
+// loadFromCache's own refusal for an unconfigured path, distinct from
+// LoadSpecIndex's caller-facing message that names both sources.
+func TestLoadFromCacheRefusesAnUnconfiguredPath(t *testing.T) {
+	if _, err := loadFromCache(""); err == nil {
+		t.Error("loadFromCache with no path configured succeeded")
+	}
+}
+
+// writeCache's own refusal for an unconfigured path — reached directly since
+// LoadSpecIndex only calls it after a successful fetch, and every fetch case
+// in this file configures a cache path.
+func TestWriteCacheRefusesAnUnconfiguredPath(t *testing.T) {
+	if err := writeCache("", []byte("x")); err == nil {
+		t.Error("writeCache with no path configured succeeded")
+	}
+}
+
+// A cache directory that cannot be created — its parent is a plain file, not
+// a directory — must not fail the boot: LoadSpecIndex only warns when the
+// cache write fails, because this boot still has a compiled index to serve.
+func TestAFetchSucceedsEvenWhenTheCacheCannotBeWritten(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed the blocking file: %v", err)
+	}
+
+	cfg := config.Validation{
+		SpecURL:       "https://spec.example/beckn.yaml",
+		SpecCachePath: filepath.Join(blocker, "beckn.yaml"), // "not-a-directory" can't hold a child
+	}
+	asked := 0
+
+	index, err := LoadSpecIndex(context.Background(), cfg, fetchOK(t, &asked))
+	if err != nil {
+		t.Fatalf("load with a healthy fetch and an unwritable cache: %v", err)
+	}
+	if _, found := index.lookup(beckn.ActionDiscover); !found {
+		t.Error("the index built from the fetch does not serve discover")
+	}
+}
+
+// writeCache's own MkdirAll and CreateTemp failures, exercised directly
+// rather than through LoadSpecIndex's warn-and-continue wrapper above.
+func TestWriteCacheWrapsAMkdirFailure(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed the blocking file: %v", err)
+	}
+
+	if err := writeCache(filepath.Join(blocker, "child", "beckn.yaml"), []byte("x")); err == nil {
+		t.Error("writeCache created a directory under a plain file")
+	}
+}
+
+// A directory that exists but cannot be written into — read+execute only —
+// fails CreateTemp rather than MkdirAll, which is a no-op on a directory
+// that is already there.
+//
+// Skips as root: permission bits are exactly what root ignores, and there is
+// no substitute mechanism here the way TestWriteCacheWrapsAMkdirFailure has
+// one. That test blocks the path with a plain file, which fails ENOTDIR — but
+// writeCache runs MkdirAll(directory, ...) on that same directory BEFORE
+// CreateTemp(directory, ...), so a shape that trips ENOTDIR trips MkdirAll
+// first and never reaches CreateTemp at all: it would just be
+// TestWriteCacheWrapsAMkdirFailure again, not a way to isolate this branch.
+// In a root-run CI container this test verifies nothing while still
+// reporting a pass; the Testing section of this PR's description says so.
+func TestWriteCacheWrapsACreateTempFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o500); err != nil {
+		t.Fatalf("chmod the cache directory read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(directory, 0o700); err != nil { // let t.TempDir() clean up
+			t.Errorf("restore the cache directory's permissions: %v", err)
+		}
+	})
+
+	if err := writeCache(filepath.Join(directory, "beckn.yaml"), []byte("x")); err == nil {
+		t.Error("writeCache created a file in a directory it cannot write to")
+	}
+}
+
+// writeAndClose's own write failure: a file already closed refuses the write
+// before it ever reaches the close.
+func TestWriteAndCloseWrapsAWriteFailure(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "beckn.*.yaml")
+	if err != nil {
+		t.Fatalf("create a temp file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close it early: %v", err)
+	}
+
+	if err := writeAndClose(file, []byte("x")); err == nil {
+		t.Error("writeAndClose wrote to an already-closed file")
 	}
 }
 

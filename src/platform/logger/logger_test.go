@@ -2,8 +2,10 @@ package logger
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -93,6 +95,16 @@ func TestWithOnABareContextIsSilentNotAPanic(t *testing.T) {
 	}
 }
 
+// No fields is a no-op: the parent context comes back unchanged rather than
+// wrapped in a logger that carries nothing new, which would still be correct
+// but would make every call site allocate a context it did not need to.
+func TestWithNoFieldsReturnsTheSameContext(t *testing.T) {
+	ctx := context.Background()
+	if got := With(ctx); got != ctx {
+		t.Error("With with no fields returned a different context")
+	}
+}
+
 func TestNewIsProductionJSONAtTheConfiguredLevel(t *testing.T) {
 	built, err := zapConfig(config.Log{Level: "warn"})
 	if err != nil {
@@ -164,5 +176,26 @@ func TestTheRequestFieldsAreNamedInSnakeCase(t *testing.T) {
 		if field.Type != zapcore.StringType {
 			t.Errorf("field %q is type %v, want a string field", want, field.Type)
 		}
+	}
+}
+
+// Status and DurationMS are typed differently from the string fields above —
+// an int and a float — so they are asserted on their own rather than folded
+// into that table.
+func TestStatusAndDurationAreNamedAndTypedCorrectly(t *testing.T) {
+	status := Status(404)
+	if status.Key != "status" || status.Type != zapcore.Int64Type {
+		t.Errorf("Status = %+v, want key \"status\" and an int field", status)
+	}
+
+	// duration_ms and not a bare "duration": zap's own duration encoder writes
+	// seconds, and a dashboard reading this field as either unit silently reads
+	// it wrong for the other.
+	elapsed := DurationMS(1500 * time.Microsecond)
+	if elapsed.Key != "duration_ms" || elapsed.Type != zapcore.Float64Type {
+		t.Errorf("DurationMS = %+v, want key \"duration_ms\" and a float field", elapsed)
+	}
+	if got := math.Float64frombits(uint64(elapsed.Integer)); got != 1.5 {
+		t.Errorf("DurationMS(1500µs) = %v, want 1.5 (milliseconds, not microseconds)", got)
 	}
 }
