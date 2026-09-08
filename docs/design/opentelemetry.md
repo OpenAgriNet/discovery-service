@@ -1,6 +1,7 @@
 # OpenTelemetry — discovery-service
 
-What this service emits, what it never emits, and how Task 23 builds it.
+What this service emits, what it never emits, the questions it has to answer,
+and how Task 23 builds it.
 
 Base is the Sunbird
 [network-telemetry-spec](https://github.com/Sunbird-Obsrv/network-telemetry-spec);
@@ -10,6 +11,107 @@ natively.
 
 **Binding on the shape of a span.** Where this and `discover-and-publish.md`
 disagree about a span, this wins; about anything else, the plan does.
+
+## Why — the questions this must answer
+
+The network's observability requirements, as a tree rooted at the **Registry**
+with Seeker and Provider as its two branches. Transcribed here from the
+requirements board (`ObservabilityRequirements.png`) so that image is no longer
+the source: a requirement that lives only in a PNG on one person's desktop
+cannot be grepped, diffed, or cited in a review.
+
+**Scope warning, and it is the first thing to read.** The tree is rooted at the
+Registry, so it spans the whole network; this service is one node in it. Several
+Provider-branch questions ask about a provider's *own* serving path, which we
+never observe — discover reads from our Postgres, so no synchronous call to IMD
+or any other source happens on the request path. If an adapter fetches IMD, that
+traffic does not pass through this binary and no span here will ever describe
+it. Those questions belong to the adapter or the facilitator, not to Task 23.
+
+### The tree
+
+```
+Registry
+├── Seeker
+│   ├── S1   What are they seeking?
+│   ├── S2   Are they satisfied?
+│   ├── S3   How much time did we take to respond?
+│   │   ├── S4   … to respond to every message?
+│   │   └── S5   … to respond to address the query?
+│   ├── S6   What is the accuracy of our response?
+│   │   └── S7   What was the source?
+│   │       ├── S8   Who added the source?
+│   │       └── S9   Was it relevant?
+│   └── S10  How many seekers?
+└── Provider
+    ├── P1   How many requests are they getting?
+    │   └── P2   From which channel are the requests coming in?
+    │             (e.g. BV and MV use the same IMD provider)
+    ├── P3   How many requests are they able to serve?
+    │   ├── P4   How many failures were recorded?
+    │   │   └── P5   What caused these failures?
+    │   │       └── P6   Where are these failures concentrated?
+    │   └── P7   What is the performance on the basic unit?
+    │             (weather: location; mandi: location and crop)
+    ├── P8   How much time do they take to serve?  — "this is latency"
+    └── P9   How many providers?
+```
+
+The ids are ours, added so later sections and commits can cite one question
+instead of paraphrasing it. Two notes were raised on the board itself and are
+not yet decided:
+
+| | Raised | Question | Status |
+|---|---|---|---|
+| N1 | karan-deep, on the Seeker branch | **What do we mean by a question?** | The tree draws the distinction itself, at S4 versus S5. Both ids are on the span — `beckn.messageId` and `beckn.transactionId` — so either definition is queryable today. Which one *counts* as a question is a network agreement, not a code change |
+| N2 | karan-deep, on the root | **How do we define a unique user?** | Open question 1. It is what makes S10 unanswerable, and it is the same blocker as `sender.id` |
+
+### What the design answers
+
+Verdicts only. The reasoning behind every **No** lives in *Open questions —
+network level* at the foot of this document and is not restated here: a second
+copy is a second thing to keep true, and it is the copy that rots.
+
+| | Question | | By what |
+|---|---|---|---|
+| S1 | What are they seeking | **Partial** | `beckn.schemaContext` + `beckn.schemaType`, at capability granularity — `WeatherObservation`, `MandiPrice` — plus `intent.kinds` / `intent.filter_type` / `intent.spatial_ops` for the shape. Never the text, the crop or the location |
+| S2 | Are they satisfied | **No** | Open question 12 |
+| S3 | Time to respond | **Yes** | The span's own duration. No attribute — see *No duration attribute* |
+| S4 | … per message | **Yes** | Span duration keyed on `beckn.messageId` |
+| S5 | … to address the query | **Partial** | Our hop only. End to end needs `traceparent` forwarded by the adapter and the experience layer — open question 4 |
+| S6 | Accuracy | **No** | Open question 12 |
+| S7 | What was the source | **Yes** | `result.provider_ids` on `response_info` |
+| S8 | Who added the source | **Yes** | `publish.bpp_ids` on the publish `request_info` |
+| S9 | Was it relevant | **No** | Open question 12 |
+| S10 | How many seekers | **No** | `sender.id` is optional, unverified and often absent; blocked on Task 6, which is parked. `sender.unidentified` measures the size of the hole — the *unattributable request share* candidate under *Metrics* |
+| P1 | Requests a provider is getting | **Partial** | Span count by `result.provider_ids` is *discovers their catalog answered*, not their inbound traffic. See the scope warning |
+| P2 | From which channel | **Yes** | `network.id` on the Resource and `beckn.networkId` on the span — `mahavistar`, `bharatvistar` (C8). Crossed with `result.provider_ids` this is exactly the shared-IMD question the board asks |
+| P3 | Requests they can serve | **Partial** | Non-empty share by provider id |
+| P4 | How many failures | **Yes** | `status = Error`, `error_type`, and the `error` event |
+| P5 | What caused them | **Yes** | The `error` event — `code`, `type`, `path` |
+| P6 | Where concentrated | **Partial** | Per **provider**, yes: `error_type` grouped by `result.provider_ids` / `publish.bpp_ids`. Per **place**, no — coordinates are on the never-emitted list. Open question 11 |
+| P7 | Performance on the basic unit | **No — refused** | Open question 11. The most consequential refusal in this document, and the only one with a middle path already identified |
+| P8 | Time they take to serve | **Partial** | Our latency, yes. An upstream provider's latency is invisible — nothing is called synchronously on the read path. `retrieval.embedding_ms` is the one external hop broken out, and it is Ollama, not a provider |
+| P9 | How many providers | **No — not telemetry** | Spans count who *served*, never who *exists*: a provider matched by nothing emits no span in any window. This is a `SELECT count(DISTINCT …)`, and saying so is the answer rather than conceding a gap |
+
+Seven of nineteen are answered outright, six partially, six not. **The six are
+decisions, not oversights**: S2, S6 and S9 share one root cause, S10 is blocked
+on a parked task, P7 is a policy refusal, and P9 is answerable — from the
+database, not from a span. Each points at a numbered open question rather than
+at a missing attribute, which is the difference between a gap we chose and one
+we missed.
+
+### What it changes for Task 23
+
+Nothing in **23a**: it builds the package, the Resource and the exporter, and one
+of the Resource attributes it pins — `network.id` — is already what answers P2.
+Three items run on their own clocks.
+
+| When | What |
+|---|---|
+| Now, and cheap | The literal `domain` and `producer` values (open questions 2 and 3). 23a creates the config field and the boot refusal either way, so it is not blocked — but `Agriculture` is a placeholder, and every OAN component must emit an identical string or grouping splits across the network |
+| Before **23d** | P7. The service already computes **H3 covers** (`src/indexing/`), so a coarse cell — resolution 3-4, roughly 100 km — would give location-grained performance without emitting a farmer's point. Crop is harder: it lives inside `filters.expression`. A **policy decision, not an implementation one**; open question 11 records it rather than taking it |
+| Not Task 23 at all | S2, S6, S9. Closing them needs the `select` leg (a different node — see `docs/design/registry/`) or an explicit feedback signal. Either is a new network contract, and no attribute added here substitutes for one |
 
 ## What we emit
 
@@ -701,15 +803,15 @@ each sub-task.
 
 | | Question |
 |---|---|
-| 1 | **`sender.id` has no reliable source.** The spec requires it and treats it as an identity; this phase neither requires `senderId` nor verifies it. Telemetry that names participants, or a phase that does not verify them — both is not available. We emit the claim flagged as a claim (`sender.unverified`); what the facilitator does with a flagged join is theirs to say |
+| 1 | **`sender.id` has no reliable source.** Blocks **S10** and answers **N2**. The spec requires it and treats it as an identity; this phase neither requires `senderId` nor verifies it. Telemetry that names participants, or a phase that does not verify them — both is not available. We emit the claim flagged as a claim (`sender.unverified`); what the facilitator does with a flagged join is theirs to say |
 | 2 | **What is the literal `domain` string?** `Agriculture` is a placeholder. Every OAN component must emit the identical value or grouping splits. Same for the `network.id` key name — our invention, so others must be told it |
 | 3 | **Is `producer` = `discovery-service`, and who keeps the participant id list?** The Sunbird registry holds *Providers*, and a DS is not one. Answering this also decides whether `producer` and `service.name` stay one value |
-| 4 | **Do the adapter and experience layer forward `traceparent`?** If so, ClickStack shows one timeline across all three — the main thing a monitoring stack buys. We cannot do it alone |
+| 4 | **Blocks S5 end to end.** Do the adapter and experience layer forward `traceparent`? If so, ClickStack shows one timeline across all three — the main thing a monitoring stack buys. We cannot do it alone |
 | 5 | Should the adapter and experience layer emit any of Part 2 too, for consistent naming? `error` and the `beckn.*` attributes are the obvious shared ones |
 | 6 | **Is a publish an AUDIT event?** It mutates a catalog and a `FULL` republish deletes resources. Modelling it as both API and AUDIT duplicates; picking one is a network call |
 | 7 | **Who owns Task 24?** The thing that queries ClickHouse, shapes `resourceMetrics` and ships on a schedule does not exist. "ClickStack does it" is false — ClickHouse stores, HyperDX charts, neither exports a METRIC signal. `metric.code` also needs a registry that does not exist |
 | 8 | **Per-mode retrieval timing** — worth emitting? Today a slow `lexical` and a slow `spatial` look the same in aggregate. `retrieval.embedding_ms` now covers the one phase that leaves the process; this question is what remains, and the merge step holds the per-mode results so it is cheap. Still more than the spec asks |
 | 9 | **Which trace id format, and which event timestamp field, does the facilitator validate?** The spec's examples use dashed UUIDs and an ISO `time`; OTLP requires hex ids and `timeUnixNano`, which is what any OTel SDK emits (divergences 5 and 6). If the facilitator was built against the examples it will reject conformant spans — from every participant, not just us. **This needs answering before 23f, and it is the spec's bug to fix, not ours.** Carried into the plan's Open Items as **O4**, because a blocker recorded only in this document is one the plan's own blocker table does not know about |
 | 10 | **Will the spec publish real schemas?** `schemas/` and `examples/` are empty placeholders. Until they are filled there is no conformance target, and every participant is interpreting prose independently — which is how five participants end up with five `domain` strings |
-| 11 | **Performance "on the basic unit" — weather by location, mandi by location and crop — is asked for by the network and refused by this design.** Coordinates and `filters.expression` are both on the never-emitted list, so no per-location or per-crop breakdown is derivable today. There is a middle path this document does not yet take: the service already computes **H3 covers** (`src/indexing/`), so a coarse cell — resolution 3-4, roughly 100 km — would give location-grained performance without emitting a farmer's point. Crop is harder, because it lives inside the filter expression. **This is a policy decision, not an implementation one**, and it is recorded rather than taken: the deny-list exists for a reason and widening it is the network's call |
-| 12 | **Relevance and accuracy cannot be answered from this service at all, and no attribute will fix it.** "Was it relevant?" needs to know what happened *after* the response — a select, a click, a farmer acting on it. This service is one synchronous hop that never learns the outcome; `result.empty` says a query went unmet, never that a non-empty answer was any good. Closing it needs the `select` leg (a different node — see `docs/design/registry/`) or an explicit feedback signal, either of which is a new network contract. **Named here so it is not mistaken for something Task 23 forgot** |
+| 11 | **P6 (per place) and P7.** **Performance "on the basic unit" — weather by location, mandi by location and crop — is asked for by the network and refused by this design.** Coordinates and `filters.expression` are both on the never-emitted list, so no per-location or per-crop breakdown is derivable today. There is a middle path this document does not yet take: the service already computes **H3 covers** (`src/indexing/`), so a coarse cell — resolution 3-4, roughly 100 km — would give location-grained performance without emitting a farmer's point. Crop is harder, because it lives inside the filter expression. **This is a policy decision, not an implementation one**, and it is recorded rather than taken: the deny-list exists for a reason and widening it is the network's call |
+| 12 | **S2, S6 and S9.** **Relevance and accuracy cannot be answered from this service at all, and no attribute will fix it.** "Was it relevant?" needs to know what happened *after* the response — a select, a click, a farmer acting on it. This service is one synchronous hop that never learns the outcome; `result.empty` says a query went unmet, never that a non-empty answer was any good. Closing it needs the `select` leg (a different node — see `docs/design/registry/`) or an explicit feedback signal, either of which is a new network contract. **Named here so it is not mistaken for something Task 23 forgot** |
