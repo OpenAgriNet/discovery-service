@@ -73,6 +73,18 @@ const (
 	PublishVisibleTo
 	PublishValidityPresent
 
+	// Build identity, on the Resource (OP5). Appended here rather than beside
+	// the four Resource keys at the top of this block, which is where they
+	// belong by origin, because the golden file's line order IS this block's
+	// order: inserting mid-block renumbers forty rows and buries four
+	// additions in a diff of pure renumbering, which is the one thing that
+	// file exists to prevent. Grouping by origin is the rule; a section named
+	// for the same thing opentelemetry.md:167 calls it keeps the rule readable.
+	ResourceServiceVersion
+	ResourceBuildCommit
+	ResourceBuildTreeState
+	ResourceBuildDate
+
 	numKeys
 )
 
@@ -101,6 +113,9 @@ var (
 	intentKinds = []string{"textSearch", "filters", "spatial", "mediaSearch"}
 	// A bool's value set, written out so Bounded means the same thing on every row.
 	boolValues = []string{"false", "true"}
+	// debug.BuildSetting "vcs.modified" is "true" or "false" and is absent
+	// entirely from a build with no VCS stamp, so the absence is the third value.
+	treeStates = []string{"clean", "dirty", "unknown"}
 )
 
 // registry is THE ONE TABLE. Every projection reads it; nothing else decides
@@ -784,5 +799,73 @@ var registry = [numKeys]Definition{
 		Values:      boolValues,
 		Visibility:  Public,
 		Note:        "Whether a validity window was set — the freshness signal.",
+	},
+
+	// ---- Build identity (OP5) ------------------------------------------------
+	//
+	// Four Resource attributes answering "which build is running", so *did the
+	// deploy break it* is askable. onix stamps the same four and namespaces
+	// three of them `onix.build.*` (otelsetup.go:221-223); we keep the stems and
+	// drop the vendor prefix, because copying `onix.` would have this service
+	// claim to be that one, and a facilitator querying the concept across both
+	// repos wants the stem, not the owner.
+	//
+	// Only service.version comes from -ldflags. The other three are read from
+	// the toolchain's own VCS stamp, which cmd/discovery-service/main.go:56-59
+	// already prefers for exactly the reason it gives — Makefile, Dockerfile and
+	// CI do not have to agree on a flag string — and which no flag can improve
+	// on. service.version is the one exception because `git describe --tags` has
+	// no equivalent in debug.BuildInfo: Main.Version reads `(devel)` for every
+	// plain `go build`.
+
+	ResourceServiceVersion: {
+		Name:        "ResourceServiceVersion",
+		SpanKey:     "service.version",
+		Signals:     Resource,
+		Kind:        KindString,
+		Layer:       Local,
+		Cardinality: Unbounded,
+		Visibility:  Public,
+		Note: "The -ldflags -X target, defaulting to `dev`. Never empty: an empty version is " +
+			"indistinguishable from an unset Resource field, so an unstamped build has to say " +
+			"which of the two it is. Unbounded because it is a git describe of every tag ever cut.",
+	},
+	ResourceBuildCommit: {
+		Name:        "ResourceBuildCommit",
+		SpanKey:     "build.commit",
+		Signals:     Resource,
+		Kind:        KindString,
+		Layer:       Local,
+		Cardinality: Unbounded,
+		Visibility:  Public,
+		Note: "vcs.revision from debug.BuildInfo, or `unknown`. A build from an exported tree " +
+			"carries no VCS stamp at all, and so does every `go test` binary, so the absence is " +
+			"a value rather than an error — the same choice main.go's vcsRevision already made.",
+	},
+	ResourceBuildTreeState: {
+		Name:        "ResourceBuildTreeState",
+		SpanKey:     "build.tree_state",
+		Signals:     Resource,
+		Kind:        KindString,
+		Layer:       Local,
+		Cardinality: Bounded,
+		Values:      treeStates,
+		Visibility:  Public,
+		Note: "clean, dirty, or unknown when the binary carries no vcs.modified setting. " +
+			"Bounded on three values including the absence, because `dirty` on a production " +
+			"Resource is a finding and it must not be confusable with a missing stamp.",
+	},
+	ResourceBuildDate: {
+		Name:        "ResourceBuildDate",
+		SpanKey:     "build.date",
+		Signals:     Resource,
+		Kind:        KindString,
+		Layer:       Local,
+		Cardinality: Unbounded,
+		Visibility:  Public,
+		Note: "vcs.time from debug.BuildInfo — the COMMIT's timestamp, RFC3339, not the moment " +
+			"the compiler ran. onix's onix.build.date is the latter. The commit time is the " +
+			"reproducible half and the one that answers which change is deployed; a build " +
+			"clock answers only which machine built it.",
 	},
 }

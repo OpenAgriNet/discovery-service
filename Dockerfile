@@ -48,6 +48,15 @@ COPY src/ ./src/
 # produces one that does not compile.
 COPY migrations/ ./migrations/
 
+# The version stamp, declared here rather than at the top of the stage so a new
+# release does not invalidate the go mod download layer above it.
+#
+# There is no .git in the build context — nothing COPYs it — so `git describe`
+# cannot run in here and the value has to arrive as an argument. `make docker`
+# passes it; a bare `docker build .` gets the default, and the binary then says
+# `dev`, which is exactly what it is.
+ARG VERSION=dev
+
 # -trimpath strips the build machine's filesystem paths from the binary, so two
 # machines building one commit produce the same bytes.
 #
@@ -56,7 +65,15 @@ COPY migrations/ ./migrations/
 # dhi/static base below stays correct. Dropping -static here does not fail the
 # build — it fails the first container start, with a missing loader and no Go
 # stack to say why.
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags '-static'" \
+#
+# The -X target is the one flag string this file and the Makefile must agree on
+# (OP5, and src/platform/telemetry/build.go says why it cannot be avoided). Go
+# silently ignores an -X naming a symbol that does not exist, so renaming that
+# package would leave a green build shipping `dev` — which is why
+# tests/architecture asserts the two spellings match rather than trusting them
+# to.
+RUN CGO_ENABLED=1 go build -trimpath \
+        -ldflags="-s -w -extldflags '-static' -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=${VERSION}" \
         -o /out/discovery-service ./cmd/discovery-service
 
 # dhi/static musl-alpine variant, verified against

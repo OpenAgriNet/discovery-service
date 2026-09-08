@@ -16,6 +16,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
 	"github.com/OpenAgriNet/discovery-service/src/platform/validation"
 	"github.com/OpenAgriNet/discovery-service/src/publish"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres"
@@ -43,6 +44,12 @@ type App struct {
 	// without the other.
 	DB   Pinger
 	Spec *validation.SpecIndex
+
+	// Telemetry is the tracer provider, held here so Close can flush it and so
+	// 23c's Trace middleware can take a tracer off it. Nil is a working value —
+	// every method on it tolerates one — which is what lets the acceptance and
+	// dbtest suites build an App without starting an exporter.
+	Telemetry *telemetry.Provider
 
 	Publish  *publish.Controller
 	Discover *discover.Controller
@@ -146,11 +153,23 @@ func wire(
 	catalogs := postgres.NewCatalogRepository(pool, cfg.Geo.ResolutionCells)
 	search := postgres.NewSearchRepository(pool, cfg.Search, embedder)
 
+	// Last, and deliberately so. Build owns exactly one cleanup point for the
+	// pool and adding a second resource with a second cleanup is how the fourth
+	// failure path gets added without one — so this goes where nothing can fail
+	// after it. Under OTEL_EXPORTER=none it starts no exporter and reaches no
+	// network; under otlp it creates a lazy client that dials on first export,
+	// so a collector that is not up yet does not hold up the boot.
+	tracing, err := telemetry.Init(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("start telemetry: %w", err)
+	}
+
 	return &App{
-		Config: cfg,
-		Log:    log,
-		DB:     pool,
-		Spec:   spec,
+		Config:    cfg,
+		Log:       log,
+		DB:        pool,
+		Spec:      spec,
+		Telemetry: tracing,
 		Publish: publish.NewController(
 			publish.NewService(catalogs, NoopReplicator{}, writeEmbedder(cfg.Embeddings),
 				cfg.App.Network, zone),
@@ -181,9 +200,44 @@ func (a *App) EmptyAcquireCount() int64 {
 	return a.pool.Stat().EmptyAcquireCount()
 }
 
+// telemetryFlushTimeout bounds the export of whatever the batcher is still
+// holding when the process is going away.
+//
+// Its own constant rather than Server.ShutdownTimeout, which would be the
+// tempting reuse: the two run in sequence, so sharing the value would make the
+// worst-case shutdown twice the number an operator configured and push a
+// default 30s terminationGracePeriodSeconds over the edge. Five seconds is
+// generous for one gRPC round trip to an in-cluster collector, and losing the
+// last batch is a better outcome than being SIGKILLed mid-drain.
+const telemetryFlushTimeout = 5 * time.Second
+
 // Close releases what Build opened. Safe on a partially built App, because
 // Build closes the pool itself on every path that fails after opening it.
+//
+// Telemetry goes first and the logger last, which is the order the failures
+// want: the exporter is the only thing here that talks to the network and so
+// the only one that can fail in a way worth reading, and it has to be able to
+// say so through a logger that is still open.
+//
+// This is also why the flush lives here rather than in app.Run's drain: Run
+// does not return until the listener is closed and no handler is running, so
+// by the time Close is called no span can still be open. Flushing inside the
+// drain would race the last handler's span.End.
 func (a *App) Close() {
+	if a.Telemetry != nil {
+		// Background, not a request context: everything that had one has
+		// already finished. Bounded, because a collector that has gone away
+		// takes as long as the deadline allows to say so.
+		ctx, cancel := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+		defer cancel()
+
+		if err := a.Telemetry.Shutdown(ctx); err != nil && a.Log != nil {
+			// Warn, not Error: the spans are lost and the process is exiting
+			// anyway. An operator wants to know the export path is broken, and
+			// wants it not to look like the shutdown itself failed.
+			a.Log.Warn("flush telemetry", zap.Error(err))
+		}
+	}
 	if a.pool != nil {
 		a.pool.Close()
 	}

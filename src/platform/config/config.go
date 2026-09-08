@@ -9,11 +9,19 @@ import (
 	"io/fs"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
 	"gopkg.in/yaml.v3"
+
+	// The attribute registry, not the telemetry package: validateOTel reads the
+	// `domain` row's declared values and the `producer` row's key spelling, so
+	// the boot refusal and the Resource cannot disagree about either. fact
+	// imports only the standard library — tests/architecture pins that — so this
+	// pulls no SDK into the config layer.
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
 // The two YAML layers, relative to the working directory. The image sets
@@ -55,6 +63,34 @@ type App struct {
 	// publishDirectives.visibleTo (C8). Discover has no such fallback: an
 	// omitted networkId there searches every network.
 	Network string `env:"APP_NETWORK_ID"`
+
+	// This deployment's registered subscriber id — an FQDN such as
+	// discovery.oan.example.org. It becomes the Resource's `producer` and every
+	// span's `recipient.id`: who actually answered, never the caller's claim
+	// about who it addressed.
+	//
+	// Optional with no default because nothing issues it yet. The OAN registry
+	// is the authority for the value and Task 6 is parked, so a default would
+	// be an invented participant id — and an invented id is worse than an
+	// absent one, because it reaches the network's only cross-participant
+	// identity join looking like a real answer. Required only when the exporter
+	// is on; see validateOTel.
+	//
+	// The name is convention rather than choice: helmcharts/quick-start
+	// already sets EXP_, NETWORK_ and PROVIDER_SUBSCRIBER_ID beside
+	// APP_NETWORK_ID, so this is the fourth line in that file under the prefix
+	// this service already owns.
+	Subscriber string `env:"APP_SUBSCRIBER_ID"`
+
+	// The sector this deployment serves — the Resource's `domain`. Not the
+	// network (that is Network) and not the entity type.
+	//
+	// Checked against the registry's declared values rather than against a
+	// literal here, so the day the sector list grows it grows in one place.
+	// Required only when the exporter is on: it is a telemetry attribute today
+	// and nothing else reads it, so a deployment with no collector should not
+	// have to answer for it.
+	Domain string `env:"APP_DOMAIN"`
 
 	// Every daily validity window is interpreted here. Validated with
 	// time.LoadLocation at startup, so a typo fails the boot rather than
@@ -461,6 +497,7 @@ func validate(cfg Config) error {
 		validateGeo(cfg.Geo),
 		validateAuth(cfg.Auth),
 		validateValidation(cfg.Validation),
+		validateOTel(cfg.OTel, cfg.App),
 	)
 	if problems != nil {
 		return fmt.Errorf("invalid configuration: %w", problems)
@@ -498,6 +535,68 @@ func validateValidation(validation Validation) error {
 	return require(!validation.EnableL2Context,
 		"validation.enableL2Context is true (VALIDATION_ENABLE_L2_CONTEXT) and Phase 1 has nothing behind it: "+
 			"L2 extended schema validation is unbuilt, so the flag would report a layer that is not running")
+}
+
+// The exporters this build has code behind. Exported because telemetry.Init
+// switches on the value and a second spelling of "otlp" in that switch is a
+// deployment that configures an exporter and gets none.
+const (
+	// ExporterNone builds a tracer provider that records nothing and reaches no
+	// network. The default, so a deployment with no collector still boots.
+	ExporterNone = "none"
+
+	// ExporterOTLP exports over gRPC to OTEL_EXPORTER_OTLP_ENDPOINT (decision
+	// 2: gRPC is the OTel default for that variable and what ClickStack's
+	// collector accepts).
+	ExporterOTLP = "otlp"
+)
+
+// validateOTel refuses a boot that would export an unattributable stream.
+//
+// The asymmetry is the point: `none` demands nothing, because most Phase 1
+// deployments have no collector and must not have to answer for telemetry they
+// do not emit. `otlp` demands the whole Resource identity, because a span that
+// reaches a facilitator with an empty `producer` lands under no participant at
+// all — and that is strictly worse than no span, since an empty string in a
+// grouping column reads as data rather than as an absence. The three the
+// exporter cannot supply for itself are checked here, at boot, rather than
+// discovered as a gap in a dashboard weeks later.
+//
+// Domain is checked against the registry rather than against a literal. See
+// TestTheDomainIsCheckedAgainstTheRegistry for why that is not indirection for
+// its own sake.
+func validateOTel(otel OTel, app App) error {
+	known := otel.Exporter == ExporterNone || otel.Exporter == ExporterOTLP
+	if !known {
+		return fmt.Errorf("otel.exporter %q is not an exporter this build has (OTEL_EXPORTER): %s or %s",
+			otel.Exporter, ExporterNone, ExporterOTLP)
+	}
+	if otel.Exporter == ExporterNone {
+		return nil
+	}
+
+	domain := fact.Of(fact.ResourceDomain)
+	return errors.Join(
+		require(otel.Endpoint != "",
+			"otel.exporter is %s with no endpoint (OTEL_EXPORTER_OTLP_ENDPOINT): "+
+				"there is nowhere to export to", ExporterOTLP),
+		require(app.Subscriber != "",
+			"otel.exporter is %s and app.subscriber is empty (APP_SUBSCRIBER_ID): "+
+				"it is the Resource's %s and every span's recipient.id, so without it "+
+				"the whole stream is attributed to no participant",
+			ExporterOTLP, domainProducerKey()),
+		require(slices.Contains(domain.Values, app.Domain),
+			"app.domain %q is not a sector this build declares (APP_DOMAIN): one of %v. "+
+				"Every OAN component must emit the identical string or grouping splits "+
+				"across the network, so a typo fails the boot",
+			app.Domain, domain.Values),
+	)
+}
+
+// domainProducerKey is the attribute name `producer`, read off the registry so
+// the refusal above cannot name a key the Resource does not actually set.
+func domainProducerKey() string {
+	return fact.Of(fact.ResourceProducer).SpanKey
 }
 
 // H3 defines resolutions 0 through 15 and nothing else, so an out-of-range

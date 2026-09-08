@@ -74,6 +74,22 @@ ARCH ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 # way, so a local describe in the same checkout stays meaningful.
 VERSION ?= $(shell git describe --tags --always --dirty)
 
+# The one value this build injects at link time, and it is deliberately one.
+#
+# cmd/discovery-service/main.go:56-59 records the standing preference: read the
+# toolchain's own build stamp rather than inject with -ldflags, so Makefile,
+# Dockerfile and CI do not have to agree on a flag string. Three of the four
+# build attributes on the telemetry Resource take that route — commit, tree
+# state and commit date all come from debug.ReadBuildInfo and need no flag.
+#
+# service.version cannot. debug.BuildInfo.Main.Version reads `(devel)` for every
+# plain `go build` and has no way to carry VERSION above, which is the value
+# OP5 wants on the Resource so a deploy that broke something can be named. So
+# the exception is exactly one -X wide, which is the smallest thing three build
+# systems can be asked to agree on. An image built without it reports `dev`
+# rather than an empty string — see src/platform/telemetry/build.go.
+LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
+
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
 
 # Where a tag push publishes. GHCR only, and unconditionally: it is the one
@@ -129,7 +145,7 @@ help:
 # bin/. Plain `go build ./...` links a lone main into the working directory,
 # which drops a binary in the repository root.
 build:
-	$(GO) build -trimpath -o $(BIN_DIR)/ ./...
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/ ./...
 
 ## test: run the unit and integration suites
 test:
@@ -428,8 +444,12 @@ security: $(GOVULNCHECK)
 	$(GOVULNCHECK) ./...
 
 ## docker: build the service image
+# VERSION crosses as a build arg because the build context carries no .git, so
+# `git describe` cannot run inside the image. Without it every deployed binary
+# reports `dev` on its telemetry Resource and OP5's question — which build is
+# running — is unanswerable in the one place it is ever asked.
 docker:
-	docker build -t $(IMAGE) .
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
 ## image-build: build this arch's release image locally and gate it on Trivy
 # Built and loaded locally, NOT pushed: Trivy then scans the exact bytes that
