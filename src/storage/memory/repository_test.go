@@ -38,12 +38,16 @@ func TestNewReturnsAnEmptyStore(t *testing.T) {
 // run — Postgres's own ListCatalogResources is exercised through
 // GetCatalogRow's merge path, and the memory twin has no equivalent caller —
 // so it is checked directly here: the found case and ErrCatalogNotFound.
-func TestListCatalogResources(t *testing.T) {
+func TestListingResourcesOfAnUnknownCatalogIsErrCatalogNotFound(t *testing.T) {
 	store := memory.New(resolution)
 
 	if _, err := store.ListCatalogResources(t.Context(), "nothing-published"); !errors.Is(err, domain.ErrCatalogNotFound) {
 		t.Fatalf("a fresh store answered ListCatalogResources with %v, want domain.ErrCatalogNotFound", err)
 	}
+}
+
+func TestListingResourcesReturnsThePublishedOnes(t *testing.T) {
+	store := memory.New(resolution)
 
 	if _, err := store.UpsertCatalog(t.Context(), domain.CatalogPatch{
 		ID:        "c1",

@@ -1,10 +1,8 @@
-package domain_test
+package domain
 
 import (
 	"testing"
 	"time"
-
-	"github.com/OpenAgriNet/discovery-service/src/domain"
 )
 
 // ScopeGate.Matches has no production caller yet — grep confirms it — but it
@@ -13,11 +11,11 @@ import (
 func TestScopeGateMatchesEveryFieldIncludingBothNilClockBounds(t *testing.T) {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
-	gate := domain.ScopeGate{
+	gate := ScopeGate{
 		VisibleTo: []string{"mahavistar"}, Active: true, ValidFrom: from, ValidTo: to,
 	}
 
-	same := domain.Resource{VisibleTo: []string{"mahavistar"}, Active: true, ValidFrom: from, ValidTo: to}
+	same := Resource{VisibleTo: []string{"mahavistar"}, Active: true, ValidFrom: from, ValidTo: to}
 	if !gate.Matches(same) {
 		t.Error("Matches = false for a resource carrying the identical gate, want true")
 	}
@@ -33,13 +31,13 @@ func TestScopeGateMatchesEveryFieldIncludingBothNilClockBounds(t *testing.T) {
 // not — Matches only ever calls it, so it is exercised through the gate
 // rather than in isolation.
 func TestScopeGateMatchesOnClockBoundsBothPresentBothAbsentAndOneEach(t *testing.T) {
-	nine := domain.TimeOfDay{Hour: 9}
-	ten := domain.TimeOfDay{Hour: 10}
+	nine := TimeOfDay{Hour: 9}
+	ten := TimeOfDay{Hour: 10}
 
 	cases := []struct {
 		name        string
-		gateBound   *domain.TimeOfDay
-		resourceOwn *domain.TimeOfDay
+		gateBound   *TimeOfDay
+		resourceOwn *TimeOfDay
 		want        bool
 	}{
 		{"both nil", nil, nil, true},
@@ -49,11 +47,13 @@ func TestScopeGateMatchesOnClockBoundsBothPresentBothAbsentAndOneEach(t *testing
 		{"both set and different", &nine, &ten, false},
 	}
 	for _, testCase := range cases {
-		gate := domain.ScopeGate{ValidTimeFrom: testCase.gateBound}
-		resource := domain.Resource{ValidTimeFrom: testCase.resourceOwn}
-		if got := gate.Matches(resource); got != testCase.want {
-			t.Errorf("%s: Matches = %v, want %v", testCase.name, got, testCase.want)
-		}
+		t.Run(testCase.name, func(t *testing.T) {
+			gate := ScopeGate{ValidTimeFrom: testCase.gateBound}
+			resource := Resource{ValidTimeFrom: testCase.resourceOwn}
+			if got := gate.Matches(resource); got != testCase.want {
+				t.Errorf("Matches = %v, want %v", got, testCase.want)
+			}
+		})
 	}
 }
 
@@ -61,20 +61,20 @@ func TestScopeGateMatchesOnClockBoundsBothPresentBothAbsentAndOneEach(t *testing
 // "resources" for any other count — checked at both 1 and 2+ so the singular
 // spelling isn't the only one a passing suite ever exercised.
 func TestFaultsNamesOneMissingResourceInTheSingularAndTwoInThePlural(t *testing.T) {
-	one := domain.PruneOfferReferences(&domain.Catalog{
-		Resources: []domain.Resource{{ID: "wheat"}},
-		Offers:    []domain.Offer{{ID: "o1", ResourceIDs: []string{"wheat", "typo"}}},
+	one := PruneOfferReferences(&Catalog{
+		Resources: []Resource{{ID: "wheat"}},
+		Offers:    []Offer{{ID: "o1", ResourceIDs: []string{"wheat", "typo"}}},
 	})
-	if faults := domain.Faults(one, "SCH_DANGLING"); len(faults) != 1 ||
+	if faults := Faults(one, "SCH_DANGLING"); len(faults) != 1 ||
 		faults[0].Message != `offer "o1" references a resource this catalog does not have: typo` {
 		t.Errorf("faults = %+v, want the singular phrasing naming one missing id", faults)
 	}
 
-	two := domain.PruneOfferReferences(&domain.Catalog{
-		Resources: []domain.Resource{{ID: "wheat"}},
-		Offers:    []domain.Offer{{ID: "o1", ResourceIDs: []string{"typo-a", "typo-b"}}},
+	two := PruneOfferReferences(&Catalog{
+		Resources: []Resource{{ID: "wheat"}},
+		Offers:    []Offer{{ID: "o1", ResourceIDs: []string{"typo-a", "typo-b"}}},
 	})
-	faults := domain.Faults(two, "SCH_DANGLING")
+	faults := Faults(two, "SCH_DANGLING")
 	if len(faults) != 1 ||
 		faults[0].Message != `offer "o1" references resources this catalog does not have: typo-a, typo-b`+
 			`; every id it named was missing, so the offer was not stored` {
