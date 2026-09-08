@@ -18,6 +18,15 @@ one-file edit that reaches the span, the log line and the metric label together,
 and the tests that make that structural rather than remembered. It is subordinate
 to this document on what an attribute means and to the plan on task shape.
 
+`telemetry-examples.md` is the *worked payload* — one transaction rendered as
+OTLP by both emitters side by side, and a table of the nine places
+discovery-service and beckn-onix spell the same idea differently. It is
+illustrative, binding on nothing, and cites the source line for every literal so
+it can be checked rather than trusted. It is also where the cross-repo defects
+found while writing it are recorded — the largest being that onix extracts
+`traceparent` inbound and injects it nowhere, so no trace crosses a participant
+boundary today.
+
 ## Why — the questions this must answer
 
 The network's observability requirements, as a tree rooted at the **Registry**
@@ -281,6 +290,48 @@ one service is cheaper than renaming one in three adapters and every collector
 config, and that is the entire argument. It does not extend to a third attribute
 nobody consumes.
 
+**And the argument is weaker than the one above it, because OAN is
+synchronous.** Every flow is a sync API call — `consumer → network node` and
+`consumer → provider node` — and `on_discover` / `catalog/on_publish` are
+*response actions* returned inline in the 200 body, with async callback dispatch
+out of scope (`beckn/actions.go:23-24`, C3); `bapUri` and `bppUri` are
+deliberately absent from `Context` for the same reason (`beckn/types.go:48`). So
+every hop *could* be a nested child span on one live connection, and **W3C
+`traceparent` would stitch the whole trace natively.** Nothing would need a
+Beckn id to correlate.
+
+**It does not work that way today, and the reason is a defect and not the
+topology.** onix extracts `traceparent` on inbound
+(`propagator.Extract`, `stdHandler.go:155`) and **injects it nowhere**:
+`SpanKindClient` appears in no file in that repo, and the single
+`WithSpanKind` call is `SpanKindServer` at `stdHandler.go:158`. So the outbound
+leg carries no context, and every participant's span is the root of its own
+trace regardless of how synchronous the call was.
+
+That, not async callbacks, is what the collector rewrite is for. A `trace_id`
+derived from `transaction_id` (`otel-collector-network/config.yaml:22-25`) is
+how you recover a transaction when nothing propagated, and the config's own
+comment says as much — the network collector "receives one span from each node
+(BAP, BPP) for the same Beckn message" (`:16-17`). *Each node*, not a parent and
+a child.
+
+Two consequences for us. First, **the aliases carry more weight than operator
+legibility**: while propagation is missing, `beckn.transactionId` is the only
+thing joining our span to the adapter's, so `transaction_id` and `message_id`
+are correlation keys rather than conveniences — and the earlier claim that they
+exist for "legibility in onix's Zipkin" (`config.yaml:39-41,58-61`) undersells
+them. Second, **once propagation is fixed the rewrite becomes actively wrong**:
+it would overwrite a correct parent-linked trace id with one derived from a
+caller-supplied field. So the order matters — inject first, then retire the
+processor. A deployment that fixes one without the other is worse off than one
+that fixes neither.
+
+Fixing it is small on both sides — an `otelhttp` round-tripper, or an inject
+before the outbound request — and it is the prerequisite for any per-hop
+latency attribution across participants. Open question 4 names the gap;
+`telemetry-examples.md` §1 shows the resulting trace shape. **Raise it with the
+onix side as a defect, not a preference.**
+
 **I2 — the network filter currently drops us.** `filter/network_traces` drops
 every span where `attributes["sender.id"] == nil`
 (`node/otel-collector-bap/config.yaml:29-33`). `senderId` is optional in this
@@ -350,6 +401,7 @@ Four items in onix, none of which this repo can land:
 | Signal | Emitted here? | Where |
 |---|---|---|
 | **TRACE** (`eid: API`) | **Yes** — one span per protocol request | This document |
+| **LOG/AUDIT** (`eid: AUDIT`) | Already emitted as zap JSON; 23e adds `trace_id`/`span_id`. **The `eid` is `AUDIT`, not `LOG`** — the signal's name and its `eid` differ, which is exactly the sort of thing a second implementation guesses wrong (`otel-specification.md:599`) | 23b, 23e |
 | **METRIC** | Not from this binary | The spec makes metrics **mandatory for the participant** — this is an obligation OAN owes, not an optional extra. `ref-impl-design.md` places the computation in micro-observability, not the SDK ("only a lightweight library without any storage"), so the split is conformant. **Task 24 is that obligation** — see *Metrics* below for the candidate list and what blocks it. N stateless replicas each counting in memory would produce N partial counts nothing can reassemble |
 | **AUDIT** (OTel LOG) | No | Spec-optional ("*in addition to the above two mandatory data points… optional data*"), so silence conforms. Open question 6 — a publish fits the `item.prevstate` → `item.state` shape well, but modelling it as both API and AUDIT duplicates |
 
@@ -380,9 +432,9 @@ external party can be harmed by.
 | Attribute | Value |
 |---|---|
 | `eid` | `API` |
-| `producer` | This deployment's participant id, e.g. `discovery-service`. New config. Participant-id shape — `^[a-z0-9][a-z0-9._:-]{2,252}$`, `maxLength` 253, from `docs/design/registry/schemas/ProviderSchema.json#/$defs/ParticipantId`. **Not** the `{2,63}` alternation on that file's line 18: that is a *provider* id, and open question 3 says a discovery service is not a Provider. The pattern is borrowed as a shape, not resolved from a record — there may be no record for us to resolve |
+| `producer` | This deployment's **registered subscriber id** — an FQDN such as `discovery.oan.example.org`, from the new `APP_SUBSCRIBER_ID`. The example here used to read `discovery-service`, which is a *service* name and not a participant id; the pattern below was always FQDN-shaped, so the row contradicted itself and the example was the wrong half. This is the value the OAN registry issues and the value Task 6 resolves to fetch a public key, so it is not ours to invent — see the note under `recipient.id`. Participant-id shape — `^[a-z0-9][a-z0-9._:-]{2,252}$`, `maxLength` 253, from `docs/design/registry/schemas/ProviderSchema.json#/$defs/ParticipantId`. **Not** the `{2,63}` alternation on that file's line 18: that is a *provider* id, and open question 3 says a discovery service is not a Provider. The pattern is borrowed as a shape, not resolved from a record — there may be no record for us to resolve |
 | `domain` | The **sector** — `Agriculture`. New config. Not the network, not the entity type |
-| `service.name` | ClickStack's grouping column. **Same value as `producer`** — they split only if one participant ever runs several services |
+| `service.name` | ClickStack's grouping column. **Not the same value as `producer`, and this row said it was.** OTel semconv `service.name` names *what software this is* — `discovery-service`, a constant carried in the struct tag. `producer` names *which participant this is* — an FQDN that differs per deployment. Collapsing them means either every deployment reports a different `service.name` and ClickStack cannot group the service, or `producer` reports a service name and the network cannot identify the participant. Two questions, two fields |
 | `network.id` | `APP_NETWORK_ID` — `mahavistar`, `bharatvistar` (C8). Our key, not the spec's |
 
 ## Scope — per exported batch
@@ -421,8 +473,10 @@ permanently.
 | `sender.id` | `context.senderId`, **when present** — one field on both paths, and unverified. See below |
 | `sender.unidentified` | `true` when the envelope carried no `senderId` — see below |
 | `sender.unverified` | `true` whenever `sender.id` is set in this phase — see below |
-| `recipient.id` | Same value as `producer`. **Ours, never the caller's `receiverId`** — a caller can address anyone; this attribute has to say who actually answered |
+| `recipient.id` | `APP_SUBSCRIBER_ID`, the same value as `producer`. **Ours, never the caller's `receiverId`** — a caller can address anyone; this attribute has to say who actually answered. Constant on every span this binary emits, because we only ever receive: `on_discover` is a response action returned inline in the 200 body and async dispatch is out of scope (`beckn/actions.go:23-24`), so we are never the sender. **We therefore need none of onix's direction machinery** — no `deriveDirection`, no `selfID`/`remoteID` swap (`stdHandler.go:845-855`); that exists for an adapter that both calls and answers, and copying it here would import a case that cannot arise |
+| `recipient.unidentified` | `true` when `APP_SUBSCRIBER_ID` is unset, with `recipient.id` omitted — the same shape as `sender.unidentified`, for the same reason: the spec marks it Required and we refuse to invent an identity. **Never fall back to `context.receiverId`.** Today the controllers echo it, so the fallback would make `recipient.id` and `beckn.receiverId` hold one value and the misaddressing query below would silently always return nothing — the bug staying invisible until Task 6 stops the echo |
 | `span_uuid` | Generated per span, by a `SpanProcessor`'s `OnStart` |
+| ~~`parent_id`~~ | **Not emitted.** onix builds one from `role + subscriberID + pod name`; two of those three do not survive here. There is no role — OAN uses `senderId`/`receiverId` and not `bapId`/`bppId`, so a participant carries no type — and `subscriberID` is already `recipient.id`. What remains is pod identity, which belongs on the **Resource**, not on every span: it is constant for the process lifetime, so a per-span copy pays thousands of times a second to say one thing. `OTEL_RESOURCE_ATTRIBUTES=k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(NS)` from the chart's downward API is standard semconv, needs no code, and the SDK merges it into the Resource `Init` builds — so it lands on spans, logs and metrics at once. Not a divergence: `parent_id` is onix-local and appears nowhere in the spec |
 | `observedTimeUnixNano` | Unix nanos as a string (the spec's prose says ISO; its field name and example say nanos — follow the name). **Set in the middleware just before `span.End()`, not in a processor** — `OnEnd` receives a `ReadOnlySpan` and cannot set attributes |
 | `http.method`, `http.host` | The request |
 | `http.route` | `r.Pattern` (Go 1.22+ `ServeMux`), **with the method prefix stripped** — the pattern reads `POST /discover` and `http.method` already carries the verb |
@@ -715,11 +769,11 @@ exists to permit.
 
 ## Divergences from the spec
 
-Every mandatory field above is emitted. These nine are where we knowingly differ,
+Every mandatory field above is emitted. These ten are where we knowingly differ,
 collected here so a reviewer sees them in one place. It read "these six" while
-rows 7 and 8 sat unlisted in the example commentary below and row 9 was in no
-document at all — a divergence noted in passing is one that gets re-litigated as
-a bug.
+rows 7 and 8 sat unlisted in the example commentary below and rows 9 and 10 were
+in no document at all — a divergence noted in passing is one that gets
+re-litigated as a bug.
 
 | | Divergence | Why |
 |---|---|---|
@@ -732,6 +786,7 @@ a bug.
 | 7 | **`status` is `{"code":"STATUS_CODE_OK"}`**, not the spec's `"Ok"` | Same root cause as 5 and 6 and the same answer: `status` is a **field on the OTLP `Span` message**, not an attribute, so no `attribute.KeyValue` can name it and no registry row can reach it. The SDK serialises the enum. This is the boundary `telemetry-seam.md` §1 draws — same value under two keys is a registry alias; a structural OTLP field serialised differently is the exporter's, and 23f is the only place it can be rewritten |
 | 8 | **`kind` is `SPAN_KIND_SERVER`**, not the spec's `Server` | Identical to 7 — an enum on the `Span` message. Both were already stated in the example commentary below as things "easy to get wrong by hand", which is how they escaped this table for so long: described accurately, filed as a formatting note rather than as a divergence a facilitator might reject on |
 | 9 | **`http.route` carries the route template**, where the spec's prose says URL | The only one of the nine that is a **value** divergence rather than a spelling or serialisation one, and the only one a registry row can hold. `/discover` is bounded and a URL is not, so the spec's reading makes `http.route` unusable as a metric label and leaks any query string the caller wrote into an always-on, unsampled export. We keep the template and record the reason on the `Definition` itself (`Note`), where the next reader meets it before "fixing" it toward the spec |
+| 10 | **`recipient.id` is self-declared**, where the spec's prose describes the addressed recipient | `otel-specification.md:299` marks it Required and glosses it "Identifier of the system that is **expected to be** the recipient of the API call" — which is the caller's claim, i.e. `context.receiverId`. onix implements the other reading: `AttrRecipientID` comes from a configured `selfID` resolved by direction, never from the envelope. The two coincide for a correctly-addressed request, which is why the disagreement has gone unnoticed, and they diverge exactly when someone addresses us wrongly — the case telemetry exists to surface. We take onix's reading, because a self-declared value is the one that is true and because the spec's own examples (`np1`, `gateway1`) read as topology rather than as an echoed payload field. Both are emitted, so nothing is lost either way: `recipient.id` self-declared, `beckn.receiverId` as claimed. **This is a judgement call between a prose spec and a reference implementation, not a settled fact** — it belongs with open question 9 to the spec owners |
 
 ### The spec is prose only
 
@@ -1023,7 +1078,7 @@ and an implementer starting there would find the plan does not describe the work
 | | Sub-task | Files | Tests pin |
 |---|---|---|---|
 | **23a0** | The attribute registry | new `platform/telemetry/fact/` — `fact.go`, `registry.go`, `record.go`; `tests/architecture/boundary_test.go`; `tests/testdata/cross-layer-attributes.json` | Every `Key` has a complete `Definition`, with `Cardinality`, `Visibility` and `Kind` each refusing their `Unspecified` zero; `Signals&Label ⇒ Bounded ∧ len(Values)>0`; `Required ⇒ Signals&Resource`; no `Definition` names an OTLP structural field (`status`, `kind`, `traceId`…); the fifteen cross-layer keys match the vendored fixture byte for byte; `fact` imports nothing outside `context`, `iter`, `time`; controllers and `src/storage` import no OTel. **Emits nothing** — it is a table and its guards. Note this makes `fact/` a node 23b, 23c and 23d all edit, which partly re-couples the six gates A23 separated; concentrating that coupling in one reviewed sub-task is the point of doing it first |
-| **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go`, `container.go`, `server.go`, `Makefile` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
+| **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go` (adds `APP_SUBSCRIBER_ID`, optional, no default — see `recipient.id`), `container.go`, `server.go`, `Makefile` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
 | **23b** | The observation record | `middlewares/correlation.go`, `envelope.go`, `request_logger.go`, `trace.go` | Log output byte-identical before and after. **Changes no output**; acceptance is the existing suite passing with no test file edited — including `request_logger_test.go:181,207`, which mount `RequestLogger` with no `Trace` above. Also pins the adopt-or-allocate rule from both sides: `Trace` first, and `RequestLogger` alone |
 | **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds. **Plus I1**: `transaction_id` and `message_id` carry the same values as their `beckn.*` counterparts, asserted as equal in one test so the pair cannot drift. Two aliases, not three — `recipient.id` is already onix's span spelling and needs none, and **no `receiver.id` is emitted**; a test asserts the exported key set does not contain it |
 | **23d** | Events | `discover/controller.go`, `publish/controller.go`, `response_writer.go` | Event times strictly increasing, none equal to span end; a master publish reports `MASTER`; `error` category matches `X-Beckn-Error-Type` byte for byte; `retrieval.embedding_ms` absent — not zero — under `noop`; `result.provider_ids` is DISTINCT and bounded at 16, so a 200-catalog answer from one provider emits one id; `beckn.schemaContext` is absent rather than empty when the seeker sent no predicate |

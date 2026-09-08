@@ -1,0 +1,255 @@
+{
+  "$comment": [
+    "Illustrative telemetry payloads for the beckn-onix adapter, as it runs TODAY.",
+    "Unlike discover-service.json, this side is OBSERVED, not specified — every",
+    "attribute below is emitted by code in the beckn-onix repo and cited to the",
+    "line. That makes this file a record of the current contract we have to join",
+    "against, and the $divergence notes are the places it does not line up.",
+    "",
+    "NOT BINDING. Nothing in this repo governs onix. Read alongside",
+    "telemetry-examples.md §4 and §6."
+  ],
+
+  "deployment": {
+    "$comment": "Three adapters plus this service. The role a given process plays is config, and it changes which id is sender and which is recipient.",
+    "topology": [
+      "experience layer adapter  — sees the farmer",
+      "consumer node adapter     — consumer → network node, sync",
+      "network node adapter      — routes",
+      "provider node adapter     — consumer → provider node, sync; calls the real provider (WeatherObservation, MandiPrice)",
+      "discovery-service         — receives only, never calls out"
+    ]
+  },
+
+  "resource": {
+    "$source": "otelsetup.go:210-232, buildBaseAttrs",
+    "$comment": "Three Resources built, one per signal, differing only in eid — API at :122, METRIC at :143, AUDIT at :159. onix gets the AUDIT literal right, which is worth noting because the signal is NAMED log/audit and a second implementation guesses LOG.",
+    "attributes": [
+      { "key": "eid", "value": { "stringValue": "API" } },
+      { "key": "producer", "value": { "stringValue": "bap.example.com" } },
+      { "key": "domain", "value": { "stringValue": "Agriculture" } },
+      { "key": "service.name", "value": { "stringValue": "beckn-onix-bap" } },
+      { "key": "service.version", "value": { "stringValue": "1.8.2" } },
+      { "key": "environment", "value": { "stringValue": "prod" } },
+      { "key": "device_id", "value": { "stringValue": "…" } },
+      { "key": "producerType", "value": { "stringValue": "bap" } },
+      { "key": "onix.build.commit", "value": { "stringValue": "9f3c1ab" } },
+      { "key": "onix.build.tree_state", "value": { "stringValue": "clean" } },
+      { "key": "onix.build.date", "value": { "stringValue": "2026-08-14T11:02:00Z" } }
+    ],
+    "$divergence": {
+      "network.id": "ABSENT here, present on ours. onix's Resource carries no network id at all, so a multi-network deployment cannot split its adapter telemetry by network. onix should add it.",
+      "environment / device_id / producerType": "onix-only. None is in the spec's Required set.",
+      "onix.build.*": "onix-only, and the good idea in this table — it identifies a locally-patched deployment. Worth copying rather than diverging from.",
+      "producer vs service.name": "onix keeps these distinct too (cfg.Producer vs cfg.ServiceName), which is the correct split and matches ours."
+    }
+  },
+
+  "scope": { "name": "<telemetry.ScopeName>", "version": "<telemetry.ScopeVersion>" },
+
+  "scenarios": [
+    {
+      "name": "TRACE / inbound request — the only span kind onix makes",
+      "why": "Every onix handler span. There is exactly one WithSpanKind call in the repo and it is SpanKindServer.",
+      "$source": "stdHandler.go:152-158 (start), 852-886 (setBecknAttr), 192-193 (deferred attrs)",
+      "span": {
+        "name": "/discover",
+        "$nameComment": "spanName = r.URL.Path (stdHandler.go:157). NOT the Beckn action — action is extracted separately at :148 and only falls back to the path when absent.",
+        "kind": "SPAN_KIND_SERVER",
+        "traceId": "7a1f0c4d5e6f2a1f0c4d5e6f7a1f0c4d",
+        "spanId": "a1b2c3d4e5f60718",
+        "attributes": [
+          { "key": "recipient.id", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "sender.id", "value": { "stringValue": "bap.example.com" } },
+          { "key": "span_uuid", "value": { "stringValue": "3fa85f64-5717-4562-b3fc-2c963f66afa6" } },
+          { "key": "http.request.method", "value": { "stringValue": "POST" } },
+          { "key": "http.route", "value": { "stringValue": "/discover" } },
+          { "key": "action", "value": { "stringValue": "discover" } },
+          { "key": "transaction_id", "value": { "stringValue": "b6b0f1c2-6b1a-4c2e-9b7e-2a1f0c4d5e6f" } },
+          { "key": "message_id", "value": { "stringValue": "e2f1a3d4-77c8-4a19-bb02-9d3e5f7a1b2c" } },
+          { "key": "parent_id", "value": { "stringValue": "bap:bap.example.com:pod-7d9f" } },
+          { "key": "server.address", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "user_agent.original", "value": { "stringValue": "beckn-onix/1.8.2" } },
+          { "key": "http.response.status_code", "value": { "intValue": 200 } },
+          { "key": "http.request.error", "value": { "stringValue": "" } },
+          { "key": "observedTimeUnixNano", "value": { "stringValue": "1756296000148000000" } }
+        ],
+        "status": { "$comment": "Set to Error only when statusCode < 200 || >= 400, with the fixed message 'status code is invalid' (stdHandler.go:194-196). The message carries no information — the code is on http.response.status_code." }
+      },
+      "$conditional": {
+        "transaction_id / message_id / parent_id": "Each appended only if present in context (stdHandler.go:865-876). Correctly absent rather than empty when missing.",
+        "server.address": "Only if r.Host != \"\".",
+        "user_agent.original": "Only if the header is set."
+      },
+      "$divergence": {
+        "sender.id / recipient.id": "Resolved BY DIRECTION from a configured selfID and the remote id (resolveDirection, stdHandler.go:840-850): the adapter's own id is the sender on a caller hop and the recipient on a receiver hop. discovery-service needs none of this — we only ever receive, so recipient.id is a config constant and sender.id is always remote.",
+        "http.request.method": "We emit http.method, which is what the spec's mandatory profile names. onix is on current OTel semconv. Defensible in isolation; the cost is that no single query spans both participants. ONIX SHOULD MOVE.",
+        "http.route": "onix sets r.URL.Path — the ACTUAL path. We set the route TEMPLATE (r.Pattern). They coincide while every path is literal and part the moment either side adds a path parameter, at which point onix's is unbounded and unusable as a label.",
+        "http.response.status_code": "We emit http.status.code (string) AND http.status_code (int); onix emits this one int. Neither side is clean — ours is the spec's own self-contradiction, onix's is semconv.",
+        "http.request.error": "Set UNCONDITIONALLY from errString(err) (stdHandler.go:193), so a successful span carries the key with an empty string. Our convention is the opposite: absent means did not happen. An empty value is one that must be filtered out of every query that touches the key. ONIX SHOULD MOVE — one `if err != nil`.",
+        "action": "onix emits `action`; we emit `beckn.action` AND `action` as an alias pair. Harmless.",
+        "parent_id": "role:subscriberID:pod. We emit nothing equivalent: there is no role in OAN (senderId/receiverId, never bapId/bppId, so a participant carries no type), subscriberID duplicates recipient.id, and pod identity belongs on the RESOURCE as k8s.pod.name — it is constant for the process, so a per-span copy pays thousands of times a second to say one thing. The in-code comment at :870-875 already explains it is NOT a span id despite the name."
+      }
+    },
+
+    {
+      "name": "TRACE / step spans — the pipeline inside a request",
+      "why": "Where the adapter's own time goes. Children of the inbound server span.",
+      "$source": "step_instrumentor.go:57-59 and :145-146; step.go:55, :70, :172",
+      "spans": [
+        { "name": "step:validate-sign", "parentSpanId": "a1b2c3d4e5f60718" },
+        { "name": "keyset", "$source": "step.go:55" },
+        { "name": "sign", "$source": "step.go:70" },
+        { "name": "validate-sign", "$source": "step.go:172" },
+        { "name": "step:route" },
+        { "name": "response-step:<name>", "$source": "step_instrumentor.go:146" },
+        { "name": "registry lookup", "$source": "sunbirdRegistry.go:362" },
+        { "name": "cache lookup", "$source": "sunbirdRegistry.go:598" }
+      ],
+      "$comment": [
+        "None of these sets a span kind, so all are SPAN_KIND_INTERNAL by default.",
+        "Naming is inconsistent: `step:validate-sign` from the instrumentor and a bare",
+        "`validate-sign` from step.go:172 are two spans for arguably the same work,",
+        "and `registry lookup` / `cache lookup` use a space where the others use a",
+        "colon and a hyphen. Not our call, but it makes a span-name group-by messy."
+      ],
+      "$gap": "These are the ONLY visibility into adapter-internal latency, and none of them covers the outbound HTTP call. See the next entry — that is the important one."
+    },
+
+    {
+      "name": "TRACE / the outbound call — NOT INSTRUMENTED",
+      "why": "This is the largest finding in either file.",
+      "span": null,
+      "$finding": [
+        "onix has NO client span and NO context injection.",
+        "`grep -rn 'SpanKindClient\\|WithSpanKind'` over the whole repo returns exactly",
+        "one line: stdHandler.go:158, SpanKindServer. Inbound context IS extracted",
+        "(propagator.Extract, stdHandler.go:155). Nothing on the outbound leg injects.",
+        "",
+        "Consequence: no trace crosses a participant boundary. Every span in the",
+        "network is the root of its own trace, and discovery-service's span will have",
+        "no parentSpanId no matter what we implement on our side.",
+        "",
+        "This is why the network collector rewrites trace_id from transaction_id",
+        "(otel-collector-network/config.yaml:22-25), and the config's own comment says",
+        "so: the collector 'receives one span from each node (BAP, BPP) for the same",
+        "Beckn message' (:16-17). EACH NODE — not a parent and a child.",
+        "",
+        "Two consequences for us. While propagation is missing, beckn.transactionId is",
+        "the ONLY thing joining our span to the adapter's, so the transaction_id and",
+        "message_id aliases are correlation keys and not conveniences. And once",
+        "propagation is fixed the rewrite becomes actively wrong — it would overwrite a",
+        "correct parent-linked trace id with one derived from a caller-supplied field.",
+        "So the order matters: inject first, then retire the processor. Fixing one",
+        "without the other is worse than fixing neither.",
+        "",
+        "Fix is small: an otelhttp round-tripper, or an inject before the outbound",
+        "request. It is the prerequisite for ANY cross-participant latency attribution",
+        "and therefore for the whole 'where did the 3 seconds go' question."
+      ],
+      "$alsoMissing": "No span at all around the external provider call — WeatherObservation / MandiPrice. upstream latency is invisible, which is onix's U1 and answers P8. The provider node adapter is the only process that can see it."
+    },
+
+    {
+      "name": "LOG / AUDIT records — two per request",
+      "why": "onix emits a request record and a response record, distinguished by audit.direction.",
+      "$source": "stdHandler.go:199 (request) and :201 (response)",
+      "records": [
+        {
+          "audit.direction": "request",
+          "http.response.status_code": 200,
+          "http.request.error": "",
+          "sender.id": "bap.example.com",
+          "receiver.id": "discovery.oan.example.org",
+          "$body": "stepCtx.Body — THE FULL REQUEST BODY is passed to EmitAuditLogs, along with r.Header"
+        },
+        {
+          "audit.direction": "response",
+          "http.response.status_code": 200,
+          "sender.id": "bap.example.com",
+          "receiver.id": "discovery.oan.example.org",
+          "$body": "responseBody — THE FULL RESPONSE BODY, headers nil"
+        }
+      ],
+      "$divergence": {
+        "receiver.id": "**DEFECT.** onix spells the recipient `recipient.id` on its span (stdHandler.go:855, via telemetry.AttrRecipientID at pluginMetrics.go:49) and on its metric (http_metric.go:102) — but `receiver.id` on the audit log, as a bare literal. One value, two keys, so a trace↔log join on the recipient silently returns nothing. Already recorded: telemetry-seam.md open item 4 and onix's own OBSERVABILITY.md:352-363. The CAUSE is that there is no registry — the audit call site is the one that did not import the constant, and nothing failed. This is the argument for telemetry-seam.md stated as an observed fact rather than a prediction.",
+        "full bodies in audit logs": "onix's audit records carry the complete request and response payloads. **We deliberately do not** — opentelemetry.md's 'Never emitted' section refuses reqBody/resBody outright, and the seam design enforces it with a deny-list over exported BYTES rather than over attribute keys, precisely so a body cannot reach a facilitator under any key name. This is a policy difference, not a bug on either side, but a deployment shipping both to one backend should know that one of the two streams contains farmer payloads and needs different retention and access control from the other."
+      }
+    },
+
+    {
+      "name": "METRIC / onix_http_request_count",
+      "why": "onix's RED counter, and a cardinality hazard our design forbids.",
+      "$source": "http_metric.go:91-112",
+      "metric": {
+        "name": "onix_http_request_count",
+        "instrument": "counter",
+        "labels": [
+          { "key": "http.status", "value": "2xx", "$comment": "status CLASS, not the code — StatusClass() at http_metric.go:78-88. Bounded to 2xx/4xx/5xx. This part is right." },
+          { "key": "action", "value": "discover" },
+          { "key": "role", "value": "bap" },
+          { "key": "sender.id", "value": "bap.example.com" },
+          { "key": "recipient.id", "value": "discovery.oan.example.org" },
+          { "key": "metric_code", "value": "discover_api_total_count", "$comment": "COMPUTED as action + \"_api_total_count\" (http_metric.go:107). See below — this partly answers our open question 7." },
+          { "key": "category", "value": "Discovery", "$comment": "\"Discovery\" when the action ends in /search or /discovery, else \"NetworkHealth\" (http_metric.go:108-111)." }
+        ]
+      },
+      "$divergence": {
+        "sender.id and recipient.id AS METRIC LABELS": "**Cardinality hazard.** The label product is status_class × action × role × |senders| × |recipients|, so it grows with the square of the participant count. Our design forbids exactly this: a fact.Key carrying the Label bit must be Bounded over a closed value set, and the cardinality-product ceiling is asserted rather than reviewed. Participant ids are open sets. This is not a divergence to reconcile — it is one we should NOT copy, and it is the concrete reason the Signals&Label ⇒ Bounded check exists.",
+        "metric_code": "onix SYNTHESISES metric.code as `<action>_api_total_count`, which is where the spec's own `search_api_total_count` example comes from. Our doc treats metric.code as unavailable pending a network metrics registry OAN does not have (open question 7). onix's answer is a reasonable convention and it is not a registry — two participants naming the same metric differently would both pass. Worth raising with the spec owners as 'is the convention normative?' alongside question 7, rather than either copying it silently or leaving Instrument.Code empty on the assumption nothing fills it."
+      }
+    },
+
+    {
+      "name": "METRIC / the rest of onix's instruments",
+      "$source": "grep 'onix_' over pkg/telemetry and core/module/handler",
+      "instruments": [
+        { "name": "onix_step_execution_duration_seconds", "kind": "histogram", "covers": "per-step latency inside the pipeline" },
+        { "name": "onix_step_executions_total", "kind": "counter" },
+        { "name": "onix_step_errors_total", "kind": "counter" },
+        { "name": "onix_plugin_execution_duration_seconds", "kind": "histogram", "covers": "per-plugin latency — the closest thing to provider latency, but it measures the PLUGIN, not the external HTTP call it makes" },
+        { "name": "onix_plugin_errors_total", "kind": "counter" },
+        { "name": "onix_plugin_info", "kind": "gauge", "covers": "which plugins are loaded at which version" },
+        { "name": "onix_routing_decisions_total", "kind": "counter" }
+      ],
+      "$comment": [
+        "This set is RED-complete for the adapter's own pipeline and says nothing",
+        "about saturation — no pool level, no queue depth, no connection count. Same",
+        "gap our Task 25 fills on our side, and worth naming as onix's equivalent.",
+        "",
+        "onix_plugin_execution_duration_seconds is NOT the answer to 'how slow is the",
+        "weather provider'. It times the plugin call, which includes the provider call",
+        "but attributes nothing to it and cannot separate provider latency from plugin",
+        "overhead or from a retry. That needs a client span around the outbound",
+        "request — onix U1."
+      ]
+    }
+  ],
+
+  "$collectorPipeline": {
+    "$source": "install/network-observability/",
+    "$comment": "Three tiers of collector config: node/otel-collector-bap, node/otel-collector-bpp, network/otel-collector-network, plus all-in-one copies of each.",
+    "transform/beckn_ids": {
+      "$source": "network/otel-collector-network/config.yaml:22-25",
+      "does": "set(span.trace_id, TraceID(transaction_id with hyphens stripped)) where transaction_id != nil",
+      "and_deliberately_does_not": "map message_id to span_id — the config comments at :15-19 explain that multiple nodes share one message_id, so overwriting span_id would give distinct spans identical ids and corrupt the trace. Correct reasoning, and it is the same reasoning that makes the trace_id rewrite wrong once propagation works.",
+      "action_for_us": "A deployment routing discovery-service through the NETWORK collector inherits this rewrite. Once we emit real parent-linked traces, disable the processor for our pipeline — or better, fix injection in onix first and retire it globally."
+    },
+    "filter/network_traces": {
+      "$comment": "Currently drops us — see opentelemetry.md I2. Left here as a pointer; the fix is in that section, not this file."
+    },
+    "exporters": ["zipkin (spans)", "prometheus :8890 namespace onix_network (metrics)", "otlphttp/loki (logs)"]
+  },
+
+  "$whoShouldMove": {
+    "$comment": "Consolidated from the $divergence notes above. Ranked by what it costs to leave alone.",
+    "1_onix_inject_traceparent": "No trace crosses a participant boundary today. Blocks all cross-participant latency work. Largest by far.",
+    "2_onix_receiver_id_to_recipient_id": "Trace↔log joins on the recipient silently return nothing. Retain receiver.id as an alias; land it with an attribute seam so the cause goes too, not as a two-line edit.",
+    "3_onix_drop_sender_recipient_metric_labels": "Unbounded label cardinality, quadratic in participant count. Will bite as the network grows, not before — which is why it should be fixed before it does.",
+    "4_onix_http_request_method_to_http_method": "One line in setBecknAttr. Until then no single query spans both participants for the commonest question there is.",
+    "5_onix_omit_http_request_error_when_nil": "One `if err != nil`.",
+    "6_onix_add_network_id_to_resource": "Needed once OAN runs more than one network.",
+    "7_spec_owners_metric_code_convention": "Is `<action>_api_total_count` normative or onix-local? Ask alongside open question 7.",
+    "8_both_add_join_keys_to_the_fixture": "tests/testdata/cross-layer-attributes.json holds fifteen keys and neither http.method nor the recipient key is among them — because neither was thought of as a join key. Both should be added, and that is OUR side's action."
+  }
+}

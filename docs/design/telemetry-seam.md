@@ -40,10 +40,14 @@ and the disagreement is invisible — each signal validates alone. So `Init` bui
 the Resource and every provider that stamps it, and Task 24 and Task 25 receive
 it rather than rebuilding it.
 
-**`eid` differs per signal and nothing else does.** `eid` is `API` on a span
-Resource and `METRIC` on a metric Resource (`otel-specification.md:449`). It is
-the one Resource attribute the projections must vary, which is why it is a
-registry row with a projection rule and not a literal in `Init`.
+**`eid` differs per signal and nothing else does.** Three literal values, and
+the spec is explicit about each: `API` for spans, `METRIC` for metrics and
+**`AUDIT`** — not `LOG` — for log records (`otel-specification.md:271`, `:446`,
+`:599`). The signal is *called* LOG/AUDIT and its `eid` is `AUDIT`; onix gets
+this right (`otelsetup.go:122,143,159`) and it is the kind of detail a second
+implementation guesses wrong. It is the one Resource attribute the projections
+must vary, which is why it is a registry row with a projection rule and not a
+literal in `Init`.
 
 **Scope is fixed at span creation and immutable afterwards.** This is why A23
 rejects `otelhttp` — a span that package starts carries *its* scope for ever, and
@@ -714,7 +718,22 @@ const (
 // config.OTel because three fields arrive from -ldflags -X rather than from the
 // environment, and config.Config must stay a pure function of the environment.
 type Identity struct {
-    Producer  string // = service.name. Required when Exporter != "none".
+    // The registered subscriber id — an FQDN, e.g. discovery.oan.example.org.
+    // Feeds Resource `producer` AND the span's `recipient.id`, which are one
+    // value: who this participant is. NOT service.name, which names what
+    // software this is (`discovery-service`) and is a struct-tag constant —
+    // collapse them and either ClickStack cannot group the service or the
+    // network cannot identify the participant.
+    //
+    // Optional, unlike APP_NETWORK_ID. That one is required because it fills
+    // publishDirectives.visibleTo (C8) — a functional dependency. This one
+    // feeds telemetry only until Task 6 resolves it to a public key, so
+    // requiring it now would refuse the boot of every running deployment for
+    // the sake of an attribute. Unset means recipient.id is omitted and
+    // recipient.unidentified is true.
+    SubscriberID string // APP_SUBSCRIBER_ID
+
+    Producer  string // = the SubscriberID above. Required when Exporter != "none".
     Domain    string // the sector. Required likewise.
     NetworkID string // APP_NETWORK_ID (C8)
     Version   string // "dev" when unstamped — never "" (OP5)

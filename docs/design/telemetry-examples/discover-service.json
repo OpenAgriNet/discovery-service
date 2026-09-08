@@ -1,0 +1,492 @@
+{
+  "$schema": "not-a-schema",
+  "$comment": [
+    "Illustrative telemetry payloads for discovery-service. NOT BINDING and NOT",
+    "A FIXTURE: docs/design/opentelemetry.md decides what is emitted, and Task 23",
+    "is unstarted, so nothing here has been observed from a running process.",
+    "Every attribute name is cited to opentelemetry.md or to source; every error",
+    "code and type comes from src/beckn/errors.go and src/platform/errors/",
+    "beckn_error.go:TypeOf. See telemetry-examples.md for the prose and for the",
+    "cross-repo divergences against adapter.json.",
+    "",
+    "The Resource is factored out into `resource` below rather than repeated in",
+    "every scenario. In real OTLP each scenario's span sits under a resourceSpans",
+    "entry carrying `resource.spans`, verbatim. Only `eid` differs per signal."
+  ],
+
+  "resource": {
+    "$comment": "One Resource per signal, varying ONLY eid. Values API / METRIC / AUDIT — the log signal is named LOG/AUDIT and its eid is AUDIT, never LOG (otel-specification.md:271,446,599).",
+    "spans": {
+      "attributes": [
+        { "key": "eid", "value": { "stringValue": "API" } },
+        { "key": "producer", "value": { "stringValue": "discovery.oan.example.org" } },
+        { "key": "domain", "value": { "stringValue": "Agriculture" } },
+        { "key": "service.name", "value": { "stringValue": "discovery-service" } },
+        { "key": "service.version", "value": { "stringValue": "1.4.0" } },
+        { "key": "network.id", "value": { "stringValue": "mahavistar" } },
+        { "key": "k8s.pod.name", "value": { "stringValue": "discovery-7d9f4b-x2kq" } }
+      ],
+      "$notes": {
+        "producer": "The registered subscriber id, an FQDN, from APP_SUBSCRIBER_ID. Spec-Required.",
+        "service.name": "Deliberately NOT equal to producer. This names what software this is; producer names which participant.",
+        "service.version": "From -ldflags -X. An unstamped build reports `dev`, never an empty string (OP5).",
+        "domain": "Spec-Required, and must be byte-identical across every OAN component or grouping splits. Open question 2.",
+        "k8s.pod.name": "Arrives via OTEL_RESOURCE_ATTRIBUTES from the chart's downward API. This is where pod identity lives instead of onix's per-span parent_id."
+      }
+    },
+    "logs": { "$sameAs": "spans", "$except": { "eid": "AUDIT" } },
+    "metrics": { "$sameAs": "spans", "$except": { "eid": "METRIC" } }
+  },
+
+  "scope": {
+    "name": "discovery_service",
+    "version": "1.0",
+    "$comment": "scope_uuid and count are deferred to 23f and deliberately absent: they are per-batch values the SDK cannot reach from an instrumentation scope."
+  },
+
+  "scenarios": [
+    {
+      "name": "discover / success, semantic degraded",
+      "why": "The ordinary case. Answers S7 (what was the source) and the degradation report in one span.",
+      "request": "POST /discover — textSearch + S_DWITHIN, EMBEDDING_PROVIDER=noop",
+      "span": {
+        "name": "discover",
+        "kind": "SPAN_KIND_SERVER",
+        "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "spanId": "00f067aa0ba902b7",
+        "startTimeUnixNano": "1756296000000000000",
+        "endTimeUnixNano": "1756296000148000000",
+        "status": { "code": "STATUS_CODE_OK" },
+        "attributes": [
+          { "key": "span_uuid", "value": { "stringValue": "3fae2d5f-3cfb-4e6e-b6a2-0ee5d6579832" } },
+          { "key": "observedTimeUnixNano", "value": { "stringValue": "1756296000148000000" } },
+          { "key": "sender.id", "value": { "stringValue": "oan-experience" } },
+          { "key": "sender.unverified", "value": { "boolValue": true } },
+          { "key": "recipient.id", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "http.method", "value": { "stringValue": "POST" } },
+          { "key": "http.route", "value": { "stringValue": "/discover" } },
+          { "key": "http.host", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "http.scheme", "value": { "stringValue": "https" } },
+          { "key": "http.flavor", "value": { "stringValue": "1.1" } },
+          { "key": "http.status.code", "value": { "stringValue": "200" } },
+          { "key": "http.status_code", "value": { "intValue": 200 } },
+          { "key": "beckn.action", "value": { "stringValue": "discover" } },
+          { "key": "beckn.version", "value": { "stringValue": "2.0.0" } },
+          { "key": "beckn.networkId", "value": { "stringValue": "mahavistar" } },
+          { "key": "beckn.transactionId", "value": { "stringValue": "b6b0f1c2-6b1a-4c2e-9b7e-2a1f0c4d5e6f" } },
+          { "key": "beckn.messageId", "value": { "stringValue": "e2f1a3d4-77c8-4a19-bb02-9d3e5f7a1b2c" } },
+          { "key": "beckn.receiverId", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "beckn.schemaContext", "value": { "arrayValue": { "values": [ { "stringValue": "https://beckn.org/Agri" } ] } } },
+          { "key": "beckn.schemaType", "value": { "arrayValue": { "values": [ { "stringValue": "MandiPrice" } ] } } },
+          { "key": "transaction_id", "value": { "stringValue": "b6b0f1c2-6b1a-4c2e-9b7e-2a1f0c4d5e6f" } },
+          { "key": "message_id", "value": { "stringValue": "e2f1a3d4-77c8-4a19-bb02-9d3e5f7a1b2c" } }
+        ],
+        "events": [
+          {
+            "name": "request_info",
+            "timeUnixNano": "1756296000004000000",
+            "attributes": [
+              { "key": "intent.kinds", "value": { "arrayValue": { "values": [ { "stringValue": "textSearch" }, { "stringValue": "spatial" } ] } } },
+              { "key": "intent.spatial_ops", "value": { "arrayValue": { "values": [ { "stringValue": "S_DWITHIN" } ] } } },
+              { "key": "intent.scoped", "value": { "boolValue": true } }
+            ]
+          },
+          {
+            "name": "retrieval_info",
+            "timeUnixNano": "1756296000141000000",
+            "attributes": [
+              { "key": "retrieval.modes_run", "value": { "arrayValue": { "values": [ { "stringValue": "lexical" }, { "stringValue": "fuzzy" }, { "stringValue": "spatial" } ] } } },
+              { "key": "retrieval.modes_degraded", "value": { "arrayValue": { "values": [ { "stringValue": "semantic" } ] } } }
+            ]
+          },
+          {
+            "name": "response_info",
+            "timeUnixNano": "1756296000147000000",
+            "attributes": [
+              { "key": "result.catalog_count", "value": { "intValue": 4 } },
+              { "key": "result.provider_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" }, { "stringValue": "agmarknet.gov.in" } ] } } },
+              { "key": "result.empty", "value": { "boolValue": false } }
+            ]
+          }
+        ]
+      },
+      "$absent": {
+        "parentSpanId": "No inbound traceparent. The common Phase 1 case and open question 4 — and today the ONLY case, because onix injects traceparent nowhere (telemetry-examples.md §1).",
+        "retrieval.embedding_ms": "semantic is degraded, so no vector was computed. A zero would read as a fast embedding rather than no embedding.",
+        "intent.filter_type": "The request carried no `filters`.",
+        "result.providersTruncated": "The 16-id bound did not bite."
+      },
+      "$readsAs": "Somebody searched mandi prices near a point; three modes ran, semantic was unavailable, four catalogs answered from two distinct providers. 4 ms parsing, 137 ms retrieving, 6 ms building. No part of the query text is on the span.",
+      "$watchFor": [
+        "Event names are request_info / retrieval_info / response_info — UNDERSCORES. Dots would read as a namespace they do not have.",
+        "retrieval.modes_degraded is an ARRAY of the degraded mode names, not a boolean. `true` says only that something degraded and the operator still has to guess which.",
+        "result.provider_ids is 2 against a catalog_count of 4 — DISTINCT providers, not one entry per catalog. Otherwise the attribute is a page-size measurement wearing an identity's name.",
+        "No duration_ms. It is endTimeUnixNano - startTimeUnixNano; a copy is free to disagree with the span it describes."
+      ]
+    },
+
+    {
+      "name": "discover / empty — unmet demand",
+      "why": "The most valuable signal this service gives the network: somebody asked and nobody serves it. No other participant can produce it.",
+      "request": "POST /discover — a schemaType nobody publishes",
+      "span": {
+        "name": "discover",
+        "kind": "SPAN_KIND_SERVER",
+        "status": { "code": "STATUS_CODE_OK" },
+        "$comment": "STATUS_CODE_OK is correct. Zero results is a successful answer, not a fault — conflating them would put unmet demand in the failure rate.",
+        "attributes": [
+          { "key": "http.status.code", "value": { "stringValue": "200" } },
+          { "key": "http.status_code", "value": { "intValue": 200 } },
+          { "key": "beckn.action", "value": { "stringValue": "discover" } },
+          { "key": "beckn.schemaType", "value": { "arrayValue": { "values": [ { "stringValue": "SoilHealthCard" } ] } } }
+        ],
+        "events": [
+          {
+            "name": "response_info",
+            "attributes": [
+              { "key": "result.catalog_count", "value": { "intValue": 0 } },
+              { "key": "result.empty", "value": { "boolValue": true } }
+            ]
+          }
+        ]
+      },
+      "$absent": {
+        "result.provider_ids": "Zero catalogs answered, so there are no provider ids. Absent, not an empty array — an empty array asserts 'we looked and the set is empty', which is the same claim in more bytes and one more thing to special-case in a query."
+      },
+      "$readsAs": "A farmer wanted a soil health card and the network has nobody serving them in mahavistar. result.empty says a query went unmet; it never says a non-empty answer was any good (open question 12 — relevance is not answerable from this service at all)."
+    },
+
+    {
+      "name": "discover / rejected — unsupported context version",
+      "why": "The rejection shape. Answers P4 and P5.",
+      "request": "POST /discover with context.version = 1.1.0",
+      "span": {
+        "name": "discover",
+        "kind": "SPAN_KIND_SERVER",
+        "startTimeUnixNano": "1756296100000000000",
+        "endTimeUnixNano": "1756296100003000000",
+        "status": { "code": "STATUS_CODE_ERROR" },
+        "attributes": [
+          { "key": "sender.unidentified", "value": { "boolValue": true } },
+          { "key": "recipient.id", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "http.method", "value": { "stringValue": "POST" } },
+          { "key": "http.route", "value": { "stringValue": "/discover" } },
+          { "key": "http.status.code", "value": { "stringValue": "400" } },
+          { "key": "http.status_code", "value": { "intValue": 400 } },
+          { "key": "beckn.action", "value": { "stringValue": "discover" } },
+          { "key": "error_type", "value": { "stringValue": "CONTEXT" } }
+        ],
+        "events": [
+          {
+            "name": "error",
+            "timeUnixNano": "1756296100002000000",
+            "attributes": [
+              { "key": "type", "value": { "stringValue": "CONTEXT" } },
+              { "key": "code", "value": { "stringValue": "CTX_VERSION_UNSUPPORTED" } },
+              { "key": "msg", "value": { "stringValue": "unsupported context version" } },
+              { "key": "path", "value": { "stringValue": "$.context.version" } }
+            ]
+          }
+        ]
+      },
+      "$absent": {
+        "sender.id": "The value never parsed, so it is OMITTED and sender.unidentified is true in its place. Never invented, never blanked (divergence 1).",
+        "beckn.networkId": "The request did not carry it. Absent means 'not sent', not 'parsing failed' — the error event says what failed.",
+        "beckn.transactionId": "Same reason.",
+        "result.*": "No retrieval ran."
+      },
+      "$watchFor": [
+        "The `error` event keys are UNPREFIXED — type / code / msg / path (opentelemetry.md:740-744). The SPAN-level attribute is error_type. Both spellings are deliberate and 23d pins them.",
+        "error_type on the span AND type on the event, so a facilitator can filter a span set without unpacking events. Same value, one source: the fault logNack already holds, so span and log cannot disagree.",
+        "`type` is derived, not chosen: errors.TypeOf splits on the code prefix — CTX→CONTEXT, AUT→CORE, SCH/BIZ/DOM→DOMAIN, POL→POLICY, anything else→SYSTEM (beckn_error.go:41-54).",
+        "The event's `type` must match the X-Beckn-Error-Type response header byte for byte. 23d asserts it."
+      ]
+    },
+
+    {
+      "name": "discover / rejected — unparsable JSONPath in a filter",
+      "why": "Corresponds to examples/18-discover-unparsable-jsonpath.json. A DOMAIN fault, not CONTEXT — the envelope was fine and the predicate was not.",
+      "span": {
+        "name": "discover",
+        "kind": "SPAN_KIND_SERVER",
+        "status": { "code": "STATUS_CODE_ERROR" },
+        "attributes": [
+          { "key": "sender.id", "value": { "stringValue": "oan-experience" } },
+          { "key": "sender.unverified", "value": { "boolValue": true } },
+          { "key": "http.status.code", "value": { "stringValue": "400" } },
+          { "key": "http.status_code", "value": { "intValue": 400 } },
+          { "key": "error_type", "value": { "stringValue": "DOMAIN" } }
+        ],
+        "events": [
+          {
+            "name": "request_info",
+            "attributes": [
+              { "key": "intent.kinds", "value": { "arrayValue": { "values": [ { "stringValue": "filter" } ] } } }
+            ]
+          },
+          {
+            "name": "error",
+            "attributes": [
+              { "key": "type", "value": { "stringValue": "DOMAIN" } },
+              { "key": "code", "value": { "stringValue": "SCH_INVALID_JSONPATH" } },
+              { "key": "msg", "value": { "stringValue": "filter criterion is not a parsable JSONPath" } },
+              { "key": "path", "value": { "stringValue": "$.message.intent.filters[0].criterion" } }
+            ]
+          }
+        ]
+      },
+      "$watchFor": [
+        "request_info fired before the fault, so the span still records WHAT was attempted. Events are ordered and strictly increasing; 23d asserts none equals the span end.",
+        "The offending JSONPath expression itself is NOT on the span. It is request content, and the shape-not-value rule holds even for a value that caused a fault — `path` locates it in the document instead. Retrieving it is the request log's job, not the facilitator's."
+      ]
+    },
+
+    {
+      "name": "discover / refused — rate limited",
+      "why": "OP3's refusal half. Proves a 429 still produces a full span: Trace is index 1 in router.go:134-141, ABOVE both RateLimit and Envelope.",
+      "span": {
+        "name": "discover",
+        "kind": "SPAN_KIND_SERVER",
+        "startTimeUnixNano": "1756296200000000000",
+        "endTimeUnixNano": "1756296200000400000",
+        "status": { "code": "STATUS_CODE_ERROR" },
+        "attributes": [
+          { "key": "http.method", "value": { "stringValue": "POST" } },
+          { "key": "http.route", "value": { "stringValue": "/discover" } },
+          { "key": "http.status.code", "value": { "stringValue": "429" } },
+          { "key": "http.status_code", "value": { "intValue": 429 } },
+          { "key": "error_type", "value": { "stringValue": "CORE" } }
+        ],
+        "events": [
+          {
+            "name": "error",
+            "attributes": [
+              { "key": "type", "value": { "stringValue": "CORE" } },
+              { "key": "code", "value": { "stringValue": "AUT_RATE_LIMITED" } },
+              { "key": "msg", "value": { "stringValue": "rate limit exceeded" } }
+            ]
+          }
+        ]
+      },
+      "$absent": {
+        "beckn.*": "RateLimit sits above Envelope, so the body was never parsed. Nothing Beckn-shaped is known.",
+        "path": "The fault is not located in the document; it is a property of the deployment's policy and the caller's rate."
+      },
+      "$watchFor": [
+        "Task 25 adds NO rejection counter for this. The refusal already produces a span, a status and an error event, so a counter restating them is the duration_ms mistake one signal up.",
+        "What no span here can carry is the pool sitting at 30 of 32 for ten minutes while every request SUCCEEDS. A ceiling is a level, a span is an event. That is the whole of OP3 and why Task 25 exists."
+      ]
+    },
+
+    {
+      "name": "publish / success — FULL replace",
+      "why": "Answers S8 (who added the source) and feeds the freshness view.",
+      "request": "POST /publish — 2 catalogs, updateMode FULL",
+      "span": {
+        "name": "publish",
+        "kind": "SPAN_KIND_SERVER",
+        "startTimeUnixNano": "1756296300000000000",
+        "endTimeUnixNano": "1756296300212000000",
+        "status": { "code": "STATUS_CODE_OK" },
+        "attributes": [
+          { "key": "sender.id", "value": { "stringValue": "imd.gov.in" } },
+          { "key": "sender.unverified", "value": { "boolValue": true } },
+          { "key": "recipient.id", "value": { "stringValue": "discovery.oan.example.org" } },
+          { "key": "http.method", "value": { "stringValue": "POST" } },
+          { "key": "http.route", "value": { "stringValue": "/publish" } },
+          { "key": "http.status.code", "value": { "stringValue": "200" } },
+          { "key": "http.status_code", "value": { "intValue": 200 } },
+          { "key": "beckn.action", "value": { "stringValue": "publish" } },
+          { "key": "beckn.networkId", "value": { "stringValue": "mahavistar" } }
+        ],
+        "events": [
+          {
+            "name": "request_info",
+            "timeUnixNano": "1756296300006000000",
+            "$comment": "Fired AT INTAKE, before the A1 MASTER refusal — so a refused publish still reports what was attempted.",
+            "attributes": [
+              { "key": "publish.bpp_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" } ] } } },
+              { "key": "publish.catalog_count", "value": { "intValue": 2 } },
+              { "key": "publish.resource_count", "value": { "intValue": 47 } },
+              { "key": "publish.offer_count", "value": { "intValue": 12 } },
+              { "key": "publish.update_modes", "value": { "arrayValue": { "values": [ { "stringValue": "FULL" } ] } } },
+              { "key": "publish.catalog_types", "value": { "arrayValue": { "values": [ { "stringValue": "REGULAR" } ] } } },
+              { "key": "publish.visible_to", "value": { "arrayValue": { "values": [ { "stringValue": "mahavistar" } ] } } },
+              { "key": "publish.validity_present", "value": { "boolValue": true } }
+            ]
+          }
+        ]
+      },
+      "$watchFor": [
+        "publish.update_modes FULL is the destructive one — a FULL republish deletes what it does not mention. Worth an alert when it appears unexpectedly for a provider that normally sends MERGE.",
+        "publish.validity_present is the freshness signal, and it is the honest one: it says a validity window was SET, not that the data is fresh. Actual freshness is time-since-last-publish keyed on publish.bpp_ids, which is a query over these spans and not an attribute (OP6 — struck from Task 25, derivable).",
+        "publish.catalog_types reads REGULAR on essentially every span that exists, because A1 refuses MASTER at intake and C9's inference is deliberately not honoured (an absent directive is REGULAR). It is emitted anyway so the MASTER case is visible at all — see the next scenario."
+      ]
+    },
+
+    {
+      "name": "publish / MERGE patch",
+      "why": "The non-destructive update path. Same span shape, one attribute different — which is the point of emitting update_modes.",
+      "span": {
+        "name": "publish",
+        "kind": "SPAN_KIND_SERVER",
+        "status": { "code": "STATUS_CODE_OK" },
+        "attributes": [
+          { "key": "beckn.action", "value": { "stringValue": "publish" } },
+          { "key": "http.status_code", "value": { "intValue": 200 } }
+        ],
+        "events": [
+          {
+            "name": "request_info",
+            "attributes": [
+              { "key": "publish.bpp_ids", "value": { "arrayValue": { "values": [ { "stringValue": "agmarknet.gov.in" } ] } } },
+              { "key": "publish.catalog_count", "value": { "intValue": 1 } },
+              { "key": "publish.resource_count", "value": { "intValue": 3 } },
+              { "key": "publish.update_modes", "value": { "arrayValue": { "values": [ { "stringValue": "MERGE" } ] } } },
+              { "key": "publish.catalog_types", "value": { "arrayValue": { "values": [ { "stringValue": "REGULAR" } ] } } },
+              { "key": "publish.validity_present", "value": { "boolValue": false } }
+            ]
+          }
+        ]
+      },
+      "$absent": {
+        "publish.offer_count": "The patch touched no offers. Absent, not zero — zero would assert the catalog has no offers, which is a claim about the stored document rather than about this request."
+      }
+    },
+
+    {
+      "name": "publish / rejected — MASTER catalog (A1)",
+      "why": "Phase 1 accepts regular resources only. The refusal is PER CATALOG, and request_info fires before it — so the span reports MASTER even though it was refused.",
+      "request": "POST /publish — one catalog with catalogType MASTER",
+      "span": {
+        "name": "publish",
+        "kind": "SPAN_KIND_SERVER",
+        "status": { "code": "STATUS_CODE_ERROR" },
+        "attributes": [
+          { "key": "sender.id", "value": { "stringValue": "imd.gov.in" } },
+          { "key": "http.status.code", "value": { "stringValue": "400" } },
+          { "key": "http.status_code", "value": { "intValue": 400 } },
+          { "key": "beckn.action", "value": { "stringValue": "publish" } },
+          { "key": "error_type", "value": { "stringValue": "DOMAIN" } }
+        ],
+        "events": [
+          {
+            "name": "request_info",
+            "attributes": [
+              { "key": "publish.bpp_ids", "value": { "arrayValue": { "values": [ { "stringValue": "imd.gov.in" } ] } } },
+              { "key": "publish.catalog_count", "value": { "intValue": 1 } },
+              { "key": "publish.catalog_types", "value": { "arrayValue": { "values": [ { "stringValue": "MASTER" } ] } } }
+            ]
+          },
+          {
+            "name": "error",
+            "attributes": [
+              { "key": "type", "value": { "stringValue": "DOMAIN" } },
+              { "key": "code", "value": { "stringValue": "SCH_TYPE_NOT_SUPPORTED" } },
+              { "key": "msg", "value": { "stringValue": "master catalogs are not supported; publish this catalog as REGULAR" } },
+              { "key": "path", "value": { "stringValue": "$.message.publishDirectives[0]" } }
+            ]
+          }
+        ]
+      },
+      "$watchFor": [
+        "MASTER on publish.catalog_types is the ONLY way this refusal is visible in aggregate — nothing about catalog type reaches the schema (catalog_type and the master columns are dropped), so there is no table to count it from. 23d asserts a master publish reports MASTER.",
+        "SCH_TYPE_NOT_SUPPORTED carries both A1's MASTER refusal AND the S_TOUCHES / S_CROSSES refusal (errors.go:76-78) — the same species of fault, a value the spec admits and this receiver declines. `path` is what distinguishes them, so a dashboard splitting by code alone will merge two unrelated causes.",
+        "Rejection is per catalog: nine regular catalogs land and the one master reports REJECTED, so a partial success is the normal outcome here, not an error state."
+      ]
+    },
+
+    {
+      "name": "publish / refused — body over the ceiling",
+      "why": "OP3's third ceiling, SERVER_MAX_REQUEST_BODY_BYTES (10 MiB). Note the status: 413, not 403.",
+      "span": {
+        "name": "publish",
+        "kind": "SPAN_KIND_SERVER",
+        "status": { "code": "STATUS_CODE_ERROR" },
+        "attributes": [
+          { "key": "http.method", "value": { "stringValue": "POST" } },
+          { "key": "http.route", "value": { "stringValue": "/publish" } },
+          { "key": "http.status.code", "value": { "stringValue": "413" } },
+          { "key": "http.status_code", "value": { "intValue": 413 } },
+          { "key": "error_type", "value": { "stringValue": "POLICY" } }
+        ],
+        "events": [
+          {
+            "name": "error",
+            "attributes": [
+              { "key": "type", "value": { "stringValue": "POLICY" } },
+              { "key": "code", "value": { "stringValue": "POL_NP_CAPACITY_EXCEEDED" } },
+              { "key": "msg", "value": { "stringValue": "request body exceeds the configured maximum" } }
+            ]
+          }
+        ]
+      },
+      "$watchFor": [
+        "TypePolicy normally maps to 403, but CodePolicyNPCapacityExceeded is special-cased to 413 ahead of the type switch (beckn_error.go:88-90). So error_type POLICY with a 413 is correct and expected; POLICY with a 403 is a different fault.",
+        "The spec pairs this code with 429 for an ENGAGEMENT capacity limit. This service has no engagement lifecycle, so the code is unambiguous here — but a deployment that grows one must revisit the mapping rather than add a second meaning (C14). A dashboard reading POL_NP_CAPACITY_EXCEEDED as 'too many requests' would be wrong today and right later, which is worse than either."
+      ]
+    },
+
+    {
+      "name": "LOG / AUDIT record",
+      "why": "Already emitted as zap JSON today. 23b/23e add trace_id and span_id and nothing else.",
+      "$comment": "Shown as the zap line the process actually writes, not as OTLP LogRecord. The collector wraps it; project_log.go in src/platform/logger is where the registry projects into zap.Field, which is what keeps package logger free of any OTel import.",
+      "record": {
+        "level": "info",
+        "ts": "2026-09-08T09:00:00.148Z",
+        "msg": "request completed",
+        "request_id": "01J7Z8Q2M3XYZP4QVR7WFDK9AB",
+        "transaction_id": "b6b0f1c2-6b1a-4c2e-9b7e-2a1f0c4d5e6f",
+        "message_id": "e2f1a3d4-77c8-4a19-bb02-9d3e5f7a1b2c",
+        "action": "discover",
+        "status": 200,
+        "duration_ms": 148,
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "span_id": "00f067aa0ba902b7"
+      },
+      "$watchFor": [
+        "trace_id is present ONLY because a span exists. Under OTEL_EXPORTER=none it is absent, not an empty string — and the logger↔registry bidirectional check makes that structural rather than remembered.",
+        "duration_ms lives HERE and only here. On the span it would be a second, worse copy of endTime - startTime.",
+        "request_id is ours and has no span counterpart: it is the correlation id for a single process's logs, where trace_id correlates across participants. Two ids for two scopes, deliberately."
+      ]
+    },
+
+    {
+      "name": "METRIC / pool saturation",
+      "why": "Task 25. A LEVEL, sampled on a clock — the one thing in OP3 no span can carry.",
+      "metric": {
+        "name": "<named by Task 25>",
+        "unit": "1",
+        "description": "Connections checked out of the pool",
+        "gauge": {
+          "dataPoints": [
+            {
+              "asDouble": 30,
+              "startTimeUnixNano": "1756295940000000000",
+              "endTimeUnixNano": "1756296000000000000",
+              "attributes": [
+                { "key": "pool", "value": { "stringValue": "primary" } }
+              ]
+            }
+          ]
+        }
+      },
+      "$watchFor": [
+        "The NAME is a placeholder on purpose. opentelemetry.md's Task 25 row describes the instruments — pool acquire-wait and in-use, one liveness gauge — but names none of them, and inventing a name in an illustrative file would create a second source of truth. Instrument.Name is where it will live.",
+        "asDouble and the two collection timestamps are NOT registry rows. A table declaring them would be a table declaring the clock.",
+        "The single label is Bounded over a closed value set. The Signals&Label ⇒ Bounded check enforces exactly this, and the cardinality-product ceiling is what stops a second label being added casually.",
+        "metric.code is ABSENT: it comes from a network metrics registry OAN does not have (open question 7). Instrument.Code empty is legal for a node metric and fatal for a facilitator one.",
+        "The Instrument registry is a SIBLING table to the attribute registry, joined one-way by Labels []fact.Key. Two-table agreement is checked; the join does not run the other direction."
+      ]
+    }
+  ],
+
+  "$neverEmitted": {
+    "$comment": "opentelemetry.md's 'Never emitted' section. Listed here because an example file is exactly where someone would add one of these by accident.",
+    "reqBody / resBody": "The spec's own example puts these on events. We do not — not on any span or event leaving for the facilitator.",
+    "query text / descriptor content": "The shape-not-value rule. intent.kinds says a textSearch happened; nothing says what was searched for.",
+    "Catalog.provider": "json.RawMessage — emitting it would put descriptor content on a span.",
+    "coordinates": "On the never-emitted list, which is why P6 is only partially answerable (per provider yes, per place no). Open question 11.",
+    "anything from DATABASE_URL or a secret": "Standing rule. Secrets never touch a config file or a log field, and a span attribute is a log field with a wider audience."
+  }
+}
