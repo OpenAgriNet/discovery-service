@@ -572,11 +572,12 @@ func TestMalformedJSONAtEveryDecodeLevelIsRefused(t *testing.T) {
 }
 
 // maxCollectionDepth bounds the recursion; a publisher's document is not
-// trusted to terminate. Built rather than hand-nested, since the limit itself
-// (8) is what the test names, not an arbitrary depth.
+// trusted to terminate. Built rather than hand-nested, and against the
+// package's own geo.MaxCollectionDepthForTests rather than a bare literal, so
+// this still means what it says if the limit ever changes.
 func TestAGeometryCollectionNestedPastTheDepthLimitIsRefused(t *testing.T) {
 	body := `{"type":"Point","coordinates":[77.5946,12.9716]}`
-	for range 9 {
+	for range geo.MaxCollectionDepthForTests + 1 {
 		body = `{"type":"GeometryCollection","geometries":[` + body + `]}`
 	}
 	if err := geo.Validate(json.RawMessage(body)); err == nil {

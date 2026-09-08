@@ -145,11 +145,6 @@ func TestDerivationDoesNotReachTheResourceID(t *testing.T) {
 // derivation that gave up would leave the resource with an EMPTY tsvector,
 // undiscoverable by any lexical query, rather than merely under-indexed.
 //
-// Since A17 the descriptor and the attributes are two members of ONE document,
-// so bytes that will not parse cost both rather than one. That is the honest
-// cost of storing the resource whole, and it is bounded: Name is a column,
-// derived and written before any of this, so the resource stays findable by the
-// thing publishers actually search for.
 // appendValues' own contract — "unreadable bytes contribute nothing and are
 // not an error" — checked directly. deriveSearchText's two callers both go
 // through domain.Resource's member() extraction, which never hands back a
@@ -164,6 +159,11 @@ func TestAppendValuesOfUnreadableBytesContributesNothing(t *testing.T) {
 	}
 }
 
+// Since A17 the descriptor and the attributes are two members of ONE document,
+// so bytes that will not parse cost both rather than one. That is the honest
+// cost of storing the resource whole, and it is bounded: Name is a column,
+// derived and written before any of this, so the resource stays findable by the
+// thing publishers actually search for.
 func TestDerivationOfAnUnreadableDocumentKeepsWhatItCanRead(t *testing.T) {
 	resource := domain.Resource{
 		Name:     "Rice",
