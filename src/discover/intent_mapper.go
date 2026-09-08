@@ -88,19 +88,28 @@ func MapIntent(
 	spatial, targets, spatialFatal, partial := mapSpatial(intent.Spatial, cfg)
 	limit, offset, pageFaults := mapPage(page, cfg.Search)
 
+	// Trimmed ONCE, here, and every reader below takes it from this variable.
+	// Whitespace is not a term: it produces an empty tsquery and a trigram
+	// comparison against padding, so `"   "` is a text search that narrows
+	// nothing while being non-empty — which is exactly the input that walks
+	// past a guard spelled `intent.TextSearch != ""`. Two readers doing their
+	// own trimming would be two places to forget it.
+	text := strings.TrimSpace(intent.TextSearch)
+
 	// Whether anything else has already cut the corpus down, which is what
 	// decides between an unindexable filter costing one slow query and costing
 	// a read of every gated row in the catalogue. Read from the MAPPED values
 	// rather than from the intent: a spatial constraint that faulted is not a
 	// constraint, and treating it as one would let the guard be defeated by
 	// sending a broken one.
-	narrowed := intent.TextSearch != "" || spatial != nil || len(schemas) > 0
+	narrowed := text != "" || spatial != nil || len(schemas) > 0
 	filters, filterFaults := mapFilters(intent.Filters, narrowed)
 
 	fatal := append(append(append(schemaFaults, spatialFatal...), pageFaults...), filterFaults...)
+	fatal = append(fatal, criterionFaults(intent, text)...)
 
 	return domain.SearchQuery{
-		Text:        intent.TextSearch,
+		Text:        text,
 		Schemas:     schemas,
 		Filters:     filters,
 		Spatial:     spatial,
@@ -108,6 +117,42 @@ func MapIntent(
 		Limit:       limit,
 		Offset:      offset,
 	}, fatal, partial
+}
+
+// criterionFaults refuses an intent that gives the search nothing to run.
+//
+// One of textSearch, spatial or filters must be present, because each of the
+// three is what asks for a retrieval mode: modesFor reads them and nothing
+// else, so an intent with none asks for no modes, fuses no lists and answers
+// `"catalogs": []` with a 200 — a page indistinguishable from a search that
+// ran and matched nothing. schemaContext is deliberately not one of the three.
+// It contributes a WHERE clause rather than a retriever, so it narrows a search
+// it cannot drive, and an intent carrying only it reaches the same dead end.
+//
+// Read off the RAW intent, unlike `narrowed` above, which reads the mapped
+// values. The two want opposite things from a broken constraint: `narrowed`
+// must not count a spatial that faulted, because an unindexable filter would
+// then be admitted by sending a bad geometry beside it; this must count it,
+// because the caller did name a criterion and "you sent no criteria" would be a
+// false sentence stacked on top of the fault that already names the real
+// mistake.
+//
+// The one exception is `text`, which arrives already trimmed and is taken as a
+// parameter for that reason: modesFor reads the TRIMMED value, so a guard
+// testing the raw field would admit `"   "` and hand it a search asking for no
+// mode at all — the same empty page under a 200 that this refusal exists to
+// prevent, reached by a caller who pressed the space bar.
+func criterionFaults(intent beckn.Intent, text string) []domain.Fault {
+	if text != "" || len(intent.Spatial) > 0 || intent.Filters != nil {
+		return nil
+	}
+	return []domain.Fault{{
+		Path: "$['message']['intent']",
+		Code: string(beckn.CodeSchemaInvalidFormat),
+		Message: "an intent needs at least one of textSearch, spatial or filters; " +
+			"schemaContext narrows a search but cannot drive one, so an intent " +
+			"carrying only it would answer an empty page rather than a refusal",
+	}}
 }
 
 // mapSchemaContext reads the schema predicate off the ENVELOPE, not the intent.

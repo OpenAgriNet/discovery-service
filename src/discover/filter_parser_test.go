@@ -91,6 +91,22 @@ func TestAFilterThatWouldFailSilentlyIsRefused(t *testing.T) {
 			wantCode:   beckn.CodeSchemaInvalidFormat,
 			wantSaying: "narrows nothing",
 		},
+		{
+			// The same filter with a text search that is nothing but spaces.
+			// Whitespace is not a term: it asks the lexical mode for an empty
+			// tsquery, which narrows the corpus by not one row — so counting
+			// it as "something else narrows" is how this guard gets walked
+			// past with a space bar.
+			name: "an unindexable filter beside a text search that is only whitespace",
+			intent: beckn.Intent{
+				TextSearch: "   ",
+				Filters: &beckn.Filters{
+					Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.rating >= 4)`,
+				},
+			},
+			wantCode:   beckn.CodeSchemaInvalidFormat,
+			wantSaying: "narrows nothing",
+		},
 	}
 
 	for _, testCase := range cases {
@@ -169,10 +185,25 @@ func TestAnUnindexableFilterIsServedWhenSomethingElseNarrows(t *testing.T) {
 	}
 }
 
+// filters.type is optional, and an absent one is accepted as the same grammar
+// as "jsonpath" — SQL/JSON path is the only one this service ever runs, so
+// absence cannot be ambiguous about which was meant.
+func TestAnEmptyFilterTypeIsAcceptedAsJSONPath(t *testing.T) {
+	intent := beckn.Intent{Filters: &beckn.Filters{Expression: `$.catalogs[*] ? (@.id == "c1")`}}
+
+	query, fatal, partial := discover.MapIntent(intent, beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 0 || len(partial) != 0 {
+		t.Fatalf("an absent filters.type faulted: fatal %s, partial %s", codesOf(fatal), codesOf(partial))
+	}
+	if len(query.Filters) != 1 {
+		t.Errorf("the query carries %d filters, want 1 — an absent type is not a refusal", len(query.Filters))
+	}
+}
+
 // An absent filter is not a filter.
 func TestNoFilterIsNoFault(t *testing.T) {
 	query, fatal, partial := discover.MapIntent(
-		beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+		beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, settings())
 
 	if len(fatal) != 0 || len(partial) != 0 {
 		t.Fatalf("an intent with no filter faulted: fatal %s, partial %s", codesOf(fatal), codesOf(partial))

@@ -1,8 +1,11 @@
 package validation
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
 
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
@@ -180,5 +183,96 @@ func TestASchemaFaultNamesWhatItRejected(t *testing.T) {
 	}
 	if strings.TrimSpace(faults[0].Message) == "" {
 		t.Error("the fault carries no message")
+	}
+}
+
+// canonicaliseAction is called on whatever json.Unmarshal produced, which for
+// a top-level array or scalar body is not a map at all — and for one whose
+// `context` isn't an object either. Both must be a no-op rather than a panic;
+// L1's own schema check reports the shape fault afterward.
+func TestCanonicaliseActionOfANonObjectShapeIsANoop(t *testing.T) {
+	canonicaliseAction("not an object", "catalog/publish") // must not panic
+
+	document := map[string]any{"context": "not an object either"}
+	canonicaliseAction(document, "catalog/publish")
+	if document["context"] != "not an object either" {
+		t.Errorf("context = %v, want it untouched", document["context"])
+	}
+}
+
+// A visitor error that isn't a MultiError — VisitJSON returns one bare error
+// for the very first document it can't even start walking — still becomes
+// exactly one fault, not zero.
+func TestSchemaFaultsOfANonMultiErrorIsOneFault(t *testing.T) {
+	faults := schemaFaults(map[string]any{}, errors.New("boom"))
+	if len(faults) != 1 {
+		t.Fatalf("faults = %d, want 1", len(faults))
+	}
+}
+
+// faultFrom's own fallback for an error that isn't *openapi3.SchemaError:
+// the root path, and the error's own message.
+func TestFaultFromOfANonSchemaErrorUsesTheRootPathAndItsMessage(t *testing.T) {
+	fault := faultFrom(map[string]any{}, errors.New("boom"))
+	if fault.Path != rootPath {
+		t.Errorf("Path = %q, want %q", fault.Path, rootPath)
+	}
+	if !strings.Contains(fault.Message, "boom") {
+		t.Errorf("Message = %q, want it to carry the underlying error", fault.Message)
+	}
+}
+
+// A SchemaError with no Reason — rare, per the code's own comment — still
+// names the field the path points at rather than leaving the fault empty.
+func TestFaultFromOfAnEmptyReasonFallsBackToAGenericMessage(t *testing.T) {
+	fault := faultFrom(map[string]any{}, &openapi3.SchemaError{})
+	if fault.Message == "" {
+		t.Error("Message is empty, want the fallback reason")
+	}
+}
+
+// descend against a node that is neither an array nor an object — a schema
+// fault reported one level below a leaf, where the walk has nothing left to
+// index into. The remaining segment still renders as a member name.
+func TestDescendOfANonObjectNodeRendersTheSegmentAnyway(t *testing.T) {
+	rendered, next := descend("a leaf value", "field")
+	if rendered != ".field" {
+		t.Errorf("rendered = %q, want %q", rendered, ".field")
+	}
+	if next != nil {
+		t.Errorf("next = %v, want nil", next)
+	}
+}
+
+// elementAt's three ways an index can fail to select anything: not a number,
+// negative, or past the end.
+func TestElementAtOfABadIndexIsNil(t *testing.T) {
+	array := []any{"a", "b"}
+	for _, segment := range []string{"not-a-number", "-1", "5"} {
+		if got := elementAt(array, segment); got != nil {
+			t.Errorf("elementAt(array, %q) = %v, want nil", segment, got)
+		}
+	}
+}
+
+// A member name that fails the RFC 9535 shorthand test — `beckn:id`, a real
+// key this protocol uses — renders bracket-quoted rather than dotted, which
+// is the reason isShorthand exists at all: `$.message.beckn:id` is not a path
+// any tool the caller owns would evaluate.
+func TestMemberBracketsANameThatIsNotShorthand(t *testing.T) {
+	if got := member("beckn:id"); got != `['beckn:id']` {
+		t.Errorf("member(%q) = %q, want %q", "beckn:id", got, `['beckn:id']`)
+	}
+}
+
+// isShorthand's own two refusals: the empty name, and a name whose first
+// disqualifying byte is not at position 0 (member's own call always has a
+// non-empty name, so this is checked directly against the pure function).
+func TestIsShorthandRefusesEmptyAndDisqualifiedNames(t *testing.T) {
+	if isShorthand("") {
+		t.Error(`isShorthand("") = true, want false`)
+	}
+	if isShorthand("beckn:id") {
+		t.Error(`isShorthand("beckn:id") = true, want false — ":" is not a shorthand byte`)
 	}
 }

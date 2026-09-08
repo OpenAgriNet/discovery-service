@@ -1201,19 +1201,115 @@
                 "exec": [
                   "const res = pm.response.json();",
                   "",
-                  "// The same intent as case 06 written WITHOUT the ?(...) filter. PostgreSQL",
-                  "// runs it happily: `@?` is given a comparison, a comparison always yields an",
-                  "// item, and `false` is an item - so it answers true for EVERY row and the",
-                  "// caller receives the whole corpus formatted as a filtered page, with no",
-                  "// error anywhere. A 400 here is the feature, not a limitation.",
+                  "// Case 06's intent written WITHOUT the ?(...) filter. PostgreSQL runs it happily: `@?` is given a comparison, a comparison always yields an item, and `false` is an item - so it answers true for EVERY row and the caller receives the whole corpus formatted as a filtered page, with no error anywhere. A 400 here is the feature.",
                   "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
                   "",
                   "pm.test(\"refused as SCH_INVALID_JSONPATH\", () =>",
                   "    pm.expect(res.message.error.code).to.eql(\"SCH_INVALID_JSONPATH\"));",
                   "",
-                  "pm.test(\"the fault names the expression\", () =>",
-                  "    pm.expect(res.message.error.details.path)",
-                  "      .to.eql(\"$.message.intent.filters.expression\"));"
+                  "// The PATH and not only the code. Each of these codes is minted in more than",
+                  "// one place, so the code alone does not say which check fired - and a fault",
+                  "// pointing at the wrong member is one the caller cannot act on.",
+                  "pm.test(\"the fault names $.message.intent.filters.expression\", () =>",
+                  "    pm.expect(res.message.error.details.path).to.eql(\"$.message.intent.filters.expression\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "17 Refusal - an intent naming no criterion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/discover",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "discover"
+              ]
+            },
+            "description": "Expected to FAIL with 400. An empty page would be a plausible answer to a search that never ran.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000017\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000017\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {}\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "// None of textSearch, spatial or filters, and nothing further down objects: no criterion asks for no retrieval mode, no retriever runs, and the empty fusion ships as `catalogs: []` under a 200 - a page identical to the honest empty one, over a corpus that has all three resources. schemaContext is deliberately not a fourth criterion: it narrows a search, it cannot drive one.",
+                  "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+                  "",
+                  "pm.test(\"refused as SCH_INVALID_FORMAT\", () =>",
+                  "    pm.expect(res.message.error.code).to.eql(\"SCH_INVALID_FORMAT\"));",
+                  "",
+                  "// The PATH and not only the code. Each of these codes is minted in more than",
+                  "// one place, so the code alone does not say which check fired - and a fault",
+                  "// pointing at the wrong member is one the caller cannot act on.",
+                  "pm.test(\"the fault names $.message.intent\", () =>",
+                  "    pm.expect(res.message.error.details.path).to.eql(\"$.message.intent\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "18 Refusal - jsonpath PostgreSQL cannot parse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/discover",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "discover"
+              ]
+            },
+            "description": "Expected to FAIL with 400 rather than 500 - the dropped dot is the caller's to fix, and a 5xx asks them to retry it unchanged.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000018\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000018\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather advisory\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*]resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "",
+                  "// Case 06's filter with ONE character removed - the dot before `resources[*]`. The form gate passes it, because the root is right and the ?(...) is there and that is all that gate decides, and PostgreSQL then refuses the cast from INSIDE the search, where every other failure is the deployment's fault and a 500. The same code as 08: which side of the query noticed is not a distinction the caller can act on.",
+                  "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+                  "",
+                  "pm.test(\"refused as SCH_INVALID_JSONPATH\", () =>",
+                  "    pm.expect(res.message.error.code).to.eql(\"SCH_INVALID_JSONPATH\"));",
+                  "",
+                  "// The PATH and not only the code. Each of these codes is minted in more than",
+                  "// one place, so the code alone does not say which check fired - and a fault",
+                  "// pointing at the wrong member is one the caller cannot act on.",
+                  "pm.test(\"the fault names $.message.intent.filters.expression\", () =>",
+                  "    pm.expect(res.message.error.details.path).to.eql(\"$.message.intent.filters.expression\"));"
                 ]
               }
             }

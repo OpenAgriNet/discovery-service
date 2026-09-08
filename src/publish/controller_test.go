@@ -194,6 +194,23 @@ func TestTheLegacyParticipantFieldsAreAcceptedAndNotEchoed(t *testing.T) {
 	}
 }
 
+// A request that reaches the handler without the Envelope middleware ahead of
+// it is a wiring fault, not the caller's — nothing about the request is
+// trustworthy enough to echo, since the envelope is what carries the
+// messageId a NACK would otherwise correlate against.
+func TestAMissingEnvelopeMiddlewareIsAWiringFaultNotTheCallers(t *testing.T) {
+	controller := publish.NewController(newService(t, newRepo(), &recordingReplicator{}), config.Errors{})
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(
+		`{"context":{"action":"publish"},"message":{"catalogs":[{"id":"c1"}]}}`))
+	recorder := httptest.NewRecorder()
+	controller.Publish(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", recorder.Code, recorder.Body)
+	}
+}
+
 // A `message` this route cannot read is a transport failure, not a verdict.
 // There is no catalog to attach a REJECTED to, so a results array would have to
 // be empty — which reads as "nothing was sent".

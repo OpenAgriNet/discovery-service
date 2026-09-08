@@ -36,3 +36,25 @@ type SearchRepository interface {
 // config.Search, so a request over HTTP is turned away before a query runs.
 // This exists for the paths that do not come through the mapper.
 var ErrRetrievalDepth = errors.New("the requested page is past the retrieval depth")
+
+// ErrInvalidFilterExpression reports an attribute filter the store's own
+// expression parser refused.
+//
+// A sentinel for the same reason as ErrRetrievalDepth, and it lives here for
+// the same import-graph reason: tests/architecture forbids src/discover from
+// importing src/storage/postgres, so an error declared in the adapter is one
+// the request path can only report as a 500.
+//
+// It exists because the gate in front of the query is deliberately not a
+// parser. jsonpath.Accept moves the three shapes PostgreSQL answers WRONGLY
+// without complaining ahead of the query and leaves syntax to PostgreSQL,
+// which means a malformed expression is caught at the cast — inside the
+// search, where every other failure is the deployment's fault rather than the
+// caller's. Without this the two are indistinguishable and a dropped dot is a
+// 500 inviting the retry of a request that can never succeed.
+//
+// Its text is what the CALLER is told, so it names the field and says nothing
+// about PostgreSQL, the SQLSTATE or the operation that was running. Those
+// belong in the operator's log, which is why the backend wraps this rather
+// than replacing it.
+var ErrInvalidFilterExpression = errors.New("filters.expression is not a valid SQL/JSON path")

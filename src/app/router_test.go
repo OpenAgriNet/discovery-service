@@ -19,6 +19,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/discover"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/platform/middlewares"
 	"github.com/OpenAgriNet/discovery-service/src/platform/validation"
@@ -72,7 +73,7 @@ func testApp(t *testing.T, db Pinger, log *zap.Logger) *App {
 
 	cfg := config.Config{}
 	cfg.App.Network = "mahavistar"
-	cfg.Geo.ResolutionCells = 8
+	cfg.Geo.ResolutionCells = geo.DefaultTestResolution
 	cfg.Search.DefaultPageSize = 20
 	cfg.Search.MaxPageSize = 100
 	cfg.Search.MaxCandidatesPerMode = 500

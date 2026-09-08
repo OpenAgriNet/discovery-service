@@ -105,6 +105,13 @@ func TestANonCanonicalUUIDSpellingIsRefused(t *testing.T) {
 		"urn:uuid:2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11",
 		"{2f6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11}",
 		"2f6b3f7e4c1a4a5e9d3f6b1f0d2a7c11",
+		// The right LENGTH (36) with the wrong byte at a hyphen position —
+		// the other three fail the length check first and never reach this
+		// one.
+		"2f6b3f7e04c1a-4a5e-9d3f-6b1f0d2a7c11",
+		// The right length and hyphen positions, with a non-hex byte where a
+		// hex digit belongs.
+		"gf6b3f7e-4c1a-4a5e-9d3f-6b1f0d2a7c11",
 	} {
 		envelope := valid()
 		envelope.TransactionID = spelling

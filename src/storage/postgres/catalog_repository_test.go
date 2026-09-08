@@ -3,16 +3,11 @@ package postgres_test
 import (
 	"testing"
 
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/storage/conformance"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres"
 	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
 )
-
-// resolution is the H3 resolution these tests cover at — the same default
-// config carries (GEO_RESOLUTION_CELLS=8). Spelled here rather than read from
-// config, because a test that inherited the environment would cover at whatever
-// the machine running it happened to export.
-const resolution = 8
 
 // This test file lives beside the adapter rather than under tests/, and that is
 // forced rather than chosen: the import-graph guard bans tests/dbtest from
@@ -23,7 +18,7 @@ func postgresBackends(t *testing.T) conformance.Backends {
 
 	pool := dbtest.NewPostgres(t)
 	return conformance.Backends{
-		Catalogs: postgres.NewCatalogRepository(pool, resolution),
+		Catalogs: postgres.NewCatalogRepository(pool, geo.DefaultTestResolution),
 
 		// No embedder, which is what a Phase 1 deployment has (A5) and what
 		// keeps this side answerable by the same fixtures the memory backend
@@ -48,5 +43,5 @@ func TestPostgresSatisfiesThePublishConformanceSuite(t *testing.T) {
 // the same answer. Each pair agrees with itself by construction; only a fixture
 // run through both can say they agree with each other.
 func TestPostgresSatisfiesTheDiscoverConformanceSuite(t *testing.T) {
-	conformance.Run(t, postgresBackends, conformance.DiscoverCases(resolution))
+	conformance.Run(t, postgresBackends, conformance.DiscoverCases(geo.DefaultTestResolution))
 }

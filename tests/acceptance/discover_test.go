@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"net/http"
 	"slices"
 	"testing"
 
@@ -303,5 +304,34 @@ func TestOmittedNetworkIDSearchesEveryNetwork(t *testing.T) {
 	one := resourceIDs(svc.discoverOn(t, "mahavistar", spatial(dwithin(providerGeoPath, majestic, 5000))))
 	if !slices.Equal(one, []string{"r-mahavistar"}) {
 		t.Errorf("an intent scoped to mahavistar returned %v, want [r-mahavistar]", one)
+	}
+}
+
+// An intent naming no criterion is a 400, and the catalogue behind it is the
+// point: this corpus HAS resources, so the empty page it answered before was
+// never "your search matched nothing".
+//
+// The trap is that nothing further down objects. Each of textSearch, spatial
+// and filters is what asks for a retrieval mode, so an intent with none asks
+// for no modes, no retriever runs, the fusion is empty and the caller is served
+// `"catalogs": []` under a 200 — a page identical to the honest empty one, from
+// a search that never happened.
+func TestAnIntentWithNoCriterionIsRefusedRatherThanAnsweredEmpty(t *testing.T) {
+	svc := twoManufacturers(t)
+
+	response := svc.discoverResponse(t, map[string]any{})
+	if response.status != http.StatusBadRequest {
+		t.Fatalf("an intent with no criterion answered %d, want 400 — this corpus has "+
+			"resources, so an empty page here tells the caller their search matched "+
+			"nothing rather than that it was never run", response.status)
+	}
+
+	fault := response.nack(t).Message.Error
+	if fault.Code != beckn.CodeSchemaInvalidFormat {
+		t.Errorf("the refusal is %s, want %s", fault.Code, beckn.CodeSchemaInvalidFormat)
+	}
+	if fault.Details == nil || fault.Details.Path != "$.message.intent" {
+		t.Errorf("the refusal points at %+v, want $.message.intent — the intent as a "+
+			"whole is what is empty, not any one member of it", fault.Details)
 	}
 }

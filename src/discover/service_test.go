@@ -10,16 +10,18 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/discover"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
 )
-
-// indexResolution is the H3 resolution the memory backend covers with, matching
-// settings().Geo.ResolutionCells.
-const indexResolution = 8
 
 // stubRepo answers with whatever it was built to answer and records what it was
 // asked.
@@ -222,6 +224,53 @@ func TestNothingIsReportedDegradedWhenNothingIs(t *testing.T) {
 	}
 	if len(degraded) != 0 {
 		t.Errorf("degraded = %v, want none", degraded)
+	}
+}
+
+// negotiate's error message joins every missing mode, not just the first —
+// checked with two, since one mode alone cannot tell a Join from a bare
+// concatenation.
+func TestTwoUnavailableModesAreBothNamedInTheRefusal(t *testing.T) {
+	repo := &stubRepo{capabilities: domain.Capabilities{domain.CapabilityLexical: true, domain.CapabilityFuzzy: true}}
+
+	cfg := settings()
+	cfg.Search.FailOnUnavailableMode = true
+
+	_, _, err := discover.NewService(repo, cfg).Discover(
+		t.Context(), beckn.Context{},
+		beckn.Intent{TextSearch: "wheat", Filters: &beckn.Filters{
+			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
+		}},
+		discover.Page{})
+	if err == nil {
+		t.Fatal("two unavailable modes were served; the deployment asked to be told")
+	}
+	for _, mode := range []domain.Capability{domain.CapabilitySemantic, domain.CapabilityJSONPath} {
+		if !strings.Contains(err.Error(), string(mode)) {
+			t.Errorf("message = %q, want %q named", err.Error(), mode)
+		}
+	}
+}
+
+// Discover's own return value, not the header it becomes — checked with two
+// modes, since one alone cannot tell an ordered slice from any other shape.
+// TestTheDegradedHeaderJoinsMultipleModesWithACommaAndNoSpace (controller_test.go)
+// is what pins the header string itself, including its separator, which is
+// not the one negotiate's error message uses (", " there, "," in the header).
+func TestTwoDegradedModesAreBothReturned(t *testing.T) {
+	repo := &stubRepo{capabilities: domain.Capabilities{domain.CapabilityLexical: true, domain.CapabilityFuzzy: true}}
+
+	_, degraded, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{},
+		beckn.Intent{TextSearch: "wheat", Filters: &beckn.Filters{
+			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
+		}},
+		discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if !slices.Equal(degraded, []string{string(domain.CapabilitySemantic), string(domain.CapabilityJSONPath)}) {
+		t.Errorf("degraded = %v, want [semantic jsonpath] in modesFor's own order", degraded)
 	}
 }
 
@@ -454,7 +503,7 @@ func TestARenderedCatalogCarriesItsDocumentsVerbatim(t *testing.T) {
 // Two resources, one offer naming only the second. A search that matches only
 // the first must not carry it.
 func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
-	repo := memory.New(indexResolution)
+	repo := memory.New(geo.DefaultTestResolution)
 
 	if _, err := repo.UpsertCatalog(t.Context(), domain.CatalogPatch{
 		ID:        "c1",
@@ -516,5 +565,189 @@ func TestAContextFaultIsNotReportedAsASchemaOne(t *testing.T) {
 	}
 	if got := apperrors.FromError(err).Type(); got != apperrors.TypeContext {
 		t.Errorf("error_type = %q, want CONTEXT", got)
+	}
+}
+
+// modesFor's other half: a spatial constraint alone, with no textSearch, still
+// asks the backend for the spatial mode. TestAModeTheBackendLacksIsNamedRatherThanDropped
+// pins the text half; this pins the branch that reads the constraint's
+// presence rather than the query having any text at all.
+func TestASpatialOnlyIntentAsksForTheSpatialMode(t *testing.T) {
+	repo := &stubRepo{capabilities: everything()}
+
+	_, _, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{},
+		spatialIntent(within(`$.catalogs[*].provider.availableAt[*].geo`)),
+		discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if !hasMode(repo.gotModes, domain.CapabilitySpatial) {
+		t.Errorf("modes = %v, want spatial asked for", repo.gotModes)
+	}
+	if hasMode(repo.gotModes, domain.CapabilityLexical) {
+		t.Errorf("modes = %v, want no text mode — the intent carried no textSearch", repo.gotModes)
+	}
+}
+
+// A catalog document that will not decode is dropped from the response rather
+// than half-rendered — renderOffers' reasoning applies here too: the row is
+// only reachable if this service never wrote it, and its shape is not one to
+// guess at.
+func TestACatalogWithAnUnreadableDocumentIsDropped(t *testing.T) {
+	repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Catalogs: []domain.Catalog{{
+		ID:       "c1",
+		Document: json.RawMessage(`not json`),
+	}}}}
+
+	catalogs, _, err := discover.NewService(repo, settings()).
+		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(catalogs) != 0 {
+		t.Errorf("catalogs = %+v, want none", catalogs)
+	}
+}
+
+// A resource whose document will not decode is dropped from its catalog,
+// which still renders with the ones that do.
+func TestAResourceWithAnUnreadableDocumentIsDropped(t *testing.T) {
+	repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Catalogs: []domain.Catalog{{
+		ID:       "c1",
+		Document: json.RawMessage(`{"id":"c1"}`),
+		Resources: []domain.Resource{
+			{ID: "r1", CatalogID: "c1", Document: json.RawMessage(`not json`)},
+			{ID: "r2", CatalogID: "c1", Document: json.RawMessage(`{"id":"r2"}`)},
+		},
+	}}}}
+
+	catalogs, _, err := discover.NewService(repo, settings()).
+		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(catalogs) != 1 || len(catalogs[0].Resources) != 1 || catalogs[0].Resources[0].ID != "r2" {
+		t.Fatalf("resources = %+v, want only r2 — r1's document could not be read", catalogs[0].Resources)
+	}
+}
+
+// An offer whose document will not decode is dropped the same way.
+func TestAnOfferWithAnUnreadableDocumentIsDropped(t *testing.T) {
+	repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Catalogs: []domain.Catalog{{
+		ID:       "c1",
+		Document: json.RawMessage(`{"id":"c1"}`),
+		Offers: []domain.Offer{
+			{ID: "o1", CatalogID: "c1", Document: json.RawMessage(`not json`)},
+			{ID: "o2", CatalogID: "c1", Document: json.RawMessage(`{"id":"o2"}`)},
+		},
+	}}}}
+
+	catalogs, _, err := discover.NewService(repo, settings()).
+		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(catalogs) != 1 || len(catalogs[0].Offers) != 1 || catalogs[0].Offers[0].ID != "o2" {
+		t.Fatalf("offers = %+v, want only o2 — o1's document could not be read", catalogs[0].Offers)
+	}
+}
+
+// typed's SCH_INVALID_JSONPATH arm, reached end to end through refusal rather
+// than pinned only at the mapper (TestUnrecognisedTargetsAreRefusedRatherThanWidened).
+func TestAnUnrecognisedTargetsExpressionAnswersInvalidJSONPath(t *testing.T) {
+	repo := &stubRepo{capabilities: everything()}
+
+	_, _, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{},
+		spatialIntent(within(`$..geo`)),
+		discover.Page{})
+	if err == nil {
+		t.Fatal("an unrecognised targets expression was answered; want SCH_INVALID_JSONPATH")
+	}
+	if got := codeOf(t, err); got != beckn.CodeSchemaInvalidJSONPath {
+		t.Errorf("code = %q, want SCH_INVALID_JSONPATH", got)
+	}
+}
+
+// reportPartials is discover.Service's own concern: it logs rather than
+// refusing, since OnDiscoverAction's schema leaves nowhere to put a per-field
+// warning (C11's header names retrieval modes, not fields).
+func TestAPartialFaultIsLoggedRatherThanRefusing(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.NewContext(t.Context(), zap.New(core))
+
+	distance := 500.0
+	repo := &stubRepo{capabilities: everything()}
+
+	_, _, err := discover.NewService(repo, settings()).Discover(
+		ctx, beckn.Context{},
+		spatialIntent(beckn.SpatialConstraint{
+			Op:             beckn.OpSIntersects,
+			Targets:        beckn.Targets{`$.catalogs[*].provider.availableAt[*].geo`},
+			Geometry:       bengaluru(),
+			DistanceMeters: &distance,
+		}),
+		discover.Page{})
+	if err != nil {
+		t.Fatalf("a partial fault refused the request: %v", err)
+	}
+
+	entries := logs.FilterMessage("part of the intent was not applied").All()
+	if len(entries) != 1 {
+		t.Fatalf("logged %d entries, want exactly one", len(entries))
+	}
+	if reason := fmt.Sprint(entries[0].ContextMap()["reason"]); !strings.Contains(reason, "distanceMeters") {
+		t.Errorf("reason = %q, want it to name the ignored field", reason)
+	}
+}
+
+// A malformed filter expression is the caller's mistake, not this service's.
+//
+// The gate in front of the query moves the three shapes PostgreSQL answers
+// WRONGLY without complaining ahead of it, and deliberately does not own a
+// jsonpath parser: syntax stays PostgreSQL's last word. So the cast is where a
+// malformed expression is caught, and the whole question is what the caller is
+// then told. A 500 says this service is broken and invites the retry of a
+// request that cannot ever succeed.
+//
+// The wrapping is what the backend really produces — `filterOnly` names the
+// operation it was running — and none of it may reach the body. The message is
+// the sentinel's own text, not the chain's.
+func TestAMalformedFilterExpressionIsTheCallersFaultNotAFiveHundred(t *testing.T) {
+	repo := &stubRepo{
+		capabilities: everything(),
+		err: fmt.Errorf("run the candidate retrieval: %w: syntax error at end of jsonpath input",
+			domain.ErrInvalidFilterExpression),
+	}
+
+	intent := beckn.Intent{Filters: &beckn.Filters{
+		Type:       "jsonpath",
+		Expression: `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`,
+	}}
+
+	_, _, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{}, intent, discover.Page{})
+	if err == nil {
+		t.Fatal("a malformed expression answered 200; want a refusal naming the field")
+	}
+
+	fault := apperrors.FromError(err)
+	if fault.Code != beckn.CodeSchemaInvalidJSONPath {
+		t.Errorf("code = %q, want SCH_INVALID_JSONPATH — the same code the gate mints "+
+			"for an expression it refuses itself, because which of the two caught "+
+			"the caller is not the caller's business", fault.Code)
+	}
+	if fault.Status() != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: the expression is unanswerable, the service "+
+			"is not broken", fault.Status())
+	}
+	if want := "$.message.intent.filters.expression"; fault.Path != want {
+		t.Errorf("path = %q, want %q", fault.Path, want)
+	}
+	if want := domain.ErrInvalidFilterExpression.Error(); fault.Message != want {
+		t.Errorf("message = %q, want exactly %q — the backend's wrapping names the "+
+			"operation it was running, and `run the candidate retrieval` is an "+
+			"internal that must not reach the caller", fault.Message, want)
 	}
 }

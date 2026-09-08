@@ -8,6 +8,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/beckn"
 	"github.com/OpenAgriNet/discovery-service/src/discover"
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
@@ -20,7 +21,7 @@ func settings() config.Config {
 			MaxCandidatesPerMode: 500,
 			MaxRadiusMeters:      200000,
 		},
-		Geo: config.Geo{ResolutionCells: 8},
+		Geo: config.Geo{ResolutionCells: geo.DefaultTestResolution},
 	}
 }
 
@@ -238,7 +239,7 @@ func TestSchemaContextSplitsOnTheFirstHash(t *testing.T) {
 		"https://beckn.org/Agri#Seed#Lot",
 	}}
 
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, envelope, discover.Page{}, settings())
+	query, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, envelope, discover.Page{}, settings())
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none", codesOf(fatal))
 	}
@@ -266,7 +267,7 @@ func TestSchemaContextSplitsOnTheFirstHash(t *testing.T) {
 func TestASchemaContextEntryWithNoBaseFaultsAndIsDropped(t *testing.T) {
 	envelope := beckn.Context{SchemaContext: []string{"#SeedLot", "https://beckn.org/Agri#SeedLot"}}
 
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, envelope, discover.Page{}, settings())
+	query, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, envelope, discover.Page{}, settings())
 	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeContextInvalidField) {
 		t.Fatalf("fatal = %s, want one CTX_INVALID_FIELD", codesOf(fatal))
 	}
@@ -278,7 +279,7 @@ func TestASchemaContextEntryWithNoBaseFaultsAndIsDropped(t *testing.T) {
 // An absent schemaContext is no predicate at all, not a predicate matching
 // nothing. A non-nil empty slice here is the bug that empties every response.
 func TestAnAbsentSchemaContextEmitsNoPredicate(t *testing.T) {
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+	query, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, settings())
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none", codesOf(fatal))
 	}
@@ -297,12 +298,12 @@ func TestAnAbsentSchemaContextEmitsNoPredicate(t *testing.T) {
 func TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused(t *testing.T) {
 	cfg := settings()
 
-	unset, _, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{}, cfg)
+	unset, _, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, cfg)
 	if unset.Limit != cfg.Search.DefaultPageSize {
 		t.Errorf("Limit = %d, want the default %d", unset.Limit, cfg.Search.DefaultPageSize)
 	}
 
-	clamped, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{Limit: 5000}, cfg)
+	clamped, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{Limit: 5000}, cfg)
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none — an over-large limit is clamped", codesOf(fatal))
 	}
@@ -311,7 +312,7 @@ func TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused(t *testing.T) {
 	}
 
 	deep := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode}
-	_, fatal, _ = discover.MapIntent(beckn.Intent{}, beckn.Context{}, deep, cfg)
+	_, fatal, _ = discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, deep, cfg)
 	if len(fatal) != 1 {
 		t.Fatalf("fatal = %s, want exactly one", codesOf(fatal))
 	}
@@ -329,5 +330,309 @@ func TestTheMapperLeavesNetworkScopingToTheService(t *testing.T) {
 	query, _, _ := discover.MapIntent(beckn.Intent{}, envelope, discover.Page{}, settings())
 	if query.NetworkID != "" {
 		t.Errorf("NetworkID = %q, want empty", query.NetworkID)
+	}
+}
+
+// A negative offset reads as the first page rather than as a caller error:
+// unlike an unreadable page (C11's neighbour above), a negative number is not
+// ambiguous about what the caller meant.
+func TestANegativeOffsetIsClampedToZero(t *testing.T) {
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{Offset: -5}, settings())
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if query.Offset != 0 {
+		t.Errorf("Offset = %d, want 0", query.Offset)
+	}
+}
+
+// A10 answers exactly one spatial constraint. A second one is refused rather
+// than ANDed or ORed, because the spec leaves undefined which of the two this
+// service would silently have picked.
+func TestMoreThanOneSpatialConstraintIsRefused(t *testing.T) {
+	target := `$.catalogs[*].provider.availableAt[*].geo`
+	intent := beckn.Intent{Spatial: []beckn.SpatialConstraint{within(target), within(target)}}
+
+	_, fatal, _ := discover.MapIntent(intent, beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaTypeNotSupported) {
+		t.Fatalf("fatal = %s, want one SCH_TYPE_NOT_SUPPORTED", codesOf(fatal))
+	}
+}
+
+// An operator that is neither answerable nor one of the two named
+// unapproximable ones (S_TOUCHES/S_CROSSES) is unknown outright — a typo, not a
+// future capability.
+func TestAnUnknownSpatialOperatorIsRefused(t *testing.T) {
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Op = "S_NEAR"
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+	if !strings.Contains(fatal[0].Message, "S_NEAR") {
+		t.Errorf("Message = %q, want it to name the operator", fatal[0].Message)
+	}
+}
+
+// No geometry at all is refused with the same code an unreadable one is, since
+// both leave the constraint with nothing to cover against.
+func TestAMissingGeometryIsRefused(t *testing.T) {
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Geometry = nil
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+}
+
+// A geometry of a recognised type whose coordinates cannot be read at all —
+// not merely wrong, but not JSON — is refused rather than passed through to a
+// backend that will fail on it far from the caller who sent it.
+func TestAGeometryThatCannotBeReadIsRefused(t *testing.T) {
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Geometry = &beckn.GeoJSONGeometry{
+		Type:        beckn.GeometryPoint,
+		Coordinates: json.RawMessage(`{not valid`),
+	}
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+	if !strings.Contains(fatal[0].Message, "cannot be read") {
+		t.Errorf("Message = %q, want it to say the geometry could not be read", fatal[0].Message)
+	}
+}
+
+// f64 turns a literal into the pointer beckn.SpatialConstraint.DistanceMeters
+// needs, so a test can state "zero" and "unset" as two different values.
+func f64(v float64) *float64 { return &v }
+
+// S_DWITHIN needs a positive radius. Unset and non-positive are the same
+// refusal, because both leave the operator with no radius to search.
+func TestSDWithinNeedsAPositiveDistance(t *testing.T) {
+	for _, distance := range []*float64{nil, f64(0), f64(-5)} {
+		constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+		constraint.Op = beckn.OpSDWithin
+		constraint.DistanceMeters = distance
+
+		_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+		if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+			t.Fatalf("distance %v: fatal = %s, want one SCH_INVALID_FORMAT", distance, codesOf(fatal))
+		}
+	}
+}
+
+// The success path S_DWITHIN exists for: a radius that survives to the query,
+// and — Point-to-Point being the one case the exact haversine refinement
+// applies to — a Center for coverConstraint to hand the repository.
+func TestSDWithinSetsTheRadiusAndCenterForAPoint(t *testing.T) {
+	distance := 5000.0
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Op = beckn.OpSDWithin
+	constraint.DistanceMeters = &distance
+
+	query, fatal, partial := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if len(partial) != 0 {
+		t.Errorf("partial = %s, want none — distanceMeters is exactly what S_DWITHIN uses", codesOf(partial))
+	}
+	if query.Spatial == nil || query.Spatial.RadiusM != distance {
+		t.Fatalf("Spatial = %+v, want RadiusM %g", query.Spatial, distance)
+	}
+	if query.Spatial.Center == nil || query.Spatial.Center.Lon != 77.5946 || query.Spatial.Center.Lat != 12.9716 {
+		t.Errorf("Center = %+v, want the query point", query.Spatial.Center)
+	}
+}
+
+// No targets at all means every geometry, the same widened answer an
+// unrecognised one is refused for — the difference is that this one was never
+// sent, rather than sent and unreadable.
+func TestNoTargetsMeansEveryGeometry(t *testing.T) {
+	constraint := beckn.SpatialConstraint{Op: beckn.OpSIntersects, Geometry: bengaluru()}
+
+	query, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if len(query.TargetPaths) != 0 {
+		t.Errorf("TargetPaths = %v, want none", query.TargetPaths)
+	}
+}
+
+// validateConstraint's own claim — "reports all of them rather than the
+// first" — checked as a combination rather than one field at a time: four
+// independent faults from one constraint, not the first one short-circuiting
+// the rest.
+func TestValidateConstraintReportsEveryFaultNotJustTheFirst(t *testing.T) {
+	constraint := beckn.SpatialConstraint{
+		Op:         "S_NEAR",
+		SRID:       "EPSG:3857",
+		Quantifier: "SOME",
+		Targets:    beckn.Targets{`$.catalogs[*].provider.availableAt[*].geo`},
+		// Geometry left nil — a fourth, independent fault.
+	}
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, settings())
+	if len(fatal) != 4 {
+		t.Fatalf("fatal = %s, want 4 — one per bad field, not just the first", codesOf(fatal))
+	}
+
+	const at = "$['message']['intent']['spatial'][0]"
+	wantPaths := []string{at + "['op']", at + "['srid']", at + "['quantifier']", at + "['geometry']"}
+	for i, fault := range fatal {
+		if fault.Code != string(beckn.CodeSchemaInvalidFormat) {
+			t.Errorf("fault %d: code = %q, want %q", i, fault.Code, beckn.CodeSchemaInvalidFormat)
+		}
+		if fault.Path != wantPaths[i] {
+			t.Errorf("fault %d: path = %q, want %q — a count of 4 the wrong shape would also "+
+				"pass this test without checking which fields actually faulted", i, fault.Path, wantPaths[i])
+		}
+	}
+}
+
+// mapPage's own boundary: `>` refuses, so a page landing EXACTLY on the
+// retrieval depth must be answered, not refused. TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused
+// only asserts the over side of this line.
+func TestAPageExactlyAtTheRetrievalDepthIsNotRefused(t *testing.T) {
+	cfg := settings()
+	page := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode - 100}
+
+	_, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, page, cfg)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none — offset+limit lands exactly on the depth, not past it", codesOf(fatal))
+	}
+}
+
+// validateDistance's own boundary: `>` refuses, so a radius EXACTLY at the
+// ceiling must be answered. TestARadiusOverTheCeilingIsRefused only asserts
+// the value one metre past it.
+func TestARadiusExactlyAtTheCeilingIsNotRefused(t *testing.T) {
+	cfg := settings()
+	atCeiling := float64(cfg.Search.MaxRadiusMeters)
+	constraint := within(`$.catalogs[*].provider.availableAt[*].geo`)
+	constraint.Op = beckn.OpSDWithin
+	constraint.DistanceMeters = &atCeiling
+
+	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, cfg)
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none — the ceiling itself is answerable", codesOf(fatal))
+	}
+}
+
+// An intent that names no retrieval criterion is refused rather than answered.
+//
+// Nothing downstream can rescue it: modesFor asks for a mode per criterion, so
+// an intent with none asks for no modes, the repository fuses no lists, and the
+// caller receives `"catalogs": []` with a 200. That page is indistinguishable
+// from a search that ran and matched nothing — and only one of the two is an
+// answer, which is the same reason every other branch of this mapper refuses
+// rather than widens.
+func TestAnIntentWithNoRetrievalCriterionIsRefused(t *testing.T) {
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one — an intent with nothing to search on", codesOf(fatal))
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+	if want := "$['message']['intent']"; fatal[0].Path != want {
+		t.Errorf("path = %q, want %q — the intent as a whole is what is empty, "+
+			"not any one member of it", fatal[0].Path, want)
+	}
+}
+
+// schemaContext is not one of the three, and this is the case that says so.
+//
+// It narrows a search and cannot drive one: it contributes a WHERE clause, not
+// a retriever, so an intent carrying only it reaches the same no-modes dead end
+// as a bare one and answers an empty page while reporting success. Refused for
+// that reason and not because schemaContext is unwelcome — sent beside a
+// textSearch it does exactly what it says.
+func TestASchemaContextAloneIsNotARetrievalCriterion(t *testing.T) {
+	envelope := beckn.Context{SchemaContext: []string{"https://beckn.org/Agri#SeedLot"}}
+
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{}, envelope, discover.Page{}, settings())
+
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+	if len(query.Schemas) != 1 {
+		t.Errorf("Schemas = %v, want the entry still mapped — the refusal is about "+
+			"what is MISSING, so it must not also drop what was sent", query.Schemas)
+	}
+}
+
+// The complement, and the half that keeps the rule from becoming a wall: each
+// of the three on its own is a complete request.
+//
+// Read off the raw intent rather than the mapped query, which is what lets a
+// filter that is refused for its own reasons — an unindexable expression with
+// nothing to narrow it — report that reason instead of "you sent no criteria",
+// a sentence that would be false.
+func TestAnyOneOfTheThreeCriteriaIsEnough(t *testing.T) {
+	filter := &beckn.Filters{
+		Type:       "jsonpath",
+		Expression: `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`,
+	}
+
+	cases := map[string]beckn.Intent{
+		"textSearch": {TextSearch: "wheat"},
+		"spatial":    spatialIntent(within(`$.catalogs[*].provider.availableAt[*].geo`)),
+		"filters":    {Filters: filter},
+	}
+
+	for name, intent := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, fatal, _ := discover.MapIntent(intent, beckn.Context{}, discover.Page{}, settings())
+			if len(fatal) != 0 {
+				t.Errorf("%s alone faulted: %s", name, codesOf(fatal))
+			}
+		})
+	}
+}
+
+// Whitespace is not a criterion, and the trim is what makes that true.
+//
+// `"   "` is not empty, so an untrimmed guard admits it — and then modesFor,
+// which reads the mapped text, sees nothing to search on and asks for no mode
+// at all. That is the SAME dead end TestAnIntentWithNoRetrievalCriterionIsRefused
+// closes, reached by a caller who pressed the space bar, and it would answer
+// the same plausible empty page under a 200.
+func TestAWhitespaceOnlyTextSearchIsNotARetrievalCriterion(t *testing.T) {
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: " \t "}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one — whitespace asks for no retrieval mode", codesOf(fatal))
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+}
+
+// The complement: a real term keeps its meaning and loses its padding.
+//
+// The trim reaches the QUERY and not only the guard. Two spellings of one
+// search that differ by a leading space are one search — they must ask the
+// same tsquery and score the same trigram similarity, which is a property the
+// guard alone would not give them.
+func TestTheMappedTextIsTrimmed(t *testing.T) {
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: "  wheat seed\n"}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if want := "wheat seed"; query.Text != want {
+		t.Errorf("Text = %q, want %q", query.Text, want)
 	}
 }

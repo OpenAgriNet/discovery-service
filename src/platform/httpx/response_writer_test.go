@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -299,6 +300,46 @@ func TestNoPackageOutsideHttpxAssemblesANack(t *testing.T) {
 	sort.Strings(offenders)
 	for _, path := range offenders {
 		t.Errorf("%s assembles a Nack; WriteNack is the only place that may", path)
+	}
+}
+
+// FromError only returns nil for a nil error, and no call site in this
+// service ever hands WriteNack one — but the function has no precondition
+// forbidding it, so it must default rather than panic on a nil *AppError.
+func TestWriteNackWithANilErrorDefaultsToInternal(t *testing.T) {
+	recorded := writeNack(t, config.Errors{}, nil)
+
+	if recorded.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", recorded.Code)
+	}
+	if got := errorObject(t, recorded.Body.Bytes())["code"]; got != string(beckn.CodeNetworkInternalError) {
+		t.Errorf("code = %v, want %q", got, beckn.CodeNetworkInternalError)
+	}
+}
+
+// brokenWriter fails every Write, the way a caller who hung up mid-response
+// would — WriteJSON has already sent the status line by the time this fires,
+// so there is no second response to send and the failure is the log's alone.
+type brokenWriter struct {
+	http.ResponseWriter
+}
+
+func (brokenWriter) Write([]byte) (int, error) {
+	return 0, errors.New("connection reset by peer")
+}
+
+func TestWriteJSONLogsRatherThanFailsWhenTheWriteItselfFails(t *testing.T) {
+	core, recorded := observer.New(zapcore.DebugLevel)
+	ctx := loggerContext(zap.New(core))
+
+	err := WriteJSON(ctx, brokenWriter{httptest.NewRecorder()}, http.StatusOK, map[string]string{"ok": "ok"})
+	if err != nil {
+		t.Errorf("WriteJSON returned %v, want nil — the status line already went out", err)
+	}
+
+	entries := recorded.FilterMessage("write response body").All()
+	if len(entries) != 1 {
+		t.Fatalf("logged %d entries for the failed write, want exactly one", len(entries))
 	}
 }
 

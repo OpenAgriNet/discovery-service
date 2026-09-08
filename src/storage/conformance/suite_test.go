@@ -5,21 +5,16 @@ import (
 	"testing"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/storage/conformance"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
 )
-
-// resolution is the H3 resolution these fixtures cover at, and it must be the
-// one the Postgres suite uses: the conformance cases compare the two backends'
-// answers to the same spatial query, and two backends covering at different
-// resolutions produce cell sets that never intersect.
-const resolution = 8
 
 // memoryBackends is what every backend's own suite supplies: a factory, not an
 // instance, so each case starts from an empty store and a case that leaves
 // state behind cannot decide the next one.
 func memoryBackends(*testing.T) conformance.Backends {
-	store := memory.New(resolution)
+	store := memory.New(geo.DefaultTestResolution)
 	return conformance.Backends{Catalogs: store, Search: store}
 }
 

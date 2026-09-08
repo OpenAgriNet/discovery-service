@@ -1,74 +1,219 @@
 name: CI
 
+# Two checks and no more: "End to End verification" and "Security Scan".
+#
+# The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
+# job whose `if:` is false still posts a *skipped* check, and its `name:` is
+# reported with `${{ matrix.* }}` unexpanded because the matrix leg never
+# materialised — so gating them inline would put two permanently skipped
+# checks reading "Build Artifact (${{ matrix.arch }})" on every PR. A separate
+# workflow with a tag-only trigger simply does not exist on a PR. That file is
+# also named `CI`, so its check names still read "CI / Build Artifact (amd64)".
+#
+# Every step below is either a one-line `make` call or GitHub plumbing — a
+# `${{ }}` expression, a $GITHUB_STEP_SUMMARY write, a `uses:` action. The
+# build, test, lint and scan logic lives in the Makefile, so a red check
+# reproduces locally by running the exact command the log shows.
+
+# Pull requests only. main moves solely by merging a PR, and that PR was
+# already verified by this same workflow at its merge commit — re-running the
+# identical checks on the push that lands it answers a question that was asked
+# and answered minutes earlier. A tag push is handled by ci-release.yml.
 on:
-  push:
-    branches: [main]
   pull_request:
 
+# Least privilege at the workflow level; the jobs that need more declare it
+# for themselves.
 permissions:
   contents: read
 
+# A new commit on a PR makes the previous commit's runs worthless, so they are
+# cancelled rather than left to finish. github.ref is refs/pull/<n>/merge for a
+# pull_request event, so every push to the PR's head branch lands in the same
+# group and supersedes the run before it.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Pinned rather than inherited: production defaults to noop (A5), and without
-  # this the whole semantic path would go untested from the day semantic search
-  # was deferred.
-  EMBEDDING_PROVIDER: hashing
-
 jobs:
-  lint:
+  verify:
+    name: End to End verification
     runs-on: ubuntu-latest
+    # pull-requests: write is for the coverage comment below.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
+      # fetch-depth: 0 — cover-diff needs the base branch's history locally to
+      # compute the changed-file set; a PR checkout otherwise holds only the
+      # head commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          # A glob, not a list: the service module has no dependencies yet, so
-          # a literal go.sum path would fail to resolve and disable the cache.
+          # A glob, not a list: tools/ is a second module, and a literal
+          # go.sum path would miss it and half-disable the cache.
           cache-dependency-path: "**/go.sum"
-      - run: make lint
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          # A glob, not a list: the service module has no dependencies yet, so
-          # a literal go.sum path would fail to resolve and disable the cache.
-          cache-dependency-path: "**/go.sum"
+      # A real gate, not advisory. CLAUDE.md's three gates are build, lint and
+      # test, and all three are clean on this tree — a check that cannot fail
+      # is noise in the checks list, so the previous `continue-on-error` lint
+      # job is folded in here as a step that actually blocks.
       - run: make build
-      - run: make test
+      - run: make lint
+      - run: make test-ci
 
-  security:
+      # Diff-scoped, never whole-repo: the PR's own diff is the gate that
+      # matters, and the repo's existing coverage is not something this PR can
+      # be asked to answer for. The base is the PR's target branch.
+      #
+      # BASE_REF goes through env:, not string-interpolated into the run
+      # script: `?=` in the Makefile means the environment wins, and nothing
+      # from the event payload ends up inside a shell command.
+      #
+      # continue-on-error so a coverage miss still posts its report; the last
+      # step in the job turns that outcome back into a failure.
+      - name: Check coverage of changed files
+        id: coverage
+        continue-on-error: true
+        env:
+          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+        run: make cover-diff
+
+      # cover-diff writes coverage-report.md on every exit path, including its
+      # own error paths, so this needs no existence guard and no fallback text.
+      - name: Post the result to the job summary
+        run: cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Always posted — pass, fail or not-applicable. A comment that only shows
+      # up on failure is ambiguous from the PR itself: did coverage run at all,
+      # pass, or never trigger? Updated in place across runs via find-comment,
+      # which matches the marker cover-diff writes into the report.
+      #
+      # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
+      # read-only, so create-or-update-comment 403s there even with
+      # pull-requests: write declared. Coverage is already gated below; a
+      # comment that cannot post must never fail the job over that.
+      - name: Find the existing coverage comment
+        continue-on-error: true
+        uses: peter-evans/find-comment@v4
+        id: find-coverage-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- coverage-report -->"
+
+      - name: Post the result to the PR
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ steps.find-coverage-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: coverage-report.md
+          edit-mode: replace
+
+      # Turns the continue-on-error above back into a job failure. cover-diff
+      # already emitted the ::error:: annotation and the per-file breakdown, so
+      # there is nothing to say here beyond the exit code.
+      - name: Gate on minimum coverage
+        if: steps.coverage.outcome == 'failure'
+        run: exit 1
+
+  security-scan:
+    name: Security Scan
     runs-on: ubuntu-latest
+    # Both scans in one job, one check. They were two jobs plus a gate job, and
+    # three red-or-green checks to answer one question — "is this branch
+    # shippable" — was more to read than it was worth. The dependency scan
+    # needs only a checkout, so it runs first and its findings are in the log
+    # before the image has finished building.
+    #
+    # pull-requests: write is the PR comment. No security-events: write — the
+    # SARIF upload is gone, see below.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/trivy-cache
+
+      # Fork PRs get an empty string for every secrets.* reference, so the
+      # image half of this job cannot run there: the Dockerfile's base images
+      # are dhi.io/*, which 401 on an anonymous pull.
+      #
+      # Exported once, into the environment, so it does double duty — it gates
+      # the three image steps below AND the Makefile reads it to narrow
+      # SARIF_REPORTS. One name, one meaning: the comment and the gate cannot
+      # end up disagreeing about whether an image report was ever expected.
+      - name: Decide whether the image can be scanned
+        run: echo "SCAN_IMAGE=${{ github.event.pull_request.head.repo.full_name == github.repository }}" >> "$GITHUB_ENV"
+
+      # Catches what the image scan structurally cannot: a vulnerable module
+      # only the test suite imports, so it is never linked into the binary and
+      # never appears in a layer. The first real finding here was exactly that
+      # shape — github.com/moby/go-archive, pulled in by testcontainers.
+      - run: make trivy-deps
+
+      # And the reverse. Trivy reads the image's base layers plus the Go build
+      # info embedded in the binary, including `stdlib`, so a Go toolchain CVE
+      # shows up here and nowhere the dependency scan can see: measured, a
+      # go.mod declaring `go 1.21.0` reports zero, and the same CVEs appear as
+      # `stdlib` once the compiled binary is scanned. Hence both.
+      - name: Log in to dhi.io
+        if: env.SCAN_IMAGE == 'true'
+        uses: ./.github/actions/dhi-login
         with:
-          go-version-file: go.mod
-          # A glob, not a list: the service module has no dependencies yet, so
-          # a literal go.sum path would fail to resolve and disable the cache.
-          cache-dependency-path: "**/go.sum"
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # T4, half one: known vulnerabilities in the Go dependency graph.
-      - name: govulncheck
-        run: make security
+      - name: Build the image
+        if: env.SCAN_IMAGE == 'true'
+        run: make docker IMAGE=discovery-service:${{ github.sha }}
 
-      # T4, half two: the shipped image. The scan is of the image and not of
-      # go.sum so that the toolchain pinned in tools/go.mod — which is never
-      # linked into the binary — cannot fail a release it does not ship in.
-      - name: Build image
-        run: docker build -t discovery-service:${{ github.sha }} .
+      - name: Scan the image
+        if: env.SCAN_IMAGE == 'true'
+        run: make trivy-image IMAGE=discovery-service:${{ github.sha }}
 
-      - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+      # No upload-sarif here, on purpose. github/codeql-action/upload-sarif
+      # posts its own check, "Code scanning results / Trivy", which is not a
+      # job and so cannot be renamed or suppressed — a third check on every PR,
+      # and one that can report the opposite of the gate: it goes green with
+      # "No new alerts in code change" whenever the findings are not new to the
+      # diff, while make trivy-gate fails on the same SARIF. Two checks
+      # disagreeing about one scan is worse than one check, and the gate is the
+      # one that is right. The cost is no Security-tab history for Trivy; the
+      # PR comment below and the gate are the surface instead.
+
+      # One comment covering both scans, rendered from the SARIF already
+      # written — no third and fourth scan.
+      - name: Assemble the PR comment
+        continue-on-error: true
+        run: make trivy-report
+
+      - name: Find the existing scan comment
+        continue-on-error: true
+        uses: peter-evans/find-comment@v4
+        id: find-scan-comment
         with:
-          image-ref: discovery-service:${{ github.sha }}
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          format: table
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- sec-scan -->"
+
+      - name: Post the scan report to the PR
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ steps.find-scan-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: trivy-report.md
+          edit-mode: replace
+
+      # The gate, last: it reads the reports and fails on any in-band finding
+      # or on a report that never got written, so the comment is on the PR
+      # before the check goes red. On a fork SCAN_IMAGE=false has already
+      # narrowed it to the dependency report, so a missing image report is
+      # still a hard failure everywhere it was actually expected.
+      - name: Gate on the findings
+        run: make trivy-gate

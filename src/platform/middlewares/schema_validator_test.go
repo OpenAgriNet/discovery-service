@@ -238,6 +238,28 @@ func TestAWellFormedRequestReachesTheController(t *testing.T) {
 	}
 }
 
+// A chain assembled without Envelope above SchemaValidator has no envelope
+// and no buffered body to check anything against — letting the request past
+// would disable L1 and C6 at once and answer 200 while doing it, so this is a
+// panic (which Recover, mounted above both in the real chain, turns into a
+// logged 500) rather than a silent pass-through.
+func TestSchemaValidatorWithoutEnvelopeAbovePanics(t *testing.T) {
+	handler := SchemaValidator(config.Errors{}, l1Off(), pinnedIndex(t))(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("the controller ran despite no envelope being mounted")
+		}))
+
+	defer func() {
+		if recovered := recover(); recovered != notMounted {
+			t.Errorf("recovered %v, want the panic to be %q", recovered, notMounted)
+		}
+	}()
+
+	request := httptest.NewRequest(http.MethodPost, "/publish", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(logger.NewContext(request.Context(), zap.NewNop())))
+	t.Fatal("SchemaValidator did not panic with Envelope missing above it")
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
