@@ -336,7 +336,8 @@ func TestTheMapperLeavesNetworkScopingToTheService(t *testing.T) {
 // unlike an unreadable page (C11's neighbour above), a negative number is not
 // ambiguous about what the caller meant.
 func TestANegativeOffsetIsClampedToZero(t *testing.T) {
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{Offset: -5}, settings())
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{Offset: -5}, settings())
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none", codesOf(fatal))
 	}
@@ -489,7 +490,7 @@ func TestAPageExactlyAtTheRetrievalDepthIsNotRefused(t *testing.T) {
 	cfg := settings()
 	page := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode - 100}
 
-	_, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, page, cfg)
+	_, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, page, cfg)
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none — offset+limit lands exactly on the depth, not past it", codesOf(fatal))
 	}
