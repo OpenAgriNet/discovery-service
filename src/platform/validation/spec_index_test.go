@@ -126,34 +126,39 @@ func TestADocumentMissingAServedPathFailsToCompile(t *testing.T) {
 	}
 }
 
-// discoverRequestBodyBlock is /discover's requestBody, verbatim from the
-// pinned fixture — unique in the document because of `const: discover`, so
-// it is a safe anchor for a targeted edit that leaves every other path alone.
-const discoverRequestBodyBlock = `      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-              - context
-              - message
-              properties:
-                context:
-                  allOf:
-                  - $ref: '#/components/schemas/Context'
-                  - type: object
-                    properties:
-                      action:
-                        type: string
-                        const: discover
-                message:`
+// discoverPathBlock returns /discover's own path item, from its "  /discover:"
+// key up to (not including) the next top-level path key — computed from the
+// live fixture rather than copied out of it, so a reindentation of the YAML
+// elsewhere in the document cannot silently desync a hand-maintained verbatim
+// copy from what the fixture actually contains. The block is what lets a
+// targeted edit ("requestBody:" -> renamed, say) land only inside /discover:
+// every other served path has its own requestBody at the same relative
+// offset, so an unscoped replace could hit any of them.
+func discoverPathBlock(t *testing.T, document string) string {
+	t.Helper()
+
+	const key = "\n  /discover:\n"
+	start := strings.Index(document, key)
+	if start < 0 {
+		t.Fatal("the fixture has no /discover path")
+	}
+	start++ // keep the block's own leading newline out of the match
+
+	afterKey := start + len(key) - 1
+	next := strings.Index(document[afterKey:], "\n  /")
+	if next < 0 {
+		t.Fatal("could not find the path following /discover")
+	}
+	return document[start : afterKey+next]
+}
 
 // A path with no requestBody at all — requestSchema's own refusal, not the
 // "path missing" one TestADocumentMissingAServedPathFailsToCompile pins.
 func TestAServedPathWithNoRequestBodyFailsToCompile(t *testing.T) {
-	edited := strings.Replace(discoverRequestBodyBlock, "requestBody:", "requestBodyRenamed:", 1)
-	document := strings.Replace(string(specDocument(t)), discoverRequestBodyBlock, edited, 1)
+	document := string(specDocument(t))
+	block := discoverPathBlock(t, document)
+	edited := strings.Replace(block, "requestBody:", "requestBodyRenamed:", 1)
+	document = strings.Replace(document, block, edited, 1)
 
 	_, err := NewSpecIndex([]byte(document))
 	if err == nil {
@@ -167,8 +172,10 @@ func TestAServedPathWithNoRequestBodyFailsToCompile(t *testing.T) {
 // A requestBody present with no application/json content — requestSchema's
 // third refusal.
 func TestAServedPathWithNoJSONContentFailsToCompile(t *testing.T) {
-	edited := strings.Replace(discoverRequestBodyBlock, "application/json:", "application/xml:", 1)
-	document := strings.Replace(string(specDocument(t)), discoverRequestBodyBlock, edited, 1)
+	document := string(specDocument(t))
+	block := discoverPathBlock(t, document)
+	edited := strings.Replace(block, "application/json:", "application/xml:", 1)
+	document = strings.Replace(document, block, edited, 1)
 
 	_, err := NewSpecIndex([]byte(document))
 	if err == nil {
@@ -282,6 +289,13 @@ func TestWriteCacheWrapsAMkdirFailure(t *testing.T) {
 // A directory that exists but cannot be written into — read+execute only —
 // fails CreateTemp rather than MkdirAll, which is a no-op on a directory
 // that is already there.
+//
+// Skips as root: permission bits are exactly what root ignores, and there is
+// no substitute mechanism here the way TestWriteCacheWrapsAMkdirFailure has
+// one (a plain file blocking the path) — that shape tests MkdirAll's own
+// failure, not CreateTemp's, so it cannot stand in for this case. In a
+// root-run CI container this test verifies nothing while still reporting a
+// pass; the coverage claim in this PR's description says so.
 func TestWriteCacheWrapsACreateTempFailure(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root ignores directory permissions")
