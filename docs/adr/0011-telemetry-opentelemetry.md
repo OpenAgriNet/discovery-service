@@ -83,15 +83,30 @@ reversed.
 
 3. **Amendment 2 covers the network signal only.** The reasoning is that a
    stateless replica cannot compute a windowed *network* aggregate — true, and
-   it is why Task 24 exists. It says nothing about the numbers a node operator
-   needs to keep this replica alive, which are per-replica by definition and so
+   it is why Task 24 exists. It says nothing about the *levels* a node operator
+   reads to keep this replica alive, which are per-replica by definition and so
    have nothing to reassemble. Read as a blanket ban it produced a service with
    three configured ceilings — the connection pool, the rate limiter, the body
-   size — and no way to see any of them approached, where a 429 is written by
+   size — and no way to see any of them approached.
+
+   The first version of this amendment justified that with "a 429 is written by
    middleware above the handler and therefore produces no span, no event and no
-   counter. The failure an operator most needs to see was the one made
-   unobservable. Task 25 emits that set, under our own scope, and is not blocked
-   by what blocks Task 24.
+   counter". **That is false, and it is corrected here rather than quietly
+   dropped, because it was the sentence the task was sized against.** `Trace` is
+   index 1 in `src/app/router.go:134-141`; `Envelope` and `RateLimit` are inside
+   it and refuse through the one `httpx.WriteNack` → `logNack` path 23d projects
+   the `error` event from. A 429 is a span with a status, an `error_type` and an
+   `error` event. Only "no counter" held, and a counter restating a span fact is
+   the second copy `opentelemetry.md`'s *No duration attribute* already refuses.
+
+   What survives is narrower and does not depend on that claim: a ceiling is a
+   **level** and a span is an **event**, so the distance to a ceiling is
+   observable only by sampling it on a clock, and no aggregation over spans
+   recovers it. Task 25 emits that set, under our own scope, and is not blocked
+   by what blocks Task 24. It is smaller than this amendment first described it:
+   no rejection counters, and no per-provider freshness — that one is a `SELECT`,
+   and as a metric it would be a windowed aggregate over N partial replicas,
+   which is Task 24's definition rather than this one's.
 
 4. **Propagation is not enough on its own.** "W3C Trace Context propagated in
    and out" is necessary and does not by itself make this service visible to the

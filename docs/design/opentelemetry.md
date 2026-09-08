@@ -12,6 +12,12 @@ natively.
 **Binding on the shape of a span.** Where this and `discover-and-publish.md`
 disagree about a span, this wins; about anything else, the plan does.
 
+**Companion.** This document is the *what*. `telemetry-seam.md` is the *where the
+code lives* — the attribute registry that makes adding or renaming an attribute a
+one-file edit that reaches the span, the log line and the metric label together,
+and the tests that make that structural rather than remembered. It is subordinate
+to this document on what an attribute means and to the plan on task shape.
+
 ## Why — the questions this must answer
 
 The network's observability requirements, as a tree rooted at the **Registry**
@@ -190,19 +196,90 @@ Three things must be true for one transaction to be readable across four layers.
 to store, and is invisible to the network observer — the worst of the three
 available outcomes, because nothing anywhere reports an error.
 
-**I1 — join keys take onix's spelling.** The network collector rewrites
-`trace_id` from an attribute named literally `transaction_id`
-(`network/otel-collector-network/config.yaml:23-25`). We specified
-`beckn.transactionId`. A span spelled our way is never stitched to anything.
-Emit `transaction_id` and `message_id` beside the `beckn.*` pair, and
-`receiver.id` beside `recipient.id`.
+**The premise all three rest on, and it is not established anywhere.** I1 and I2
+bind **if and only if** our OTLP passes through the node's onix companion
+collector — the `traces/network` pipeline in `node/otel-collector-bap/config.yaml`,
+whose filter is I2 and whose downstream `transform/beckn_ids` stage is I1. Nothing
+committed in either repository establishes that it does, and an earlier draft of
+this section asserted it by omission.
 
-This bends the no-second-copy rule that *No duration attribute* applies, and does
-so knowingly. The two cases differ in the way that matters: a `duration_ms`
+**If we export direct to ClickStack and to the facilitator, I2 is moot and I1
+reduces to insurance.** I2 is a property of one YAML file we would never traverse:
+with no `filter/network_traces` between us and a destination we post to ourselves,
+the `sender.id` admission bug drops nothing of ours, and **U2 stops being a
+blocker on us** — it stays onix's bug affecting onix's adapters. I1 reduces to:
+emit `transaction_id` and `message_id` anyway, because they are two attributes
+written from values we already hold at a call site we are already writing, and any
+consumer that ever keys on the Beckn transaction will want that spelling. It stops
+being "not optional" and becomes an asymmetric bet — near-zero cost, non-zero
+payoff — which is a weaker and truer claim.
+
+**Direct export is what the committed artifacts point at, and it is not close.**
+`config/common.yaml:55` defaults `otel.exporter: none` and states that a
+collector-less deploy still boots. `config/instance.yaml.example:39-42` has the
+OTLP block commented out and, uncommented, names `http://localhost:4317` with
+nothing saying whose. *Two destinations* above names ClickStack and the OAN
+facilitator and no third hop, and Decision 5 resolves the deny-list into a second
+in-process exporter — a two-exporters-from-the-binary topology by construction.
+Against all that, the only thing pointing at the companion collector is that onix
+ships one. Note also where onix's network pipeline terminates: **Zipkin**
+(`network/otel-collector-network/config.yaml:39-41,58-61`), with the `trace_id`
+rewrite existing for Jaeger/Zipkin UI correlation. It is a network *operator's*
+UI, not the facilitator's ingest — so I1 and I2 were never about facilitator
+conformance at all. They are about being legible in onix's Zipkin, which is a real
+benefit and a much smaller claim than "a span that fails either is invisible to
+the network observer".
+
+**This is decided here, not carried as an open question.** Deferring it defers
+23f, which already has to know whether its second exporter targets a facilitator
+endpoint or a collector, and it puts a bug in a repository we do not own on our
+critical path. **Assume direct export to ClickStack and the facilitator, per
+Decision 5, and emit the two I1 aliases regardless.** I2 is demoted from a
+justification to a recorded consequence: if a deployment later routes us through
+an onix node collector, `sender.unidentified` is not enough and that deployment
+must either carry U2 or accept that the network layer drops us. The topology
+itself is settled by whichever chart in `OpenAgriNet/helmcharts` deploys this
+service and decides whether a collector sidecar is in the pod; record the answer
+there and cite it here, because a deployment fact asserted in a design document
+and contradicted by a values file is the kind of divergence nobody finds until a
+span goes missing.
+
+**I1 — join keys take onix's spelling, and there are exactly two of them.** The
+network collector rewrites `trace_id` from an attribute named literally
+`transaction_id` (`network/otel-collector-network/config.yaml:23-25`). We
+specified `beckn.transactionId`. A span spelled our way is never stitched to
+anything. **Emit `transaction_id` and `message_id` beside the `beckn.*` pair** —
+that is the complete list.
+
+**No `receiver.id` alias. It was in an earlier draft of this section and it was
+an invention.** onix's *spans* carry `recipient.id` — `AttrRecipientID` at
+`pkg/telemetry/pluginMetrics.go:49`, set at `core/module/handler/stdHandler.go:855`
+— and `recipient.id` is the spelling we already emit. `receiver.id` appears in
+onix only on **audit log** records (`stdHandler.go:199,201`); no collector
+pipeline reads it off a span, so a fourth spelling would be paid for on every
+span and consumed by nothing. It is also one capital letter from
+`beckn.receiverId`, which this document defines as the caller's *claim* about who
+it addressed — the opposite of `recipient.id`, which is who actually answered.
+Two keys differing by a capital and meaning opposite things is a query someone
+writes wrongly and never finds out about. The right fix for the audit-log
+spelling is onix's: emit `recipient.id` there too, retaining `receiver.id` as an
+alias, so both sides move together.
+
+`message_id` is worth stating carefully for the same reason. The network
+collector deliberately does **not** map it onto `span_id`
+(`otel-collector-network/config.yaml:15-20` says why — several nodes emit spans
+for one Beckn message, and identical span ids would corrupt the trace). It is a
+searchable tag, not a join. We emit it because onix does and a network operator
+filters on that spelling.
+
+Two aliases bend the no-second-copy rule that *No duration attribute* applies,
+and do so knowingly. The cases differ in the way that matters: a `duration_ms`
 attribute is free to disagree with the span it duplicates, whereas both spellings
-here are written from one value at one call site and cannot. Renaming four
-attributes in one service is cheaper than renaming them in three adapters and
-every collector config, and that is the entire argument.
+here are written from one value at one call site and cannot — which is why 23c's
+pin asserts them *equal* rather than merely present. Renaming two attributes in
+one service is cheaper than renaming one in three adapters and every collector
+config, and that is the entire argument. It does not extend to a third attribute
+nobody consumes.
 
 **I2 — the network filter currently drops us.** `filter/network_traces` drops
 every span where `attributes["sender.id"] == nil`
@@ -236,7 +313,7 @@ answered the wrong questions.
 |---|---|---|
 | OP1 | **Is the node up and serving?** Span rate is a proxy, and a poor one: a node that stopped receiving looks exactly like a network that went quiet | Task 25 |
 | OP2 | **Rate, errors, duration per action.** Derivable from spans the moment 23c lands. Needs aggregation, not instrumentation | Task 25 |
-| OP3 | **Saturation — is it about to fall over?** Three ceilings exist and **not one is observable**: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). A 429 is written by middleware *above* the handler, so it produces no span, no event and no counter — the failure mode an operator most needs to see is the one that is currently invisible | **Task 25** |
+| OP3 | **Saturation — is it about to fall over?** Three ceilings exist and not one has a *level* anyone can see: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). The refusals themselves are already visible — `Trace` is index 1 in `router.go:134-141`, above both `Envelope` and `RateLimit`, so a 429 and a body-ceiling refusal each produce a span, a status off the record and, post-23d, an `error` event from the one `logNack` they both pass through. What no span can carry is the pool sitting at 30 of 32 for ten minutes while every request succeeds: a ceiling is a **level**, a span is an **event**, and the distance to a ceiling is observable only by sampling it on a clock. That is the whole of OP3 and it is enough | **Task 25** |
 | OP4 | **Dependency health** — Postgres acquire-wait and query latency; Ollama when semantic is on. `retrieval.embedding_ms` covers Ollama only while it is enabled, and nothing covers Postgres | Task 25 |
 | OP5 | **Which build is running?** onix stamps `service.version` and three `onix.build.*`. We have no version variable and no `-ldflags` in the Makefile, so *did the deploy break it* is unanswerable here | **23a** — the Resource is already being constructed; this is the cheapest moment it will ever be |
 | OP6 | **Data freshness per provider.** In agriculture a stale weather catalog is worse than an absent one: it answers confidently and wrongly. Derivable from publish spans keyed on `publish.bpp_ids` | Task 25 |
@@ -254,7 +331,7 @@ answered the wrong questions.
 | **23a** | Add build identity to the Resource — OP5. `-ldflags -X` in the Makefile and a `version` variable, matching what onix already does. This does not enlarge 23a's shape: the Resource is being built there anyway |
 | **23c** | Add the I1 alias attributes beside the `beckn.*` pair. Propagation (I3) was already in scope |
 | **23d** | Unchanged, and *smaller*: P7 moves to the provider adapter, so the H3-coarsening question raised against 23d is **withdrawn as a discovery-service concern**. See open question 11 |
-| **Task 25** (new) | **Node-operator metrics.** RED per action, the three saturation ceilings of OP3, dependency health, freshness. Deliberately *not* Task 24: these are `onix_*`-style operational metrics for the node pipeline and are **not blocked** on the metric-code registry that blocks the facilitator's METRIC signal. Conflating the two is what has so far left this service with no metrics at all |
+| **Task 25** (new) | **Node-operator metrics.** The saturation *levels* of OP3, Postgres dependency health, one liveness gauge, and a duration histogram conditional on Decision 6. Deliberately *not* Task 24: these are `onix_*`-style operational numbers for the node pipeline and are **not blocked** on the metric-code registry that blocks the facilitator's METRIC signal. Equally deliberately not a mirror of the spans — a metric that restates a span fact is the `duration_ms` mistake one signal up. What earns a metric here is a number the span layer cannot hold: a level between events, or a distribution that survives the sampler Decision 6 hands to deployments. Per-provider freshness and the alert list are **struck** — see Task 25's own section |
 | **Task 26** (new) | **Deny-list conformance test** — OP11 |
 
 Four items in onix, none of which this repo can land:
@@ -793,10 +870,23 @@ than off a writer `Trace` cannot see.
 | 7 | `response_writer.go` | The `error` event, from the fault it already has |
 | 8 | `request_logger.go` | Adopts the record rather than allocating when `Trace` is above it, and records the status as a fact — the one thing the span cannot see for itself |
 
-**Controllers never import the telemetry package.** They record timestamped
-facts; a projection turns those into events. **Six of the eight existing log
-fields are also span attributes** — instrumenting separately would put
-`error_type` in two places, which is what C1 exists to prevent.
+**Controllers never link the OpenTelemetry SDK.** They record timestamped facts;
+a projection turns those into events. **Six of the eight existing log fields are
+also span attributes** — instrumenting separately would put `error_type` in two
+places, which is what C1 exists to prevent.
+
+That sentence read "controllers never import the telemetry package" until
+`telemetry-seam.md` made the wording load-bearing, and the narrowing is
+deliberate rather than a softening. A controller has to name the fact it is
+recording, so it names a `fact.Key` — and `src/platform/telemetry/fact/` imports
+`context`, `iter` and `time` and nothing else, precisely so that naming one links
+no exporter and no SDK. What the rule was always protecting is that a controller's
+build does not break on an SDK release, and that survives exactly. The literal
+old reading does not, so it is restated rather than left to be discovered as a
+contradiction: **controllers may import `.../telemetry/fact`; they may not import
+`go.opentelemetry.io/...` or `src/platform/telemetry` itself.** Unlike the old
+wording, this one is checkable, and `tests/architecture/boundary_test.go` checks
+it.
 
 The two that are not are deliberate, and naming them is worth more than the
 count. `logger.go` defines eight fields: `request_id`, `transaction_id`,
@@ -911,7 +1001,7 @@ A23 split Task 23 into six. One review gate between each.
 |---|---|---|---|
 | **23a** | Foundation and Resource | new `platform/telemetry/`; `config.go`, `container.go`, `server.go`, `Makefile` | `OTEL_EXPORTER=none` still boots; Resource carries all five; `otlp` with `Producer`/`Domain` empty fails **at boot**. Starts no spans. **Plus OP5**: `service.version` and the build attributes from `-ldflags -X`, with a test that an unstamped build reports `dev` rather than an empty string — an empty version is indistinguishable from an unset Resource field |
 | **23b** | The observation record | `middlewares/correlation.go`, `envelope.go`, `request_logger.go`, `trace.go` | Log output byte-identical before and after. **Changes no output**; acceptance is the existing suite passing with no test file edited — including `request_logger_test.go:181,207`, which mount `RequestLogger` with no `Trace` above. Also pins the adopt-or-allocate rule from both sides: `Trace` first, and `RequestLogger` alone |
-| **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds. **Plus I1**: `transaction_id`, `message_id` and `receiver.id` carry the same values as their `beckn.*` counterparts, asserted as equal in one test so the pair cannot drift |
+| **23c** | Span lifecycle | `middlewares/trace.go`, `correlate()`, `validation/http_fetcher.go`, `embeddings/ollama.go` | Inbound `traceparent` joined not replaced; outbound injection on the two clients; scope is ours; `http.status.code` comes off the record and matches the status actually written; a recovered panic's 500 is inside the exported span; A11's behavioural pin holds. **Plus I1**: `transaction_id` and `message_id` carry the same values as their `beckn.*` counterparts, asserted as equal in one test so the pair cannot drift. Two aliases, not three — `recipient.id` is already onix's span spelling and needs none, and **no `receiver.id` is emitted**; a test asserts the exported key set does not contain it |
 | **23d** | Events | `discover/controller.go`, `publish/controller.go`, `response_writer.go` | Event times strictly increasing, none equal to span end; a master publish reports `MASTER`; `error` category matches `X-Beckn-Error-Type` byte for byte; `retrieval.embedding_ms` absent — not zero — under `noop`; `result.provider_ids` is DISTINCT and bounded at 16, so a 200-catalog answer from one provider emits one id; `beckn.schemaContext` is absent rather than empty when the seeker sent no predicate |
 | **23e** | Trace/log correlation | `logger/logger.go`, `trace.go` | `trace_id`/`span_id` present once a span exists, **absent not empty** when exporter is `none` |
 | **23f** | Facilitator stream + redaction | `telemetry/redact.go` | **BLOCKED** on open questions 2, 3 and 9 — the plan's **O1**, **O2** and **O4**. Also where `scope_uuid` and `count` land, since both need the custom exporter this sub-task builds |
@@ -932,11 +1022,30 @@ Notes that bite:
   the recovered panic's 500 must be recorded *inside* it, true only if `Trace`
   wraps `Recover`. **Keep A11's behavioural pin** — one completion line at
   `status = 500` with `X-Response-Time` set — when the header pair goes.
-- `trace.go:22` and `:31` still say this is "the place Task 23 puts `otelhttp`".
-  A23 rejected `otelhttp`, so those two comments are wrong today and 23c must
-  delete them along with the header entry and the `chainTrace` constant. A stale
-  comment naming a rejected library is how the rejection gets undone by someone
-  reading the file instead of the plan.
+- **`trace.go`'s `otelhttp` rejection is correct today, and 23c must keep it.**
+  An earlier version of this note claimed `:22` and `:31` "still say this is the
+  place Task 23 puts `otelhttp`", and instructed 23c to delete them. Both halves
+  were wrong. `:22-23` names the slot — "a pass-through today, and the place Task
+  23 starts the span" — and does not mention the library. `:31-37` states the
+  **rejection** and its reason: "NOT otelhttp: the network telemetry spec requires
+  scope.name/scope.version on every exported batch, and the instrumentation scope
+  is fixed when the span is created, so a span otelhttp started would carry that
+  package's scope for ever (A23, ADR-0011)." That is this document's own argument
+  under *Scope*, written at the one file someone would reach for the library in.
+  Deleting it is the failure the note was trying to prevent, inverted.
+
+  What 23c **does** delete is the chain-entry machinery and nothing else: the
+  `w.Header().Add(HeaderChain, chainTrace)` line, the `chainTrace` constant, and
+  the sentences at `:24-30` explaining why a pass-through needed a side effect.
+  All three exist only so Task 20's order test had something to observe, and the
+  order assertion moves to the span. The rejection paragraph survives the edit
+  verbatim, moved onto the new body, and 23c's diff should show it unchanged.
+
+  **The temptation is live, not hypothetical.** `go.mod:74` already carries
+  `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0` as an
+  indirect dependency, so `import ".../otelhttp"` compiles today with no `go get`
+  and no new line in `go.mod` for a reviewer to notice. A rejection recorded only
+  in a design document is one that gets undone by someone reading the file.
 - **`Trace` stays above `RequestLogger`.** The chain order does not move. What
   changes is that the observation record is allocated by whichever of the two runs
   first — see *How the span learns the status*. Moving `Trace` below
@@ -966,8 +1075,50 @@ both are cheaper to answer before the thing they govern is built than after:
 
 | | Decision | Recommendation | Needed by |
 |---|---|---|---|
-| 6 | **Sampling — what fraction of spans is exported?** Today's design is always-on and unsampled. That is defensible at Phase 1 volumes and indefensible at network scale, and the cost lands on whoever pays for ingestion, who is not us. **OP8** | **`AlwaysSample` in Phase 1, behind `OTEL_TRACES_SAMPLER`** so the decision is a deployment's rather than a rebuild's, with `ParentBased` so a sampled transaction stays whole across four layers. A per-node sampler that ignores the parent produces traces with holes, which are worse than no traces because they read as dropped hops | Before **23c** — the sampler is a `TracerProvider` option, and retrofitting `ParentBased` after dashboards exist means every historical rate changes meaning |
+| 6 | **Sampling — what fraction of spans is exported?** Today's design is always-on and unsampled. That is defensible at Phase 1 volumes and indefensible at network scale, and the cost lands on whoever pays for ingestion, who is not us. **OP8** | **Set no sampler.** The default you get by writing nothing is exactly the one we want, and writing the one we want is what destroys it — see below the table | Before **23c**, and it is one line *not* written |
 | 7 | **What is the served-request SLO?** The plan's 20 ms retrieval budget is an internal figure covering one phase of one path. Without an end-to-end objective a p95 is a number with no verdict attached, and OP10's alert list has nothing to fire on. **OP9** | **Do not invent one here.** It is the network's to set, and a target this document picks becomes a target someone charts. Ask for it as one number per action, at the served-response boundary, and record it beside the metrics that measure it | Before **Task 25** |
+
+**Decision 6 in full, because the obvious implementation is self-defeating.** The
+recommendation reads like a null decision and is not. Passing
+`sdktrace.WithSampler(sdktrace.AlwaysSample())` — which is what "AlwaysSample in
+Phase 1, behind `OTEL_TRACES_SAMPLER`" would compile to, and what an earlier draft
+of this row said — **removes the knob the same sentence promises.**
+`sdk@v1.44.0/trace/provider.go:399-403` is explicit:
+
+> This option overrides the Sampler configured through the OTEL_TRACES_SAMPLER
+> and OTEL_TRACES_SAMPLER_ARG environment variables. If this option is not used
+> and the sampler is not configured through environment variables or the
+> environment contains invalid/unsupported configuration, the TracerProvider will
+> use a ParentBased(AlwaysSample) Sampler by default.
+
+Read the second sentence: **passing nothing gives both halves at once.** Unsampled
+by default, `ParentBased` by default, and the environment variables live. Passing
+`AlwaysSample` gives the first half, throws away the second, and silently ignores
+whatever a deployment sets — the worst outcome of the three, because the operator
+sees the variable in their manifest and believes it is doing something. The bare
+form additionally discards the parent's decision, producing exactly the holed
+cross-layer traces this decision exists to prevent.
+
+So: **`telemetry.go` passes no `WithSampler` option, and a comment at that
+non-line says why.** A pin that holds only because someone remembered it is not a
+pin, and this one is invisible by construction — there is no code to review.
+Encode it behaviourally: 23c starts a child from an inbound `traceparent` whose
+sampled flag is clear and asserts the child is not recorded, then flips the flag
+and asserts it is. That test fails the moment anyone adds the option back.
+
+**One thing the SDK's environment layer does not give us, and it is worth a
+boot-time warning.** The parent-respecting samplers are the `parentbased_*`
+values; plain `always_on` and `traceidratio` are **not** parent-based. A
+deployment setting `OTEL_TRACES_SAMPLER=traceidratio` gets a per-node sampler that
+ignores the inbound decision, and four independent per-node samplers produce
+traces with holes — worse than no traces, because a hole reads as a dropped hop
+rather than as a sampling artefact. Config already reads
+`OTEL_EXPORTER_OTLP_ENDPOINT`, so the SDK's environment surface is already part of
+ours; read `OTEL_TRACES_SAMPLER` there too and **warn at boot** when it is set to
+anything without the `parentbased_` prefix. A warning, not a refusal:
+`validateAuth` refuses the boot because a security control claiming to run and not
+running is a lie about safety, and a sampler choice is not that. Document
+`parentbased_traceidratio` as the value to set.
 
 ## Open questions — network level
 
