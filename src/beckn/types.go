@@ -45,13 +45,26 @@ type Context struct {
 	// verification keys, so one field answers both "who" and "with what key" —
 	// which is what the parked signature layer will need.
 	//
-	// `bapId`, `bapUri`, `bppId` and `bppUri` are deliberately NOT here. The
-	// spec retains them for backward compatibility and a caller may still send
-	// them; they are ignored rather than modelled, because a field this service
-	// echoes but never reads is one a reader has to check is unused, and one an
-	// operator can mistake for an identity that was verified. A body carrying
-	// them is still accepted — Context declares no `additionalProperties:
-	// false` and the decoder is not strict — it simply does not get them back.
+	// `bapId`, `bapUri`, `bppId` and `bppUri` are deliberately NOT here. OAN is
+	// a new network, so the spec's own reason for keeping them — backward
+	// compatibility with existing integrations — is not a reason that applies
+	// to it. A caller may still send them; they are ignored rather than
+	// modelled, because a field this service echoes but never reads is one a
+	// reader has to check is unused, and one an operator can mistake for an
+	// identity that was verified. A body carrying them is still accepted —
+	// Context declares no `additionalProperties: false` and the decoder is not
+	// strict — it simply does not get them back.
+	//
+	// Declining them costs nothing, and that is a schema fact rather than a
+	// hope. The spec's prose says the context "MUST include at minimum …
+	// `bapId` or `bppId`", but Context carries no `required`, no
+	// `additionalProperties` and no `oneOf`/`anyOf`, so the demand is
+	// unenforceable and an envelope with only these two validates. `senderId`
+	// and `receiverId` are declared properties of that same schema, so this is
+	// a selection from the spec's property list and not a deviation from it.
+	// `Catalog` is the opposite case and stays as it is: it closes with
+	// `additionalProperties: false`, which makes `bppId` the only spelling
+	// validation there will accept.
 	//
 	// NEITHER IS VERIFIED, and on a callback that has a sharp edge. The two
 	// controllers build a response by swapping them, so this service's own
