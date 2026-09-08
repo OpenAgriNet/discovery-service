@@ -703,3 +703,53 @@ func TestAPartialFaultIsLoggedRatherThanRefusing(t *testing.T) {
 		t.Errorf("reason = %q, want it to name the ignored field", reason)
 	}
 }
+
+// A malformed filter expression is the caller's mistake, not this service's.
+//
+// The gate in front of the query moves the three shapes PostgreSQL answers
+// WRONGLY without complaining ahead of it, and deliberately does not own a
+// jsonpath parser: syntax stays PostgreSQL's last word. So the cast is where a
+// malformed expression is caught, and the whole question is what the caller is
+// then told. A 500 says this service is broken and invites the retry of a
+// request that cannot ever succeed.
+//
+// The wrapping is what the backend really produces — `filterOnly` names the
+// operation it was running — and none of it may reach the body. The message is
+// the sentinel's own text, not the chain's.
+func TestAMalformedFilterExpressionIsTheCallersFaultNotAFiveHundred(t *testing.T) {
+	repo := &stubRepo{
+		capabilities: everything(),
+		err: fmt.Errorf("run the candidate retrieval: %w: syntax error at end of jsonpath input",
+			domain.ErrInvalidFilterExpression),
+	}
+
+	intent := beckn.Intent{Filters: &beckn.Filters{
+		Type:       "jsonpath",
+		Expression: `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`,
+	}}
+
+	_, _, err := discover.NewService(repo, settings()).Discover(
+		t.Context(), beckn.Context{}, intent, discover.Page{})
+	if err == nil {
+		t.Fatal("a malformed expression answered 200; want a refusal naming the field")
+	}
+
+	fault := apperrors.FromError(err)
+	if fault.Code != beckn.CodeSchemaInvalidJSONPath {
+		t.Errorf("code = %q, want SCH_INVALID_JSONPATH — the same code the gate mints "+
+			"for an expression it refuses itself, because which of the two caught "+
+			"the caller is not the caller's business", fault.Code)
+	}
+	if fault.Status() != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: the expression is unanswerable, the service "+
+			"is not broken", fault.Status())
+	}
+	if want := "$.message.intent.filters.expression"; fault.Path != want {
+		t.Errorf("path = %q, want %q", fault.Path, want)
+	}
+	if want := domain.ErrInvalidFilterExpression.Error(); fault.Message != want {
+		t.Errorf("message = %q, want exactly %q — the backend's wrapping names the "+
+			"operation it was running, and `run the candidate retrieval` is an "+
+			"internal that must not reach the caller", fault.Message, want)
+	}
+}

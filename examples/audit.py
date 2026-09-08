@@ -480,13 +480,31 @@ def main():
         check_fidelity(name, published, body)
         print()
 
-    print("--- refusal")
-    status, body, _ = post("/discover", load("08-discover-invalid-jsonpath.json"))
-    if status == 400 and body["message"]["error"]["code"] == "SCH_INVALID_JSONPATH":
-        ok("unbounded jsonpath refused with 400 SCH_INVALID_JSONPATH")
-    else:
-        bad("expected 400 SCH_INVALID_JSONPATH, got %s %s"
-            % (status, json.dumps(body)[:200]))
+    print("--- refusals")
+    # Each of these would otherwise be answered PLAUSIBLY, and that is why they
+    # belong in the audit rather than only in verify.sh: 08's `@?` answers true
+    # for every row, 17 asks for no retrieval mode and fuses nothing, and 18
+    # reaches PostgreSQL's cast from inside the search. The first two ship a 200
+    # whose page this oracle would have to accept — over a corpus it has just
+    # confirmed HAS all three resources — and the third a 500 that reads as the
+    # deployment's fault. The path is asserted beside the code because each code
+    # is minted in more than one place.
+    for filename, code, path in (
+        ("08-discover-invalid-jsonpath.json", "SCH_INVALID_JSONPATH",
+         "$.message.intent.filters.expression"),
+        ("17-discover-no-criterion.json", "SCH_INVALID_FORMAT",
+         "$.message.intent"),
+        ("18-discover-unparsable-jsonpath.json", "SCH_INVALID_JSONPATH",
+         "$.message.intent.filters.expression"),
+    ):
+        status, body, _ = post("/discover", load(filename))
+        error = (body.get("message") or {}).get("error") or {}
+        got = (error.get("code"), (error.get("details") or {}).get("path"))
+        if status == 400 and got == (code, path):
+            ok("%s refused with 400 %s at %s" % (filename[:2], code, path))
+        else:
+            bad("%s: expected 400 %s at %s, got %s %s"
+                % (filename[:2], code, path, status, json.dumps(body)[:200]))
     print()
 
     print("=" * 60)

@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -36,10 +37,13 @@ import (
 //   - No case asserts a total, because there is none (A19). What a paginating
 //     caller actually depends on is pinned instead: that the offset SLICES a
 //     stable order rather than re-ranking it.
-//   - No case names `jsonpath` either. Since Task 22 Postgres executes the
-//     subset and the memory backend declines it, so a filter case would pin
+//   - No case names `jsonpath` to SEARCH with. Since Task 22 Postgres executes
+//     the subset and the memory backend declines it, so a filter case would pin
 //     the difference between them rather than an agreement — which is what
-//     puts the filter's own tests on the Postgres side.
+//     puts the filter's own tests on the Postgres side. The one case that names
+//     it at all asserts what a backend owes if it DECLARES the mode, and skips
+//     on one that does not; it is the only conditional case here and it says
+//     why at its own definition.
 func DiscoverCases(resolution int) []Case {
 	return []Case{
 		anOmittedNetworkSearchesEveryNetwork(),
@@ -56,6 +60,7 @@ func DiscoverCases(resolution int) []Case {
 		aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch(),
 		askingForNoRetrievalModeAtAllReturnsNothing(),
 		aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution),
+		aBackendThatRunsFiltersRefusesOneItCannotParse(),
 	}
 }
 
@@ -770,6 +775,62 @@ func aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution int) Case {
 			if len(result.Degraded) > 0 {
 				t.Errorf("Degraded is %v, want none: the geometry was applied, not dropped",
 					result.Degraded)
+			}
+		},
+	}
+}
+
+// A backend that DECLARES jsonpath owes the caller a named refusal for an
+// expression it cannot parse.
+//
+// The only conditional case in this file, and the condition is the point: the
+// suite otherwise pins agreements, and here the backends do not agree on
+// whether the mode runs at all. What they can be held to is the implication —
+// declare the mode and you own its refusals — so the case reads Capabilities
+// and skips where the mode is declined. A skip is visible in the run; a case
+// deleted for being awkward is not.
+//
+// It belongs on the PORT rather than beside the Postgres retrievers, where an
+// equivalent test already lives, because domain.ErrInvalidFilterExpression is
+// declared on the port for src/discover to match — and src/discover cannot
+// import a backend. An expression is the one part of a query this service hands
+// to the store as TEXT, so every backend that executes it has a parser of its
+// own that can refuse it, and the request path has exactly one way to tell that
+// refusal from a broken deployment. A backend that returns something else
+// returns a 500 for the caller's typo, which is the defect this pins shut.
+func aBackendThatRunsFiltersRefusesOneItCannotParse() Case {
+	return Case{
+		Name: "a backend that runs filters refuses one it cannot parse",
+		Given: []Publish{{
+			Patch: catalogPatch("c1", searchable("r1", "listing", "", "", "")),
+			Mode:  domain.UpdateModeMerge, Derive: deriveSearchable,
+		}},
+		Then: func(t *testing.T, backends Backends) {
+			if !backends.Search.Capabilities().Has(domain.CapabilityJSONPath) {
+				t.Skip("this backend declines jsonpath, so it never parses an " +
+					"expression and owes no refusal for one — the mode is " +
+					"reported in Degraded instead, which " +
+					"aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch pins")
+			}
+
+			// Rooted at $.catalogs, filter form, one root, an `==` — every
+			// shape the gate in front of the query checks — and missing the
+			// `.` before `resources[*]`, which only a parser catches. That is
+			// what makes this the store's refusal to make.
+			query := domain.SearchQuery{
+				Limit: pageLimit,
+				Filters: []domain.AttributeFilter{{
+					Expression: `$.catalogs[*]resources[*] ? (@.resourceAttributes.name == "listing")`,
+				}},
+			}
+
+			_, err := backends.Search.Search(t.Context(), query,
+				[]domain.Capability{domain.CapabilityJSONPath})
+			if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+				t.Errorf("searching with an unparsable expression returned %v, want an "+
+					"error wrapping domain.ErrInvalidFilterExpression — anything else "+
+					"reads to the request path as the deployment's fault and answers "+
+					"the caller's typo with a 500", err)
 			}
 		},
 	}

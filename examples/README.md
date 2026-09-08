@@ -88,6 +88,8 @@ generous.
 | `06-discover-filter-granularity.json` | jsonpath, resource-rooted | village alone |
 | `07-discover-filter-cross-level.json` | jsonpath, **offer**-rooted | point alone |
 | `08-discover-invalid-jsonpath.json` | the form gate | **400** |
+| `17-discover-no-criterion.json` | an intent asking for no retrieval at all | **400** |
+| `18-discover-unparsable-jsonpath.json` | PostgreSQL's own jsonpath parser | **400** |
 | `16-discover-filter-only.json` | filter alone — no text, no geometry | village alone |
 | `10-discover-text-and-geo.json` | text **and** geo | point alone |
 | `11-discover-geo-and-filter.json` | geo **and** filter, no text at all | village alone |
@@ -130,6 +132,32 @@ an item back, `false` is an item, and so it answers true for every row. The
 caller receives the entire corpus formatted as a filtered page with no error
 anywhere — nothing in the response distinguishes it from an honest result. The
 service rejects the shape before the cast instead.
+
+**17 and 18 are refusals for the same reason as 08 — a plausible answer is the
+worst answer.** All three of these requests used to be served without anyone
+noticing they had gone wrong.
+
+17 names none of `textSearch`, `spatial` or `filters`. Nothing further down
+objects: no criterion asks for no retrieval mode, no retriever runs, the fusion
+is empty, and the caller is served `"catalogs": []` under a 200 — a page
+identical to the honest empty one, over the corpus above, which has three
+resources. `schemaContext` is deliberately not a fourth criterion; it narrows a
+search and cannot drive one, so an intent carrying only it lands here too.
+
+18 is case 06's filter with ONE character removed, the dot before
+`resources[*]`:
+
+```
+$.catalogs[*]resources[*] ? (@.resourceAttributes.geographicGranularity == "Village")
+```
+
+The form gate passes it — the root is right and the `? (...)` is there, and
+that is all that gate decides, because it is deliberately a gate and not a
+parser. PostgreSQL then refuses the cast from INSIDE the search, where every
+other failure is the deployment's fault and a 500. It carries the same code as
+08: which side of the query noticed is not a distinction the caller can act on.
+The answer names `filters.expression` and says nothing about PostgreSQL — the
+SQLSTATE and the failing clause go to the service log.
 
 **16 is the only filter that arrives alone.** Every other filter case carries
 a `textSearch` beside it (06, 07, 14) or a geometry (11, 12, 15). An intent

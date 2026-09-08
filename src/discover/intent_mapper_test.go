@@ -238,7 +238,7 @@ func TestSchemaContextSplitsOnTheFirstHash(t *testing.T) {
 		"https://beckn.org/Agri#Seed#Lot",
 	}}
 
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, envelope, discover.Page{}, settings())
+	query, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, envelope, discover.Page{}, settings())
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none", codesOf(fatal))
 	}
@@ -266,7 +266,7 @@ func TestSchemaContextSplitsOnTheFirstHash(t *testing.T) {
 func TestASchemaContextEntryWithNoBaseFaultsAndIsDropped(t *testing.T) {
 	envelope := beckn.Context{SchemaContext: []string{"#SeedLot", "https://beckn.org/Agri#SeedLot"}}
 
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, envelope, discover.Page{}, settings())
+	query, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, envelope, discover.Page{}, settings())
 	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeContextInvalidField) {
 		t.Fatalf("fatal = %s, want one CTX_INVALID_FIELD", codesOf(fatal))
 	}
@@ -278,7 +278,7 @@ func TestASchemaContextEntryWithNoBaseFaultsAndIsDropped(t *testing.T) {
 // An absent schemaContext is no predicate at all, not a predicate matching
 // nothing. A non-nil empty slice here is the bug that empties every response.
 func TestAnAbsentSchemaContextEmitsNoPredicate(t *testing.T) {
-	query, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+	query, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, settings())
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none", codesOf(fatal))
 	}
@@ -297,12 +297,12 @@ func TestAnAbsentSchemaContextEmitsNoPredicate(t *testing.T) {
 func TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused(t *testing.T) {
 	cfg := settings()
 
-	unset, _, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{}, cfg)
+	unset, _, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, cfg)
 	if unset.Limit != cfg.Search.DefaultPageSize {
 		t.Errorf("Limit = %d, want the default %d", unset.Limit, cfg.Search.DefaultPageSize)
 	}
 
-	clamped, fatal, _ := discover.MapIntent(beckn.Intent{}, beckn.Context{}, discover.Page{Limit: 5000}, cfg)
+	clamped, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{Limit: 5000}, cfg)
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none — an over-large limit is clamped", codesOf(fatal))
 	}
@@ -311,7 +311,7 @@ func TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused(t *testing.T) {
 	}
 
 	deep := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode}
-	_, fatal, _ = discover.MapIntent(beckn.Intent{}, beckn.Context{}, deep, cfg)
+	_, fatal, _ = discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, deep, cfg)
 	if len(fatal) != 1 {
 		t.Fatalf("fatal = %s, want exactly one", codesOf(fatal))
 	}
@@ -508,5 +508,117 @@ func TestARadiusExactlyAtTheCeilingIsNotRefused(t *testing.T) {
 	_, fatal, _ := discover.MapIntent(spatialIntent(constraint), beckn.Context{}, discover.Page{}, cfg)
 	if len(fatal) != 0 {
 		t.Fatalf("fatal = %s, want none — the ceiling itself is answerable", codesOf(fatal))
+	}
+}
+
+// An intent that names no retrieval criterion is refused rather than answered.
+//
+// Nothing downstream can rescue it: modesFor asks for a mode per criterion, so
+// an intent with none asks for no modes, the repository fuses no lists, and the
+// caller receives `"catalogs": []` with a 200. That page is indistinguishable
+// from a search that ran and matched nothing — and only one of the two is an
+// answer, which is the same reason every other branch of this mapper refuses
+// rather than widens.
+func TestAnIntentWithNoRetrievalCriterionIsRefused(t *testing.T) {
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one — an intent with nothing to search on", codesOf(fatal))
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+	if want := "$['message']['intent']"; fatal[0].Path != want {
+		t.Errorf("path = %q, want %q — the intent as a whole is what is empty, "+
+			"not any one member of it", fatal[0].Path, want)
+	}
+}
+
+// schemaContext is not one of the three, and this is the case that says so.
+//
+// It narrows a search and cannot drive one: it contributes a WHERE clause, not
+// a retriever, so an intent carrying only it reaches the same no-modes dead end
+// as a bare one and answers an empty page while reporting success. Refused for
+// that reason and not because schemaContext is unwelcome — sent beside a
+// textSearch it does exactly what it says.
+func TestASchemaContextAloneIsNotARetrievalCriterion(t *testing.T) {
+	envelope := beckn.Context{SchemaContext: []string{"https://beckn.org/Agri#SeedLot"}}
+
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{}, envelope, discover.Page{}, settings())
+
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+	if len(query.Schemas) != 1 {
+		t.Errorf("Schemas = %v, want the entry still mapped — the refusal is about "+
+			"what is MISSING, so it must not also drop what was sent", query.Schemas)
+	}
+}
+
+// The complement, and the half that keeps the rule from becoming a wall: each
+// of the three on its own is a complete request.
+//
+// Read off the raw intent rather than the mapped query, which is what lets a
+// filter that is refused for its own reasons — an unindexable expression with
+// nothing to narrow it — report that reason instead of "you sent no criteria",
+// a sentence that would be false.
+func TestAnyOneOfTheThreeCriteriaIsEnough(t *testing.T) {
+	filter := &beckn.Filters{
+		Type:       "jsonpath",
+		Expression: `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`,
+	}
+
+	cases := map[string]beckn.Intent{
+		"textSearch": {TextSearch: "wheat"},
+		"spatial":    spatialIntent(within(`$.catalogs[*].provider.availableAt[*].geo`)),
+		"filters":    {Filters: filter},
+	}
+
+	for name, intent := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, fatal, _ := discover.MapIntent(intent, beckn.Context{}, discover.Page{}, settings())
+			if len(fatal) != 0 {
+				t.Errorf("%s alone faulted: %s", name, codesOf(fatal))
+			}
+		})
+	}
+}
+
+// Whitespace is not a criterion, and the trim is what makes that true.
+//
+// `"   "` is not empty, so an untrimmed guard admits it — and then modesFor,
+// which reads the mapped text, sees nothing to search on and asks for no mode
+// at all. That is the SAME dead end TestAnIntentWithNoRetrievalCriterionIsRefused
+// closes, reached by a caller who pressed the space bar, and it would answer
+// the same plausible empty page under a 200.
+func TestAWhitespaceOnlyTextSearchIsNotARetrievalCriterion(t *testing.T) {
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: " \t "}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one — whitespace asks for no retrieval mode", codesOf(fatal))
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Errorf("code = %q, want SCH_INVALID_FORMAT", fatal[0].Code)
+	}
+}
+
+// The complement: a real term keeps its meaning and loses its padding.
+//
+// The trim reaches the QUERY and not only the guard. Two spellings of one
+// search that differ by a leading space are one search — they must ask the
+// same tsquery and score the same trigram similarity, which is a property the
+// guard alone would not give them.
+func TestTheMappedTextIsTrimmed(t *testing.T) {
+	query, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: "  wheat seed\n"}, beckn.Context{}, discover.Page{}, settings())
+
+	if len(fatal) != 0 {
+		t.Fatalf("fatal = %s, want none", codesOf(fatal))
+	}
+	if want := "wheat seed"; query.Text != want {
+		t.Errorf("Text = %q, want %q", query.Text, want)
 	}
 }
