@@ -14,6 +14,11 @@ import (
 const (
 	repoCommonYAML = "../../../config/common.yaml"
 	noInstance     = "instance-that-does-not-exist.yaml"
+
+	// repoRoot is where commonPath ("config/common.yaml") resolves against —
+	// Load reads it relative to the process working directory, not to this
+	// package's own location.
+	repoRoot = "../../.."
 )
 
 // baseEnv supplies only the two values that have no default and no file:
@@ -528,6 +533,18 @@ func TestLoadReadsPathsRelativeToTheProcessWorkingDirectory(t *testing.T) {
 		t.Fatal("Load succeeded from a working directory with no config/common.yaml beneath it")
 	} else if !strings.Contains(err.Error(), "config/common.yaml") {
 		t.Errorf("error %v does not name config/common.yaml", err)
+	}
+
+	// The complement, and the half that actually distinguishes "relative to the
+	// working directory" from "relative to the binary": a Load that resolved
+	// commonPath relative to the compiled test binary would fail the case above
+	// too, so it alone does not pin the claim. Only succeeding once chdir'd to a
+	// directory that genuinely has config/common.yaml beneath it does.
+	t.Chdir(repoRoot)
+	t.Setenv("APP_NETWORK_ID", "mahavistar")
+	t.Setenv("DATABASE_URL", "postgres://discovery@localhost:5432/discovery")
+	if _, err := Load(); err != nil {
+		t.Errorf("Load from the repo root: %v, want nil — config/common.yaml is right there", err)
 	}
 }
 
