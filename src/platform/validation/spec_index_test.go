@@ -292,10 +292,13 @@ func TestWriteCacheWrapsAMkdirFailure(t *testing.T) {
 //
 // Skips as root: permission bits are exactly what root ignores, and there is
 // no substitute mechanism here the way TestWriteCacheWrapsAMkdirFailure has
-// one (a plain file blocking the path) — that shape tests MkdirAll's own
-// failure, not CreateTemp's, so it cannot stand in for this case. In a
-// root-run CI container this test verifies nothing while still reporting a
-// pass; the coverage claim in this PR's description says so.
+// one. That test blocks the path with a plain file, which fails ENOTDIR — but
+// writeCache runs MkdirAll(directory, ...) on that same directory BEFORE
+// CreateTemp(directory, ...), so a shape that trips ENOTDIR trips MkdirAll
+// first and never reaches CreateTemp at all: it would just be
+// TestWriteCacheWrapsAMkdirFailure again, not a way to isolate this branch.
+// In a root-run CI container this test verifies nothing while still
+// reporting a pass; the Testing section of this PR's description says so.
 func TestWriteCacheWrapsACreateTempFailure(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root ignores directory permissions")
