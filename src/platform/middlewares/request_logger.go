@@ -6,10 +6,9 @@ import (
 	"strconv"
 	"time"
 
-	"go.uber.org/zap"
-
 	"github.com/OpenAgriNet/discovery-service/src/platform/httpx"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
 // HeaderResponseTime reports how long this service took to answer, in
@@ -43,8 +42,9 @@ type responseRecorder struct {
 	status int
 	wrote  bool
 
-	// Filled in by Envelope, below. See correlation.
-	correlators *correlation
+	// The request's facts. Allocated by Trace above, or here when RequestLogger
+	// is mounted without it, and written by Envelope below. See fact.Record.
+	record *fact.Record
 }
 
 // committed reports whether the response has gone. Recover asks, because a
@@ -94,11 +94,12 @@ func RequestLogger(next http.Handler) http.Handler {
 		// 200, and that is the status net/http will send.
 		recorder := &responseRecorder{ResponseWriter: w, started: time.Now(), status: http.StatusOK}
 
-		// The one thing that has to travel back up the chain: Envelope, below,
-		// is what learns which transaction this request belongs to. See
-		// correlation.
-		ctx, correlators := newCorrelation(r.Context())
-		recorder.correlators = correlators
+		// The one thing that has to travel back up the chain: Envelope, below, is
+		// what learns which transaction this request belongs to. Trace above has
+		// normally allocated the record already; see recordFor for why both links
+		// adopt-or-allocate rather than one of them owning it.
+		ctx, record := recordFor(r.Context())
+		recorder.record = record
 
 		// Deferred, so a panic unwinding through here does not take the line
 		// with it. Recover sits below and answers the ordinary panic, but the
@@ -122,26 +123,28 @@ func (w *responseRecorder) complete(ctx context.Context) {
 		w.Header().Set(HeaderResponseTime, responseTime(elapsed))
 	}
 
-	// The correlators first, so a line reads as what the request was before what
-	// it cost. Copied rather than appended to: the slice belongs to the
-	// correlation, and appending into another owner's spare capacity is a bug
-	// that only shows up at the one length where the capacity happens to be
-	// spare.
-	recorded := w.correlators.recorded()
-	fields := make([]zap.Field, 0, len(recorded)+3)
-	fields = append(append(fields, recorded...), logger.Status(w.status), logger.DurationMS(elapsed))
+	// What the request cost, observed onto the record rather than appended to the
+	// line directly, so the span and 23e's metrics read the same numbers from the
+	// same place. The correlators Envelope observed are already on it and were
+	// observed first, which is what keeps a line reading as what the request was
+	// before what it cost — Record.All yields first-observed order, and the
+	// projection preserves it.
+	w.record.ObserveInt64(fact.HTTPStatusCode, int64(w.status))
+	w.record.ObserveFloat64(fact.DurationMS, logger.Millis(elapsed))
 	if category := w.Header().Get(httpx.HeaderErrorType); category != "" {
 		// Only when something was rejected. A field that is blank on every
 		// successful request is a field nothing can be filtered by.
-		fields = append(fields, logger.ErrorType(category))
+		w.record.ObserveString(fact.ErrorType, category)
 	}
-	logger.FromContext(ctx).Info(requestCompleted, fields...)
+
+	logger.FromContext(ctx).Info(requestCompleted, logger.Fields(w.record)...)
 }
 
-// responseTime renders the elapsed time for the header: milliseconds to
-// microsecond precision, with the unit. Integer milliseconds would report every
-// request this service is built to serve — the 20 ms budget — as one of twenty
-// indistinguishable values, and a sub-millisecond one as zero.
+// responseTime renders the elapsed time for the header, with the unit. The
+// number itself comes from logger.Millis, which is also what the log field and
+// the fact record carry — three answers to "how long did this take" that a
+// caller can reconcile only if they agree, and they can only be relied on to
+// agree if they are one computation.
 func responseTime(elapsed time.Duration) string {
-	return strconv.FormatFloat(float64(elapsed.Microseconds())/1000, 'f', 3, 64) + "ms"
+	return strconv.FormatFloat(logger.Millis(elapsed), 'f', 3, 64) + "ms"
 }

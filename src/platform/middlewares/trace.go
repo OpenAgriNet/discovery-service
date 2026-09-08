@@ -19,28 +19,40 @@ const (
 	chainRecover = "recover"
 )
 
-// Trace is the tracing slot in the chain: a pass-through today, and the place
-// Task 23 starts the span.
+// Trace is the tracing slot in the chain. It allocates the request's fact
+// record, and 23c starts the span here.
 //
-// It is a pass-through with a side effect rather than a bare pass-through. The
-// chain entry exists purely so Task 20's order test has something to observe at
-// this slot — a link with no side effect is the one link no order test can
-// place. The request itself goes through untouched, which is what a test
-// asserting on the request the handler below receives pins.
+// The record reaches the chain HERE rather than one link down in RequestLogger,
+// which is where it used to be allocated as middlewares.correlation. The reason
+// is ordering: Trace is above RequestLogger, so a span started here cannot read
+// attributes off a record that link below it allocates. Doing it here costs
+// nothing — RequestLogger adopts what it finds, see recordFor — and it means the
+// span, the completion line and 23e's metrics read one record per request
+// instead of one each.
 //
-// Task 23 replaces this body with a hand-rolled span and drops the entry,
-// moving the order assertion to the span. NOT otelhttp: the network telemetry
-// spec requires scope.name/scope.version on every exported batch, and the
-// instrumentation scope is fixed when the span is created, so a span otelhttp
-// started would carry that package's scope for ever (A23, ADR-0011). The
-// exported signature does not change, so the chain Task 20 wires does not move
-// when that lands.
+// Unconditionally with respect to configuration, including under
+// OTEL_EXPORTER=none. Trace takes none today and recordFor asks about none
+// deliberately: a record whose lifetime depended on an environment variable
+// would make 23b's whole invariant untestable in the configuration `make test`
+// runs in, and would fail only where nobody is looking. The record is one struct
+// and a slice that grows to about twenty entries — cheaper than the span the
+// same request may not start.
+//
+// The chain entry exists so Task 20's order test has something to observe at
+// this slot; 23c drops it and moves the order assertion to the span. NOT
+// otelhttp: the network telemetry spec requires scope.name/scope.version on
+// every exported batch, and the instrumentation scope is fixed when the span is
+// created, so a span otelhttp started would carry that package's scope for ever
+// (A23, ADR-0011). The exported signature does not change, so the chain Task 20
+// wires does not move when that lands.
 func Trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Before next, not after: Recover writes its 500 from a deferred
 		// function, so an entry stamped on the way back out would be stamped
 		// after the response had already gone.
 		w.Header().Add(HeaderChain, chainTrace)
-		next.ServeHTTP(w, r)
+
+		ctx, _ := recordFor(r.Context())
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

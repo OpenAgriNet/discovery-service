@@ -7,12 +7,24 @@ import (
 	"testing"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
-// Trace is a pass-through until Task 23 starts a span inside it, so what is
-// pinned here is that it passes the request through *as it arrived* — the same
-// request value, not a copy carrying a context of its own — and that the one
-// thing it does add is its chain entry.
+// What Trace passes through, and what it adds.
+//
+// This test used to assert the handler saw the *same* *http.Request value,
+// because a link with nothing to put in the context has no reason to copy one.
+// 23b gave it something — the fact record 23c's span reads its attributes off —
+// and r.WithContext is a shallow copy by construction, so the pointer cannot
+// stay the same and asserting that it does would only pin the allocation out
+// again.
+//
+// The claim that survives is the one the pointer was standing in for: the
+// request arrives at the handler as it arrived here, with the context the single
+// difference and the record the single thing in it. Asserting the URL, header
+// and body are the SAME values rather than merely equal ones is what shows the
+// copy was WithContext's shallow one and not a request rebuilt somewhere along
+// the way.
 func TestTracePassesTheRequestThroughUnmodified(t *testing.T) {
 	var seen *http.Request
 	handler := Trace(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -23,9 +35,24 @@ func TestTracePassesTheRequestThroughUnmodified(t *testing.T) {
 	recorded := httptest.NewRecorder()
 	handler.ServeHTTP(recorded, request)
 
-	if seen != request {
-		t.Errorf("the handler saw %p, want the request Trace was given, %p", seen, request)
+	if seen == nil {
+		t.Fatal("Trace never called the handler below it")
 	}
+	sameHeaderMap := reflect.ValueOf(seen.Header).Pointer() == reflect.ValueOf(request.Header).Pointer()
+	if seen.Method != request.Method || seen.URL != request.URL ||
+		seen.Body != request.Body || !sameHeaderMap {
+		t.Errorf("the handler saw %s %v, want the request Trace was given, %s %v",
+			seen.Method, seen.URL, request.Method, request.URL)
+	}
+
+	if fact.From(seen.Context()) == nil {
+		t.Error("no record below Trace; 23c's span would have nothing to read attributes off")
+	}
+	if fact.From(request.Context()) != nil {
+		t.Error("Trace put the record on the request it was given rather than on a copy, " +
+			"which leaks it back up to whatever mounted the chain")
+	}
+
 	if got := recorded.Result().Header; len(got) != 1 {
 		t.Errorf("Trace set %v, want only %s", got, HeaderChain)
 	}

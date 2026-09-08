@@ -480,14 +480,19 @@ var registry = [numKeys]Definition{
 		Name:        "DurationMS",
 		LogKey:      "duration_ms",
 		Signals:     Log,
-		Kind:        KindInt64,
+		Kind:        KindFloat64,
 		Layer:       Local,
 		Cardinality: Unbounded,
 		Visibility:  Public,
 		Note: "Log only, and deliberately not a span attribute: response time is the " +
 			"span's own end - start, stored as a native Duration column and charted " +
 			"from there. A duration attribute would be a second copy free to disagree " +
-			"with the first. The log line has no such column, which is why it keeps one.",
+			"with the first. The log line has no such column, which is why it keeps one. " +
+			"Float64, not Int64: logger.DurationMS writes microsecond precision because " +
+			"integer milliseconds report every request inside the 20 ms budget as one of " +
+			"twenty indistinguishable values. This row said Int64 until 23b's projection " +
+			"had to read Kind to pick a constructor — the mismatch was invisible while " +
+			"nothing read the column, and it would have rounded every duration.",
 	},
 
 	// ---- The error event -----------------------------------------------------

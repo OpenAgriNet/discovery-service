@@ -28,6 +28,7 @@ import (
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
 	"github.com/OpenAgriNet/discovery-service/src/platform/httpx"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
 // RawEnvelope is the shape Envelope parses off the wire: the context every
@@ -260,21 +261,27 @@ func correlate(ctx context.Context, envelope beckn.Context) context.Context {
 	fields := make([]zap.Field, 0, 3)
 	for _, correlator := range []struct {
 		value string
+		key   fact.Key
 		field func(string) zap.Field
 	}{
-		{envelope.TransactionID, logger.TransactionID},
-		{envelope.MessageID, logger.MessageID},
-		{envelope.Action, logger.Action},
+		{envelope.TransactionID, fact.BecknTransactionID, logger.TransactionID},
+		{envelope.MessageID, fact.BecknMessageID, logger.MessageID},
+		{envelope.Action, fact.BecknAction, logger.Action},
 	} {
-		if correlator.value != "" {
-			fields = append(fields, correlator.field(correlator.value))
+		if correlator.value == "" {
+			continue
 		}
-	}
 
-	// Down to everything below, and back up to RequestLogger's completion line,
-	// which is written by a middleware that ran before this one could know any
-	// of it. See correlation.
-	correlationFrom(ctx).record(fields...)
+		// Down to everything below, as pre-populated fields on the request-scoped
+		// logger.
+		fields = append(fields, correlator.field(correlator.value))
+
+		// And back up: to RequestLogger's completion line, written by a middleware
+		// that ran before this one could know any of it, and from 23c to the span
+		// Trace started for the same reason. One table with both spellings rather
+		// than two loops, so a correlator cannot reach one and not the other.
+		fact.ObserveString(ctx, correlator.key, correlator.value)
+	}
 
 	return logger.With(ctx, fields...)
 }

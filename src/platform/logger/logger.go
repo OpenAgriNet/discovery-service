@@ -128,5 +128,15 @@ func Status(code int) zap.Field { return zap.Int("status", code) }
 // the name because a bare `duration` is a number two dashboards will read as
 // two different quantities, and zap's own duration encoder writes seconds.
 func DurationMS(elapsed time.Duration) zap.Field {
-	return zap.Float64("duration_ms", float64(elapsed.Microseconds())/1000)
+	return zap.Float64("duration_ms", Millis(elapsed))
+}
+
+// Millis is the number DurationMS carries, exported because it is now written
+// in three places that must agree: this field, the X-Response-Time header, and
+// the fact record the projection reads. Milliseconds to microsecond precision —
+// integer milliseconds would report every request this service is built to
+// serve, the 20 ms budget, as one of twenty indistinguishable values, and a
+// sub-millisecond one as zero.
+func Millis(elapsed time.Duration) float64 {
+	return float64(elapsed.Microseconds()) / 1000
 }
