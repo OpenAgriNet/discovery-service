@@ -12,14 +12,12 @@ import (
 // Hashing is CI's provider: the same vector for the same text, on every run and
 // every machine, with no model and no network.
 //
-// It is a hashing vectoriser rather than a digest reshaped into floats, so that
-// two texts sharing tokens come out closer than two that share none. Tests that
-// assert a semantic ordering therefore assert something, instead of passing
-// against a provider whose output is uncorrelated with its input.
+// A hashing vectoriser rather than a digest reshaped into floats, so two texts
+// sharing tokens come out closer than two that share none. A test asserting a
+// semantic ordering therefore asserts something.
 //
 // It approximates nothing about meaning — "paddy" and "rice" are as far apart
-// here as "paddy" and "tractor". It is a test double, and the only claim it
-// makes is determinism.
+// here as "paddy" and "tractor". Its only claim is determinism.
 type Hashing struct {
 	dimensions int
 }
@@ -32,9 +30,9 @@ func NewHashing(dimensions int) *Hashing {
 // Embed hashes each token of text into one bucket with one sign, then scales
 // the result to unit length.
 //
-// Unit length because cosine distance is what the index will be queried with:
-// leaving the magnitude proportional to token count would make a long
-// description look distant from a short one that says the same thing.
+// Unit length because the index is queried with cosine distance: a magnitude
+// proportional to token count would make a long description look distant from a
+// short one saying the same thing.
 func (h *Hashing) Embed(_ context.Context, text string) ([]float32, error) {
 	// Stated rather than routed through CheckDimensions, which would read a
 	// zero-width provider's empty vector as the right width and hand back a
@@ -63,10 +61,10 @@ func (h *Hashing) Dimensions() int {
 
 // normalised scales a vector to unit length, in place.
 //
-// A vector of all zeros — which an empty text produces, and an empty text is an
+// An all-zero vector — what an empty text produces, and an empty text is an
 // ordinary resource with no descriptor — is returned unchanged. Dividing by its
-// zero norm would fill the column with NaN, and NaN reaches pgvector as a row
-// that matches nothing and cannot be found again to be repaired.
+// zero norm would fill the column with NaN, which reaches pgvector as a row that
+// matches nothing and cannot be found again to be repaired.
 func normalised(vector []float32) []float32 {
 	sum := 0.0
 	for _, value := range vector {
