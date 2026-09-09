@@ -72,7 +72,78 @@ ARCH ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 # renders an untagged commit as v0.0.1-rc1-3-gabc1234 rather than a branch name
 # that would then be pushed as an image tag. Needs fetch-depth: 0 in CI either
 # way, so a local describe in the same checkout stays meaningful.
+#
+# DO NOT DELETE THE `zz-decoy` TAG. It is the regression fixture for exactly the
+# bug described above, and it is on origin, not just local. It is an annotated
+# tag created deliberately AFTER v0.0.1-rc4 on the same commit, so `git describe`
+# prefers it — which is the whole point: it reproduces "describe picks the
+# tag created last" on demand, and its name matches no release trigger pattern
+# so it can never start a release run. `git describe --tags` returning
+# zz-decoy-N-g<sha> on a local build is therefore the fixture WORKING, not a
+# fault to clean up, and a local binary stamped service.version=zz-decoy-... is
+# expected. Deleting the tag would tidy away the only evidence this bug stays
+# fixed. Nothing in the tree references it by name, which is why it is called
+# out here rather than left to be rediscovered.
 VERSION ?= $(shell git describe --tags --always --dirty)
+
+# The other three quarters of the build Resource.
+#
+# BUILD_DATE is the COMMIT's timestamp and not the moment the compiler ran: it
+# answers which change is deployed, and it is the half that is reproducible —
+# building the same commit twice must not produce two different stamps.
+#
+# Each is `?=` for the same reason VERSION is: a build system that already knows
+# the answer should be able to say so rather than have us re-derive it. Each
+# degrades to empty outside a git checkout, and empty is what the linker stamp
+# reads as "nothing supplied" — see linkerStamp in src/platform/buildinfo/buildinfo.go,
+# which then falls back to unknown/unknown/epoch rather than to a lie.
+# BUILD_DATE is forced to UTC Z-form rather than %cI's local offset, because the
+# toolchain's vcs.time is UTC and OVERRIDES this value wherever it exists — so
+# the same commit would otherwise stamp two different-looking timestamps
+# depending on which build produced the binary, for no difference in meaning.
+COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null)
+BUILD_DATE ?= $(shell TZ=UTC0 git show -s --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD 2>/dev/null)
+TREE_STATE ?= $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo clean || echo dirty)
+
+# All four values this build injects at link time, and it used to be one.
+#
+# The standing preference is to read the toolchain's own build stamp instead, so
+# that Makefile, Dockerfile and CI need not agree on a flag string. Not one of
+# the four can take that route:
+#
+#   service.version  — Main.Version carries the MODULE's version and never
+#                      VERSION above.
+#   the other three  — debug.ReadBuildInfo's vcs.revision / vcs.time /
+#                      vcs.modified are written only when the toolchain can see
+#                      a git working tree, and the release image is built from a
+#                      copied context that has none. So build.commit,
+#                      build.tree_state and build.date read unknown, unknown and
+#                      the epoch on precisely the binaries you cannot identify by
+#                      looking at your own checkout. The toolchain's answer still
+#                      WINS where it exists; this is the floor under it.
+#
+# Why, and what the release image's stamp does not carry:
+# docs/design/opentelemetry.md, "Build identity".
+#
+# The Dockerfile must spell these exact strings. tests/architecture/ldflags_test.go
+# asserts the two files stamp the same set and that every symbol exists, because
+# `go build` ignores an -X naming a symbol that does not, leaving a green build
+# shipping `dev` and an unknown commit.
+#
+# The import path is written out four times rather than held in a make variable
+# on purpose: that test greps the FILE. A `$(TELEMETRY_PKG)` here would leave it
+# comparing a variable reference against the Dockerfile's literal, which is
+# exactly the drift it exists to catch.
+# Exported so `docker compose build` sees them. Compose cannot shell out to git,
+# so docker-compose.yml's build.args read these from the environment; without the
+# export, `make run` would build an image stamped dev/unknown while `make docker`
+# built a correct one from the same checkout.
+export VERSION COMMIT BUILD_DATE TREE_STATE
+
+LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.version=$(VERSION) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.commit=$(COMMIT) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.buildDate=$(BUILD_DATE) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.treeState=$(TREE_STATE)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
 
@@ -94,6 +165,14 @@ IMAGE_REPOS = ghcr.io/$(OWNER)/$(IMAGE_NAME)
 # — query embedding, HNSW, RRF, the dimension guard, the degradation report —
 # would go untested from the day semantic search was deferred.
 TEST_ENV := EMBEDDING_PROVIDER=hashing
+
+# The telemetry stack is the app stack plus one profile and one variable. It
+# was a second compose file until 2026-09-09, because it has to change the
+# service container's environment and a profile can only add containers;
+# OTEL_EXPORTER is the whole of that change, so interpolating it in the one
+# compose file replaces the overlay. Spelled once here so the three telemetry
+# targets cannot drift into disagreeing about what the stack is.
+TELEMETRY := OTEL_EXPORTER=otlp docker compose --profile app --profile telemetry
 
 # Coverage instruments these packages regardless of which test binary is
 # running. Without it Go instruments only the package under test, and
@@ -129,7 +208,7 @@ help:
 # bin/. Plain `go build ./...` links a lone main into the working directory,
 # which drops a binary in the repository root.
 build:
-	$(GO) build -trimpath -o $(BIN_DIR)/ ./...
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/ ./...
 
 ## test: run the unit and integration suites
 test:
@@ -428,8 +507,19 @@ security: $(GOVULNCHECK)
 	$(GOVULNCHECK) ./...
 
 ## docker: build the service image
+# All four stamp values cross as build args because the build context carries no
+# .git: neither `git describe` nor `git rev-parse` can run inside the image, and
+# the toolchain writes no vcs.* build settings there either. Without them every
+# deployed binary reports `dev` and an unknown commit on its telemetry Resource,
+# and OP5's question — which build is running — is unanswerable in the one place
+# it is ever asked.
 docker:
-	docker build -t $(IMAGE) .
+	docker build \
+	  --build-arg VERSION=$(VERSION) \
+	  --build-arg COMMIT=$(COMMIT) \
+	  --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  --build-arg TREE_STATE=$(TREE_STATE) \
+	  -t $(IMAGE) .
 
 ## image-build: build this arch's release image locally and gate it on Trivy
 # Built and loaded locally, NOT pushed: Trivy then scans the exact bytes that
@@ -509,6 +599,55 @@ run:
 ## logs: follow the service's output
 logs:
 	docker compose --profile app logs -f discovery-service
+
+## telemetry: the same stack plus an OTel collector, with the service exporting
+##            to it. Metrics appear at localhost:8889/metrics — including
+##            discover call count and latency, which are DERIVED from the spans
+##            by the spanmetrics connector and are instrumented nowhere in Go.
+telemetry:
+	$(TELEMETRY) up -d --build
+
+## telemetry-metrics: the derived streams, which is the point of the profile.
+##                    Waits, because a bare scrape right after `make telemetry`
+##                    reports zeros that are not the answer — see below.
+telemetry-metrics:
+	@# TWO waits, in this order, because they are for different things and the
+	@# second cannot be skipped. A stream appears only on the connector's flush
+	@# interval AND only after a request of that shape, so for up to a minute
+	@# there is nothing at all. Then the histogram arrives carrying its true
+	@# count while `discovery_calls_total` still reads 0 for roughly another
+	@# minute — measured: three consecutive scrapes at 0, then 3/15/1 exactly
+	@# matching discovery_duration_milliseconds_count, stable thereafter.
+	@#
+	@# So waiting on the histogram alone still prints a zero counter, which is
+	@# the trap this target exists to close. But it has to come first: a zero
+	@# counter on its own is indistinguishable from an idle service, whereas a
+	@# nonzero _count PROVES traffic was seen — which is what makes the second
+	@# wait sound rather than a guess that something will turn up.
+	@printf 'waiting for the connector to flush'
+	@for i in $$(seq 1 30); do \
+		curl -fsS localhost:8889/metrics 2>/dev/null \
+			| grep -qE '^discovery_duration_milliseconds_count\{.* [1-9][0-9]*$$' && break; \
+		printf '.'; sleep 5; \
+	done
+	@printf ' traffic seen; waiting for the counter to converge'
+	@for i in $$(seq 1 30); do \
+		curl -fsS localhost:8889/metrics 2>/dev/null \
+			| grep -qE '^discovery_calls_total\{.* [1-9][0-9]*$$' && break; \
+		printf '.'; sleep 5; \
+	done
+	@printf ' ok\n'
+	@curl -fsS localhost:8889/metrics | grep -E '^discovery_|^pgxpool_' || \
+		{ echo "nothing yet — the connector emits on its flush interval, and a stream appears only after a request of that shape. Drive some: ./examples/verify.sh"; exit 1; }
+
+## telemetry-logs: the collector's view of the spans, since the local stack has
+##                 no trace backend to send them to
+telemetry-logs:
+	$(TELEMETRY) logs -f otel-collector
+
+## telemetry-down: stop the telemetry stack and discard its volumes
+telemetry-down:
+	$(TELEMETRY) down -v
 
 ## verify: publish the sample catalog and assert text, spatial and filter
 ##         retrieval against a stack already running via `make run`
@@ -594,4 +733,5 @@ $(TRIVY):
 	sqlc-verify migrate run logs migrate-down security trivy-deps \
 	trivy-image trivy-release-gate trivy-report trivy-gate docker \
 	image-build image-push image-publish require-image-repos up down \
-	verify newman audit tools clean
+	verify newman audit tools clean telemetry telemetry-metrics \
+	telemetry-logs telemetry-down

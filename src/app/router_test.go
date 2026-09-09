@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,8 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/platform/middlewares"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 	"github.com/OpenAgriNet/discovery-service/src/platform/validation"
 	"github.com/OpenAgriNet/discovery-service/src/publish"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
@@ -59,6 +62,13 @@ func (livePool) Ping(context.Context) error { return nil }
 //
 // It builds the App by hand rather than calling Build, because Build's job is
 // to open a pool and this file's subject is what sits above one.
+//
+// Telemetry is left nil, and that is the point for every test but the two that
+// set it: a nil provider is what most of this file exercises, so `chain` calling
+// Tracer() on one has to be safe. Provider.Tracer() answers with a no-op tracer
+// rather than dereferencing, and this is what would catch a change that stopped
+// it doing so — as a panic in eleven tests rather than at 3am in a deployment
+// that left OTEL_EXPORTER unset.
 func testApp(t *testing.T, db Pinger, log *zap.Logger) *App {
 	t.Helper()
 
@@ -136,27 +146,176 @@ func TestTheRouteTableIsTheFourAndTheAliasIsNotAmongThem(t *testing.T) {
 	}
 }
 
-// The chain order, proved by the ORDER of the two entries and not by the
-// presence of either.
+// The chain order, proved by the span rather than by the X-Beckn-Chain header
+// it used to be proved by.
 //
-// Both are appended before Recover writes its 500, so a test asserting only
-// that a marker survived the panic passes under either nesting. Reading
-// Values() gives insertion order, which does not.
-func TestOnAPanickingRouteTheChainReadsTraceThenRecover(t *testing.T) {
+// Trace stamped a `trace` entry there only so this assertion had something to
+// observe at that slot. 23c gave it a real side effect — the span — and a marker
+// kept beside it would be a second thing to keep true. What is asserted is the
+// same claim in stronger terms: not that Trace ran before Recover, but that the
+// 500 Recover wrote is ON the span, which is what an operator opening the trace
+// for a failed request actually needs and what the ordering was for.
+//
+// Recover stamps its own entry still — nothing else places it — and it is
+// checked here so the two links are named in one place.
+func TestOnAPanickingRouteTheFiveHundredIsInsideTheSpan(t *testing.T) {
+	provider, recorder := telemetry.NewRecorder()
+
+	app := testApp(t, livePool{}, zap.NewNop())
+	app.Telemetry = provider
+
 	panics := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("the handler fell over")
 	})
 
-	recorder := request(t, chain(testApp(t, livePool{}, zap.NewNop()))(panics), http.MethodPost, "/discover", validDiscover)
+	response := request(t, chain(app)(panics), http.MethodPost, "/discover", validDiscover)
 
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 — the panic was not recovered", recorder.Code)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — the panic was not recovered", response.Code)
+	}
+	if got := response.Header().Values(middlewares.HeaderChain); len(got) != 1 || got[0] != "recover" {
+		t.Errorf("%s = %v, want [recover] — Trace no longer stamps one", middlewares.HeaderChain, got)
 	}
 
-	got := recorder.Header().Values(middlewares.HeaderChain)
-	want := []string{"trace", "recover"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("%s = %v, want %v — Trace is outside Recover", middlewares.HeaderChain, got, want)
+	spans := recorder.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("%d spans exported for one request, want 1", len(spans))
+	}
+	if got := spans[0].Attributes["http.status_code"]; got != int64(http.StatusInternalServerError) {
+		t.Errorf("http.status_code = %v, want 500 — Recover is not inside the span, so the "+
+			"one request an operator opens the trace for is the one with nothing on it", got)
+	}
+	if spans[0].Status != "Error" {
+		t.Errorf("span status = %q on a recovered panic, want Error", spans[0].Status)
+	}
+}
+
+// TestTheAssembledChainNamesTheSpanByTheAction is the whole chain answering the
+// question each of its links answers a part of: Trace starts the span, Envelope
+// four links below parses the action, and Trace's deferred block renames it.
+//
+// It is here rather than in middlewares because the middleware tests drive
+// Trace over a stub handler that writes the record itself; this is the only
+// place the real Envelope does it, over the real chain, through the real
+// container wiring. A chain that dropped Trace, or a Trace handed a tracer that
+// was not the App's, would leave every span named for its route and nothing in
+// the middleware tests would notice.
+//
+// It does not pin the ORDER — the record is allocated above both links and
+// Envelope writes into it wherever it sits, so this still passes with Trace
+// below Envelope. TestOnAPanickingRouteTheFiveHundredIsInsideTheSpan is the one
+// that fails on that, and it is checked to fail on it.
+func TestTheAssembledChainNamesTheSpanByTheAction(t *testing.T) {
+	provider, recorder := telemetry.NewRecorder()
+
+	app := testApp(t, livePool{}, zap.NewNop())
+	app.Telemetry = provider
+
+	served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	request(t, chain(app)(served), http.MethodPost, "/discover", validDiscover)
+
+	spans := recorder.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("%d spans exported for one request, want 1", len(spans))
+	}
+	if spans[0].Name != "discover" {
+		t.Errorf("span name = %q, want the action; Envelope is below Trace in the assembled "+
+			"chain and its correlators have to reach the span", spans[0].Name)
+	}
+}
+
+// traced serves one request through the whole router with a recording exporter
+// and gives back the single span it produced.
+//
+// NewRouter rather than chain over a stub, which is the difference that makes
+// the two tests below worth having: the facts come from the real controllers
+// and the real service, over the real store, and the record they write into is
+// the one Trace allocated at the top of the chain.
+func tracedSpan(t *testing.T, path, body string) telemetry.Span {
+	t.Helper()
+
+	provider, recorder := telemetry.NewRecorder()
+	app := testApp(t, livePool{}, zap.NewNop())
+	app.Telemetry = provider
+
+	request(t, NewRouter(app), http.MethodPost, path, body)
+
+	spans := recorder.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("%d spans exported for one request, want 1", len(spans))
+	}
+	return spans[0]
+}
+
+func eventNames(span telemetry.Span) []string {
+	spelled := make([]string, 0, len(span.Events))
+	for _, event := range span.Events {
+		spelled = append(spelled, event.Name)
+	}
+	return spelled
+}
+
+// TestTheEventsOfOneRequestLandOnOneSpanInOrder — 23d end to end.
+//
+// Every other test of the events works on one layer: the projection is pinned
+// in telemetry/traces_test.go, the timestamping in middlewares, and each
+// call site against its own record. None of them can show that the three
+// point-in-time facts of a discover — written by the controller, by the service
+// below it and by the controller again — reach the SAME span, in the order they
+// happened. A record allocated per handler rather than per request, or a
+// service given a context that had lost it, would leave every one of those
+// tests green and this one with one event, or none.
+//
+// Non-decreasing rather than strictly increasing, deliberately. Strictness at
+// this level would be an assertion about the clock's resolution between three
+// calls with no work between them; the acceptance criterion's real content is
+// that the stamps come from where the facts were observed, and
+// TestTheEventsAreStampedWhereTheyHappened pins that with sleeps and was
+// checked to fail without WithTimestamp. What is worth pinning here is order
+// and containment.
+func TestTheEventsOfOneRequestLandOnOneSpanInOrder(t *testing.T) {
+	span := tracedSpan(t, "/discover", validDiscover)
+
+	want := []string{
+		fact.RequestInfo.EventName(),
+		fact.RetrievalInfo.EventName(),
+		fact.ResponseInfo.EventName(),
+	}
+	if got := eventNames(span); !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+
+	for index, event := range span.Events {
+		if event.Time.Before(span.Start) || !event.Time.Before(span.End) {
+			t.Errorf("%s at %s is outside the span [%s, %s)",
+				event.Name, event.Time, span.Start, span.End)
+		}
+		if index > 0 && event.Time.Before(span.Events[index-1].Time) {
+			t.Errorf("%s is stamped before %s, which ran first",
+				event.Name, span.Events[index-1].Name)
+		}
+	}
+}
+
+// TestARefusedRequestCarriesTheErrorEventAndNothingElse.
+//
+// The error event is the one of the four no controller writes — it comes from
+// WriteNack, which this body reaches through Envelope, four links above any
+// handler. So this is the only place the assembled chain shows that a rejection
+// too early for a controller to see is still on the span.
+//
+// And nothing else: a request that was refused before it was parsed has no
+// intent to describe and no retrieval to report, so an empty request_info here
+// would read as a discover that arrived asking for nothing.
+func TestARefusedRequestCarriesTheErrorEventAndNothingElse(t *testing.T) {
+	span := tracedSpan(t, "/discover", `{"context":{`)
+
+	want := []string{fact.ErrorEvent.EventName()}
+	if got := eventNames(span); !slices.Equal(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
 	}
 }
 

@@ -12,20 +12,16 @@ import (
 	"github.com/OpenAgriNet/discovery-service/migrations"
 )
 
-// migrationSource names the source driver in golang-migrate's own error text.
-// It is not a path: the embedded filesystem has no path outside the binary, and
-// a name that looked like one would send an operator hunting for a directory
-// that is not on the disk.
+// migrationSource names the source driver in golang-migrate's error text. Not a
+// path: the embedded filesystem has none, and a name that looked like one would
+// send an operator hunting for a directory that is not on the disk.
 const migrationSource = "embedded"
 
 // Migrate applies every pending migration from the binary's embedded copy
 // (D10), and is what DATABASE_AUTO_MIGRATE switches on.
 //
-// It takes no context, because golang-migrate's Up takes none either and a
-// context parameter this function could only ignore would promise a
-// cancellation that never happens. A migration is the one boot step that is
-// genuinely not interruptible partway: the half of it that already ran is
-// committed.
+// No context parameter: golang-migrate's Up takes none, so one here would
+// promise a cancellation that never happens.
 func Migrate(dsn string) error {
 	target, err := migrationTarget(dsn)
 	if err != nil {
@@ -42,13 +38,13 @@ func Migrate(dsn string) error {
 		return fmt.Errorf("open the migrator: %w", err)
 	}
 
-	// Both errors, and Close's two, are collected before any is returned: a
-	// migration that ran against a connection it then failed to release is a
-	// leak that the Up error would otherwise hide.
+	// Up's error and Close's two are collected before any is returned: a
+	// connection the migrator failed to release is a leak the Up error would
+	// otherwise hide.
 	upErr := instance.Up()
 	if errors.Is(upErr, migrate.ErrNoChange) {
-		// Not an error. AutoMigrate runs on every boot, and "already at the
-		// latest version" is the answer on all but the first.
+		// Not an error: this runs on every boot, and "already at the latest
+		// version" is the answer on all but the first.
 		upErr = nil
 	}
 	if upErr != nil {
@@ -66,28 +62,22 @@ func Migrate(dsn string) error {
 }
 
 // migrationTarget translates DATABASE_URL into the URL golang-migrate wants.
-//
-// The scheme is rewritten to pgx5 rather than required of the caller.
-// DATABASE_URL is one value read by the pool and by this, the pool wants
-// postgres:// and golang-migrate resolves its database driver by scheme, so
-// asking an operator to supply a scheme that works for exactly one of the two
-// readers is asking them to get it wrong.
+// The scheme is rewritten to pgx5 rather than required of the caller: one value
+// serves the pool, which wants postgres://, and golang-migrate, which resolves
+// its driver by scheme.
 func migrationTarget(dsn string) (string, error) {
 	target, err := url.Parse(dsn)
 	if err != nil {
-		// The DSN itself is deliberately absent from the message: it carries
-		// the database password, and a boot failure is the most-copied line in
-		// any incident channel.
+		// The DSN stays out of the message: it carries the password, and a boot
+		// failure is the most-copied line in any incident channel.
 		return "", fmt.Errorf("parse the connection string: %w", err)
 	}
 
-	// pgxpool.ParseConfig accepts a libpq keyword/value DSN as readily as a URL,
-	// so the pool opens on one and nothing upstream objects. url.Parse accepts
-	// it too — it simply does not mean anything, and overwriting the scheme of a
-	// value that has none produces pgx5://host=localhost%20password=s3cret...,
-	// which golang-migrate then reports verbatim, password and all. That leak is
-	// what this check exists to prevent; the confusing failure is only the
-	// second reason.
+	// The check prevents a password LEAK, not merely a confusing failure. pgx
+	// accepts a libpq keyword/value DSN and url.Parse does not reject one, so
+	// overwriting the scheme of a value that has none yields
+	// pgx5://host=localhost%20password=s3cret..., which golang-migrate then
+	// reports verbatim.
 	if target.Scheme != "postgres" && target.Scheme != "postgresql" {
 		return "", errors.New("the connection string must be a postgres:// URL: golang-migrate " +
 			"resolves its database driver by scheme, and a libpq keyword/value DSN has none")

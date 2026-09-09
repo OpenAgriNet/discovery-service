@@ -159,7 +159,7 @@ func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture
 	for _, fixture := range fixtures {
 		visibleTo := fixture.visibleTo
 		if visibleTo == nil {
-			visibleTo = []string{"bap.example.com"}
+			visibleTo = []string{"local-network"}
 		}
 		derive := fixture.derive
 		if derive == nil {
@@ -486,8 +486,8 @@ func TestARetrieverNeverReturnsMoreThanItsCap(t *testing.T) {
 	pool := dbtest.NewPostgres(t)
 	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	if _, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
-		ID: "cat-cap", NetworkID: "bap.example.com", Active: true, ProtocolVersion: beckn.Version,
-		VisibleTo: []string{"bap.example.com"}, Resources: resources,
+		ID: "cat-cap", NetworkID: "local-network", Active: true, ProtocolVersion: beckn.Version,
+		VisibleTo: []string{"local-network"}, Resources: resources,
 	}, domain.UpdateModeFull, deriveSearchable); err != nil {
 		t.Fatalf("publish: %v", err)
 	}

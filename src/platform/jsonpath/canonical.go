@@ -1,18 +1,17 @@
 // Package jsonpath reduces the subset of JSONPath this service reads to one
 // spelling.
 //
-// It exists for a single reason: geometry lookup is a byte comparison. The
-// publish walker stores the path it found a geometry at in
-// resource_geometries.target_path, and the discover mapper turns intent.targets
-// into the array on the right of "target_path = ANY($1)". Nothing normalises
-// between them at the database, so a caller writing $.catalogs[*].geo and a
-// caller writing $['catalogs'][*]['geo'] must arrive at the same bytes here or
-// one of them silently matches nothing.
+// It exists for one reason: geometry lookup is a byte comparison. Publish stores
+// the path it found a geometry at in resource_geometries.target_path, and discover
+// turns intent.targets into the array on the right of "target_path = ANY($1)".
+// Nothing normalises between them at the database, so $.catalogs[*].geo and
+// $['catalogs'][*]['geo'] must arrive at the same bytes here or one of them
+// silently matches nothing.
 //
-// The subset is deliberately narrow. Everything JSONPath can express beyond
-// naming a fixed location — recursive descent, filters, slices, unions — is
-// refused rather than approximated, because an expression this service reads
-// wrongly widens a spatial query instead of failing it.
+// The subset is deliberately narrow: everything beyond naming a fixed location —
+// recursive descent, filters, slices, unions — is refused rather than
+// approximated, because a misread expression widens a spatial query instead of
+// failing it.
 package jsonpath
 
 import "strings"
@@ -21,10 +20,10 @@ import "strings"
 // service stores and compares, or returns the empty string if it cannot read the
 // path.
 //
-// The empty return is the refusal, and every caller must treat it as one: the
-// intent mapper answers 400, and the publish walker never produces a path it
-// cannot read. Returning the input unchanged instead would put an unmatchable
-// string in the ANY() array and turn a bad request into an empty result.
+// The empty return is the refusal and every caller must treat it as one: the
+// intent mapper answers 400. Returning the input unchanged would put an
+// unmatchable string in the ANY() array and turn a bad request into an empty
+// result.
 func Canonicalise(path string) string {
 	rest := strings.TrimSpace(path)
 	if !strings.HasPrefix(rest, "$") {
@@ -59,8 +58,8 @@ func Canonicalise(path string) string {
 // dotSegment reads one .name or .* segment and returns it in bracket form.
 //
 // A second dot is recursive descent, which names an unbounded set of locations
-// rather than one, so it is refused here rather than flattened into something
-// that looks like a single path.
+// rather than one, so it is refused rather than flattened into something that
+// looks like a single path.
 func dotSegment(rest string) (segment, remainder string, ok bool) {
 	if len(rest) > 1 && rest[1] == '.' {
 		return "", "", false
@@ -83,8 +82,8 @@ func dotSegment(rest string) (segment, remainder string, ok bool) {
 
 // bracketSegment reads one [*], ['name'], ["name"] or [0] segment.
 //
-// Concrete indices are kept as written. They are what makes source_path unique
-// among several geometries found under one wildcard, so folding them here would
+// Concrete indices are kept as written: they are what makes source_path unique
+// among several geometries found under one wildcard, so folding them would
 // collide every location in an array onto its first element.
 func bracketSegment(rest string) (segment, remainder string, ok bool) {
 	if strings.HasPrefix(rest, "[*]") {
@@ -112,7 +111,7 @@ func bracketSegment(rest string) (segment, remainder string, ok bool) {
 //
 // A backslash inside the name is refused rather than unescaped: this subset has
 // no escape grammar, and a half-understood one would let two different names
-// canonicalise to the same bytes.
+// reach the same bytes.
 func quotedSegment(rest string) (segment, remainder string, ok bool) {
 	quote := rest[1]
 
@@ -135,8 +134,8 @@ func quotedSegment(rest string) (segment, remainder string, ok bool) {
 // isMemberName reports whether name is one this subset will carry.
 //
 // The '@' is there for JSON-LD: "@context" and "@type" are ordinary members of a
-// published catalog, and a name check that rejected them would make the
-// attributes block unaddressable.
+// published catalog, and rejecting them would make the attributes block
+// unaddressable.
 func isMemberName(name string) bool {
 	if name == "" {
 		return false
@@ -151,10 +150,10 @@ func isMemberName(name string) bool {
 
 // isMemberByte reports whether c may appear in a member name.
 //
-// Split out of isMemberName so that rootMember, which has to find where a name
-// ENDS rather than check one it already has, reads the same character class.
-// Two copies of this class would be two chances for a name to be addressable
-// in one file and not the other.
+// Split out of isMemberName so rootMember, which has to find where a name ENDS
+// rather than check one it already has, reads the same character class. Two
+// copies would be two chances for a name to be addressable in one and not the
+// other.
 func isMemberByte(c byte) bool {
 	switch {
 	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
@@ -168,8 +167,7 @@ func isMemberByte(c byte) bool {
 // isIndex reports whether digits is a non-negative integer in its only spelling.
 //
 // "01" is refused because it addresses the same element as "0" while comparing
-// unequal to it, which is exactly the kind of near-miss this package exists to
-// keep out of the database.
+// unequal to it — the near-miss this package exists to keep out of the database.
 func isIndex(digits string) bool {
 	if digits == "" {
 		return false

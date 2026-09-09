@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 
 	"github.com/OpenAgriNet/discovery-service/src/app"
+	"github.com/OpenAgriNet/discovery-service/src/platform/buildinfo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
@@ -26,10 +27,9 @@ func main() {
 // run is main with its effects as parameters, so the exit code is the only
 // thing main itself decides.
 //
-// The build line goes out first, before configuration is even read: the most
-// common question about a service that failed to start is which build failed,
-// and an error printed by a binary that never said what it was is an error
-// nobody can place.
+// The build line goes out first, before configuration is read: the most common
+// question about a service that failed to start is which build failed, and an
+// error from a binary that never said what it was is one nobody can place.
 func run(ctx context.Context, out io.Writer) error {
 	if err := writeBuildInfo(out); err != nil {
 		return err
@@ -44,40 +44,53 @@ func run(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// Closes the pool and flushes the logger, on the shutdown path and on the
+	// Closes the pool and flushes the logger, on the shutdown path and the
 	// serve-failed path alike. app.Run does not return until the listener is
-	// closed and no handler is running, so nothing is still holding a
-	// connection when this fires.
+	// closed and no handler is running, so nothing still holds a connection when
+	// this fires.
 	defer application.Close()
 
 	return app.Run(ctx, application)
 }
 
-// writeBuildInfo reports the module, version and VCS revision this binary was
-// linked from. The values are read from the toolchain's own build stamp rather
-// than injected with -ldflags, so Makefile, Dockerfile and CI do not have to
-// agree on a flag string for a deployed image to identify itself.
+// writeBuildInfo names the build this binary was linked from: module path,
+// release tag, commit, commit date and tree state.
+//
+// It reads buildinfo.Read — the SAME four values the telemetry Resource is
+// assembled from — so an operator reading the log and a facilitator reading a
+// span cannot be told two different things about which build is running.
+//
+// It read debug.BuildInfo's Main.Version and vcs.revision until 2026-09-10, and
+// so the first line of every release container's log was:
+//
+//	github.com/OpenAgriNet/discovery-service (devel) unknown
+//
+// `(devel)` because a .git-less build has no module version, `unknown` because
+// it has no VCS stamp — the same cause that left three attributes empty on every
+// exported span, surfacing in the place an operator looks first.
+// docs/design/opentelemetry.md, "Build identity" holds the reasoning; do not
+// restate it here — it was wrong at four sites until it was measured.
+//
+// Plain text rather than a zap line, which is a trade and not an oversight. run
+// emits this BEFORE config.Load, because the most common question about a
+// service that failed to start is which build failed, and the logger does not
+// exist until app.Build. Making it structured would move it after the two steps
+// most likely to fail — precisely when it is worth having.
+//
+// debug.ReadBuildInfo is still consulted, for the module path alone: that is
+// the one field here the linker stamp does not carry, and it is the same in
+// every build.
 func writeBuildInfo(w io.Writer) error {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return fmt.Errorf("read build info: not recorded in this binary")
 	}
 
-	_, err := fmt.Fprintf(w, "%s %s %s\n", info.Main.Path, info.Main.Version, vcsRevision(info))
+	build := buildinfo.Read()
+	_, err := fmt.Fprintf(w, "%s %s %s %s %s\n",
+		info.Main.Path, build.Version, build.Commit, build.Date, build.TreeState)
 	if err != nil {
 		return fmt.Errorf("write build info: %w", err)
 	}
 	return nil
-}
-
-// vcsRevision returns the commit the binary was built from. A build from an
-// exported tree — and every `go test` binary — carries no VCS stamp at all, so
-// the absence is reported as a value rather than as an error.
-func vcsRevision(info *debug.BuildInfo) string {
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
-		}
-	}
-	return "unknown"
 }

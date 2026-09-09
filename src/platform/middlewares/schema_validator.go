@@ -11,35 +11,26 @@ import (
 )
 
 // notMounted is what a chain assembled without Envelope above this middleware
-// panics with.
-//
-// A panic rather than a pass-through, because the alternative is a service that
-// silently validates nothing: there is no envelope to check and no buffered
-// body to check it against, so letting the request past would disable the whole
-// of L1 and C6 at once and report 200 while doing it. Recover sits above and
-// turns this into a logged 500 — which is what a wiring bug is.
+// panics with. A panic rather than a pass-through: with no envelope and no
+// buffered body, letting the request past would disable L1 and C6 at once and
+// report 200 while doing it. Recover turns it into a logged 500.
 const notMounted = "SchemaValidator is mounted without Envelope above it"
 
 // SchemaValidator refuses a request that does not satisfy the protocol, and
 // reports every way in which it does not.
 //
-// Two passes, and the order matters. The envelope rules run first and run
-// unconditionally (C6): the published Context declares no `required` list, so
-// L1 cannot refuse a body carrying no transaction id however strict it is, and
-// a response context cannot be built without those fields at all. L1 runs
-// second and only when configured on, because that flag is the one an operator
-// reaches for when a protocol point release outruns the spec they have cached.
+// Two passes, in this order. The envelope rules run first and unconditionally
+// (C6) — the published Context declares no `required` list, so L1 cannot refuse
+// a body carrying no transaction id however strict it is. L1 runs second and
+// only when configured on.
 //
-// Faults from a pass are aggregated and chained through details.cause (C7) so a
-// caller with five mistakes learns about five. The two passes are not merged
-// into one chain: once the context is unreadable, every schema fault below it
-// is a consequence of that rather than a separate thing to fix, and reporting
-// both would bury the one the caller has to act on.
+// Faults within a pass are chained through details.cause (C7) so a caller with
+// five mistakes learns about five. The two passes are NOT merged: once the
+// context is unreadable every schema fault below it is a consequence, and
+// reporting both would bury the one the caller has to act on.
 //
-// The message id is lifted off the envelope before anything judges it (C13) and
-// handed to WriteNack as sent — including the value this middleware is in the
-// middle of rejecting as malformed, because the NACK reporting a bad message id
-// is the one NACK the caller cannot correlate any other way.
+// The message id is echoed as sent (C13), including the value being rejected as
+// malformed — that NACK is the one the caller cannot correlate any other way.
 func SchemaValidator(cfg config.Errors, rules config.Validation, index *validation.SpecIndex) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

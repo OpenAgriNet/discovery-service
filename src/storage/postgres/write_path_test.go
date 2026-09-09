@@ -694,7 +694,7 @@ func TestFilterDocCarriesThisResourceAloneWithItsCatalogAndItsOffers(t *testing.
 			"id": "c1",
 			"descriptor": {"code": "HUL-BLR", "name": "HUL Bangalore"},
 			"provider": {"id": "p1", "availableAt": [{"gps": "12.97,77.59"}]},
-			"bppId": "bpp.example.com"
+			"bppId": "provider.example.org"
 		}`),
 		Resources: []domain.ResourcePatch{
 			resourcePatch("r-a", `{"grade":"A"}`),
@@ -720,7 +720,7 @@ func TestFilterDocCarriesThisResourceAloneWithItsCatalogAndItsOffers(t *testing.
 	if descriptor["code"] != "HUL-BLR" {
 		t.Errorf("the catalog block carries descriptor %v, want the published one", block["descriptor"])
 	}
-	if block["bppId"] != "bpp.example.com" {
+	if block["bppId"] != "provider.example.org" {
 		t.Errorf("the catalog block carries bppId %v, want the published one", block["bppId"])
 	}
 

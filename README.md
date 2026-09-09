@@ -14,11 +14,17 @@ measurement and what it means.
   pgvector 0.8 ·
   uber/h3-go v4 · kin-openapi · zap · testify · testcontainers-go.
 
-The design is specified in
-[`docs/design/discover-and-publish.md`](docs/design/discover-and-publish.md);
-the decisions behind it are recorded in [`docs/adr/`](docs/adr/README.md). Read
-the design document before changing anything here — the constraints it states
-are binding, not advisory.
+**[`docs/`](docs/README.md) is the way in.** Four short documents — a
+[quickstart](docs/quickstart.md), [how publish and
+discover work](docs/publish-and-discover.md), the
+[telemetry](docs/telemetry.md) and the [registry](docs/registry.md) — plus the
+[API artefacts](docs/api/README.md) and the sixteen
+[ADRs](docs/adr/README.md).
+
+The specification is
+[`docs/design/implementation-plan.md`](docs/design/implementation-plan.md), and
+it is binding rather than advisory. Read it before changing anything here; where
+it and one of the four documents above disagree, it wins.
 
 ## Requirements
 
@@ -54,8 +60,9 @@ Compose profile, which `make run` selects.
 That stack applies its own migrations (they are compiled into the binary) and
 reads the Beckn specification from `tests/testdata/beckn-v2.0.0.yaml`, mounted
 at the cache path. The boot logs one warning about the registry fetch it did
-not do, which is why it works with no network; set `VALIDATION_SPEC_URL` to
-exercise the fetch path instead.
+not do, which is why it works with no network. That file is byte-identical to
+the `core-v2.0.0-lts` tag of `beckn/protocol-specifications-v2`; set
+`VALIDATION_SPEC_URL` to its raw URL to exercise the fetch path instead.
 
 With the stack up, there is a worked catalog and the requests that find it:
 
@@ -103,7 +110,9 @@ overrides; that file is gitignored. **Secrets — `DATABASE_URL` above all —
 belong in neither YAML file.**
 
 The Beckn specification is fetched at boot from `VALIDATION_SPEC_URL` and
-cached under `.cache/beckn/`. It is deliberately not committed and not baked
+cached under `.cache/beckn/`. It defaults to the `core-v2.0.0-lts` tag of
+`beckn/protocol-specifications-v2` — a tag rather than a branch, so an upstream
+merge cannot change the validator under a running deployment. It is not baked
 into the image; air-gapped deploys mount a cache file at
 `VALIDATION_SPEC_CACHE_PATH`.
 

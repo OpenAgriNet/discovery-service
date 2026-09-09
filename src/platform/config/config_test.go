@@ -55,7 +55,6 @@ func TestDefaultsAreTheFloor(t *testing.T) {
 	assertEqual(t, "Embeddings.Provider", cfg.Embeddings.Provider, "noop")
 	assertEqual(t, "Embeddings.Dimensions", cfg.Embeddings.Dimensions, 768)
 	assertEqual(t, "Validation.EnableL1Schema", cfg.Validation.EnableL1Schema, true)
-	assertEqual(t, "Validation.EnableL2Context", cfg.Validation.EnableL2Context, false)
 	assertEqual(t, "Auth.EnableSignatureVerification", cfg.Auth.EnableSignatureVerification, false)
 	assertEqual(t, "OTel.Exporter", cfg.OTel.Exporter, "none")
 
@@ -143,10 +142,10 @@ func TestALayerDoesNotClobberAValueItDoesNotSet(t *testing.T) {
 // ordinary shapes this arrives in, and instance.yaml is the layer an operator
 // is most likely to have set.
 func TestABlankVariableDoesNotEraseTheLayerBelow(t *testing.T) {
-	instance := writeYAML(t, "search:\n  maxPageSize: 40\nlog:\n  level: warn\nvalidation:\n  specURL: https://spec.example/beckn.yaml\n")
+	instance := writeYAML(t, "search:\n  maxPageSize: 40\nlog:\n  level: warn\nvalidation:\n  specURL: https://spec.example/beckn.yaml\notel:\n  endpoint: collector.example:4317\n")
 
 	environment := baseEnv()
-	for _, blank := range []string{"SEARCH_MAX_PAGE_SIZE", "LOG_LEVEL", "VALIDATION_SPEC_URL"} {
+	for _, blank := range []string{"SEARCH_MAX_PAGE_SIZE", "LOG_LEVEL", "VALIDATION_SPEC_URL", "OTEL_EXPORTER_OTLP_ENDPOINT"} {
 		environment[blank] = ""
 	}
 
@@ -160,12 +159,17 @@ func TestABlankVariableDoesNotEraseTheLayerBelow(t *testing.T) {
 	assertEqual(t, "Search.MaxPageSize", cfg.Search.MaxPageSize, 40)
 	assertEqual(t, "Log.Level", cfg.Log.Level, "warn")
 
-	// The same rule where there is no tag to resurrect: a blank variable used
-	// to win here and set the field empty, which made one spelling mean "clear
-	// this" for the five fields with no default and "restore the default" for
-	// the twenty with one. Uniform is the point — precedence is a property of
-	// the layer, not of whether a field happens to carry a tag.
+	// A blank variable used to win here and set the field empty, which made one
+	// spelling mean "clear this" for the fields with no default and "restore the
+	// default" for the ones with one. Uniform is the point — precedence is a
+	// property of the layer, not of whether a field happens to carry a tag.
 	assertEqual(t, "Validation.SpecURL", cfg.Validation.SpecURL, "https://spec.example/beckn.yaml")
+
+	// And the same rule where there is genuinely no tag to resurrect. SpecURL
+	// above played this part until 2026-09-09, when it gained a default; without
+	// a field that still has none, the two arms became the same assertion twice
+	// and the no-default half of the rule stopped being tested at all.
+	assertEqual(t, "OTel.Endpoint", cfg.OTel.Endpoint, "collector.example:4317")
 }
 
 // The same rule one layer down, and there a refusal rather than a skip: a blank
@@ -184,7 +188,7 @@ func TestABlankValueInAFileFailsStartup(t *testing.T) {
 		},
 		// A field without one: "" used to win outright and clear it.
 		"a blank string where there is no tag to restore": {
-			"validation:\n  specURL: \"\"\n", "validation.specURL",
+			"otel:\n  endpoint: \"\"\n", "otel.endpoint",
 		},
 	}
 
@@ -487,36 +491,50 @@ func TestSignatureVerificationOffBoots(t *testing.T) {
 	}
 }
 
-// Task 10 was skipped by decision on 2026-08-26, so nothing sits behind
-// VALIDATION_ENABLE_L2_CONTEXT: SchemaSource, the refresh loop, the L2
-// validator and the schemas/<TypeName>/attributes.yaml set are all unbuilt.
-// That makes it the twin of AUTH_ENABLE_SIGNATURE_VERIFICATION and it gets the
-// twin's treatment — an operator reading a validation layer back as enabled,
-// while every @context and @type goes unchecked, is worse off than one who can
-// see there is no layer at all.
-func TestL2ContextValidationRefusesToBoot(t *testing.T) {
-	environment := baseEnv()
-	environment["VALIDATION_ENABLE_L2_CONTEXT"] = "true"
+// L2 extended @context/@type validation is the adapter's, so this service no
+// longer declares the flag. A stale `validation.enableL2Context` left in a
+// mounted instance.yaml is caught by the walk that rejects any key no field
+// claims — it needs no rule of its own, which is the point of testing it:
+// "we deleted the struct field" and "a live deployment carrying the old key is
+// told about it" are different claims, and only the second one is any use to an
+// operator.
+//
+// The environment is the half with no such guard. VALIDATION_ENABLE_L2_CONTEXT
+// left set is simply ignored, because env.Parse ignores a variable no field
+// claims. That is deliberate here: the control genuinely exists, in the
+// adapter, so the variable is set in the wrong place rather than naming
+// something that does not run.
+func TestTheRemovedL2FlagIsAnUnknownKeyInYAML(t *testing.T) {
+	path := writeYAML(t, "validation:\n  enableL2Context: true\n")
 
-	_, err := load(repoCommonYAML, noInstance, environment)
-	if err == nil {
-		t.Fatal("load accepted VALIDATION_ENABLE_L2_CONTEXT=true with nothing behind the flag")
+	if _, err := load(path, noInstance, baseEnv()); err == nil {
+		t.Fatal("load accepted validation.enableL2Context in a config file")
+	} else {
+		if !strings.Contains(err.Error(), "enableL2Context") {
+			t.Errorf("error %v does not name the stale key", err)
+		}
+		// Asserting the mechanism, not just the refusal. This test passed
+		// before the field was deleted too — via validateValidation, which
+		// went with it. "unknown key" is the walk that needs no rule per
+		// removed flag, and it is the reason none was added.
+		if !strings.Contains(err.Error(), "unknown key") {
+			t.Errorf("error %v is not the unknown-key refusal; some other rule is "+
+				"catching this, and it will not catch the next removed key", err)
+		}
 	}
-	if !strings.Contains(err.Error(), "VALIDATION_ENABLE_L2_CONTEXT") {
-		t.Errorf("error %v does not name the flag an operator has to unset", err)
+
+	if _, err := load(repoCommonYAML, path, baseEnv()); err == nil {
+		t.Fatal("load accepted validation.enableL2Context in instance.yaml")
 	}
 }
 
-// Defaulting it off is half the obligation and refusing `true` is the other
-// half: refusing alone, over a tag that still reads `true`, would mean nothing
-// boots at all.
-func TestL2ContextValidationIsOffInTheReviewedFile(t *testing.T) {
+// L1 is the layer that ships here, and it stays on in the reviewed file. This
+// assertion outlived the L2 test it used to share a function with, because it
+// is the half that is about a control this service actually runs.
+func TestL1SchemaValidationIsOnInTheReviewedFile(t *testing.T) {
 	cfg, err := load(repoCommonYAML, noInstance, baseEnv())
 	if err != nil {
 		t.Fatalf("load: %v", err)
-	}
-	if cfg.Validation.EnableL2Context {
-		t.Error("validation.enableL2Context is true with no environment setting it")
 	}
 	if !cfg.Validation.EnableL1Schema {
 		t.Error("validation.enableL1Schema is false; L1 is built and is the layer that ships")

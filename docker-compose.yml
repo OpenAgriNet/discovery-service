@@ -1,20 +1,11 @@
-# Two stacks in one file, separated by a profile.
-#
-#   docker compose up -d --wait          PostgreSQL alone — the development
-#                                        default, and what `make up` runs
-#   docker compose --profile app up -d   PostgreSQL plus the service
-#
-# The default stays dependencies-only on purpose. The integration suites reach
-# PostgreSQL through testcontainers and never through this file, and day-to-day
-# development runs the binary from the host against it — so a service container
-# in the default set would rebuild on every `make up` and serve a binary one
-# edit behind the one being worked on. Under `--profile app` it is the opposite
-# case: someone who wants to TRY the service, not change it.
+# docker compose up -d --wait                 PostgreSQL alone (make up)
+# docker compose --profile app up -d           plus the service (make run)
+# OTEL_EXPORTER=otlp docker compose \          plus a collector (make telemetry)
+#   --profile app --profile telemetry up -d
 
 services:
   postgres:
-    # pgvector 0.8 on PostgreSQL 16 (D6). Pinned rather than floating on :pg16,
-    # because the HNSW index options this service uses arrived in 0.8.
+    # Pinned, not :pg16 — the HNSW options this service uses arrived in 0.8.
     image: pgvector/pgvector:0.8.0-pg16
     environment:
       POSTGRES_USER: discovery
@@ -34,72 +25,74 @@ services:
     profiles: ["app"]
     build:
       context: .
+      # The build stamp, from the shell rather than from git: the build context
+      # has no .git and the toolchain therefore writes no vcs.* settings, so a
+      # compose-built image reports dev/unknown/epoch unless something crosses
+      # them. Compose cannot shell out, so these read the environment — `make
+      # compose-up` exports them, and a bare `docker compose build` gets the
+      # Dockerfile's defaults and honestly says it does not know.
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        TREE_STATE: ${TREE_STATE:-}
     ports:
       - "8080:8080"
+    # No depends_on for otel-collector: the OTLP client dials on first export,
+    # and a dependency on a disabled profile has nothing to resolve to.
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      # Credentials, not secrets: this pair exists only in this file and in the
-      # Makefile's default DSN, and the database it opens holds whatever the
-      # person running it published five minutes ago. A deployment overrides
-      # DATABASE_URL from the environment, which is why the environment layer
-      # sits on top of both YAML files (TRD §8) — and why this string appears
-      # in neither of them.
+      # Local credentials, not secrets. A deployment overrides DATABASE_URL
+      # from the environment, which is why it is in neither YAML file.
       DATABASE_URL: postgres://discovery:discovery@postgres:5432/discovery?sslmode=disable
-
-      # The migrations are compiled INTO the binary, so this needs no sidecar
-      # and no mounted directory: the service applies them on boot and treats
-      # "already at the latest version" as success. Left false in deployment,
-      # where migrating is a step someone decides to take.
+      # Migrations are compiled into the binary and applied on boot.
       DATABASE_AUTO_MIGRATE: "true"
-
-      # Required — the boot refuses without it. It fills an empty
-      # publishDirectives.visibleTo, so every catalog published without one is
-      # visible to this network and no other.
+      # Required; fills an empty publishDirectives.visibleTo.
       APP_NETWORK_ID: local-network
-
       LOG_LEVEL: debug
-
-      # Effectively off for the local stack. The default is 20 rps / 40 burst
-      # (A4), which a Postman collection run or any scripted sweep trips
-      # immediately — and a 429 NACK carries no `catalogs`, so a harness that
-      # reads `message.catalogs` defensively turns it into an empty result and
-      # reports "no matches" for what was actually a refused request.
-      #
-      # Not zero: the config layer requires rps > 0 and burst >= rps, because a
-      # bucket smaller than one second's refill can never fill. This is a
-      # ceiling nothing local will reach, not a disabled limiter — deployments
-      # leave both unset and get the real defaults back.
+      # Effectively off. The real default (20/40, A4) trips on any scripted
+      # sweep, and a 429 NACK carries no `catalogs`. Not zero: burst >= rps > 0.
       RATE_LIMIT_RPS: "100000"
       RATE_LIMIT_BURST: "100000"
-
+      # The telemetry switch, and the only environment change the old
+      # docker-compose.telemetry.yml overlay carried.
+      OTEL_EXPORTER: ${OTEL_EXPORTER:-none}
+      # Read only when the exporter is otlp, so set unconditionally.
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      APP_SUBSCRIBER_ID: discovery-service.local-network.oan
+      # Overridable, because the domain gate is a thing people test AGAINST: a
+      # request carrying domain "Energy" is supposed to be refused, and a hard
+      # `Agriculture` here fights that developer silently, from a file they have
+      # no reason to be reading.
+      APP_DOMAIN: ${APP_DOMAIN:-Agriculture}
     volumes:
-      # The Beckn specification, which the service loads BEFORE it serves and
-      # refuses to start without — the check is unconditional, so turning L1
-      # validation off does not remove the requirement.
+      # The Beckn spec, which the service refuses to boot without. Byte-identical
+      # to the core-v2.0.0-lts tag of beckn/protocol-specifications-v2, which is
+      # also VALIDATION_SPEC_URL's default — so a normal boot fetches, compiles
+      # and finds this file already holding the same bytes, and an offline boot
+      # falls back to it with one accurate warning about the fetch that failed.
       #
-      # Ordinarily it is fetched from VALIDATION_SPEC_URL and cached here. This
-      # mount supplies the cache directly instead, which is what makes the
-      # local stack work with no registry reachable and no network at all. The
-      # boot logs one warning about the fetch it could not do; that warning is
-      # accurate and is not a failure.
-      #
-      # To exercise the fetch path instead, drop this line and point
-      # VALIDATION_SPEC_URL at
-      #   https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/heads/main/api/v2.0.0/beckn.yaml
-      # which is where this file came from. A configured URL is trusted
-      # precisely because an operator configured it — a URL arriving in a
-      # request body is not, which is the whole meaning of
-      # EXT_ALLOW_NETWORK_FETCH=false. That URL tracks `main`, though, so the
-      # fetch path pins nothing; the mount is what makes a run reproducible.
+      # Read-only on purpose: this is a file the service must not be able to
+      # rewrite. writeCache skips a cache that already matches for exactly this
+      # reason — until 2026-09-10 every online boot warned that it could not
+      # overwrite these bytes with themselves.
       - ./tests/testdata/beckn-v2.0.0.yaml:/app/.cache/beckn/beckn.yaml:ro
+    # No healthcheck: the distroless runtime has no shell to run one. Probes are
+    # HTTP — GET /healthz for liveness, GET /readyz for PostgreSQL.
 
-    # No healthcheck, and not an omission: the runtime stage is
-    # distroless/static, which has no shell and no curl for one to run. The
-    # probes are HTTP and are for you rather than for Compose —
-    # GET /healthz answers that the process is up, GET /readyz that it can
-    # reach PostgreSQL.
+  otel-collector:
+    profiles: ["telemetry"]
+    # contrib, not core: `spanmetrics` is a contrib connector. Pinned because
+    # its default stream names have been renamed across releases.
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otel/collector.yaml:ro
+    ports:
+      - "8889:8889" # scrape endpoint — the derived metrics
+      - "4317:4317" # OTLP/gRPC, published so the binary can run from the host
 
 volumes:
   postgres-data:

@@ -37,12 +37,12 @@ embeddings:
   provider: noop
 
 validation:
+  # The one schema layer this service runs. L2 extended @context/@type
+  # validation is the adapter's and is configured there — `enableL2Context` was
+  # removed from here rather than defaulted off, because a key in a reviewed
+  # file reads as a control this service owns. Re-adding it fails the boot as an
+  # unknown key.
   enableL1Schema: true
-  # L2 extended validation was skipped by decision, not blocked: nothing reads
-  # this flag, so `true` refuses the boot the way an enabled-but-absent
-  # signature check does. C4 therefore has no enforcer today — see the plan's
-  # Deferred table.
-  enableL2Context: false
 
 auth:
   # Phase 2, and parked further than that: the Ed25519 primitives are not built

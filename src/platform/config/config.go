@@ -9,16 +9,23 @@ import (
 	"io/fs"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
 	"gopkg.in/yaml.v3"
+
+	// The attribute registry, not the telemetry package: validateOTel reads the
+	// `domain` row's values and the `producer` row's key spelling, so the boot
+	// refusal and the Resource cannot disagree. fact imports only the standard
+	// library — tests/architecture pins that — so no SDK reaches this layer.
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
-// The two YAML layers, relative to the working directory. The image sets
-// WORKDIR /app and copies config/common.yaml beside the binary; instance.yaml
-// is mounted there by the deployment, or absent.
+// The two YAML layers, relative to the working directory. The image copies
+// config/common.yaml beside the binary; instance.yaml is mounted there by the
+// deployment, or absent.
 const (
 	commonPath   = "config/common.yaml"
 	instancePath = "config/instance.yaml"
@@ -50,15 +57,34 @@ type Config struct {
 
 // App identifies the deployment itself.
 type App struct {
-	// The network this deployment serves. It has no default because there is no
+	// The network this deployment serves. No default, because there is no
 	// repo-wide answer, and publish falls back to it to fill an empty
-	// publishDirectives.visibleTo (C8). Discover has no such fallback: an
-	// omitted networkId there searches every network.
+	// publishDirectives.visibleTo (C8). Discover has no such fallback: an omitted
+	// networkId there searches every network.
 	Network string `env:"APP_NETWORK_ID"`
 
+	// This deployment's registered subscriber id — an FQDN such as
+	// discovery.oan.example.org. It becomes the Resource's `producer` and every
+	// span's `recipient.id`: who actually answered, never the caller's claim about
+	// who it addressed.
+	//
+	// No default, because nothing issues it yet and an invented participant id is
+	// worse than an absent one — it reaches the network's only cross-participant
+	// identity join looking like a real answer. Required only when the exporter is
+	// on; see validateOTel.
+	Subscriber string `env:"APP_SUBSCRIBER_ID"`
+
+	// The sector this deployment serves — the Resource's `domain`. Not the network
+	// (that is Network) and not the entity type.
+	//
+	// Checked against the registry's declared values rather than a literal here, so
+	// the sector list grows in one place. Required only when the exporter is on:
+	// nothing but telemetry reads it today.
+	Domain string `env:"APP_DOMAIN"`
+
 	// Every daily validity window is interpreted here. Validated with
-	// time.LoadLocation at startup, so a typo fails the boot rather than
-	// silently shifting every window by hours.
+	// time.LoadLocation at startup, so a typo fails the boot rather than silently
+	// shifting every window by hours.
 	DefaultTimezone string `env:"APP_DEFAULT_TIMEZONE" envDefault:"Asia/Kolkata"`
 }
 
@@ -71,14 +97,12 @@ type Server struct {
 	ShutdownTimeout time.Duration `env:"SERVER_SHUTDOWN_TIMEOUT" envDefault:"15s"`
 
 	// The ceiling on a request body, in bytes (C14). Enforced by the Envelope
-	// middleware, which is the only thing in the service that reads a body and
-	// runs before RateLimit — so until this exists there is no bound at all on
-	// what an unauthenticated caller can make the process allocate.
+	// middleware, the only thing in the service that reads a body and runs before
+	// RateLimit — so without it nothing bounds what an unauthenticated caller can
+	// make the process allocate.
 	//
-	// 10 MiB is sized for the largest thing this service accepts, a publish
-	// carrying a full catalog, with room to spare. It is a knob rather than a
-	// constant because that size is a property of a deployment's catalogs and
-	// not of the protocol.
+	// A knob rather than a constant because the size is a property of a
+	// deployment's catalogs, not of the protocol.
 	MaxRequestBodyBytes int64 `env:"SERVER_MAX_REQUEST_BODY_BYTES" envDefault:"10485760"`
 }
 
@@ -89,16 +113,15 @@ type Database struct {
 	URL string `env:"DATABASE_URL"`
 
 	// Sized by the concurrency model, not guessed. Discover runs its retrieval
-	// modes concurrently (A2), so one in-flight discover holds as many
-	// connections as it has enabled modes — two in Phase 1, three once semantic
-	// lands:
+	// modes concurrently (A2), so one in-flight discover holds one connection per
+	// enabled mode:
 	//
 	//	MaxConns >= (enabled modes) x (expected in-flight discovers)
 	//
-	// bounded above by the server's own max_connections less whatever else
-	// shares it. pgxpool's own default is max(4, numCPU), under which the
-	// sixteen concurrent discovers the performance scenario runs would queue in
-	// pool.Acquire() and measure the queue rather than the query.
+	// bounded above by the server's max_connections less whatever else shares it.
+	// Under pgxpool's own max(4, numCPU) the performance scenario's sixteen
+	// concurrent discovers would queue in pool.Acquire() and measure the queue
+	// rather than the query.
 	MaxConns int32 `env:"DATABASE_MAX_CONNS" envDefault:"32"`
 
 	// A warm-start knob only: idle backends cost the server memory to save a
@@ -122,27 +145,25 @@ type Search struct {
 	// refused, because the caller still gets the results they asked about.
 	MaxPageSize int `env:"SEARCH_MAX_PAGE_SIZE" envDefault:"100"`
 
-	// How many ids one retrieval mode may return into fusion. Much larger than
-	// a page, and it is also the reachable pagination depth: a request whose
-	// offset + limit passes it is refused outright, because slicing past the
-	// end of the fused list would answer with an empty page that reads exactly
-	// like the end of the results.
+	// How many ids one retrieval mode may return into fusion. Also the reachable
+	// pagination depth: a request whose offset + limit passes it is refused, since
+	// slicing past the end of the fused list would answer with an empty page that
+	// reads exactly like the end of the results.
 	MaxCandidatesPerMode int `env:"SEARCH_MAX_CANDIDATES_PER_MODE" envDefault:"500"`
 
 	// The largest S_DWITHIN radius a caller may ask for.
 	MaxRadiusMeters int `env:"SEARCH_MAX_RADIUS_METERS" envDefault:"200000"`
 
-	// One deadline for the whole concurrent retrieval (A2). The write path's
-	// twin is Embeddings.WriteDeadline; the two are separate because inference
-	// on a publish and a fan-out of queries on a discover fail at different
-	// speeds (A3).
+	// One deadline for the whole concurrent retrieval (A2). Separate from
+	// Embeddings.WriteDeadline because inference on a publish and a fan-out of
+	// queries on a discover fail at different speeds (A3).
 	ReadDeadline time.Duration `env:"SEARCH_READ_DEADLINE" envDefault:"2s"`
 
-	// What happens when a requested retrieval mode is missing. False names it
-	// in the X-Beckn-Degraded header and returns what the other modes found;
-	// true makes the same request a 400. It defaults to false because Phase 1
-	// ships EMBEDDING_PROVIDER=noop, so semantic is missing on every fresh
-	// deployment and refusing would break the common case (C11).
+	// What happens when a requested retrieval mode is missing. False names it in
+	// the X-Beckn-Degraded header and returns what the other modes found; true
+	// makes the same request a 400. False by default because Phase 1 ships
+	// EMBEDDING_PROVIDER=noop, so semantic is missing on every fresh deployment
+	// and refusing would break the common case (C11).
 	FailOnUnavailableMode bool `env:"SEARCH_FAIL_ON_UNAVAILABLE_MODE" envDefault:"false"`
 }
 
@@ -175,19 +196,29 @@ type Log struct {
 	Level string `env:"LOG_LEVEL" envDefault:"info"`
 }
 
-// Validation switches the two schema layers and locates the protocol spec.
+// Validation switches the L1 schema layer and locates the protocol spec.
+//
+// One layer, not two: L2 extended @context/@type validation is the adapter's and
+// is configured there, so this struct does not name it.
 type Validation struct {
 	EnableL1Schema bool `env:"VALIDATION_ENABLE_L1_SCHEMA" envDefault:"true"`
 
-	// Off, and `true` refuses the boot — see validateValidation. L2 was skipped
-	// by decision rather than blocked, so there is no code path behind this
-	// flag to switch on.
-	EnableL2Context bool `env:"VALIDATION_ENABLE_L2_CONTEXT" envDefault:"false"`
-
 	// beckn.yaml is fetched at boot rather than baked into the image, so a
-	// deployment names the published document it validates against. No default:
-	// which spec URL a network trusts is not a repository-wide decision.
-	SpecURL string `env:"VALIDATION_SPEC_URL"`
+	// deployment names the document it validates against.
+	//
+	// The default is a TAG, and that is the whole reason there can be one. This
+	// field carried no default until 2026-09-09, on the argument that which spec
+	// a network trusts is not a repository-wide decision — true of a branch,
+	// which would let an upstream merge change the validator under a running
+	// deployment without a deploy. refs/tags/core-v2.0.0-lts cannot move, so the
+	// default names one immutable document and a network that trusts a different
+	// one still overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical
+	// to it, so the fetch path and an air-gapped mount agree.
+	//
+	// The cost is that boot now makes a network call before falling back to
+	// SpecCachePath. LoadSpecIndex already warns loudly and falls back, so an
+	// offline boot is slower and noisier, not broken.
+	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml"`
 
 	// Where the fetched spec is cached, and what an air-gapped deployment
 	// mounts in place of the fetch.
@@ -212,37 +243,40 @@ type OTel struct {
 
 // Replication configures publish's write fan-out seam (A7).
 type Replication struct {
-	// The stores a committed catalog is announced to. Empty — the Phase 1
-	// value — selects the no-op replicator; a named target with no
-	// implementation behind it fails the boot rather than silently dropping
-	// every announcement. No queue table ships until a target needs one.
+	// The stores a committed catalog is announced to. Empty — the Phase 1 value —
+	// is the only state this build acts on: Task 20 constructs `NoopReplicator`
+	// unconditionally (src/app/container.go) and nothing else reads this field.
+	// A named target neither replicates anywhere nor fails the boot yet — it is
+	// accepted and silently ignored, which is a gap, not a feature: the second
+	// store that reads it still needs to land, and until it does this knob is
+	// forward-declared rather than enforced. Do not rely on a named target
+	// doing anything, or on setting one being refused.
 	Targets []string `env:"REPLICATION_TARGETS"`
 }
 
 // Errors shapes the error body, not the error handling (C1).
 type Errors struct {
 	// The spec's Error is {code, message, details} with additionalProperties:
-	// false, so the five PRD categories travel in X-Beckn-Error-Type instead.
-	// true re-injects type into the body for v1-style clients that require it,
-	// which is a deliberate spec violation and therefore off by default.
+	// false, so the five PRD categories travel in X-Beckn-Error-Type instead. true
+	// re-injects type into the body for v1-style clients that require it, which is
+	// a deliberate spec violation and therefore off by default.
 	IncludeLegacyType bool `env:"ERROR_INCLUDE_LEGACY_TYPE" envDefault:"false"`
 }
 
 // Ext configures where L2's extended schemas come from.
 type Ext struct {
-	// The SSRF boundary. A registry URL configured by an operator is trusted
-	// and is fetched; a @context URL that arrived in a request body is not, and
-	// while this is false it cannot be — which is why the default is false and
-	// not merely the recommended setting.
+	// The SSRF boundary. A registry URL configured by an operator is trusted and
+	// is fetched; a @context URL that arrived in a request body is not, and while
+	// this is false it cannot be.
 	AllowNetworkFetch bool `env:"EXT_ALLOW_NETWORK_FETCH" envDefault:"false"`
 }
 
 // Geo configures the H3 index the spatial path is built on.
 type Geo struct {
-	// r8 is ~0.74 km2 per cell, ~531 m average edge, ~1.1 km MAYBE band. It is
-	// configuration rather than a constant because the accuracy against storage
-	// trade is a property of one deployment's data, not of the service. Every
-	// stored cover is at this resolution, so changing it means reindexing.
+	// r8 is ~0.74 km2 per cell, ~531 m average edge, ~1.1 km MAYBE band.
+	// Configuration rather than a constant because the accuracy-against-storage
+	// trade is a property of a deployment's data. Every stored cover is at this
+	// resolution, so changing it means reindexing.
 	ResolutionCells int `env:"GEO_RESOLUTION_CELLS" envDefault:"8"`
 }
 
@@ -253,23 +287,21 @@ func Load() (Config, error) {
 	return load(commonPath, instancePath, envMap(os.Environ()))
 }
 
-// Defaults returns the floor: every field as its envDefault tag declares it,
-// with no file and no environment read. It is not validated, because the floor
-// deliberately carries no network id and no database URL — there is no
-// repo-wide answer to either.
+// Defaults returns the floor: every field as its envDefault tag declares it, with
+// no file and no environment read. Not validated, because the floor deliberately
+// carries no network id and no database URL.
 func Defaults() (Config, error) {
 	return parse(map[string]string{})
 }
 
 // load is Load with its inputs as parameters, which is what the layer tests
-// drive. The environment is passed rather than read so a test asserts against
-// its own fixture and not against whatever the test runner exports.
+// drive. The environment is passed rather than read so a test asserts against its
+// own fixture and not against whatever the test runner exports.
 func load(common, instance string, environment map[string]string) (Config, error) {
-	// One env.Parse, not one per layer: env.Parse applies every envDefault tag
-	// whose variable is absent, so a second pass over an already-populated
-	// struct would reset each field the environment does not name. Handing it
-	// the YAML values as environment entries instead keeps the tags as the
-	// floor and leaves precedence to map insertion order.
+	// One env.Parse, not one per layer: it applies every envDefault tag whose
+	// variable is absent, so a second pass over a populated struct would reset each
+	// field the environment does not name. Handing it the YAML values as
+	// environment entries keeps the tags as the floor.
 	overrides := map[string]string{}
 	if err := overlay(common, false, overrides); err != nil {
 		return Config{}, err
@@ -279,8 +311,8 @@ func load(common, instance string, environment map[string]string) (Config, error
 	}
 	// A blank variable cannot express an empty value — env.Parse reads a
 	// present-but-blank entry as absent and applies the envDefault tag — so
-	// copying it over the YAML layer erases a reviewed value and resurrects the
-	// tag default in its place. Skipping it leaves the layer below intact.
+	// copying it over the YAML layer would erase a reviewed value and resurrect
+	// the tag default. Skipping it leaves the layer below intact.
 	for name, value := range environment {
 		if value != "" {
 			overrides[name] = value
@@ -309,9 +341,8 @@ func parse(environment map[string]string) (Config, error) {
 // env tag. A key matching no field is a startup failure: a typo must not
 // silently do nothing.
 func overlay(path string, optional bool, overrides map[string]string) error {
-	// G304 is waived, not worked around: the only paths that reach here are the
-	// two constants above and the fixtures the layer tests write. A config file
-	// the operator points the process at is the input, so there is no
+	// G304 is waived, not worked around: the only paths that reach here are the two
+	// constants above and the fixtures the layer tests write. There is no
 	// user-supplied path to sanitise.
 	document, err := os.ReadFile(path) //nolint:gosec // see above
 	if errors.Is(err, fs.ErrNotExist) && optional {
@@ -355,15 +386,13 @@ func collectField(field reflect.StructField, value any, path, key string, overri
 		return fmt.Errorf("config %s: key %q names field %s, which declares no %s tag", path, key, field.Name, envTag)
 	}
 	if list, ok := value.([]any); ok {
-		// A list is answerable only where the field is one. Joined into a
-		// scalar field it would become a string nobody asked for, and empty it
-		// would render blank and erase the layer below exactly as `key: ""`
-		// does — the failure the blank refusal exists to prevent, arriving
-		// under a different spelling.
+		// A list is answerable only where the field is one: joined into a scalar
+		// field it becomes a string nobody asked for, and empty it renders blank
+		// and erases the layer below exactly as `key: ""` does.
 		if field.Type.Kind() != reflect.Slice {
 			return fmt.Errorf("config %s: key %q takes a value, not a list", path, key)
 		}
-		// Here empty is a value: it clears what the layer below set. env.Parse
+		// Here empty IS a value: it clears what the layer below set. env.Parse
 		// never sets a blank, so the field keeps its zero value.
 		if len(list) == 0 {
 			overrides[name] = ""
@@ -392,19 +421,14 @@ func fieldNamed(group reflect.Type, key string) (reflect.StructField, bool) {
 // scalar renders a YAML leaf as the env parser reads it. A sequence becomes the
 // comma-separated form env already understands for slices.
 //
-// A blank string is refused rather than written through. It would overwrite
-// whatever the layer below set, and env.Parse ignores a blank value — so the
-// envDefault tag comes back where a field has one and the zero value stands
-// where it does not, and neither is what the file said. A blank in the
-// environment is merely ignored, but in a reviewed file it is a deliberate
-// keystroke and says so loudly; refusing costs only a spelling indistinguishable
-// from omitting the key, which is already how a layer defers to the one below.
+// A blank string is refused rather than written through: env.Parse ignores a
+// blank, so the envDefault tag comes back where a field has one and the zero value
+// stands where it does not, and neither is what the file said. Refusing costs only
+// a spelling indistinguishable from omitting the key.
 //
 // An empty sequence is refused here too. The one place it means something is as
-// the whole value of a slice field, where it clears what the layer below set,
-// and collectField answers that before reaching this function — it is the only
-// caller that knows the field's type. Nested inside a list it is junk, and on a
-// scalar field it is a blank wearing a different spelling.
+// the whole value of a slice field, and collectField — the only caller that knows
+// the field's type — answers that before reaching this function.
 func scalar(value any) (string, error) {
 	switch typed := value.(type) {
 	case nil:
@@ -435,8 +459,8 @@ func scalar(value any) (string, error) {
 }
 
 // envMap turns os.Environ's KEY=VALUE lines into the map env.ParseWithOptions
-// takes, so the environment is a value the loader is handed rather than a
-// global it reads.
+// takes, so the environment is a value the loader is handed rather than a global
+// it reads.
 func envMap(lines []string) map[string]string {
 	environment := make(map[string]string, len(lines))
 	for _, line := range lines {
@@ -447,9 +471,9 @@ func envMap(lines []string) map[string]string {
 	return environment
 }
 
-// validate fails startup on a configuration the service cannot honour, and
-// reports every problem at once: an operator fixing a bad file should not have
-// to restart once per mistake.
+// validate fails startup on a configuration the service cannot honour, reporting
+// every problem at once: an operator fixing a bad file should not have to restart
+// once per mistake.
 func validate(cfg Config) error {
 	problems := errors.Join(
 		validateApp(cfg.App),
@@ -460,7 +484,7 @@ func validate(cfg Config) error {
 		validateRateLimit(cfg.RateLimit),
 		validateGeo(cfg.Geo),
 		validateAuth(cfg.Auth),
-		validateValidation(cfg.Validation),
+		validateOTel(cfg.OTel, cfg.App),
 	)
 	if problems != nil {
 		return fmt.Errorf("invalid configuration: %w", problems)
@@ -468,40 +492,77 @@ func validate(cfg Config) error {
 	return nil
 }
 
-// Phase 1 ships the empty slot in the middleware order and this flag, and
-// nothing between them: the Ed25519 primitives are not built and the Signature
-// middleware is not written, so there is no code path the flag can switch on.
-// A flag named for a security control that silently does nothing is worse than
-// no flag — an operator reads it back as enabled and is wrong about every
-// request the service has served since — so `true` refuses the boot instead.
-// Deleting this check is not how signature verification is turned on; building
-// what goes in the slot is.
+// validateAuth refuses a boot that sets the flag, because Phase 1 has nothing
+// behind it: the Ed25519 primitives are not built and the Signature middleware is
+// not written, so there is no code path to switch on. A flag named for a security
+// control that silently does nothing is worse than no flag. Deleting this check
+// is not how signature verification is turned on; building the slot's contents is.
 func validateAuth(auth Auth) error {
 	return require(!auth.EnableSignatureVerification,
 		"auth.enableSignatureVerification is true (AUTH_ENABLE_SIGNATURE_VERIFICATION) and Phase 1 has nothing behind it: "+
 			"signature verification is deferred, so the flag would report a control that is not running")
 }
 
-// The exact twin of validateAuth, and for the exact same reason. L2 extended
-// validation was skipped by decision on 2026-08-26: SchemaSource, the refresh
-// loop, the L2 validator and the schemas/<TypeName>/attributes.yaml set are
-// unbuilt, so nothing reads this flag and nothing would if it were true. An
-// operator who reads a validation layer back as enabled, while every @context
-// and @type reaches storage unchecked, is worse off than one who can see there
-// is no layer. Deleting this check is not how L2 is turned on; building Task 10
-// is.
+// The exporters this build has code behind. Exported because telemetry.Init
+// switches on the value, and a second spelling of "otlp" in that switch is a
+// deployment that configures an exporter and gets none.
+const (
+	// ExporterNone builds a tracer provider that records nothing and reaches no
+	// network. The default, so a deployment with no collector still boots.
+	ExporterNone = "none"
+
+	// ExporterOTLP exports over gRPC to OTEL_EXPORTER_OTLP_ENDPOINT — the OTel
+	// default for that variable, and what ClickStack's collector accepts.
+	ExporterOTLP = "otlp"
+)
+
+// validateOTel refuses a boot that would export an unattributable stream.
 //
-// The SSRF boundary is untouched by any of it — Ext.AllowNetworkFetch guards a
-// URL that arrived in a payload, and nothing fetches one because nothing
-// fetches at all.
-func validateValidation(validation Validation) error {
-	return require(!validation.EnableL2Context,
-		"validation.enableL2Context is true (VALIDATION_ENABLE_L2_CONTEXT) and Phase 1 has nothing behind it: "+
-			"L2 extended schema validation is unbuilt, so the flag would report a layer that is not running")
+// The asymmetry is the point: `none` demands nothing, because a Phase 1
+// deployment with no collector must not answer for telemetry it does not emit.
+// `otlp` demands the whole Resource identity, because a span reaching a
+// facilitator with an empty `producer` lands under no participant — worse than no
+// span, since an empty string in a grouping column reads as data rather than as
+// an absence.
+//
+// Domain is checked against the registry rather than a literal; see
+// TestTheDomainIsCheckedAgainstTheRegistry.
+func validateOTel(otel OTel, app App) error {
+	known := otel.Exporter == ExporterNone || otel.Exporter == ExporterOTLP
+	if !known {
+		return fmt.Errorf("otel.exporter %q is not an exporter this build has (OTEL_EXPORTER): %s or %s",
+			otel.Exporter, ExporterNone, ExporterOTLP)
+	}
+	if otel.Exporter == ExporterNone {
+		return nil
+	}
+
+	domain := fact.Of(fact.ResourceDomain)
+	return errors.Join(
+		require(otel.Endpoint != "",
+			"otel.exporter is %s with no endpoint (OTEL_EXPORTER_OTLP_ENDPOINT): "+
+				"there is nowhere to export to", ExporterOTLP),
+		require(app.Subscriber != "",
+			"otel.exporter is %s and app.subscriber is empty (APP_SUBSCRIBER_ID): "+
+				"it is the Resource's %s and every span's recipient.id, so without it "+
+				"the whole stream is attributed to no participant",
+			ExporterOTLP, domainProducerKey()),
+		require(slices.Contains(domain.Values, app.Domain),
+			"app.domain %q is not a sector this build declares (APP_DOMAIN): one of %v. "+
+				"Every OAN component must emit the identical string or grouping splits "+
+				"across the network, so a typo fails the boot",
+			app.Domain, domain.Values),
+	)
 }
 
-// H3 defines resolutions 0 through 15 and nothing else, so an out-of-range
-// value must fail the boot rather than the first cover that reaches h3.
+// domainProducerKey is the attribute name `producer`, read off the registry so the
+// refusal above cannot name a key the Resource does not set.
+func domainProducerKey() string {
+	return fact.Of(fact.ResourceProducer).SpanKey
+}
+
+// validateGeo bounds the resolution to the 0-15 H3 defines, so an out-of-range
+// value fails the boot rather than the first cover that reaches h3.
 func validateGeo(geo Geo) error {
 	return require(geo.ResolutionCells >= 0 && geo.ResolutionCells <= 15,
 		"geo.resolutionCells %d is not an H3 resolution (GEO_RESOLUTION_CELLS): H3 defines 0 through 15", geo.ResolutionCells)
@@ -522,9 +583,8 @@ func validateServer(server Server) error {
 	return errors.Join(
 		require(server.Port > 0 && server.Port < 65536, "server.port %d is not a port", server.Port),
 		require(server.ShutdownTimeout > 0, "server.shutdownTimeout %s is not positive", server.ShutdownTimeout),
-		// Zero would read as "no limit" to anyone skimming the YAML and mean
-		// "refuse everything" to http.MaxBytesReader. Neither is a value to let
-		// a deployment discover at runtime.
+		// Zero reads as "no limit" to anyone skimming the YAML and means "refuse
+		// everything" to http.MaxBytesReader.
 		require(server.MaxRequestBodyBytes > 0,
 			"server.maxRequestBodyBytes %d is not positive (SERVER_MAX_REQUEST_BODY_BYTES): "+
 				"zero is not \"unlimited\", it refuses every request with a body", server.MaxRequestBodyBytes),

@@ -18,28 +18,24 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 )
 
-// Service is the publish request path: it turns one wire action into one
-// verdict per catalog.
-//
-// It holds no request state, so one instance serves every caller.
+// Service is the publish request path: it turns one wire action into one verdict
+// per catalog. It holds no request state, so one instance serves every caller.
 type Service struct {
 	repo       domain.CatalogRepository
 	replicator domain.CatalogReplicator
 	embedder   embeddings.Embedder
 
-	// network is APP_NETWORK_ID, the fallback when the envelope names none. It
-	// is read only to fill an empty visibleTo (C8).
+	// network is APP_NETWORK_ID, the fallback when the envelope names none, and
+	// it is read only to fill an empty visibleTo (C8).
 	network string
 
 	// zone is APP_DEFAULT_TIMEZONE, used to resolve a bare clock in `validity`.
 	zone *time.Location
 }
 
-// NewService wires the publish path.
-//
-// The replicator is a required collaborator rather than an optional one: a
-// deployment that fans out to nothing passes a no-op, which is a decision
-// visible at the composition root instead of a nil check repeated here.
+// NewService wires the publish path. The replicator is required rather than
+// optional: a deployment that fans out to nothing passes a no-op, which is a
+// decision visible at the composition root instead of a nil check repeated here.
 func NewService(
 	repo domain.CatalogRepository,
 	replicator domain.CatalogReplicator,
@@ -53,9 +49,9 @@ func NewService(
 // Publish processes every catalog in the action and answers one result each, in
 // the order they were sent.
 //
-// Each catalog is its own transaction. A request-wide transaction would make one
-// publisher's refused catalog an outage for the catalogs beside it, and the
-// per-catalog `status` enum the spec defines would have nothing to say.
+// Each catalog is its own transaction: a request-wide one would make a single
+// refused catalog an outage for the catalogs beside it, and the per-catalog
+// `status` enum the spec defines would have nothing to say.
 func (s *Service) Publish(
 	ctx context.Context, envelope beckn.Context, action beckn.CatalogPublishAction,
 ) []beckn.CatalogProcessingResult {
@@ -68,8 +64,8 @@ func (s *Service) Publish(
 	seen := make(map[string]bool, len(action.Catalogs))
 
 	for index, catalog := range action.Catalogs {
-		// The same id twice in one request. Left unchecked both come back
-		// ACCEPTED and the stored catalog is the second, so one of the two
+		// The same id twice in one request. Left unchecked, both come back
+		// ACCEPTED and the stored catalog is the second — so one of the two
 		// success verdicts describes a document that no longer exists.
 		if seen[catalog.ID] {
 			results = append(results, rejected(catalog.ID, beckn.Error{
@@ -94,9 +90,9 @@ func (s *Service) Publish(
 	return results
 }
 
-// request is one catalog together with everything about where in the payload it
-// came from. The two indices are carried because a fault has to name the value
-// the publisher sent, and only the caller knows which slot that was.
+// request is one catalog together with where in the payload it came from. The
+// two indices are carried because a fault has to name the value the publisher
+// sent, and only the caller knows which slot that was.
 type request struct {
 	catalogIndex   int
 	catalog        beckn.Catalog
@@ -104,8 +100,8 @@ type request struct {
 	directiveIndex int
 	network        string
 
-	// version is context.version, carried per-request rather than read from
-	// the service because it describes the envelope, not the deployment.
+	// version is context.version, carried per-request rather than on the
+	// service because it describes the envelope, not the deployment.
 	version string
 }
 
@@ -139,10 +135,9 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 		requestRelative(derived)...,
 	)
 
-	// A7. AFTER the write returns, never inside the closure: a fan-out that ran
-	// before commit would announce a catalog that then rolled back, and no
-	// response anywhere would show it. The converse is a stale replica, which
-	// the next publish repairs.
+	// A7. AFTER the write returns, never inside the closure: a fan-out before
+	// commit would announce a catalog that then rolled back. The converse is a
+	// stale replica, which the next publish repairs.
 	if err := s.replicator.Replicate(ctx, req.catalog.ID); err != nil {
 		// Logged, not reported. The catalog IS stored; a REJECTED here would ask
 		// the publisher to send again what the store already holds.
@@ -163,10 +158,8 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 }
 
 // directiveFor finds the directive that names a catalog, and says where it sat.
-//
-// The index is the reason this is not a method on the action returning only the
-// directive: a refusal has to point at `$.message.publishDirectives[1]`, and a
-// literal `i` in a response is a placeholder that shipped.
+// The index is why it returns two things: a refusal has to point at
+// `$.message.publishDirectives[1]`.
 func directiveFor(action beckn.CatalogPublishAction, catalogID string) (beckn.PublishDirective, int) {
 	for index, directive := range action.PublishDirectives {
 		if directive.CatalogID == catalogID {
@@ -176,13 +169,12 @@ func directiveFor(action beckn.CatalogPublishAction, catalogID string) (beckn.Pu
 	return beckn.PublishDirective{}, -1
 }
 
-// applyDirectiveDefaults fills a missing directive FIELD-WISE (A9).
+// applyDirectiveDefaults fills a missing directive FIELD-WISE (A9), because a
+// directive naming only catalogId means the same thing as no directive at all.
 //
-// Field-wise rather than all-or-nothing because a directive naming only
-// catalogId means the same thing as no directive at all. The updateMode default
-// is the one that is a data-loss bug the other way round: a zero value reading
-// as FULL turns every directive-less republish into a partial wipe of everything
-// the payload did not mention.
+// The updateMode default is the one that is a data-loss bug the other way round:
+// a zero value reading as FULL turns every directive-less republish into a
+// partial wipe of everything the payload did not mention.
 func applyDirectiveDefaults(
 	directive beckn.PublishDirective, catalogID, network string,
 ) beckn.PublishDirective {
@@ -205,9 +197,8 @@ func applyDirectiveDefaults(
 }
 
 // intakeRefusal is A1: the two things Phase 1 refuses before doing any work.
-//
-// Refused at intake and not partially handled, so nothing downstream has to
-// carry a half-implemented inheritance path that no test exercises.
+// Refused at intake and not partially handled, so nothing downstream carries a
+// half-implemented inheritance path.
 func intakeRefusal(req request) *beckn.Error {
 	if req.catalog.ID == "" {
 		return &beckn.Error{
@@ -241,9 +232,9 @@ func intakeRefusal(req request) *beckn.Error {
 // derive is the closure the repository runs inside the write transaction, on the
 // MERGED document.
 //
-// It is built here rather than passed in as a repository port because it needs
-// two things a port has no business knowing: the catalog's index in THIS request,
-// so a geometry fault names the value the publisher sent, and the embedder.
+// A closure rather than a repository port because it needs two things a port has
+// no business knowing: the catalog's index in THIS request, so a geometry fault
+// names the value the publisher sent, and the embedder.
 func (s *Service) derive(ctx context.Context, catalogIndex int) domain.DeriveFunc {
 	return func(merged *domain.Catalog, touched []string) []domain.Fault {
 		found, faults := ExtractGeometries(catalogIndex, *merged)
@@ -263,9 +254,9 @@ func (s *Service) derive(ctx context.Context, catalogIndex int) domain.DeriveFun
 // assignGeometries replaces the catalog's covers with the walk's finds, split by
 // who owns them.
 //
-// Replaces rather than appends: derive runs on every publish, and under MERGE
-// the merged document already carries the geometries the last one derived.
-// Appending would double them at each republish.
+// Replaces rather than appends: under MERGE the merged document already carries
+// the geometries the last publish derived, so appending would double them at
+// each republish.
 func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 	merged.Geometries = nil
 	for index := range merged.Resources {
@@ -273,13 +264,9 @@ func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 	}
 
 	// Walk each geometry's OWNERS and look the resource up, rather than walking
-	// every resource and scanning the owners. The two read alike and cost
-	// differently: a catalog's resources outnumber one shape's owners by orders
-	// of magnitude, so the scan is geometries x resources where this is
-	// geometries x owners. A resource id an owner names but the catalog does
-	// not hold is skipped — ExtractGeometries takes owners from the resources
-	// it walked and from offer.ResourceIDs, and only the second can name a
-	// resource that is not there.
+	// every resource and scanning the owners: the two read alike and cost
+	// geometries x owners against geometries x resources. An owner the catalog
+	// does not hold is skipped — only offer.ResourceIDs can name one.
 	at := make(map[string]int, len(merged.Resources))
 	for index := range merged.Resources {
 		at[merged.Resources[index].ID] = index
@@ -293,12 +280,10 @@ func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 			continue
 		}
 		for position, owner := range geometry.Owners {
-			// Owners come from offer.ResourceIDs, which is publisher-supplied
-			// and may name the same resource twice. Scanning the resources and
-			// testing membership — which this replaced — appended once per
-			// RESOURCE and so absorbed the duplicate silently; walking the
-			// owners does not, and a shape stored twice against one resource is
-			// a duplicate row in the geometry table.
+			// offer.ResourceIDs is publisher-supplied and may name the same
+			// resource twice. Walking the owners does not absorb that the way
+			// scanning the resources did, and a shape stored twice against one
+			// resource is a duplicate row in the geometry table.
 			if slices.Contains(geometry.Owners[:position], owner) {
 				continue
 			}
@@ -313,9 +298,7 @@ func assignGeometries(merged *domain.Catalog, found []domain.Geometry) {
 
 // deriveResource fills the columns that are read OFF the merged document rather
 // than sent: the two C4 filter columns, the search text, and the A5 pair.
-//
-// Nothing else in the service writes SchemaContext or SchemaType, so a discover
-// filtering on either matches nothing without this.
+// Nothing else writes SchemaContext or SchemaType.
 func (s *Service) deriveResource(
 	ctx context.Context, resource *domain.Resource, catalogIndex, resourceIndex int,
 ) []domain.Fault {
@@ -327,9 +310,9 @@ func (s *Service) deriveResource(
 	changed := !bytes.Equal(hash[:], resource.EmbeddingSourceHash)
 
 	// A5: written UNCONDITIONALLY, outside the branch. It records what the
-	// derived text currently IS, which is true whether or not an embedder ran —
-	// and the Phase 2 backfill selects on a NULL embedding, not on this, so a
-	// failed embed is still picked up.
+	// derived text IS, whether or not an embedder ran — and the Phase 2 backfill
+	// selects on a NULL embedding, not on this, so a failed embed is still
+	// picked up.
 	resource.EmbeddingSourceHash = hash[:]
 
 	if !changed {
@@ -381,14 +364,10 @@ func schemaOf(attributes json.RawMessage) (schemaContext, schemaType string) {
 	return shape.Context, shape.Type
 }
 
-// statsFor counts what THIS request landed (C5, C12).
-//
-// Request-scoped, not catalog-scoped: a MERGE carrying one resource into a
-// forty-resource catalog reports 1. Read back off the stored rows instead, a
-// re-publish of a single resource would report 40 and the publisher would have
-// no way to tell what their request actually did.
+// statsFor counts what THIS request landed — request-scoped, not catalog-scoped
+// (C12), with categories as distinct @type because the spec has no category
+// field anywhere (C5).
 func statsFor(patch domain.CatalogPatch) *beckn.CatalogStats {
-	// Distinct @type, because the spec has no category field anywhere (C5).
 	categories := make(map[string]bool, len(patch.Resources))
 	for _, resource := range patch.Resources {
 		if _, schemaType := schemaOf(resource.ResourceAttributes()); schemaType != "" {
@@ -423,10 +402,9 @@ func catalogRelative(faults []domain.Fault, catalogIndex int) []beckn.Error {
 // requestRelative renders faults the GEOMETRY WALK produced. It walks the
 // catalogs array, so its paths already name the catalog: `$['catalogs'][2]…`.
 //
-// It takes no index precisely because it needs none — which is the whole reason
-// this is a second function rather than a `strings.HasPrefix` inside one. A
-// sniff would hold only while no catalog field is ever called `catalogs`, and
-// that is an invariant nothing states and nothing checks.
+// A second function rather than a `strings.HasPrefix` inside one, because a
+// sniff would hold only while no catalog field is ever called `catalogs` — an
+// invariant nothing states and nothing checks.
 func requestRelative(faults []domain.Fault) []beckn.Error {
 	return rebase(faults, func(dotted string) string {
 		return messageRoot + dotted[len("$"):]
@@ -434,11 +412,8 @@ func requestRelative(faults []domain.Fault) []beckn.Error {
 }
 
 // rebase renders each fault's path onto the request body in the dot form C7's
-// example uses, and copies the rest of the fault across.
-//
-// Neither producer is wrong about its own root; only here is it known that both
-// sit under `message`, and a publisher needs a path they can run against the
-// body they actually sent.
+// example uses, and copies the rest of the fault across. Neither producer is
+// wrong about its own root; only here is it known that both sit under `message`.
 func rebase(faults []domain.Fault, onto func(dotted string) string, catalogIndex int) []beckn.Error {
 	if len(faults) == 0 {
 		return nil
@@ -451,7 +426,7 @@ func rebase(faults []domain.Fault, onto func(dotted string) string, catalogIndex
 			path = onto(dotted)
 		} else if catalogIndex >= 0 {
 			// Unreadable, so there is nothing honest to say about where inside
-			// the catalog it was. Naming the catalog is still true and useful.
+			// the catalog it was. Naming the catalog is still true.
 			path = catalogPath(catalogIndex)
 		}
 
@@ -476,11 +451,10 @@ func resourcePath(catalogIndex, resourceIndex int) string {
 	return fmt.Sprintf("$['catalogs'][%d]['resources'][%d]", catalogIndex, resourceIndex)
 }
 
-// directivePath names the directive this catalog was published under.
-//
-// A catalog with no directive of its own falls back to naming the catalog: the
-// defaults A9 filled are not in the payload, so pointing at
-// `publishDirectives[-1]` would name a value the publisher never sent.
+// directivePath names the directive this catalog was published under. A catalog
+// with none of its own falls back to naming the catalog: the defaults A9 filled
+// are not in the payload, so `publishDirectives[-1]` would name a value the
+// publisher never sent.
 func (r request) directivePath() string {
 	if r.directiveIndex < 0 {
 		return catalogPath(r.catalogIndex)

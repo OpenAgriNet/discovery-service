@@ -46,9 +46,9 @@ func TestListingResourcesReturnsThePublishedOnes(t *testing.T) {
 
 	if _, err := store.UpsertCatalog(t.Context(), domain.CatalogPatch{
 		ID:        "c1",
-		NetworkID: "bap.example.com",
+		NetworkID: "local-network",
 		Active:    true,
-		VisibleTo: []string{"bap.example.com"},
+		VisibleTo: []string{"local-network"},
 		Resources: []domain.ResourcePatch{{ID: "r1"}, {ID: "r2"}},
 	}, domain.UpdateModeFull, nil); err != nil {
 		t.Fatalf("publish: %v", err)

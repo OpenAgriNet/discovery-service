@@ -74,8 +74,13 @@ jobs:
       # The push to a registry. Read is not enough.
       packages: write
     steps:
-      # fetch-depth: 0 — VERSION comes from `git describe --tags`, which needs
-      # the tag objects, not just the commit.
+      # fetch-depth: 0 — NOT because VERSION needs it. VERSION is github.ref_name
+      # (see the env block above); this comment said "VERSION comes from git
+      # describe" until 2026-09-09, which is the pre-#9 behaviour the release
+      # workflow deliberately stopped using. It stays at 0 because the Makefile's
+      # VERSION fallback and any local describe in this checkout need the tag
+      # objects, so a shallow clone would make them silently disagree with the
+      # ref-derived value.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

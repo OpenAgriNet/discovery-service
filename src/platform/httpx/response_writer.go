@@ -14,15 +14,15 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
 // HeaderErrorType carries the PRD error category (C1).
 //
-// v2.0.0 closed `Error` with additionalProperties:false and dropped the `type`
-// key the PRD's five categories used to live in, so the category travels beside
-// the body instead of inside it. It goes out on every error response — a
-// consumer that branches on the category must not have to know which faults
-// this service happened to categorise.
+// v2.0.0 closed `Error` and dropped the `type` key the PRD's five categories
+// lived in, so the category travels beside the body instead of inside it. It
+// goes out on every error response — a consumer branching on the category must
+// not have to know which faults this service happened to categorise.
 const HeaderErrorType = "X-Beckn-Error-Type"
 
 // HeaderRetryAfter is the back-off A4 requires beside a 429.
@@ -32,21 +32,19 @@ const contentTypeJSON = "application/json"
 
 // maxEchoedMessageIDBytes bounds the message id C13 echoes back.
 //
-// 128 is well past any uuid and past any correlation key a caller could
-// plausibly be using, which is the point: what it excludes is not a long id but
-// a caller who has noticed that this field comes back and started putting
-// things in it. Over the cap the value is dropped rather than truncated — a
-// truncated id still looks like an id and correlates to nothing, which is
-// strictly worse than admitting there isn't one.
+// 128 is well past any uuid, which is the point: what it excludes is not a long
+// id but a caller who noticed this field comes back and started putting things
+// in it. Over the cap the value is dropped rather than truncated — a truncated id
+// still looks like an id and correlates to nothing.
 const maxEchoedMessageIDBytes = 128
 
 // WriteJSON writes body as the JSON response at status.
 //
-// It encodes before it touches the ResponseWriter, so a body that cannot be
-// encoded leaves the response untouched and the status line still the caller's
-// to set. That is why the error comes back rather than being answered here: the
-// handler answers it with WriteNack, through the one writer, instead of this
-// function inventing a second error body beside it.
+// It encodes before touching the ResponseWriter, so a body that cannot be
+// encoded leaves the status line still the caller's to set — which is why the
+// error comes back rather than being answered here. The handler answers it with
+// WriteNack, through the one writer, instead of this function inventing a second
+// error body beside it.
 func WriteJSON(ctx context.Context, w http.ResponseWriter, status int, body any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -74,16 +72,10 @@ func WriteJSON(ctx context.Context, w http.ResponseWriter, status int, body any)
 // second one is a second wire shape to keep true, and the two diverge on the
 // day one of them grows a header.
 //
-// messageID is the request's `context.messageId`, which the Ack family echoes
-// as the caller's only correlation handle — no member of that family declares a
-// `context`, and this service does not add one to an open schema (C13). It goes back verbatim, including a value this service is in the
-// middle of rejecting as malformed: C13 reads the family's own
-// "Echoes the messageId from the triggering request's Context" over the
-// `format: uuid` its other variants declare, because by C6 the spec never
-// establishes that a uuid was sent. Bounded by maxEchoedMessageIDBytes. An
-// envelope too broken to yield one leaves it empty rather than inventing a uuid
-// the caller never sent — a minted id looks like an answer and correlates to
-// nothing.
+// messageID is the request's `context.messageId`, echoed VERBATIM under C13 —
+// including a value this service is in the middle of rejecting as malformed, and
+// bounded by maxEchoedMessageIDBytes. An envelope too broken to yield one leaves
+// it empty; a minted uuid would look like an answer and correlate to nothing.
 //
 // It reports nothing. WriteNack is the last resort on the request path, so
 // there is nothing left to escalate a failure to, and a returned error would
@@ -96,6 +88,8 @@ func WriteNack(ctx context.Context, w http.ResponseWriter, cfg config.Errors, me
 	status := fault.Status()
 
 	w.Header().Set(HeaderErrorType, fault.Type())
+	observeFault(ctx, fault)
+
 	if retryAfter := fault.RetryAfter; retryAfter > 0 {
 		// Whole seconds, rounded up: a 1.5s window reported as 1 invites the
 		// caller back before it has closed. Absent rather than "0" everywhere
@@ -119,11 +113,37 @@ func WriteNack(ctx context.Context, w http.ResponseWriter, cfg config.Errors, me
 	}
 }
 
+// observeFault puts the rejection on the record, as 23d's error event.
+//
+// It calls fault.Type() rather than deriving the category a second way, because
+// 23d requires the event's type and X-Beckn-Error-Type to match byte for byte
+// and two calls to one method cannot drift.
+//
+// Here rather than in a controller because every refusal on every path passes
+// through WriteNack, including the ones no controller sees — a body over the size
+// ceiling, a rate-limit refusal, a panic caught by Recover.
+//
+// The COERCED fault's fields, never the original error: a span leaves this
+// machine, and a driver's text names a host, a port or a query. The original
+// stays in logNack, which does not leave.
+//
+// Path is omitted when there is none. "" is not the root of anything, and
+// writing it would put every fault that names no field at a location that reads
+// like one.
+func observeFault(ctx context.Context, fault *apperrors.AppError) {
+	fact.ObserveString(ctx, fact.ErrorEventType, fault.Type())
+	fact.ObserveString(ctx, fact.ErrorCode, string(fault.Code))
+	fact.ObserveString(ctx, fact.ErrorMessage, fault.Message)
+
+	if fault.Path != "" {
+		fact.ObserveString(ctx, fact.ErrorPath, fault.Path)
+	}
+}
+
 // logNack writes the operator's copy of the rejection.
 //
 // The original error goes here and only here: a driver's text names a host, a
-// port or a query, and none of that is the caller's — which is why the body
-// carries the coerced fault's fixed message instead.
+// port or a query, none of which is the caller's.
 //
 // A 4xx logs below Error. A malformed body someone else sent is not an incident
 // in this service, and logging it as one is how an error rate stops meaning

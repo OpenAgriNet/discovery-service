@@ -1,10 +1,10 @@
 {
   "context": {
     "domain": "agriculture",
-    "action": "publish",
+    "action": "catalog/publish",
     "version": "2.0.0",
-    "bppId": "weather.karnataka.example.org",
-    "bppUri": "https://weather.karnataka.example.org/beckn",
+    "senderId": "weather.karnataka.example.org",
+    "receiverId": "discovery.local-network.oan",
     "transactionId": "3f9a1c62-4d5e-4a7b-9c8d-1e2f3a4b5c6d",
     "messageId": "8b7c6d5e-4f3a-42b1-a0c9-d8e7f6a5b4c3",
     "timestamp": "2026-08-27T06:30:00Z",

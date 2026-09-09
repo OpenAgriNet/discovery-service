@@ -3,25 +3,23 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 )
 
-// predicates is everything the three retrievers and the counter share: the
-// scope gate, the schema pair, the whole spatial EXISTS. Four queries, one
-// derivation.
-//
-// It exists in Go because the four sqlc parameter structs are four distinct
-// types that happen to hold the same sixteen fields. Deriving each one from the
-// SearchQuery separately would be four places for the quantifier XOR or the
-// nil-cover rule to drift, and drift there is invisible: each query would still
-// return rows, just a different set from its siblings, and the fusion would
-// report nothing wrong.
+// predicates is everything the retrievers share: the scope gate, the schema
+// pair, the whole spatial EXISTS. One derivation, because sqlc emits a distinct
+// parameter struct per query and deriving each separately would be one place
+// per query for the quantifier XOR or the nil-cover rule to drift — invisibly,
+// since every query would still return rows, just a different set.
 type predicates struct {
 	networkID      pgtype.Text
 	schemaContexts []string
@@ -45,21 +43,13 @@ type predicates struct {
 }
 
 // sharedPredicates reduces a SearchQuery to the parameters every read query
-// binds.
-//
-// Scope is accepted and deliberately unused for the instant: Postgres's gate
-// calls now() and reads the transaction's own clock, which is what makes the
-// gate a property of the statement rather than of a timestamp the caller could
-// have computed wrong. Scope.Now exists for the backends that have no now()
-// (A6). NetworkID, however, IS read from the query, because "" there means
-// UNSCOPED — every network — and the parameter must be NULL rather than an
-// empty string that matches no visible_to entry.
+// binds. NetworkID becomes NULL when unscoped — "" would match no visible_to
+// entry and empty every response.
 func sharedPredicates(query domain.SearchQuery) predicates {
 	shared := predicates{networkID: nullableText(query.NetworkID)}
 
-	// Emitted as a PAIR of equal-length arrays, index-aligned. Empty stays nil,
-	// so the query's `IS NULL` arm fires and no schema predicate is applied at
-	// all — an empty schemaContext must return everything rather than nothing.
+	// A PAIR of equal-length, index-aligned arrays. Empty stays nil so the
+	// query's `IS NULL` arm fires and no schema predicate applies at all.
 	for _, filter := range query.Schemas {
 		shared.schemaContexts = append(shared.schemaContexts, filter.Context)
 		// "" is the sentinel for "any type under this context", read by the
@@ -72,44 +62,35 @@ func sharedPredicates(query domain.SearchQuery) predicates {
 		shared.spatial(*query.Spatial, query.TargetPaths)
 	}
 
-	// One expression, cast and evaluated verbatim (A18). It is already rooted
-	// at `$.catalogs`, which is what filter_doc holds, so there is nothing to
-	// rebase and nothing to assemble: the mapper's gate has settled the three
-	// shapes PostgreSQL answers wrongly without complaint, and what survives is
-	// a PARAMETER — `@filter::jsonpath` — never a fragment of SQL.
-	//
-	// Only the first is bound. The domain carries a slice because the shape
-	// outlives this version of the protocol, and `Intent.filters` is one object
-	// today; combining two would mean concatenating jsonpath text, which is the
-	// thing this service will not do.
+	// One expression, already rooted at `$.catalogs` and bound as a PARAMETER —
+	// `@filter::jsonpath`, never a fragment of SQL (A18). Only the first is
+	// bound: combining two would mean concatenating jsonpath text.
 	if len(query.Filters) > 0 {
 		shared.attributeFilter = nullableText(query.Filters[0].Expression)
 	}
 	return shared
 }
 
-// spatial fills the geometry half. Split out because the quantifier decision is
-// two lines that decide the meaning of every geo search and belong somewhere
-// they can be read on their own.
+// spatial fills the geometry half.
 func (p *predicates) spatial(filter domain.SpatialFilter, targetPaths []string) {
 	p.spatialOp = nullableText(string(filter.Op))
 
 	// Three quantifiers out of two flags, XORed against the EXISTS and against
 	// the match inside it:
-	//   ANY  → f, f →     EXISTS(matches)      at least one targeted shape
-	//   NONE → t, f → NOT EXISTS(matches)      not one does
-	//   ALL  → t, t → NOT EXISTS(NOT matches)  every one does
-	// ALL is NOT EXISTS over the NEGATED predicate and not EXISTS over the
-	// conjunction, because "every geometry matches" is only decidable as "none
-	// provably fails".
+	//
+	//	ANY  → f, f →     EXISTS(matches)      at least one targeted shape
+	//	NONE → t, f → NOT EXISTS(matches)      not one does
+	//	ALL  → t, t → NOT EXISTS(NOT matches)  every one does
+	//
+	// ALL negates the inner predicate rather than conjoining, because "every
+	// geometry matches" is only decidable as "none provably fails".
 	p.geoNegate = filter.Quantifier == domain.QuantifierNone || filter.Quantifier == domain.QuantifierAll
 	p.matchNegate = filter.Quantifier == domain.QuantifierAll
 
-	// Empty means every shape the resource can be found by — its own and its
-	// catalog's — so it stays nil and the query emits no path predicate.
-	// `g.target_path = ANY($1)` is plain equality, so what is passed here must
-	// already be canonicalised: a dot-form filter against a bracket-form stored
-	// path is an empty page with nothing anywhere to explain it.
+	// Empty means every shape the resource can be found by, so it stays nil and
+	// the query emits no path predicate. `g.target_path = ANY($1)` is plain
+	// equality, so these must arrive canonicalised — a dot-form filter against
+	// a bracket-form stored path is an empty page with nothing to explain it.
 	if len(targetPaths) > 0 {
 		p.targetPaths = targetPaths
 	}
@@ -121,15 +102,14 @@ func (p *predicates) spatial(filter domain.SpatialFilter, targetPaths []string) 
 		p.maxLon = nullableFloat(filter.Bounds.MaxLon)
 	}
 
-	// The two covers are nil TOGETHER — a cover that declined disables the cell
-	// predicate entirely and leaves the box to decide — so passing one without
-	// the other would put the query in a state it has no branch for.
+	// Nil TOGETHER: a declined cover disables the cell predicate and leaves the
+	// box to decide. One without the other is a state the query has no branch
+	// for.
 	p.qCover = cells(filter.CellsCover)
 	p.qFull = cells(filter.CellsFull)
 
-	// Populated only for Point-to-Point S_DWITHIN. A centre on any other
-	// operator would silently narrow that operator's answer to a radius nobody
-	// asked it to apply.
+	// Point-to-Point S_DWITHIN only. A centre on any other operator would
+	// silently narrow it to a radius nobody asked for.
 	if filter.Center != nil {
 		p.centerLat = nullableFloat(filter.Center.Lat)
 		p.centerLon = nullableFloat(filter.Center.Lon)
@@ -137,12 +117,8 @@ func (p *predicates) spatial(filter domain.SpatialFilter, targetPaths []string) 
 	}
 }
 
-// nullableText maps "" to SQL NULL.
-//
-// The distinction is load-bearing in both directions: an empty networkId means
-// EVERY network and must reach the query as NULL so the predicate is skipped,
-// while "" sent as a value would match no visible_to entry and empty every
-// response.
+// nullableText maps "" to SQL NULL, so the predicate is skipped rather than
+// matched against an empty string.
 func nullableText(value string) pgtype.Text {
 	if value == "" {
 		return pgtype.Text{}
@@ -154,11 +130,8 @@ func nullableFloat(value float64) pgtype.Float8 {
 	return pgtype.Float8{Float64: value, Valid: true}
 }
 
-// LexicalRetriever answers the full-text mode.
-//
-// One type per mode rather than one type with a mode parameter, so the modes
-// run concurrently without sharing a code path and adding a mode is a new type
-// rather than a new arm in a switch every existing mode passes through.
+// LexicalRetriever answers the full-text mode. One type per mode, so adding a
+// mode is a new type rather than a new arm in a shared switch.
 type LexicalRetriever struct {
 	queries *gen.Queries
 	limit   int32
@@ -166,12 +139,9 @@ type LexicalRetriever struct {
 
 var _ domain.Retriever = (*LexicalRetriever)(nil)
 
-// NewLexicalRetriever builds the mode over a store, capped at limit ids.
-//
-// The cap is not optional and not a safety net: `discover_tsquery` ORs its
-// terms, so "wheat seeds for sale" matches every listing carrying any one of
-// those words. The broad query is the ordinary one, and without the cap it
-// sends the corpus across the wire for RRF to rank and discard.
+// NewLexicalRetriever builds the mode over a store, capped at limit ids. The
+// cap is not a safety net: `discover_tsquery` ORs its terms, so a broad query
+// matches most of the corpus and the cap is what keeps it off the wire.
 func NewLexicalRetriever(store gen.DBTX, limit int) *LexicalRetriever {
 	return &LexicalRetriever{queries: gen.New(store), limit: int32(limit)}
 }
@@ -179,10 +149,8 @@ func NewLexicalRetriever(store gen.DBTX, limit int) *LexicalRetriever {
 // Retrieve returns the ids this mode ranks, best first.
 //
 // The Scope is ignored: this query's gate calls now() and reads visible_to
-// itself, so the instant the caller captured is already in the WHERE clause the
-// count query shares. It stays in the signature because the backends that have
-// no now() — the memory store, and any index with no notion of validity — need
-// it, and a port that dropped it would make them unimplementable.
+// itself. It stays in the signature for the backends that have no now() (A6),
+// which a port without it could not implement.
 func (l *LexicalRetriever) Retrieve(
 	ctx context.Context, query domain.SearchQuery, _ domain.Scope,
 ) ([]string, error) {
@@ -270,11 +238,9 @@ func (f *FuzzyRetriever) Retrieve(
 	return keys, nil
 }
 
-// SemanticRetriever answers the vector mode.
-//
-// It holds an Embedder because the query side has to embed the caller's text
-// with the SAME provider the write side embedded the corpus with; two providers
-// produce two unrelated spaces and the distances between them mean nothing.
+// SemanticRetriever answers the vector mode. It holds an Embedder because the
+// query must be embedded by the SAME provider the corpus was: two providers are
+// two unrelated spaces, and the distances between them mean nothing.
 type SemanticRetriever struct {
 	queries  *gen.Queries
 	embedder embeddings.Embedder
@@ -288,12 +254,9 @@ func NewSemanticRetriever(store gen.DBTX, embedder embeddings.Embedder, limit in
 	return &SemanticRetriever{queries: gen.New(store), embedder: embedder, limit: int32(limit)}
 }
 
-// Retrieve embeds the query text and returns the nearest ids.
-//
-// An embedder that fails fails the MODE rather than the search: the error
-// reaches Search, which records it in Degraded and fuses what the other modes
-// returned. The Scope is ignored for the reason given on
-// LexicalRetriever.Retrieve.
+// Retrieve embeds the query text and returns the nearest ids. An embedder that
+// fails fails the MODE, not the search — Search records it in Degraded. The
+// Scope is ignored for the reason on LexicalRetriever.Retrieve.
 func (s *SemanticRetriever) Retrieve(
 	ctx context.Context, query domain.SearchQuery, _ domain.Scope,
 ) ([]string, error) {
@@ -335,35 +298,34 @@ func (s *SemanticRetriever) Retrieve(
 	return keys, nil
 }
 
-// queryVector embeds text for whichever side is asking, or answers nil when
-// there is nothing to embed.
+// queryVector embeds text, or answers nil when there is nothing to embed.
 //
-// It had a second caller — the counter — and the sharing was the point: the two
-// had to bind the SAME vector for one request or `Total` described a pool the
-// page was not drawn from. A19 deleted both, so this is the semantic
-// retriever's alone now. Kept as a function rather than folded into Retrieve
-// because the nil-embedder case below is a contract with the composition root,
-// not a local branch.
+// A nil embedder or an empty text is nil and NO error: the query reads a NULL
+// vector as "this mode contributes no rows", which is true for a geo-only
+// intent and for the default configuration, where semantic is off (A5).
 //
-// A nil embedder or an empty text is nil and no error. The query reads a NULL
-// vector as "this mode contributes no rows", which is exactly true for a
-// geo-only intent and for the default configuration, where semantic is off
-// (A5). Failing instead would take down every such page, on the deployment this
-// service actually ships as.
-//
-// The dimension guard runs HERE rather than at the statement, because
-// pgvector's own width check fires inside the query and reports a storage
-// failure for what is a provider misconfiguration three layers up — the
-// read-side twin of the guard on the publish path.
+// The dimension guard runs here rather than at the statement, because
+// pgvector's own width check fires inside the query and would report a storage
+// failure for a provider misconfiguration three layers up.
 func queryVector(ctx context.Context, embedder embeddings.Embedder, text string) (*pgvector.Vector, error) {
 	if embedder == nil || text == "" {
 		return nil, nil
 	}
 
+	started := time.Now()
 	values, err := embedder.Embed(ctx, text)
 	if err != nil {
 		return nil, fmt.Errorf("embed the query text: %w", err)
 	}
+
+	// Only when a vector came back: retrieval.embedding_ms is absent rather
+	// than 0 when no embedding ran (opentelemetry.md §`discover`). logger.Millis, so
+	// this and duration_ms round the same way. fact is what keeps the OTel SDK
+	// out of src/storage (A23).
+	if len(values) > 0 {
+		fact.ObserveFloat64(ctx, fact.RetrievalEmbeddingMs, logger.Millis(time.Since(started)))
+	}
+
 	if err := embeddings.CheckDimensions(values, embedder.Dimensions()); err != nil {
 		return nil, fmt.Errorf("embed the query text: %w", err)
 	}

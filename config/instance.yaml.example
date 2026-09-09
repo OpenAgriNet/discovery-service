@@ -36,7 +36,10 @@ log:
 # embeddings:
 #   provider: ollama
 
-# Uncomment to export traces and metrics to a collector (T2).
+# Uncomment to export traces and metrics to a collector (T2). otlp also
+# requires APP_SUBSCRIBER_ID and APP_DOMAIN in the environment — the boot
+# refuses otlp without both, since an exported span with no producer is worse
+# than no span at all.
 # otel:
 #   exporter: otlp
 #   endpoint: http://localhost:4317

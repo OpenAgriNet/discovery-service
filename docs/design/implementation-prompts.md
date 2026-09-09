@@ -1,7 +1,7 @@
 # Implementation Prompts — Discover & Publish
 
 Copy-paste prompts for driving a fresh Claude Code session/agent through
-`docs/design/discover-and-publish.md`, one task at a time. The template below
+`docs/design/implementation-plan.md`, one task at a time. The template below
 is the same for every task — only the task number/name changes.
 
 ## How to use this
@@ -24,22 +24,49 @@ deferred — see the notes under the checklist for all three.
 
 Tasks 1-22 have landed, with three holes that are decisions rather than
 omissions: **6** is parked, **7** shipped at half scope (`Envelope` only), and
-**10** (L2 validation) is deferred.
+**10** (L2 validation) is **not this service's** — it moved to the adapter on
+2026-09-09, and its flag and config key were removed rather than left
+defaulted off. It was described here as "deferred" until then.
 
 **Task 23 is now six sub-tasks (A23), and it is no longer the last in the plan.**
-23a-23e run in order and are unblocked; **23f is blocked** on the `domain` string
-and the `producer` registry, and **Task 24 (metrics exporter) is blocked** on a
+23a-23e run in order and are unblocked; **23f is blocked** on the `domain` string,
+the `producer` registry and the id/timestamp format the facilitator validates
+(Open Items O1, O2 and O4), and **Task 24 (metrics exporter) is blocked** on a
 metrics registry that does not exist. Both blockers are network-level decisions
 outside this repo, and building either on a guess produces data a facilitator
 will reject or misread. Run 23a-23e, then stop and report the two blockers rather
 than inventing values to get past them.
+
+**Tasks 25 and 26 were added by A25 and neither is blocked.** 25 is the
+node-operator metric set — distinct from Task 24, which is the facilitator's
+signal and is what the registry blocks; conflating them is why this service has
+no metrics at all today. 26 encodes the never-emitted list as a test.
+
+This paragraph used to say "neither is blocked" and then, one sentence later,
+"26 once 23f unblocks" — a contradiction inside a single paragraph, and the
+second half was the wrong one. `opentelemetry.md` §Two tables, not one settles
+it: the deny-list
+test asserts over the **serialised bytes** of the facilitator projection using an
+in-memory exporter, and an in-memory exporter is not 23f. It needs the projection
+to exist, which is 23d. **So the order after 23e is 25, then 26 — and 26 can move
+earlier, to directly after 23d, which is where it belongs.** Nothing about it
+waits on the network, and parking it behind 23f is what left OP11 as a rule
+nothing enforces for as long as it has been.
+
+A25 also changes two sub-tasks already in flight, and both changes are cheap only
+if made when that sub-task is built rather than after: **23a** stamps build
+identity onto the Resource it is already constructing, and **23c** emits
+`transaction_id` and `message_id` alongside the `beckn.*` pair — two aliases,
+not three, because onix's span spelling for the third is `recipient.id`, which we
+already emit, and `receiver.id` exists in onix only on audit log records. The
+network collector joins on those spellings and orphans anything else. See `opentelemetry.md` *The stack — who answers what*.
 
 ---
 
 ## Per-task prompt
 
 ```
-Implement Task {N} — {TASK_NAME} from docs/design/discover-and-publish.md,
+Implement Task {N} — {TASK_NAME} from docs/design/implementation-plan.md,
 and only Task {N}.
 
 Rules:
@@ -59,7 +86,7 @@ Rules:
   Conflicts, Amendments, and Open Items first — most things are already
   decided there), stop and ask me rather than guessing.
 - Before you say you're done, self-review: re-read this task's own section of
-  docs/design/discover-and-publish.md side-by-side with your diff. Check every
+  docs/design/implementation-plan.md side-by-side with your diff. Check every
   file, type, function signature, and behavior it names is actually there,
   under the name it uses, and that nothing you wrote drifted from it or from
   the Global Constraints table. Include this as a short checklist in your
@@ -86,7 +113,7 @@ in, and it is worth keeping only because it saves the paste.
 
 ```
 Implement Task 23a — Telemetry foundation and the Resource from
-docs/design/discover-and-publish.md, and only 23a.
+docs/design/implementation-plan.md, and only 23a.
 
 Rules:
 - Follow the task's own steps literally, in TDD order (failing test first, run
@@ -102,7 +129,14 @@ Rules:
   23b.
 
 Read A23 in the Amendments table first — it is what restructured this task, and
-it names two things the older text got wrong.
+it names two things the older text got wrong. Then read A25, which adds one
+requirement to 23a: build identity on the Resource. `service.version` plus the
+build attributes, stamped through `-ldflags -X` in the Makefile, matching what
+beckn-onix already does — so "did the deploy break it" is answerable. This does
+not enlarge 23a's shape; the Resource is being constructed here anyway, and this
+is the cheapest moment it will ever be. Pin that an unstamped build reports
+`dev` rather than an empty string: an empty version is indistinguishable from a
+Resource field nobody set.
 
 Scope note: 23a builds the package, the Resource and the exporter. It starts no
 spans; `Trace` stays the no-op pass-through until 23c. So nothing observable
@@ -113,8 +147,12 @@ Domain empty must fail at boot rather than emit a non-conformant span later.
 Also read docs/design/opentelemetry.md — it is the single design document for
 telemetry here. Part 1 and Part 2 are the wire shape and carry the worked
 envelopes the attribute names come from; its Implementation section is 23a's own
-scope, and its Decisions table names the four things to settle before writing
-code.
+scope. Its Decisions table has seven rows; **1, 2 and 3 are 23a's to settle**
+(4 is already done, 5 belongs to 23f, 6 to 23c and 7 to Task 25). Read *Why —
+the questions this must answer* and *The stack — who answers what* for the
+reason any of this exists and for which layer answers what — three of the
+network's questions cannot be answered from this service at all, and knowing
+which three stops you inventing attributes to reach them.
 
 Note before you start: `src/platform/telemetry/` exists but holds only a
 `.gitkeep`. ADR-0011 is the accepted decision and describes the shape; the OTel
@@ -135,7 +173,7 @@ makes them direct.
 | 7 | Signature & Envelope Middleware | **`Envelope` only** — the `Signature` half is parked with Task 6, which no longer builds the `Keyring` it needs. Do not create `signature.go` and do not stub it: a mounted middleware that does nothing is indistinguishable from a working one at exactly the call sites where it matters. Scenario 7 is now the boot refusal, not the two flag-sides. `Envelope` also carries the **request body ceiling** (C14): it is the only thing that reads a body and it runs before `RateLimit`, so a bound anywhere later is a bound after the allocation |
 | 8 | Request Logger & Rate Limit Middleware | Also homes `RequestID` (its own file; it mints rather than trusting an inbound `X-Request-Id`, and it is first in the chain because nothing below it logs until it installs the request-scoped logger) and **departs from A4**: the bucket is keyed on the remote address, not the subscriber id, which on an unverified request is a claim anyone can make about anyone. Subscriber-id keying moved to Deferred, tied to the task that verifies the signature. Also builds `Trace` as a **no-op pass-through** that appends `trace` to `X-Beckn-Chain`, alongside `Recover` appending `recover` — the pair exists so Task 20's order test can read the two back in the order they ran. See Task 8's own section; an earlier draft of this row said `X-Beckn-Trace-Seen: 1`, a single presence marker that cannot carry order. **A11 landed in review of this task**: `RequestLogger` moved above `Recover`, so a panicking request is still timed and logged, and `Recover` now aborts rather than writing a second body over a committed response |
 | 9 | L1 Schema Validation | |
-| 10 | L2 Extended Schema Validation | |
+| 10 | ~~L2 Extended Schema Validation~~ | **Moved to the adapter, 2026-09-09 — do not implement here.** The flag, the `common.yaml` key and the boot check are removed. The plan's Task 10 section is kept as the adapter's specification, because C4 and T3 are still requirements and that is where their reasoning lives |
 | 11 | Domain Model & The DB-Agnostic Boundary | `purity_test.go` lives here — the import-boundary gate every later task is checked against. Also **scaffolds** `storage/memory/repository.go` (both port interfaces, no behavior) and `storage/conformance/` (fixture types, no fixtures) — Tasks 12, 15, 16 modify these as they add behavior; this task creates them |
 | 12 | H3 Geospatial Indexing | Modifies `storage/memory/repository.go` — adds the spatial-matching behavior (`MatchesOp`, bounding-box stage) the memory backend needs |
 | 13 | Text Derivation & Embeddings | Ships with `EMBEDDING_PROVIDER=noop` — don't turn semantic search on. Four open questions from this task sit in **Open questions** (Q1–Q4); Q1, the versioning mechanism, is the one that changes a contract elsewhere. Builds no selector and no `embedding_source_hash` — the hash is the publish path's (plan line ~1484) |
@@ -147,9 +185,11 @@ makes them direct.
 | 19 | Discover Service & Controller | The degraded list is the `X-Beckn-Degraded` **header**, never a body key (C11) — and it is set before `WriteJSON` writes the status line, pinned over a real connection because a `ResponseRecorder` accepts a header set too late to be sent. `query.NetworkID` comes from the request envelope and is **not** defaulted to `APP_NETWORK_ID` (scenario 29). Mapper faults are typed by a switch over code literals, not a conversion, so the `src/platform/errors` enum pin still sees them. Leaves **Q5** in **Open questions** — discover has no channel for a partial fault |
 | 20 | Container, Router & Server Lifecycle | First point the service actually boots end-to-end. Wires the full middleware chain **minus `Signature`**, order-tested by observing side effects — specifically the *order of the two entries* `Trace` and `Recover` append to `X-Beckn-Chain`, since both are appended before `Recover` writes its 500 and a mere presence marker therefore survives under either nesting. `RequestLogger`'s position stamps no chain entry, so it is pinned behaviourally instead (A11): a panicking route must produce one completion line at `status = 500` with `X-Response-Time` set. Reads `SERVER_MAX_REQUEST_BODY_BYTES` once and passes it to `Envelope`; sets no second ceiling on the `http.Server` (C14) |
 | 21 | End-to-End Acceptance Suite | The 35 scenarios in the doc's Scenarios section get pinned here, over real HTTP against a real Postgres — this is the integration/e2e layer, not unit tests. Covers publish and discover each in their own `_test.go` file, plus offers, validity, performance, defaults, geopath and spatial-operator groups. Runs against **Postgres only** — memory-backend parity is `storage/conformance`'s job (Tasks 11/12/15/16), not this suite's |
-| 22 | Structured Attribute Filtering | *Phase 1, per the doc's Open Items table* — do not skip unless you've deliberately decided to push it to Phase 2. Validation + rebase live in `src/platform/jsonpath/subset.go` (backend-agnostic, beside `Canonicalise`); `storage/postgres/jsonpath.go` only casts/executes the already-accepted expression |
-| 23 | OpenTelemetry Tracing | **Six sub-tasks (A23), one review gate each.** **23a** foundation — the `telemetry` package, the Resource's five mandatory attributes, the OTLP exporter, `Producer`/`Domain` config; boots only, starts no spans. **23b** the observation record — `correlation` generalises from `[]zap.Field` to a timestamped fact record; a pure refactor whose acceptance criterion is that every existing test passes *unchanged*. **23c** the span — replaces Task 8's no-op `Trace` body and drops its `trace` entry from `X-Beckn-Chain`; **hand-rolled, not `otelhttp`**, because the spec requires `scope.name`/`version` and the instrumentation scope is immutable once the span exists. Task 20's order assertion moves here. **23d** events — the spec's own `request_info`/`retrieval_info`/`response_info`/`error`, projected from the record; controllers call `record()` and never import telemetry; event times must be strictly increasing. **23e** `trace_id`/`span_id` log fields. **23f BLOCKED** — the facilitator exporter and its deny-list, gated on the `domain` string and the `producer` registry |
+| 22 | Structured Attribute Filtering | *Phase 1, per the doc's Open Items table* — do not skip unless you've deliberately decided to push it to Phase 2. Validation + rebase live in `src/platform/jsonpath/subset.go` (backend-agnostic, beside `Canonicalise`); the backend only binds it — `storage/postgres/retrievers.go` passes the accepted expression as one parameter and `queries/discover.sql` casts and executes it. A18 left nothing for a `postgres/jsonpath.go` to hold, so none was created |
+| 23 | OpenTelemetry Tracing | **Six sub-tasks (A23), one review gate each.** **23a** foundation — the `telemetry` package, the Resource's five mandatory attributes, the OTLP exporter, `Producer`/`Domain` config; boots only, starts no spans. **23b** the observation record — `correlation` generalises from `[]zap.Field` to a timestamped fact record; a pure refactor whose acceptance criterion is that every existing test passes *unchanged*. **23c** the span — replaces Task 8's no-op `Trace` body and drops its `trace` entry from `X-Beckn-Chain`; **hand-rolled, not `otelhttp`**, because the instrumentation scope is immutable once the span exists and `scope.version` is where the spec wants the *specification's* version, not a library's — so `otelhttp` would stamp `v0.69.0` where `1.0` belongs. Not because scope is mandatory: the block is Optional, its two fields Required only within it (2026-09-09 audit). Task 20's order assertion moves here. **23d** events — the spec's own `request_info`/`retrieval_info`/`response_info`/`error`, projected from the record; controllers call `record()` and never import telemetry; event times must be strictly increasing. **23e** `trace_id`/`span_id` log fields. **23f BLOCKED** — the facilitator exporter and its deny-list, gated on the `domain` string (O1), the `producer` registry (O2) and the id/timestamp format the facilitator validates (O4) |
 | 24 | Metrics Exporter | **BLOCKED, and probably not this repo.** The OTLP METRIC signal the spec requires of participants. Not in this binary: a stateless service behind N replicas emits N partial counts nobody can reassemble, so `ref-impl-design.md` puts computation in the tier with storage. Aggregates over Task 23's spans — cannot precede it, needs no new instrumentation in `src/`. Gated on a metrics registry that does not exist for OAN; `metric.code` is defined there and invented codes will not match |
+| 25 | Node-Operator Metrics | **Not blocked, not Task 24, and now ONE instrument.** Task 24 is the facilitator's METRIC signal, gated on a `metric.code` registry; this is the `onix_*`-style operational number a node operator needs. **Cut from three instruments to one on 2026-09-09** against a test the first draft never ran — *only instrument what the layer below is blind to*. kubelet and kube-state-metrics already answer liveness from the `/healthz` and `/readyz` this service already serves, and a self-reported gauge is worse than an external prober in exactly the outage it exists to catch. `pg_stat_activity` grouped by `application_name` already answers pool utilisation — so **`pool.go` gains an `application_name`, which is one line and not an instrument**. What survives is **Postgres acquire-wait**, off `pgxpool.Stat().EmptyAcquireCount()` and `EmptyAcquireWaitTime()`: queueing inside this process before any syscall, invisible to cAdvisor (which sees only the container's resource envelope) and to Postgres (which never sees a statement that was not sent), and rising *before* anything fails. Two observable counters rather than a histogram, because pgxpool exposes only cumulative totals and a real distribution would mean wrapping every `Acquire` on the hot path. Conflating this task with 24 is why this service has no metrics at all today. **Do not repeat the claim that a 429 produces no span** — it does: `Trace` is index 1 in `router.go`'s `chain`, above `Envelope` and `RateLimit`, both of which refuse through `httpx.WriteNack` → `logNack`, which is where 23d's `error` event comes from. The justification is that a ceiling is a level and a span is an event — but note that the "pool at 30 of 32" framing is *not* what this task ships: a utilisation reading is confounded by connections pgxpool holds open while idle, so 32 open with 2 acquired is indistinguishable from 32 acquired. Waiting is the unambiguous signal. Tests pin: acquire-wait under a pool sized to 1 with a second concurrent caller, **one** instrument registered so a second arrives with a reviewer attached, and an assertion that **no instrument here counts a rejection**. Per-provider freshness, the alert list and the liveness gauge are all **struck** — the first is a `SELECT` and a cross-replica aggregate, the second a rule file with no acceptance criterion, the third already served by kubelet. Open question 7's SLO **does not gate this task**; it gated OP10's alert list, which is struck. See `opentelemetry.md` **OP3 and OP4**, and the *Node-operator metrics — Task 25* section |
+| 26 | Deny-List Conformance | The never-emitted list is a rule five sub-tasks comply with and nothing enforces. One fixture-driven test over the **facilitator exporter's output** — a span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves it with none of them — asserted over the exported payload, not over the code that builds it, so a future attribute added anywhere is caught. Follows 23f, since 23f builds the exporter it asserts against. `opentelemetry.md` **OP11** |
 
 ---
 

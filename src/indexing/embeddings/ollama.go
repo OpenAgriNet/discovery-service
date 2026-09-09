@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
 )
 
 // embedPath is Ollama's embedding route.
@@ -15,10 +17,10 @@ const embedPath = "/api/embed"
 
 // Ollama embeds against a local model server, `nomic-embed-text` by default.
 type Ollama struct {
-	// endpoint comes from configuration and from nowhere else. A URL out of a
-	// request body would make this a fetch any publisher can aim, which is the
-	// distinction EXT_ALLOW_NETWORK_FETCH exists to draw — and it holds here
-	// even though nothing today can write to this field.
+	// endpoint comes from configuration and nowhere else. A URL out of a request
+	// body would make this a fetch any publisher can aim, which is the
+	// distinction EXT_ALLOW_NETWORK_FETCH draws — and it holds here even though
+	// nothing today can write to this field.
 	endpoint   string
 	model      string
 	dimensions int
@@ -28,10 +30,10 @@ type Ollama struct {
 // NewOllama returns a provider posting to endpoint, with timeout as the ceiling
 // on one embedding call.
 //
-// The timeout lives on the client as well as on the caller's context because
-// this call sits inside the publish path: a model server that accepts a
-// connection and then stops writing would otherwise hold a publish open for as
-// long as the request does.
+// The timeout lives on the client as well as the caller's context because this
+// call sits inside the publish path: a model server that accepts a connection
+// and then stops writing would otherwise hold a publish open for as long as the
+// request lives.
 func NewOllama(endpoint, model string, dimensions int, timeout time.Duration) *Ollama {
 	return &Ollama{
 		endpoint:   strings.TrimSuffix(endpoint, "/"),
@@ -43,10 +45,9 @@ func NewOllama(endpoint, model string, dimensions int, timeout time.Duration) *O
 
 // Embed asks the model server for the vector of text.
 //
-// An empty text is answered without a request. There is nothing to embed, the
-// round trip would be wasted, and servers disagree about whether an empty input
-// is an error — which would turn a resource that merely has no descriptor into
-// a failed publish.
+// An empty text is answered without a request. Servers disagree about whether
+// an empty input is an error, which would turn a resource that merely has no
+// descriptor into a failed publish.
 func (o *Ollama) Embed(ctx context.Context, text string) ([]float32, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
@@ -61,6 +62,12 @@ func (o *Ollama) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, fmt.Errorf("build the embedding request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+
+	// Continues the trace into the embedding service, if it is instrumented.
+	// retrieval.embedding_ms says how long the call took; the traceparent is what
+	// says where inside the model server it went. A no-op when no span is in
+	// flight, which is why it is unconditional rather than guarded.
+	telemetry.Inject(ctx, request.Header)
 
 	vector, err := o.send(request)
 	if err != nil {
@@ -81,9 +88,11 @@ func (o *Ollama) send(request *http.Request) ([]float32, error) {
 	return o.readAndClose(response)
 }
 
-// readAndClose closes the body whatever the read did, mirroring writeAndClose
-// in platform/validation. A close error is reported only when the read itself
-// succeeded: when both fail, the read is the one that says what went wrong.
+// readAndClose closes the body whatever the read did, mirroring writeAndClose in
+// platform/validation.
+//
+// A close error is reported only when the read succeeded: when both fail, the
+// read is the one that says what went wrong.
 func (o *Ollama) readAndClose(response *http.Response) ([]float32, error) {
 	vector, readErr := o.firstVector(response)
 	closeErr := response.Body.Close()

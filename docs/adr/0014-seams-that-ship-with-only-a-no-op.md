@@ -1,7 +1,8 @@
-# ADR-0014 — `CatalogReplicator` and `Keyring`: what a seam must carry to ship
+# ADR-0014 — `CatalogReplicator`: what a seam must carry to ship
 
 **Status:** Accepted
 **Date:** 2026-08-25
+**Amended:** 2026-09-07 — see Amendments
 
 ## Context
 
@@ -9,12 +10,13 @@ ADR-0012 states the rule: *a seam ships with a conformance test or a second
 implementation behind it, or it does not ship.* Two seams appear to violate it.
 
 `CatalogReplicator` (A7) is publish's write fan-out. Phase 1 has exactly one
-store, so the only implementation is a no-op. `registry.Keyring` is the seam to
-the participant registry, and the registry is another team's and does not exist
-yet, so the only implementation is a static env-backed map. Neither has a second
-implementation, and neither can have a conformance suite in the sense
-`src/storage/conformance/` means it — there is nothing to hold two backends
-against each other.
+store, so the only implementation is a no-op. It has no second implementation,
+and it cannot have a conformance suite in the sense `src/storage/conformance/`
+means it — there is nothing to hold two backends against each other.
+
+`registry.Keyring` was assessed here on the same question and reached the
+opposite answer; the amendment below records why, and it is the sharper of the
+two worked examples this ADR now carries.
 
 The same amendment also *removed* something for looking exactly like these two:
 `pending_targets`, a column written on every resource insert and read by
@@ -23,7 +25,7 @@ difference has to be stated, or the rule is applied by taste.
 
 ## Decision
 
-**Both seams ship, and the distinction that admits them is construction and
+**The seam ships, and the distinction that admits it is construction and
 exercise, not implementation count.** A seam may ship with a single trivial
 implementation when:
 
@@ -51,13 +53,9 @@ table is created. A queue with no consumer is `pending_targets` again — write
 cost on the hot path for a feature that does not exist. The table arrives with
 the second store that needs one, and so does the reconciler that reads it.
 
-`Keyring` ships on the same terms: constructed in the container, exercised by
-Task 6's tests through `Verify` (unknown `keyId` fails distinguishably from a
-bad signature), behind `AUTH_ENABLE_SIGNATURE_VERIFICATION=false`.
-
 ## Alternatives considered
 
-- **Not shipping either seam until a second implementation exists** — the
+- **Not shipping the seam until a second implementation exists** — the
   ordering constraint above (fan-out strictly after commit) would then be
   discovered by whoever adds the second store, under deadline, from a bug
   report about a catalog announced and then rolled back.
@@ -69,10 +67,37 @@ bad signature), behind `AUTH_ENABLE_SIGNATURE_VERIFICATION=false`.
 
 ## Consequences
 
-Two interfaces exist with one trivial implementation each, which is a cost paid
+One interface exists with a single trivial implementation, which is a cost paid
 in indirection at every call site. What is bought is that the hard part —
 *when* replication runs relative to the transaction, and how a failure affects
 the verdict — is decided and pinned now rather than inferred later. The rule
 this ADR draws is falsifiable: a seam that no `container.go` line constructs, or
-that no test reaches through its real call site, does not meet it, and
-`pending_targets` is the worked example of what failing it looks like.
+that no test reaches through its real call site, does not meet it.
+`pending_targets` is the worked example of what failing it looks like, and
+`Keyring` — below — is the example of the rule being applied to a seam this ADR
+had already admitted.
+
+## Amendments
+
+**2026-09-07.** This ADR was titled "`CatalogReplicator` and `Keyring`" and
+stated that `Keyring` "ships on the same terms: constructed in the container,
+exercised by Task 6's tests through `Verify`". None of that happened.
+`src/platform/registry/` holds a `.gitkeep`, no `container.go` line constructs a
+keyring, and no test reaches one — Task 6 was parked after this ADR was written,
+and nothing under its heading is implemented.
+
+So `Keyring` fails both clauses of the test in the Decision above, and it is
+removed from the title and the body rather than left as an accepted decision
+contradicting the tree. The rule is unchanged; if anything this is the rule
+working. The two clauses were written to be falsifiable, and the first seam they
+falsified was one this ADR itself had waved through — which is worth more as a
+record than a clean pass would have been.
+
+What ships in its place is a refusal. `validateAuth` in `src/platform/config`
+fails the boot when `AUTH_ENABLE_SIGNATURE_VERIFICATION=true`, on the reasoning
+that a flag advertising a control that is not running is a worse artefact than
+an absent flag — the same instinct as `pending_targets`, applied to
+configuration instead of schema. `Keyring` returns here, with its construction
+line and its `Verify` tests, when Task 6 is built.
+
+ADR-0012 carried the matching claim in its promise table and is amended in step.

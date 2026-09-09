@@ -8,32 +8,26 @@ import (
 // Accept reports whether an attribute-filter expression may be handed to
 // PostgreSQL, or returns the reason it may not.
 //
-// It is a gate, not a rewriter. Since A18 the filter runs against one column —
+// A gate, not a rewriter. Since A18 the filter runs against one column —
 // `resources.filter_doc`, a composite already rooted at `$.catalogs` — so an
-// expression that passes here is cast with `@filter::jsonpath` and evaluated
-// VERBATIM. Nothing is stripped, rebased or repaired, because an expression
-// this service edited would be one the caller cannot debug against their own
-// document, and a repairer is a parser, which is the thing this package
-// refuses to own.
+// accepted expression is cast with `@filter::jsonpath` and evaluated VERBATIM.
+// Nothing is stripped, rebased or repaired: a repairer is a parser, which is the
+// thing this package refuses to own.
 //
-// What makes the gate necessary rather than tidy: `@?` takes a PATH
-// expression, and given a PREDICATE expression — the same intent written
-// without the `?` — PostgreSQL matches EVERY row and reports no error, because
-// `@?` asks only whether the expression yielded an item and a comparison
-// always yields one, `false` included. Two more shapes fail as quietly: a
-// wrong root matches nothing, and a two-root expression matches everything.
-// A caller who hits any of the three receives a plausible page and is told
-// nothing. All three are refused here so they become a 400.
+// What makes the gate necessary rather than tidy is that three wrong shapes fail
+// SILENTLY. `@?` takes a PATH expression, and given a PREDICATE — the same intent
+// written without the `?` — it matches EVERY row and reports no error, because it
+// asks only whether the expression yielded an item and a comparison always yields
+// one, `false` included. A wrong root then matches nothing, and a two-root
+// expression matches everything. All three are refused here so they become a 400.
 //
-// The error is a plain one. Callers map it to SCH_INVALID_JSONPATH; this
-// package stays free of the protocol for the same reason Canonicalise does,
-// so the accepted grammar does not move when the backend does.
+// The error is a plain one; callers map it to SCH_INVALID_JSONPATH.
 func Accept(expression string) error {
 	rest := strings.TrimSpace(expression)
 
-	// PostgreSQL's explicit path modes. They change how missing members and
-	// arrays behave, not what the expression names, so they are carried
-	// through untouched rather than being a fourth thing to validate.
+	// PostgreSQL's explicit path modes change how missing members and arrays
+	// behave, not what the expression names, so they are carried through untouched
+	// rather than being a fourth thing to validate.
 	for _, mode := range []string{"strict ", "lax "} {
 		if strings.HasPrefix(rest, mode) {
 			rest = strings.TrimSpace(rest[len(mode):])
@@ -54,23 +48,21 @@ const (
 	// filterRoot is the only member an accepted expression may name off `$`.
 	filterRoot = "catalogs"
 
-	// filterColumn is named in the refusal because "wrong root" is otherwise
-	// the least guessable of the three: the caller wrote a path that is valid
-	// against the response document and simply does not exist in the column
-	// the filter runs against.
+	// filterColumn is named in the refusal because "wrong root" is the least
+	// guessable of the three: the caller wrote a path valid against the response
+	// document that simply does not exist in the column the filter runs against.
 	filterColumn = "resources.filter_doc"
 )
 
-// acceptForm walks the expression once, checking the two things a caller
-// cannot learn from PostgreSQL's own answer: that a `?` filter is reached
-// before any comparison, and that there is only one root.
+// acceptForm walks the expression once, checking the two things a caller cannot
+// learn from PostgreSQL's own answer: that a `?` filter is reached before any
+// comparison, and that there is only one root.
 //
-// This is bracket matching over bytes, deliberately not a parse. It has to
-// know where strings and nesting are — a `?` in a name and a `&&` between
-// two roots are the same bytes as the ones that matter — and it needs to know
-// nothing else. Everything it lets through is still PostgreSQL's to reject:
-// the cast is the last word on syntax, and this walk only moves the three
-// silent failures in front of it.
+// Bracket matching over bytes, deliberately not a parse. It has to know where
+// strings and nesting are — a `?` in a name and a `&&` between two roots are the
+// same bytes as the ones that matter — and nothing else. The cast is still the
+// last word on syntax; this walk only moves the three silent failures in front
+// of it.
 func acceptForm(expression string) error {
 	walk := scan{filterAt: -1, compare: -1}
 
@@ -88,9 +80,9 @@ func acceptForm(expression string) error {
 // scan is where the walk has got to: how deep it is, and where it first saw the
 // two things whose ORDER is the whole question.
 //
-// filterAt and compare start at -1 rather than 0, because byte 0 is a position
-// an expression can genuinely have one at and a zero value would read as "seen
-// at the start" — which is exactly the state that decides the last check below.
+// filterAt and compare start at -1, because byte 0 is a position an expression can
+// genuinely have one at and a zero value would read as "seen at the start" — the
+// state that decides the last check in done.
 type scan struct {
 	parens   int
 	brackets int
@@ -140,10 +132,9 @@ func (s *scan) step(expression string, i int) (int, error) {
 // filter records a `? (...)` and refuses the RFC 9535 spelling of one.
 //
 // `[?(@.x == "y")]` is what every JSONPath tutorial teaches and what PostgreSQL
-// does not speak (C10). The two dialects differ here by one bracket, so it is
-// named rather than left to a syntax error from inside a query — and left to
-// PostgreSQL it is not even that: the subscript form parses, selects nothing,
-// and `@?` reports no error.
+// does not speak (C10). The dialects differ by one bracket, and left to PostgreSQL
+// the subscript form parses, selects nothing, and `@?` reports no error — so it is
+// named here instead.
 func (s *scan) filter(expression string, i int) error {
 	if s.brackets > 0 {
 		return fmt.Errorf("the filter at byte %d is inside a subscript: that is RFC 9535, and this service runs PostgreSQL SQL/JSON path, where a filter is written ? (...) after the subscript", i)
@@ -159,10 +150,9 @@ func (s *scan) filter(expression string, i int) error {
 
 // conjunction refuses a second root: `$.catalogs[*] ? (...) && $.other == 1`.
 //
-// It is legal jsonpath and parses as a PREDICATE, so under `@?` it behaves
-// exactly like the missing-`?` case and returns the corpus. Inside parentheses
-// the same operator is the ordinary conjunction a predicate is built from, so
-// depth is the whole distinction.
+// Legal jsonpath, and it parses as a PREDICATE, so under `@?` it behaves like the
+// missing-`?` case and returns the corpus. Inside parentheses the same operator is
+// the ordinary conjunction a predicate is built from, so depth is the distinction.
 func (s *scan) conjunction(expression string, i int) (int, error) {
 	if i+1 >= len(expression) || expression[i+1] != expression[i] {
 		return i, nil
@@ -193,9 +183,9 @@ func (s *scan) done() error {
 
 // rootMember reads the one member an expression names off `$`.
 //
-// It stops at the first byte that cannot be part of a name, which is what lets
-// `$.catalogs ? (...)` — legal, and lax-mode's auto-unwrapping is why a caller
-// might write it — be read the same way as `$.catalogs[*] ? (...)`.
+// It stops at the first byte that cannot be part of a name, which is what reads
+// `$.catalogs ? (...)` — legal, and what lax-mode auto-unwrapping invites — the
+// same way as `$.catalogs[*] ? (...)`.
 func rootMember(expression string) (string, bool) {
 	if !strings.HasPrefix(expression, "$") {
 		return "", false
@@ -205,9 +195,8 @@ func rootMember(expression string) (string, bool) {
 	switch {
 	case strings.HasPrefix(rest, ".."):
 		// Recursive descent names an unbounded set of locations, and under a
-		// composite that includes every level of the document at once, it is
-		// the one construct that could make a resource match on its
-		// catalog's other resources.
+		// composite holding every level of the document at once it is the one
+		// construct that could make a resource match on its catalog's others.
 		return "", false
 
 	case strings.HasPrefix(rest, "."):
@@ -233,11 +222,10 @@ func rootMember(expression string) (string, bool) {
 
 // closingQuote returns the index of the quote closing the one at open, or -1.
 //
-// A backslash escapes the next byte, so `"a \" b"` closes at the second quote
-// and not the first. Single quotes are tracked alongside double ones not
-// because this subset writes them, but so that one left unterminated is a
-// refusal here rather than a scan that runs off into the rest of the
-// expression and mis-reads what follows.
+// A backslash escapes the next byte, so `"a \" b"` closes at the second quote and
+// not the first. Single quotes are tracked alongside double ones so that one left
+// unterminated is a refusal here rather than a scan that runs off and mis-reads
+// what follows.
 func closingQuote(s string, open int) int {
 	for i := open + 1; i < len(s); i++ {
 		switch s[i] {
@@ -261,19 +249,16 @@ func skipSpace(s string, i int) int {
 // HasIndexableEquality reports whether GIN can extract anything from an
 // accepted expression.
 //
-// `jsonb_path_ops` extracts clauses of the form accessor-chain `==` constant
-// and nothing else. Inequality, `like_regex` and `starts with` are answered
-// correctly and read every gated row to do it — which is fine beside a text or
-// spatial predicate that has already narrowed the corpus, and is a full scan of
-// the catalogue when it arrives alone. The caller uses this to tell those two
-// cases apart; see MapIntent.
+// `jsonb_path_ops` extracts clauses of the form accessor-chain `==` constant and
+// nothing else. Inequality, `like_regex` and `starts with` are answered correctly
+// by reading every gated row — fine beside a text or spatial predicate that has
+// already narrowed the corpus, a full scan of the catalogue when alone. MapIntent
+// uses this to tell the two cases apart.
 //
-// It deliberately OVER-approximates in one direction: `@.a == "x" || @.b > 1`
-// answers true here, and PostgreSQL will in fact scan it, because a disjunction
-// is only index-servable when EVERY arm is. Over-approximating means the guard
-// occasionally permits a scan it could have refused, which costs one slow
-// query; under-approximating would refuse a query the index can serve, which
-// costs a 400 on a legitimate filter. The asymmetry is the whole choice.
+// It OVER-approximates deliberately: `@.a == "x" || @.b > 1` answers true here and
+// PostgreSQL will in fact scan it, since a disjunction is index-servable only when
+// EVERY arm is. Over-approximating costs one slow query; under-approximating would
+// cost a 400 on a legitimate filter.
 func HasIndexableEquality(expression string) bool {
 	for i := 0; i < len(expression); i++ {
 		switch expression[i] {
@@ -286,9 +271,8 @@ func HasIndexableEquality(expression string) bool {
 			}
 			i = end
 		case '=':
-			// `==` and only `==`. `!=`, `<=` and `>=` each carry one `=`, so
-			// the pair is what separates the extractable clause from the three
-			// that scan.
+			// `==` and only `==`: `!=`, `<=` and `>=` each carry one `=`, so the
+			// pair is what separates the extractable clause from the three that scan.
 			if i+1 < len(expression) && expression[i+1] == '=' {
 				return true
 			}

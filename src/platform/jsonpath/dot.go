@@ -4,19 +4,17 @@ import "strings"
 
 // Dot renders a canonical bracket path in the dot form the wire uses.
 //
-// It is the inverse rendering of the grammar Canonicalise parses, and it exists
-// because the two audiences want different spellings of the same path. A stored
+// The two audiences want different spellings of the same path. A stored
 // target_path is compared byte-for-byte against a caller's `targets`, so it must
 // be canonical; an `error.details.path` is read by a human looking for the value
 // they sent, and C7's own example is dot form — `$.message.publishDirectives[1]`.
 //
-// Only a member name that is a bare identifier is unbracketed. `@type` and
-// `resource-id` stay in brackets, because `$.a.@type` is not a path any JSONPath
-// implementation would take back — a renderer that produced it would hand the
-// publisher a string their own tooling refuses.
+// Only a bare identifier is unbracketed. `@type` and `resource-id` stay in
+// brackets, because `$.a.@type` is not a path any JSONPath implementation would
+// take back.
 //
-// Returns the empty string for a path it cannot read, exactly as Canonicalise
-// does, so a caller has one refusal to handle rather than two.
+// Returns the empty string for a path it cannot read, as Canonicalise does, so a
+// caller has one refusal to handle rather than two.
 func Dot(path string) string {
 	rest := strings.TrimSpace(path)
 	if !strings.HasPrefix(rest, "$") {
@@ -59,9 +57,11 @@ func dotRender(rest string) (segment, remainder string, ok bool) {
 	return rest[:end+1], rest[end+1:], true
 }
 
-// dotMember renders a quoted member. The closing quote is found before the
-// closing bracket, not the other way round: Canonicalise admits `-` and `@` in a
-// name, and scanning to the first `]` would mis-split a name that contained one.
+// dotMember renders a quoted member.
+//
+// The closing quote is found before the closing bracket, not the other way
+// round: Canonicalise admits `-` and `@` in a name, so scanning to the first `]`
+// would mis-split a name containing one.
 func dotMember(rest string) (segment, remainder string, ok bool) {
 	end := strings.IndexByte(rest[2:], '\'')
 	if end < 0 {
@@ -85,9 +85,9 @@ func dotMember(rest string) (segment, remainder string, ok bool) {
 
 // isIdentifier reports whether a member name can be written after a dot.
 //
-// Narrower than isMemberName on purpose: that one describes what this service
-// will READ, and this one describes what it is willing to EMIT. A leading digit,
-// a `-` or a `@` is legal in a bracketed name and unreadable in a dotted one.
+// Narrower than isMemberName on purpose: that one is what this service will
+// READ, this one what it will EMIT. A leading digit, a `-` or a `@` is legal in
+// a bracketed name and unreadable in a dotted one.
 func isIdentifier(name string) bool {
 	if name == "" {
 		return false

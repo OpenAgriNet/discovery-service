@@ -6,45 +6,40 @@ import (
 	"strconv"
 	"time"
 
-	"go.uber.org/zap"
-
 	"github.com/OpenAgriNet/discovery-service/src/platform/httpx"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
-// HeaderResponseTime reports how long this service took to answer, in
-// milliseconds. The unit is in the value rather than in the name because the
-// name has nowhere to put it, and a bare number is a number the next consumer
-// guesses the unit of.
+// HeaderResponseTime reports how long this service took to answer. The unit is
+// in the VALUE, since the header name has nowhere to put it and a bare number is
+// one the next consumer guesses the unit of.
 const HeaderResponseTime = "X-Response-Time"
 
-// requestCompleted is the completion line's message. Fixed, and named here, so
-// the line is findable by message rather than by position — a rejected request
-// logs through WriteNack as well, and which of the two comes first is not
-// something a query should have to know.
+// requestCompleted is the completion line's message, fixed so the line is
+// findable by message rather than by position — a rejected request logs through
+// WriteNack as well.
 const requestCompleted = "request completed"
 
-// responseRecorder is the wrapper that stamps the elapsed time and captures the
-// status.
+// responseRecorder stamps the elapsed time and captures the status.
 //
-// Both halves have to happen here rather than in RequestLogger. A header set
-// after the handler has written is a header that never reaches the wire, so
-// WriteHeader — the last moment the header map is still mutable — is where the
-// stamp goes; and the status is only knowable from inside, because a handler
-// that answered its own request never tells the middleware what it answered.
+// Both halves have to happen HERE and not in RequestLogger: a header set after
+// the handler has written never reaches the wire, so WriteHeader is the last
+// moment the header map is mutable, and the status is knowable only from inside
+// — a handler that answered its own request never says what it answered.
 type responseRecorder struct {
 	http.ResponseWriter
 
-	// When the request reached RequestLogger. Held on the recorder rather than
-	// closed over, so the value the header reports and the value the log line
-	// reports are measured from one origin.
+	// When the request reached RequestLogger. On the recorder rather than closed
+	// over, so the header and the log line are measured from one origin.
 	started time.Time
 
 	status int
 	wrote  bool
 
-	// Filled in by Envelope, below. See correlation.
-	correlators *correlation
+	// The request's facts. Allocated by Trace above, or here when RequestLogger
+	// is mounted without it, and written by Envelope below.
+	record *fact.Record
 }
 
 // committed reports whether the response has gone. Recover asks, because a
@@ -59,10 +54,9 @@ func (w *responseRecorder) WriteHeader(status int) {
 		w.Header().Set(HeaderResponseTime, responseTime(time.Since(w.started)))
 	}
 
-	// Delegated every time, including a second call. net/http answers a
-	// superfluous WriteHeader with a warning of its own, and swallowing the
-	// call here would swallow the warning with it — a handler writing its
-	// status twice is a bug worth hearing about.
+	// Delegated every time, including a second call: net/http warns about a
+	// superfluous WriteHeader, and swallowing the call would swallow the
+	// warning about a real bug with it.
 	w.ResponseWriter.WriteHeader(status)
 }
 
@@ -80,31 +74,22 @@ func (w *responseRecorder) Write(body []byte) (int, error) {
 // completion line carrying the status, the duration and — on a rejection — the
 // error category.
 //
-// The timer starts before everything below it, authentication included, because
-// what a caller experiences is the whole chain and not the part of it that ran
-// after they were let in.
-//
-// The category is read back off the X-Beckn-Error-Type header that
-// httpx.WriteNack already set (C1) rather than derived here. Deriving it a
-// second time would be a second place that decides what family a fault belongs
-// to, and having exactly one is the whole of C1.
+// The timer starts above everything below it, authentication included: what a
+// caller experiences is the whole chain. The category is read back off the
+// X-Beckn-Error-Type header WriteNack already set rather than derived a second
+// time, which is the whole of C1.
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 200 up front: a handler that returns without writing has answered
 		// 200, and that is the status net/http will send.
 		recorder := &responseRecorder{ResponseWriter: w, started: time.Now(), status: http.StatusOK}
 
-		// The one thing that has to travel back up the chain: Envelope, below,
-		// is what learns which transaction this request belongs to. See
-		// correlation.
-		ctx, correlators := newCorrelation(r.Context())
-		recorder.correlators = correlators
+		ctx, record := recordFor(r.Context())
+		recorder.record = record
 
 		// Deferred, so a panic unwinding through here does not take the line
-		// with it. Recover sits below and answers the ordinary panic, but the
-		// committed-response case re-panics with http.ErrAbortHandler by
-		// design — and a request that ended by having its connection dropped is
-		// not one to leave unaccounted for.
+		// with it — including Recover's committed-response case, which drops the
+		// connection with http.ErrAbortHandler.
 		defer recorder.complete(ctx)
 
 		next.ServeHTTP(recorder, r.WithContext(ctx))
@@ -116,32 +101,30 @@ func RequestLogger(next http.Handler) http.Handler {
 func (w *responseRecorder) complete(ctx context.Context) {
 	elapsed := time.Since(w.started)
 	if !w.wrote {
-		// Nothing has committed the response, so the header still has somewhere
-		// to go. This is the case a stamp placed only here would pass on, which
-		// is why it is not the only place it happens.
+		// Nothing committed the response, so the header still has somewhere to
+		// go. WriteHeader covers the case this one cannot.
 		w.Header().Set(HeaderResponseTime, responseTime(elapsed))
 	}
 
-	// The correlators first, so a line reads as what the request was before what
-	// it cost. Copied rather than appended to: the slice belongs to the
-	// correlation, and appending into another owner's spare capacity is a bug
-	// that only shows up at the one length where the capacity happens to be
-	// spare.
-	recorded := w.correlators.recorded()
-	fields := make([]zap.Field, 0, len(recorded)+3)
-	fields = append(append(fields, recorded...), logger.Status(w.status), logger.DurationMS(elapsed))
+	// Onto the record rather than appended to the line directly, so the span,
+	// the line and the metrics read one set of numbers. Observed AFTER
+	// Envelope's correlators, which is what keeps the line reading as what the
+	// request was before what it cost — Record.All yields first-observed order.
+	w.record.ObserveInt64(fact.HTTPStatusCode, int64(w.status))
+	w.record.ObserveFloat64(fact.DurationMS, logger.Millis(elapsed))
 	if category := w.Header().Get(httpx.HeaderErrorType); category != "" {
 		// Only when something was rejected. A field that is blank on every
 		// successful request is a field nothing can be filtered by.
-		fields = append(fields, logger.ErrorType(category))
+		w.record.ObserveString(fact.ErrorType, category)
 	}
-	logger.FromContext(ctx).Info(requestCompleted, fields...)
+
+	logger.FromContext(ctx).Info(requestCompleted, logger.Fields(w.record)...)
 }
 
-// responseTime renders the elapsed time for the header: milliseconds to
-// microsecond precision, with the unit. Integer milliseconds would report every
-// request this service is built to serve — the 20 ms budget — as one of twenty
-// indistinguishable values, and a sub-millisecond one as zero.
+// responseTime renders the elapsed time for the header, with the unit. The
+// number comes from logger.Millis, which is what the log field and the record
+// carry too: three answers to "how long did this take" agree only by being one
+// computation.
 func responseTime(elapsed time.Duration) string {
-	return strconv.FormatFloat(float64(elapsed.Microseconds())/1000, 'f', 3, 64) + "ms"
+	return strconv.FormatFloat(logger.Millis(elapsed), 'f', 3, 64) + "ms"
 }

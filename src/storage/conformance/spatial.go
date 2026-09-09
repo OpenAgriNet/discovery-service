@@ -5,12 +5,11 @@ import "github.com/OpenAgriNet/discovery-service/src/domain"
 // SpatialCase is one stored geometry, one constraint, and the answer every
 // backend must give.
 //
-// It is data rather than a test, because the two implementations that must
-// agree are written in different languages: the memory backend runs
-// geo.MatchesOp plus its own bounding-box stage, Postgres runs a `CASE
-// spatial_op` block over GIN-indexed arrays. Both are driven from THIS table,
-// so a disagreement is a failing test rather than a support ticket about a
-// result 10 km from where it should be.
+// Data rather than a test, because the two implementations that must agree are
+// written in different languages — geo.MatchesOp plus a bounding-box stage in
+// memory, a `CASE spatial_op` block over GIN-indexed arrays in Postgres. Both
+// are driven from THIS table, so a disagreement is a failing test rather than a
+// support ticket about a result 10 km from where it should be.
 type SpatialCase struct {
 	Name   string
 	Stored domain.Geometry
@@ -24,9 +23,9 @@ type SpatialCase struct {
 	Want bool
 }
 
-// The fixture coordinates. Real places, ~290 km apart, which is far enough that
-// no cover at any sane resolution puts them in the same MAYBE band and close
-// enough that a reader can check the claim on a map.
+// The fixture coordinates. Real places ~290 km apart: far enough that no cover
+// at any sane resolution puts them in the same MAYBE band, close enough that a
+// reader can check the claim on a map.
 var (
 	fixtureCenter = domain.GeoPoint{Lat: 12.9716, Lon: 77.5946}
 	fixtureFar    = domain.GeoPoint{Lat: 13.0827, Lon: 80.2707}
@@ -34,12 +33,11 @@ var (
 
 // SpatialCases is the table both backends are run against.
 //
-// The negative rows carry the weight. Phrased over `cells_full` rather than
-// `cells_cover` — as the operator table once was — every one of them passes
-// VACUOUSLY, because a Point's full set is empty and the empty set is a subset
-// of everything. Both backends would then have been wrong in the same
-// direction, and agreeing, which is the one failure a conformance suite cannot
-// catch by construction. They are written out one per operator for that reason.
+// The negative rows carry the weight, and they are written out ONE PER OPERATOR
+// on purpose: a predicate phrased over `cells_full` passes all of them
+// vacuously, since a Point's full set is empty (implementation-plan.md
+// §Discover — How It Works, the spatial predicate). Both backends would then be wrong in the same direction and agreeing,
+// which is the one failure a conformance suite cannot catch by construction.
 func SpatialCases() []SpatialCase {
 	inside := PolygonGeometryAt(0, fixtureCenter, 0.05)
 	here, far := PointGeometryAt(0, fixtureCenter), PointGeometryAt(1, fixtureFar)
@@ -60,9 +58,9 @@ func SpatialCases() []SpatialCase {
 		{"a Point 290 km away is not within 5 km", far, here, domain.OpDWithin, 5000, false},
 	}
 
-	// Refused, not approximated, and asserted as ordinary rows so that a
-	// backend which quietly starts answering one fails here rather than in
-	// production.
+	// Refused, not approximated (A10, implementation-plan.md §Out of Scope), and asserted
+	// as ordinary rows so a backend that quietly starts answering one fails here
+	// rather than in production.
 	for _, op := range []domain.SpatialOp{domain.OpTouches, domain.OpCrosses} {
 		cases = append(cases, SpatialCase{
 			Name:   "a Point does not match the refused operator " + string(op),

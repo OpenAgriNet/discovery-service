@@ -20,11 +20,10 @@ type contextKey struct{}
 
 // New builds the production JSON logger at the configured level.
 //
-// It takes config.Log rather than the whole Config for two reasons. The
-// signature then says what the logger reads, which is the level and nothing
-// else; and Config.Database.URL carries a password, so handing the logger the
-// whole struct would put a secret inside the one component whose job is to
-// write things down.
+// It takes config.Log rather than the whole Config for two reasons: the
+// signature then says what the logger reads, and Config.Database.URL carries a
+// password, so handing over the whole struct would put a secret inside the one
+// component whose job is to write things down.
 func New(cfg config.Log) (*zap.Logger, error) {
 	built, err := zapConfig(cfg)
 	if err != nil {
@@ -50,8 +49,8 @@ func zapConfig(cfg config.Log) (zap.Config, error) {
 	built := zap.NewProductionConfig()
 	built.Level = level
 
-	// Production sampling keys on level and message only, and drops all but
-	// the first hundred entries sharing a pair within a second. Every request
+	// Production sampling keys on level and message only, dropping all but the
+	// first hundred entries sharing a pair within a second. Every request
 	// completion line shares one message and differs only in its fields, so
 	// sampling would discard most of the request log at exactly the load worth
 	// reading it at.
@@ -92,13 +91,29 @@ func With(ctx context.Context, fields ...zap.Field) context.Context {
 }
 
 // The fields a request-scoped logger is pre-populated with, and the two the
-// response writer adds when it writes a fault. They are spelled here and
-// nowhere else: one key spelled two ways is two fields to whatever queries the
-// logs, and the mistake stays invisible until someone searches for the
-// spelling that is missing.
+// response writer adds when it writes a fault. Spelled here and nowhere else:
+// one key spelled two ways is two fields to whatever queries the logs, and the
+// mistake stays invisible until someone searches for the missing spelling.
 
 // RequestID names this service's own per-request identifier.
 func RequestID(id string) zap.Field { return zap.String("request_id", id) }
+
+// TraceID names the trace this request's span belongs to, so an operator
+// holding a span reaches the logs.
+//
+// The SPAN's id, not a second one minted here — Trace reads it off the span
+// context it just created. request_id has no span attribute precisely because
+// this pair exists; shipping an internal handle to the facilitator would pay for
+// the same join twice (fact.RequestID's Note).
+//
+// Set on the request-scoped logger rather than appended to one line, so every
+// line the request writes carries it — including httpx.WriteNack's, the one an
+// operator following a failed span most wants.
+func TraceID(id string) zap.Field { return zap.String("trace_id", id) }
+
+// SpanID names this service's own span within that trace. trace_id narrows the
+// logs to the exchange; this narrows them to our part of it.
+func SpanID(id string) zap.Field { return zap.String("span_id", id) }
 
 // TransactionID names the Beckn transaction the request belongs to, which spans
 // every hop of the exchange.
@@ -110,23 +125,34 @@ func MessageID(id string) zap.Field { return zap.String("message_id", id) }
 // Action names the Beckn action from the envelope's context.
 func Action(action string) zap.Field { return zap.String("action", action) }
 
-// ErrorType names the PRD error category (C1). The category was dropped from
-// the v2.0.0 body, so it reaches the caller as the X-Beckn-Error-Type header
-// and the operator as this field — both, because a category that exists only
-// on the wire is one nothing can be aggregated over.
+// ErrorType names the PRD error category (C1).
+//
+// Dropped from the v2.0.0 body, so it reaches the caller as the
+// X-Beckn-Error-Type header and the operator as this field — both, because a
+// category that exists only on the wire cannot be aggregated over.
 func ErrorType(category string) zap.Field { return zap.String("error_type", category) }
 
-// ErrorCode names the Beckn code that went out with the fault, so a log line
-// and the body the caller received can be reconciled without a timestamp
-// search.
+// ErrorCode names the Beckn code that went out with the fault, so a log line and
+// the body the caller received reconcile without a timestamp search.
 func ErrorCode(code string) zap.Field { return zap.String("error_code", code) }
 
 // Status names the HTTP status the response went out with.
 func Status(code int) zap.Field { return zap.Int("status", code) }
 
-// DurationMS names how long the request took, in milliseconds. The unit is in
-// the name because a bare `duration` is a number two dashboards will read as
-// two different quantities, and zap's own duration encoder writes seconds.
+// DurationMS names how long the request took, in milliseconds.
+//
+// The unit is in the name because a bare `duration` is a number two dashboards
+// will read as two different quantities, and zap's own encoder writes seconds.
 func DurationMS(elapsed time.Duration) zap.Field {
-	return zap.Float64("duration_ms", float64(elapsed.Microseconds())/1000)
+	return zap.Float64("duration_ms", Millis(elapsed))
+}
+
+// Millis is the number DurationMS carries.
+//
+// Exported because it is written in three places that must agree: this field,
+// the X-Response-Time header, and the fact record the projection reads.
+// Microsecond precision — integer milliseconds would report every request inside
+// the 20 ms budget as one of twenty values, and a sub-millisecond one as zero.
+func Millis(elapsed time.Duration) float64 {
+	return float64(elapsed.Microseconds()) / 1000
 }

@@ -214,7 +214,11 @@ func TestTheCompletionLineCarriesTheCorrelatorsEnvelopeParsed(t *testing.T) {
 	for key, want := range map[string]string{
 		"transaction_id": "a3f0",
 		"message_id":     "2f6b",
-		"action":         "catalog/publish",
+
+		// Normalised, though the request said catalog/publish — see
+		// beckn.NormalizeAction. The completion line and the span have to agree
+		// about what this request was, and the span's spelling is the Bounded one.
+		"action": "publish",
 	} {
 		if got := fields[key]; got != want {
 			t.Errorf("%s = %v, want %q", key, got, want)

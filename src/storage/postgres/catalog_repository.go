@@ -14,10 +14,8 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 )
 
-// errUnboundedGeometry is the PARTIAL a shape that produced no bounding box
-// earns. The box columns are NOT NULL and, for a shape too big to cover, the
-// box is the ENTIRE spatial predicate — so a row without one is not a degraded
-// row, it is an undiscoverable one.
+// errUnboundedGeometry reports a shape that produced no bounding box. The box
+// columns are NOT NULL, so the row cannot be written.
 var errUnboundedGeometry = errors.New("the geometry produced no bounding box")
 
 // CatalogRepository is the write half of the PostgreSQL adapter.
@@ -25,38 +23,26 @@ type CatalogRepository struct {
 	pool    *pgxpool.Pool
 	queries *gen.Queries
 
-	// resolution is the H3 resolution stored covers are built at. It is a field
-	// rather than a package constant because it is configuration
-	// (GEO_RESOLUTION_CELLS), and because a store that covered at one
-	// resolution while the query covered at another would return nothing and
-	// report nothing wrong.
+	// resolution is the H3 resolution stored covers are built at
+	// (GEO_RESOLUTION_CELLS). A store that covered at one resolution while the
+	// query covered at another would return nothing and report nothing wrong.
 	resolution int
 }
 
 // NewCatalogRepository builds the write repository over a pool.
-//
-// It takes the resolution as well as the pool, which the plan's stated
-// signature does not: `geo.CoverGeometry` needs one, the plan's own pseudocode
-// elides it, and the alternative — reading config in here — would put a second
-// copy of the setting one layer below the composition root that owns it.
 func NewCatalogRepository(pool *pgxpool.Pool, resolutionCells int) *CatalogRepository {
 	return &CatalogRepository{pool: pool, queries: gen.New(pool), resolution: resolutionCells}
 }
 
-// Compile-time proof that this satisfies the port. The conformance suite proves
-// it BEHAVES like one; this catches signature drift at the place that can say
-// why it matters.
 var _ domain.CatalogRepository = (*CatalogRepository)(nil)
 
 // UpsertCatalog is the whole write path, in one transaction.
 //
-// The order inside is load-bearing and is the plan's "Inside UpsertCatalog":
-// the lock-and-load upsert takes the catalog's row lock FIRST, so two
-// concurrent republishes of one catalog serialise rather than interleaving two
-// read-modify-writes. Everything after it is paid for while that lock is held,
-// which is why each loop goes out as one pgx.Batch — the cost of this
-// transaction is lock hold time, and a statement per resource makes it linear
-// in catalog size.
+// The order inside is load-bearing (the plan's "Inside UpsertCatalog"): the
+// lock-and-load upsert takes the catalog's row lock FIRST, so two concurrent
+// republishes of one catalog serialise instead of interleaving two
+// read-modify-writes. Everything after it is paid for under that lock, which is
+// why each loop leaves as one pgx.Batch.
 func (r *CatalogRepository) UpsertCatalog(
 	ctx context.Context, patch domain.CatalogPatch, mode domain.UpdateMode, derive domain.DeriveFunc,
 ) (faults []domain.Fault, err error) {
@@ -65,13 +51,11 @@ func (r *CatalogRepository) UpsertCatalog(
 		return nil, fmt.Errorf("begin the publish transaction: %w", err)
 	}
 
-	// Unconditional, because a rollback guarded by a condition is one somebody
-	// eventually forgets on a new early return, and the failure mode of
-	// forgetting is a half-written catalog. After a successful Commit it
-	// returns pgx.ErrTxClosed, which is the ordinary path and says nothing went
-	// wrong; any OTHER error means the connection could not be put back into a
-	// clean state, and reporting the publish as having succeeded on a
-	// connection in that condition would be the worse of the two answers.
+	// Unconditional: a rollback guarded by a condition is one a new early return
+	// eventually skips, and the failure mode is a half-written catalog. After a
+	// successful Commit this returns pgx.ErrTxClosed, the ordinary path; any
+	// other error means the connection is not in a clean state, so the publish
+	// is not reported as having succeeded.
 	defer func() {
 		rollbackErr := transaction.Rollback(ctx)
 		if err == nil && rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
@@ -115,11 +99,9 @@ func (r *CatalogRepository) write(
 // prepare is everything between the load and the first write: the merge, the
 // three pure write-path rules and the post-merge derive.
 //
-// The rules are domain functions called in this order rather than code written
-// here, because the memory backend has to reach the same end state and two
-// pieces of code reaching it would agree only until someone changed one. The
-// ORDER is what is genuinely per-backend, and it is the only thing this
-// function contributes.
+// The rules are domain functions rather than code written here, because the
+// memory backend has to reach the same end state. Only the ORDER is
+// per-backend, and it is all this function contributes.
 func prepare(
 	stored domain.Catalog, patch domain.CatalogPatch, derive domain.DeriveFunc,
 ) (domain.Catalog, []string, []domain.Fault) {
@@ -133,9 +115,8 @@ func prepare(
 		gate.ApplyTo(&merged.Resources[index])
 	}
 
-	// POST-merge (A8). Derive writes what it computes onto the merged catalog
-	// through the pointer and returns only faults; those faults are PARTIALS —
-	// the transaction still commits, and only a storage error rolls it back.
+	// POST-merge (A8). Derive writes through the pointer and returns only
+	// faults, which are PARTIALS: the transaction still commits.
 	if derive != nil {
 		faults = append(faults, derive(&merged, touched)...)
 	}
@@ -143,8 +124,7 @@ func prepare(
 }
 
 // persist is the SQL half, in the order the plan's "Inside UpsertCatalog" sets
-// out. Every statement in it runs under the catalog row lock the load already
-// took, which is why each per-entity loop leaves as one batch.
+// out. Every statement runs under the row lock the load already took.
 func (r *CatalogRepository) persist(
 	ctx context.Context, queries *gen.Queries,
 	merged domain.Catalog, touched []string, mode domain.UpdateMode,
@@ -163,11 +143,10 @@ func (r *CatalogRepository) persist(
 		return nil, err
 	}
 
-	// Covering happens before the resource upserts because a cover can FAIL,
-	// and a failed cover is a fault rather than an abort; inserting happens
-	// after them, because a resource-level geometry row has a foreign key onto
-	// (catalog_id, resource_id) and a resource this publish is creating does
-	// not exist yet.
+	// Covering runs before the resource upserts because a failed cover is a
+	// fault rather than an abort; the INSERT runs after them, because a
+	// resource-level geometry row has a foreign key onto (catalog_id,
+	// resource_id) and a resource this publish creates does not exist yet.
 	inserts, coverFaults := r.coverGeometries(merged, touched)
 
 	if err := writeResources(ctx, queries, merged, touched); err != nil {
@@ -192,8 +171,7 @@ func (r *CatalogRepository) persist(
 	}
 
 	// LAST, and deliberately: filter_doc projects the three documents this
-	// transaction has just settled (A18). RebuildFilterDocs names the three
-	// publishes an earlier derivation gets wrong.
+	// transaction has just settled (A18).
 	if err := queries.RebuildFilterDocs(ctx, merged.ID); err != nil {
 		return nil, fmt.Errorf("rebuild the filter composites: %w", err)
 	}
@@ -202,11 +180,9 @@ func (r *CatalogRepository) persist(
 
 // loadForMerge takes the row lock and returns what the patch merges against.
 //
-// Under FULL that is an EMPTY catalog rather than a second code path:
-// "omissions reset to defaults, and resources and offers the payload omits are
-// deleted" is exactly what merging into nothing does. The lock is still taken —
-// the upsert runs in both modes — because a FULL republish races a MERGE one
-// just as readily.
+// Under FULL that is an EMPTY catalog rather than a second code path: merging
+// into nothing is what "omissions reset to defaults" means. The lock is taken
+// in both modes, because a FULL republish races a MERGE one just as readily.
 func (r *CatalogRepository) loadForMerge(
 	ctx context.Context, queries *gen.Queries, patch domain.CatalogPatch, mode domain.UpdateMode,
 ) (domain.Catalog, error) {
@@ -237,10 +213,9 @@ func (r *CatalogRepository) loadForMerge(
 		stored.Offers = append(stored.Offers, storedOffer(offer))
 	}
 
-	// Geometries are deliberately NOT loaded. They have no id to key an
-	// identity merge on: the merge happens one level up, on `provider` and on
-	// each resource's document, and the rows are rebuilt from whatever the
-	// walker finds afterwards.
+	// Geometries are deliberately NOT loaded: they have no id to key an
+	// identity merge on. The merge happens one level up, on `provider` and each
+	// resource's document, and the rows are rebuilt from what the walker finds.
 	return stored, nil
 }
 
@@ -272,26 +247,16 @@ func deleteOmitted(ctx context.Context, queries *gen.Queries, merged domain.Cata
 // pruneOrphanedOffers is the delete-then-prune pair, in that order.
 //
 // Two statements rather than one because an offer that ARRIVES empty means
-// catalog-wide and must be kept, while one PRUNED to empty must go.
-//
-// It is the SECOND of the three defences the missing foreign key on
-// `resource_ids` needs, and today it never fires: domain.PruneOfferReferences
-// has already removed every dangling reference from the merge result before
-// anything reaches SQL, and the merge result is what both this statement and
-// that function measure against. What it covers is drift neither can see — a
-// row written by an older build, or by hand — which is exactly the case a
-// foreign key would have covered. That also makes the plan's "the delete runs
-// before the prune" unobservable through the ports; the order is still the one
-// stated, because it is the order that stays correct if the domain-side prune
-// is ever removed.
+// catalog-wide and is kept, while one PRUNED to empty must go. The second of
+// the three defences the missing foreign key on `resource_ids` needs; it covers
+// drift the domain-side prune cannot see.
 func pruneOrphanedOffers(ctx context.Context, queries *gen.Queries, merged domain.Catalog) error {
 	if err := queries.PruneOfferResourceIDs(ctx, merged.ID); err != nil {
 		return fmt.Errorf("prune the orphaned offer references: %w", err)
 	}
 
-	// Only offers that arrived carrying ids are candidates for deletion.
-	// Sweeping every offer would take one a publisher deliberately sent
-	// catalog-wide, which is a meaning and not an absence.
+	// Only offers that arrived carrying ids are candidates. Sweeping every offer
+	// would take one a publisher deliberately sent catalog-wide.
 	candidates := make([]string, 0, len(merged.Offers))
 	for _, offer := range merged.Offers {
 		if len(offer.ResourceIDs) > 0 {
@@ -308,10 +273,9 @@ func pruneOrphanedOffers(ctx context.Context, queries *gen.Queries, merged domai
 
 // clearGeometries removes the rows the covers below will replace.
 //
-// Geometry rows are REPLACED, never merged: a geometry has no id, so there is
-// nothing to key an identity merge on. Catalog-level and resource-level rows
-// are cleared by two separate statements so neither wipes the other, and only
-// TOUCHED resources are cleared — an untouched resource's shapes are still
+// Geometry rows are REPLACED, never merged, since a geometry has no id. The two
+// statements keep catalog-level and resource-level rows from wiping each other,
+// and only TOUCHED resources are cleared — an untouched one's shapes are still
 // current.
 func clearGeometries(ctx context.Context, queries *gen.Queries, catalogID string, touched []string) error {
 	if err := queries.DeleteCatalogGeometries(ctx, catalogID); err != nil {
@@ -330,19 +294,14 @@ func clearGeometries(ctx context.Context, queries *gen.Queries, catalogID string
 	return nil
 }
 
-// coverCache memoizes an H3 fill for the length of one publish.
-//
-// Keyed on SourcePath, which is unique per shape within a catalog — it is half
-// of the unique index the geometry rows carry. An offer's shape sits on the
-// list of every resource that offer covers, so without this the identical fill
-// would run once per owner, and the fill is the expensive half of a publish.
+// coverCache memoizes an H3 fill for the length of one publish, keyed on
+// SourcePath — unique per shape within a catalog. An offer's shape sits on
+// every resource that offer covers, so without this the identical fill runs
+// once per owner.
 type coverCache map[string]geo.Cover
 
-// cover answers for a shape, computing it at most once.
-//
-// Only successes are cached: a shape that will not cover is the rare path, and
-// caching the failure would buy nothing while making the cache hold two kinds
-// of thing.
+// cover answers for a shape, computing it at most once. Only successes are
+// cached.
 func (c coverCache) cover(shape domain.Geometry, resolution int) (geo.Cover, error) {
 	if hit, ok := c[shape.SourcePath]; ok {
 		return hit, nil
@@ -352,8 +311,7 @@ func (c coverCache) cover(shape domain.Geometry, resolution int) (geo.Cover, err
 	if err != nil {
 		return geo.Cover{}, err
 	}
-	// Bounds is nil only for a shape geo could not bound, which the error above
-	// already covers; the columns are NOT NULL, so there is nothing to write.
+	// The box columns are NOT NULL, so a shape with no bounds has no row.
 	if computed.Bounds == nil {
 		return geo.Cover{}, errUnboundedGeometry
 	}
@@ -365,9 +323,8 @@ func (c coverCache) cover(shape domain.Geometry, resolution int) (geo.Cover, err
 // coverGeometries turns every shape on the merged catalog into insert
 // parameters, and a shape that will not cover into a PARTIAL.
 //
-// The catalog's own provider locations are covered ONCE for the catalog: three
-// shapes across forty resources are three rows with a NULL resource_id, not
-// 120 rows and 120 H3 fills.
+// The catalog's own provider locations are covered ONCE for the catalog, as
+// rows with a NULL resource_id, not once per resource.
 func (r *CatalogRepository) coverGeometries(
 	merged domain.Catalog, touched []string,
 ) ([]gen.InsertGeometryParams, []domain.Fault) {
@@ -391,11 +348,9 @@ func (r *CatalogRepository) coverGeometries(
 	// The catalog's own provider locations, owned by nobody.
 	add("", merged.Geometries)
 
-	// Resource-level shapes, for the touched resources only — the rows of the
-	// untouched ones were never cleared, so re-inserting them would collide
-	// with themselves. An offer geometry cannot go stale on an untouched
-	// resource, because `touched` follows offers: patching the offer that
-	// carries the shape touches every resource it covers.
+	// Touched resources only: the untouched ones' rows were never cleared, so
+	// re-inserting them would collide with themselves. An offer geometry cannot
+	// go stale on an untouched resource, because `touched` follows offers.
 	inPatch := domain.NewTouchedSet(touched)
 	for _, resource := range merged.Resources {
 		if inPatch.Has(resource.ID) {
@@ -405,11 +360,8 @@ func (r *CatalogRepository) coverGeometries(
 	return inserts, faults
 }
 
-// geometryFault names the shape that could not be stored.
-//
-// By SourcePath, which carries concrete indices, rather than by TargetPath: a
-// publisher fixing a bad polygon needs to know WHICH `availableAt` entry it
-// was, and the wildcard form names all of them.
+// geometryFault names the shape that could not be stored, by SourcePath rather
+// than TargetPath: the concrete indices say WHICH `availableAt` entry it was.
 func geometryFault(shape domain.Geometry, err error) domain.Fault {
 	return domain.Fault{
 		Path:    shape.SourcePath,
@@ -418,23 +370,17 @@ func geometryFault(shape domain.Geometry, err error) domain.Fault {
 	}
 }
 
-// batchResults is what all four generated *BatchResults types have in common.
-//
-// sqlc emits a distinct named type per :batchexec query with no shared
-// interface, so this states the shape once instead of at four call sites. It is
-// declared structurally: nothing in `gen` has to be aware of it, which is what
-// keeps it correct across a regeneration.
+// batchResults is what the generated *BatchResults types have in common. sqlc
+// emits a distinct named type per :batchexec query with no shared interface;
+// this is structural, so a regeneration cannot break it.
 type batchResults interface {
 	Exec(f func(int, error))
 	Close() error
 }
 
-// runBatch sends a batch and returns the FIRST statement error.
-//
-// First, not last: the statements in one batch write one catalog, so the second
-// failure is usually a consequence of the first and the first is the one that
-// says why. Every statement is still drained — Exec walks the whole batch — so
-// the connection is left usable whatever happened.
+// runBatch sends a batch and returns the FIRST statement error — later ones are
+// usually a consequence of it. Every statement is still drained, so the
+// connection is left usable.
 func runBatch(results batchResults) error {
 	var first error
 	results.Exec(func(index int, err error) {
@@ -448,11 +394,8 @@ func runBatch(results batchResults) error {
 	return first
 }
 
-// writeResources upserts every TOUCHED resource, whole-row, in one batch.
-//
-// `touched` only. A resource the patch never named is already byte-identical to
-// what is stored, and rewriting it would burn a row version, a WAL record and
-// an embedding for nothing.
+// writeResources upserts every TOUCHED resource, whole-row, in one batch. A
+// resource the patch never named is already byte-identical to what is stored.
 func writeResources(ctx context.Context, queries *gen.Queries, merged domain.Catalog, touched []string) error {
 	inPatch := domain.NewTouchedSet(touched)
 	upserts := make([]gen.UpsertResourceParams, 0, len(touched))
@@ -480,8 +423,8 @@ func writeOffers(ctx context.Context, queries *gen.Queries, merged domain.Catalo
 	return nil
 }
 
-// gateParams is the propagate's arguments, gathered here so the six gate
-// columns and the touched list travel together.
+// gateParams is the propagate's arguments — the six gate columns and the
+// touched list.
 func gateParams(catalogID string, gate domain.ScopeGate, touched []string) gen.PropagateGateParams {
 	return gen.PropagateGateParams{
 		CatalogID:     catalogID,
@@ -496,10 +439,7 @@ func gateParams(catalogID string, gate domain.ScopeGate, touched []string) gen.P
 }
 
 // DeleteCatalog removes a catalog and, by cascade, everything under it.
-//
-// Idempotent: deleting what is not there is not an error. A publisher retrying
-// a delete it already completed is ordinary, and a store that failed the second
-// attempt would make the retry the thing that reports a problem.
+// Idempotent: deleting what is not there is not an error.
 func (r *CatalogRepository) DeleteCatalog(ctx context.Context, catalogID string) error {
 	if err := r.queries.DeleteCatalog(ctx, catalogID); err != nil {
 		return fmt.Errorf("delete catalog %q: %w", catalogID, err)
@@ -510,7 +450,7 @@ func (r *CatalogRepository) DeleteCatalog(ctx context.Context, catalogID string)
 // GetCatalog reads a whole catalog back — row, resources, offers and
 // geometries.
 //
-// Through GetCatalogRow and not the lock-and-load upsert: that statement
+// Through GetCatalogRow and never the lock-and-load upsert: that statement
 // CREATES the row it does not find, so a read routed through it would answer
 // "found" for a catalog nobody published and leave it behind.
 func (r *CatalogRepository) GetCatalog(ctx context.Context, catalogID string) (domain.Catalog, error) {
@@ -549,12 +489,9 @@ func (r *CatalogRepository) GetCatalog(ctx context.Context, catalogID string) (d
 	return catalog, nil
 }
 
-// ListCatalogResources returns the catalog's resources.
-//
-// It does NOT report a missing catalog: an empty catalog and an absent one both
-// hold no resources, and distinguishing them would cost a second query for a
-// caller that has no different answer for the two. GetCatalog is where that
-// distinction lives.
+// ListCatalogResources returns the catalog's resources. It does NOT report a
+// missing catalog — an empty one and an absent one both hold no resources.
+// GetCatalog is where that distinction lives.
 func (r *CatalogRepository) ListCatalogResources(ctx context.Context, catalogID string) ([]domain.Resource, error) {
 	rows, err := r.queries.ListStoredResources(ctx, catalogID)
 	if err != nil {

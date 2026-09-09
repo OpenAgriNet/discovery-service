@@ -38,7 +38,8 @@ import (
 // stop being hybrid.
 //
 // A matrix that needs text to act as a constraint therefore cannot run with a
-// semantic mode present. noop returns a nil embedder (container.go:204), the
+// semantic mode present. noop returns a nil embedder (container.go's
+// newEmbedder), the
 // mode is declared absent, and the response carries X-Beckn-Degraded: semantic.
 // It is also production's own default (A5), so these cases run the
 // configuration a deployment actually has.
