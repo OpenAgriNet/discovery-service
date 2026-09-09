@@ -232,7 +232,7 @@ All four carry a `provider` label, and **`result.provider_ids` and
 `publish.provider_ids` are `Cardinality: Unbounded` in our registry**
 (`registry.go:683`, `:724`). That classification is correct for us: this service
 cannot know how many providers exist. The *registry* can — the participant
-registry (`docs/design/registry/schemas.md`) enumerates them. So the ceiling is
+registry (`docs/registry.md`) enumerates them. So the ceiling is
 knowable, just not here. Hence question 2.
 
 `publish_api_catalog_age_seconds` additionally does not fit the windowed-count

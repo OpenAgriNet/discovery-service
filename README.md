@@ -18,7 +18,7 @@ The design is specified in
 [`docs/design/discover-and-publish.md`](docs/design/discover-and-publish.md),
 with the span shape Task 23 must emit in
 [`docs/design/opentelemetry.md`](docs/design/opentelemetry.md) and the registry
-schema in [`docs/design/registry/`](docs/design/registry/README.md); the
+schema in [`docs/registry.md`](docs/registry.md); the
 decisions behind them are recorded in [`docs/adr/`](docs/adr/README.md). Read
 the design document before changing anything here — the constraints it states
 are binding, not advisory.
