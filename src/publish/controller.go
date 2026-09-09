@@ -12,11 +12,9 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/middlewares"
 )
 
-// Controller is the HTTP face of the publish path.
-//
-// It owns its own route registration rather than being mounted by the router,
-// so the mount and the handler cannot drift apart — C2's "one route" is a
-// property of this file and is asserted here.
+// Controller is the HTTP face of the publish path. It owns its own route
+// registration rather than being mounted by the router, so C2's "one route" is a
+// property of this file.
 type Controller struct {
 	service *Service
 	errors  config.Errors
@@ -27,11 +25,8 @@ func NewController(service *Service, errors config.Errors) *Controller {
 	return &Controller{service: service, errors: errors}
 }
 
-// Register mounts the publish route, and only it.
-//
-// There is no `POST /catalog/publish` alias. The action lives in the body (C2),
-// so a second path would be a second thing to route, rate-limit, log and
-// document for no gain — and nothing would notice it reappearing.
+// Register mounts the publish route, and only it. There is no
+// `POST /catalog/publish` alias — the action lives in the body (C2).
 func (c *Controller) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /publish", c.Publish)
 }
@@ -40,9 +35,7 @@ func (c *Controller) Register(mux *http.ServeMux) {
 //
 // 200 even when every catalog came back REJECTED: the request was well-formed
 // and the per-catalog verdicts ARE the payload. A transport-level NACK is
-// reserved for a request that could not be read at all, because a caller
-// branching on the HTTP status must not be told "your request failed" about a
-// request this service understood and answered.
+// reserved for a request that could not be read at all.
 func (c *Controller) Publish(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -77,20 +70,17 @@ func (c *Controller) Publish(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// responseContext turns the request's envelope into the response's.
-//
-// The correlation handles are echoed and the action becomes the callback's.
-// Echoed rather than regenerated: transactionId and messageId are how the caller
-// — and every log downstream of it — ties this answer to the request it made.
+// responseContext turns the request's envelope into the response's: the
+// correlation handles are echoed, the action becomes the callback's, and the
+// participant legs reverse.
 func responseContext(request beckn.Context) beckn.Context {
 	return beckn.Context{
 		Action:  beckn.ActionCatalogOnPublish,
 		Version: beckn.Version,
 
-		// The legs reverse. On the request this service was the receiver; on
-		// the answer it is the sender, so echoing these unswapped would put the
-		// caller's DID on a message the caller did not send.
-		// Neither is verified; beckn.Context spells out what that costs here.
+		// Echoing these unswapped would put the caller's DID on a message the
+		// caller did not send. Neither is verified; beckn.Context says what
+		// that costs.
 		SenderID:   request.ReceiverID,
 		ReceiverID: request.SenderID,
 
@@ -98,9 +88,8 @@ func responseContext(request beckn.Context) beckn.Context {
 		MessageID:     request.MessageID,
 		NetworkID:     request.NetworkID,
 
-		// This service's own clock. The request's timestamp says when the caller
-		// sent; a response repeating it would claim the answer was ready before
-		// it was computed.
+		// This service's own clock, not the request's: a repeated timestamp
+		// would claim the answer was ready before it was computed.
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 }
