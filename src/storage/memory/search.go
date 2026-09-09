@@ -60,9 +60,6 @@ func (r *Repository) Search(
 	// "what is near me" with nothing at all.
 	if len(ranked) == 0 && !filtering {
 		page = nil
-		if len(degraded) == 0 {
-			matched = nil
-		}
 	}
 
 	return domain.SearchResult{
