@@ -1895,13 +1895,17 @@ components:
         One participant on the network. `type` says which kind, and decides which of the
         remaining fields apply.
 
-        A **`network_adapter`** speaks Beckn — a consumer node, the network node, or a provider
-        node. It needs a `role` and `keys`, and its `participantId` must be a hostname, because
+        A **`network_adapter`** is a node: it speaks Beckn. It can sit at any of the three
+        layers — a consumer node, the network node, or a provider node — and `role` is what says
+        which. It needs a `role` and `keys`, and its `participantId` must be a hostname, because
         that id is how the network addresses it.
 
-        An **`upstream_api`** is an external provider's ordinary HTTP API. It has never heard of
-        Beckn, so it has no role and no keys, and its `participantId` is the provider id
-        consumers see.
+        An **`upstream_api`** is the provider's actual external system, an ordinary HTTP API. It
+        has never heard of Beckn, so it has no role and no keys, and its `participantId` is the
+        provider id consumers see.
+
+        `type` and `role` are two axes: `type` is how we integrate with it, `role` is where on
+        the network it sits.
 
         An external API and the adapter that fronts it are two separate participants, so two rows.
       properties:
@@ -1923,6 +1927,10 @@ components:
           enum:
             - network_adapter
             - upstream_api
+          description: |-
+            How we integrate with it. `network_adapter` speaks Beckn and is a node at one of the
+            three layers; `upstream_api` is the provider's external system, called over ordinary
+            HTTP through a binding.
         status:
           $ref: "#/components/schemas/Status"
         baseUrl:
@@ -1940,8 +1948,9 @@ components:
             - consumer
             - network
           description: |-
-            The OAN role. Required for a `network_adapter`, refused for an `upstream_api`.
-            `consumer` asks; `provider` answers; `network` exposes publish and discover.
+            Which of the three layers it sits at. Required for a `network_adapter`, refused for
+            an `upstream_api` — which is not on the network to have a place on it. `consumer`
+            asks; `provider` answers; `network` exposes publish and discover.
         keys:
           allOf:
             - $ref: "#/components/schemas/PublicKey"

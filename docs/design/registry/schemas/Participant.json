@@ -222,7 +222,7 @@
       ]
     },
     "Role": {
-      "description": "The OAN role this adapter plays. consumer asks. provider answers. network exposes publish and discover, answering discover from published catalogs.",
+      "description": "Which of the three layers this adapter sits at — a different axis from type, which says how we integrate with it. consumer asks. provider answers. network exposes publish and discover, answering discover from published catalogs.",
       "type": "string",
       "enum": [
         "provider",
@@ -231,7 +231,7 @@
       ]
     },
     "ParticipantType": {
-      "description": "Integration type. network_adapter speaks Beckn. upstream_api is an API we call over ordinary HTTP and does not.",
+      "description": "Integration type, and a different axis from role. network_adapter is a node: it speaks Beckn, and it can sit at any of the three layers — role says which. upstream_api is the provider's actual external system, an API we call over ordinary HTTP that does not speak Beckn and has no place on the network.",
       "type": "string",
       "enum": [
         "network_adapter",

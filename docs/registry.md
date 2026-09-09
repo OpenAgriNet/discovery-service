@@ -131,18 +131,25 @@ decides the rest. One level, no wrapper object:
 > but wrote `"upstream"` in its second worked example. The declared enum wins:
 > the example is normalised to `upstream_api` here and in the schema.
 
-A **`network_adapter`** speaks Beckn, and its `participantId` *is* its network
-identity — what goes on the wire as `senderId` / `receiverId`, and field 1 of the
-`Authorization` keyId. There is no second id field, because an adapter id that is
-also a hostname is one name for one thing. The schema enforces the hostname shape
-when `type` is `network_adapter`, so `oan-provider` is refused there and
+A **`network_adapter`** is a node — it speaks Beckn. It can sit at any of the
+three layers, and `role` is what says which: the provider adapter, the consumer
+adapter and the network node are all `network_adapter` rows, differing only
+there. Its `participantId` *is* its network identity — what goes on the wire as
+`senderId` / `receiverId`, and field 1 of the `Authorization` keyId. There is no
+second id field, because an adapter id that is also a hostname is one name for
+one thing. The schema enforces the hostname shape when `type` is
+`network_adapter`, so `oan-provider` is refused there and
 `provider-network-vistaar.da.gov.in` is not.
 
-An **`upstream_api`** is an ordinary API. It has not heard of Beckn, so it has no
-role and no keys, and its `participantId` is the `offer.provider.id` the farmer
-sees.
+An **`upstream_api`** is the provider's actual external system — the ordinary API
+an adapter calls. It has not heard of Beckn, so it has no role and no keys, and
+its `participantId` is the `offer.provider.id` the farmer sees.
 
-`role` is the OAN role: `provider`, `consumer` or `network`.
+**`type` and `role` are two axes and neither substitutes for the other.** `type`
+says how we integrate with it — Beckn, or plain HTTP through a binding. `role`
+says where on the network it sits: `provider`, `consumer` or `network`. That is
+why `role` applies only to a `network_adapter`: an `upstream_api` is not on the
+network to have a place on it.
 
 `baseUrl` is one field because it was always one idea: the base something is
 appended to — a Beckn action for a `network_adapter`, a binding's `path` for an
