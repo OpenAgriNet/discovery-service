@@ -7,7 +7,7 @@ proposes twelve codes, states what each is computed from, and asks seven
 questions that only the registry owner can answer.
 
 Nothing here may be implemented as a `Scope: Network` instrument until the
-registry answers. `fact.checkCodeMatchesScope` (`instruments.go:212-226`) refuses
+registry answers. `fact.checkCodeMatchesScope` (`instruments.go:198-212`) refuses
 a `Scope: Network` row with an empty `Code`, and that refusal is the point: a
 code invented locally will not match the one a facilitator later publishes, and
 a stream of unrecognised codes is worse than no stream. This document is the
@@ -111,7 +111,7 @@ distinction matters in exactly one direction:
 | Fact | Placement | Verified |
 |---|---|---|
 | `beckn.action`, `error_type`, `http.route`, `sender.unidentified` | span attribute | `registry.go` — `Event` unset |
-| `result.empty` | event `ResponseInfo` **and span attribute** | `registry.go:695` — the one `PromoteToSpan` row |
+| `result.empty` | event `ResponseInfo` **and span attribute** | `registry.go:646` — the one `PromoteToSpan` row |
 | `result.provider_ids` | event `ResponseInfo` | `registry.go:676` |
 | `retrieval.modes_degraded` | event `RetrievalInfo` | `registry.go:633` |
 | `publish.resource_count`, `publish.provider_ids` | event `RequestInfo` | `registry.go:743`, `:717` |
@@ -262,11 +262,11 @@ the prefix) is the only place a dimension belongs.
 
 | Label | Values | Source |
 |---|---|---|
-| `error_type` | 5 — `CONTEXT`, `CORE`, `DOMAIN`, `POLICY`, `SYSTEM` | `registry.go:110` |
-| `mode` | 5 — `lexical`, `fuzzy`, `semantic`, `spatial`, `jsonpath` | `registry.go:112` |
+| `error_type` | 5 — `CONTEXT`, `CORE`, `DOMAIN`, `POLICY`, `SYSTEM` | `registry.go:102` |
+| `mode` | 5 — `lexical`, `fuzzy`, `semantic`, `spatial`, `jsonpath` | `registry.go:104` |
 | `provider` | **unknown to us** — question 2 | `result.provider_ids` / `publish.provider_ids` |
 
-`fact.MaxLabelSeries` is **200** per instrument (`instruments.go:59`), checked per
+`fact.MaxLabelSeries` is **200** per instrument (`instruments.go:56`), checked per
 instrument rather than per attribute because the accident is multiplicative:
 four labels can each be honestly `Bounded`, no single row wrong, and still
 multiply to 800 streams. Tier A and B stay far under it. Tier C's ceiling is
@@ -367,7 +367,7 @@ refers to the plan's "open question 7", which is a different sequence.
 
 Each ratified code becomes one `fact.Instrument` row with `Scope: Network` and
 `Code` set — the same table Task 25's two rows already live in
-(`instruments.go:103-120`). The guards then do the work: `Code` non-empty is
+(`instruments.go:95-115`). The guards then do the work: `Code` non-empty is
 enforced for `Scope: Network`, the label product is checked against
 `MaxLabelSeries`, `Temporality` may not be left unspecified, and the golden file
 makes each addition a reviewable diff rather than a claim.

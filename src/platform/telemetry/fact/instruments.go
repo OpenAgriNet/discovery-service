@@ -10,9 +10,9 @@ import (
 type Temporality uint8
 
 const (
-	// TemporalityUnspecified is the zero, and the completeness test refuses it.
-	// Defaulting either way silently rescales the operator's graph by the
-	// scrape interval, which is the kind of wrong that looks plausible.
+	// TemporalityUnspecified is the zero, and the completeness test refuses it:
+	// defaulting either way silently rescales the operator's graph by the scrape
+	// interval.
 	TemporalityUnspecified Temporality = iota
 	// Delta reports what happened since the last collection.
 	Delta
@@ -24,13 +24,12 @@ const (
 type Scope uint8
 
 const (
-	// ScopeUnspecified is the zero. Refused, because the two answers have
-	// opposite requirements and neither is a safe default: Node with no Code is
-	// correct, Network with no Code is a stream no facilitator can route.
+	// ScopeUnspecified is the zero, and is refused: the two answers have
+	// opposite Code requirements, so neither is a safe default.
 	ScopeUnspecified Scope = iota
 	// Node is a node-operator stream. It stays local — beckn-onix's
-	// filter/network_metrics drops every metric it does not name — and it needs
-	// no metric.code.
+	// filter/network_metrics drops every metric it does not name — and needs no
+	// metric.code.
 	Node
 	// Network is offered to the facilitator and therefore needs a Code from the
 	// network's metrics registry.
@@ -51,18 +50,14 @@ const (
 )
 
 // MaxLabelSeries is the per-instrument ceiling on the product of its labels'
-// value sets (telemetry-seam.md 5d).
-//
-// It is checked per instrument rather than per Definition because the accident
-// is multiplicative: four labels can each be honestly Bounded, no single row
-// wrong, and still multiply to 800 streams.
+// value sets (telemetry-seam.md 5d). Per instrument rather than per Definition
+// because the accident is multiplicative: four labels can each be honestly
+// Bounded and still multiply to 800 streams.
 const MaxLabelSeries = 200
 
 // Instrument is one metric stream. A sibling table to registry rather than a
-// column on it, because an attribute belongs to several instruments and so has
-// no instrument name, and because the two have different lifetimes — an
-// instrument is registered once per process, an attribute is observed thousands
-// of times a second (telemetry-seam.md 4).
+// column on it, because an attribute belongs to several instruments and the two
+// have different lifetimes (telemetry-seam.md 4).
 type Instrument struct {
 	Name        string // spec Required — metrics[].name
 	Unit        string // spec Required — "1", "ns", "ms", "s", "%", "B"
@@ -70,8 +65,8 @@ type Instrument struct {
 	Category    string // spec Optional — metric.category
 
 	// Code is spec Required (metric.code) and comes from the network metrics
-	// registry OAN does not have. Empty on every Scope: Node entry, and a
-	// completeness failure on any Scope: Network one — so Task 24 fails loudly
+	// registry OAN does not have. Empty on every Scope: Node row, and a
+	// completeness failure on any Scope: Network one, so Task 24 fails loudly
 	// rather than inventing a code no facilitator will know.
 	Code string
 
@@ -86,20 +81,17 @@ type Instrument struct {
 
 	Scope Scope
 
-	// Note records why this instrument exists at all, which for this table is
-	// the load-bearing field: the entry bar is "a number the layer below is
-	// blind to", and the answer belongs beside the row rather than in a document
-	// the next author will not open.
+	// Note records why this instrument exists at all — the entry bar is "a
+	// number the layer below is blind to", and this is where a row answers it.
 	Note string
 }
 
 // instruments is the table. Two rows, and the count is a test.
 //
-// Both halves come off one pgxpool.Stat() call, and neither is on the request
+// Both halves come off one pgxpool.Stat() call and neither is on the request
 // path: this is a sampling callback over a struct the pool maintains anyway.
-// container.go:196 already reads EmptyAcquireCount for /readyz, so the number is
-// not new — what is new is that a level becomes visible on a clock rather than
-// only at the moment something asks.
+// container.go already reads EmptyAcquireCount for /readyz, so what is new is
+// only that the level becomes visible on a clock.
 var instruments = [numInstruments]Instrument{
 	PoolAcquireWaits: {
 		Name:        "pgxpool.empty_acquire",
@@ -169,19 +161,17 @@ func AllInstruments() iter.Seq2[InstrumentKey, Instrument] {
 }
 
 // LabelSeries is how many time series an instrument's labels can produce: the
-// product of their value sets, or 1 for an instrument with no labels.
-//
-// One series is the honest answer for the unlabelled case rather than zero — an
-// unlabelled instrument still produces a stream, and a zero here would make the
+// product of their value sets, or 1 for an instrument with no labels — an
+// unlabelled instrument still produces a stream, and a zero would make the
 // ceiling check pass for the wrong reason.
 func LabelSeries(in Instrument) int {
 	series := 1
 	for _, label := range in.Labels {
 		values := len(Of(label).Values)
 		if values == 0 {
-			// Not a series count at all — the label rules reject this row
-			// separately, with a message about the missing bound. Multiplying by
-			// zero here would hide it behind a ceiling check that passes.
+			// Skipped, not multiplied in: the label rules reject a Bounded row
+			// with no Values separately, and a zero here would hide that behind
+			// a ceiling check that passes.
 			continue
 		}
 		series *= values
@@ -192,10 +182,9 @@ func LabelSeries(in Instrument) int {
 // ValidateInstrument returns every way an Instrument contradicts itself or
 // disagrees with the attribute table, as prose a failure message can print.
 //
-// Exported for the same reason Validate is: over the live table the label rules
-// pass vacuously, because the acquire-wait pair names no labels, and a rule that
-// has never rejected anything is a rule nobody knows works. The test runs it
-// over rows the table happens not to have.
+// Exported for the same reason Validate is: the acquire-wait pair names no
+// labels, so over the live table the label rules pass vacuously, and the test
+// runs it over rows the table happens not to have.
 func ValidateInstrument(in Instrument) []string {
 	report, collect := newProblems()
 
@@ -206,10 +195,9 @@ func ValidateInstrument(in Instrument) []string {
 	return collect()
 }
 
-// checkCodeMatchesScope: metric.code is the facilitator's routing key and comes
-// from a registry OAN has not published. Both directions are errors — a Network
-// row without one cannot be routed, and a Node row with one is a code somebody
-// invented, which is the failure this table exists to make loud.
+// checkCodeMatchesScope: metric.code is the facilitator's routing key. Both
+// directions are errors — a Network row without one cannot be routed, and a Node
+// row with one is a code somebody invented.
 func checkCodeMatchesScope(in Instrument, report reporter) {
 	if in.Scope == Network && in.Code == "" {
 		report("Scope is Network and Code is empty. metric.code is spec Required " +
@@ -250,9 +238,8 @@ func checkInstrumentLabels(in Instrument, report reporter) {
 	}
 }
 
-// checkMeasurementIsNumeric: Kind implies the spec's asDouble, so it is the one
-// field standing in for the measurement itself. A string or a list cannot be
-// summed, and a bool that could be is a count wearing the wrong type.
+// checkMeasurementIsNumeric: Kind stands in for the measurement itself, and a
+// string or a list cannot be summed.
 func checkMeasurementIsNumeric(in Instrument, report reporter) {
 	switch in.Kind {
 	case KindInt64, KindFloat64:

@@ -1,13 +1,10 @@
 package fact
 
-// The keys, in the order the registry array indexes them.
-//
-// Grouped by where the fact comes from rather than alphabetically, because the
-// grouping is what makes a missing row visible: a reviewer reading the publish
-// block notices the count that is not there, and cannot notice it in a sorted
-// list. numKeys closes the block and sizes the array, so a key added here
-// without a row is the completeness test's first failure rather than a zero
-// Definition four projections silently drop.
+// The keys, in the order the registry array indexes them. Grouped by origin
+// rather than alphabetically: a reviewer reading the publish block notices the
+// count that is not there. numKeys closes the block and sizes the array, so a
+// key added without a row fails the completeness test rather than projecting a
+// zero Definition.
 const (
 	// The Resource, set once at boot and stamped on every signal.
 	ResourceEID Key = iota
@@ -73,13 +70,10 @@ const (
 	PublishVisibleTo
 	PublishValidityPresent
 
-	// Build identity, on the Resource (OP5). Appended here rather than beside
-	// the four Resource keys at the top of this block, which is where they
-	// belong by origin, because the golden file's line order IS this block's
-	// order: inserting mid-block renumbers forty rows and buries four
-	// additions in a diff of pure renumbering, which is the one thing that
-	// file exists to prevent. Grouping by origin is the rule; a section named
-	// for the same thing opentelemetry.md:167 calls it keeps the rule readable.
+	// Build identity, on the Resource (OP5). APPENDED rather than filed with
+	// the Resource keys above, where origin says they belong: the golden file's
+	// line order IS this block's order, so inserting mid-block renumbers forty
+	// rows and buries the addition in a diff of pure renumbering.
 	ResourceServiceVersion
 	ResourceBuildCommit
 	ResourceBuildTreeState
@@ -93,18 +87,16 @@ const (
 	numKeys
 )
 
-// The bounds on the two caller-supplied lists. Named rather than repeated so
-// the pair that has to stay parallel is bounded by one number, not by two that
-// happen to match today.
+// The bounds on the caller-supplied lists. Named so the two rows that must stay
+// parallel are bounded by one number rather than by two that match today.
 const (
 	maxSchemaEntries = 16
 	maxSchemaRunes   = 256
 	maxProviderIDs   = 16
 )
 
-// The closed value sets. A Bounded key's Values is what turns the claim into
-// something a projection can enforce, so each of these is sourced from the
-// declaration it mirrors rather than retyped from the design document.
+// The closed value sets, each cited to the declaration it mirrors rather than
+// retyped from the design document.
 var (
 	// src/platform/errors/beckn_error.go:21-25.
 	errorTypes = []string{"CONTEXT", "CORE", "DOMAIN", "POLICY", "SYSTEM"}
@@ -131,10 +123,8 @@ var (
 var registry = [numKeys]Definition{
 	// ---- Resource ------------------------------------------------------------
 	//
-	// eid is the one Resource attribute the projections vary: API for spans,
-	// METRIC for metrics and AUDIT — not LOG — for log records
-	// (otel-specification.md:271, :446, :599). That is why it is a row with a
-	// projection rule rather than a literal in Init.
+	// eid is the one Resource attribute the projections vary — API, METRIC,
+	// AUDIT — which is why it is a row rather than a literal in Init.
 	ResourceEID: {
 		Name:        "ResourceEID",
 		SpanKey:     "eid",
@@ -195,11 +185,10 @@ var registry = [numKeys]Definition{
 
 	// ---- The spec's mandatory span profile -----------------------------------
 	//
-	// sender.id is Required by the spec and optional here: envelope_rules.go:98-104
-	// deliberately excludes senderId, because participant identity was parked with
-	// Task 6. So a valid request can carry no caller identity, and one that carries
-	// it carries a string the caller chose — hence both flags, and neither
-	// collapsing into the other.
+	// sender.id is Required by the spec and optional here: envelope_rules.go
+	// excludes senderId while Task 6 is parked, so a valid request can carry no
+	// caller identity, and one that carries it carries a string the caller chose
+	// — hence both flags, and neither collapsing into the other.
 	SenderID: {
 		Name:        "SenderID",
 		SpanKey:     "sender.id",
@@ -678,10 +667,8 @@ var registry = [numKeys]Definition{
 
 	// ---- publish: request_info -----------------------------------------------
 	//
-	// Fired at intake, BEFORE the A1 MASTER refusal. After it,
-	// publish.catalog_types would read REGULAR on every span that exists; at
-	// intake it answers who is trying to publish master data to a network that
-	// refuses it, and the error event on the same span carries the refusal.
+	// Fired at intake, BEFORE the A1 MASTER refusal — after it,
+	// publish.catalog_types would read REGULAR on every span that exists.
 	PublishProviderIDs: {
 		Name:           "PublishProviderIDs",
 		SpanKey:        "publish.provider_ids",
@@ -779,26 +766,17 @@ var registry = [numKeys]Definition{
 
 	// ---- Build identity (OP5) ------------------------------------------------
 	//
-	// Four Resource attributes answering "which build is running", so *did the
-	// deploy break it* is askable. onix stamps the same four and namespaces
-	// three of them `onix.build.*` (otelsetup.go:221-223); we keep the stems and
-	// drop the vendor prefix, because copying `onix.` would have this service
-	// claim to be that one, and a facilitator querying the concept across both
+	// Four Resource attributes answering "which build is running". Only
+	// service.version comes from -ldflags; the other three are read from the
+	// toolchain's own VCS stamp, and in the release image — which copies no
+	// .git — they read `unknown` and the zero instant. A known gap, not a
+	// property.
+	//
+	// opentelemetry.md's "Build identity" section is the one home for the rest:
+	// why exactly one -X, and why build.date is the commit's time. onix's
+	// equivalents are namespaced `onix.build.*`; we keep the stems and drop the
+	// vendor prefix, because a facilitator querying the concept across both
 	// repos wants the stem, not the owner.
-	//
-	// Only service.version comes from -ldflags. The other three are read from
-	// the toolchain's own VCS stamp, which main.go's writeBuildInfo already
-	// prefers for exactly the reason it gives: Makefile, Dockerfile and CI do not
-	// have to agree on a flag string. service.version is the one exception
-	// because `git describe --tags` has no equivalent in debug.BuildInfo —
-	// Main.Version carries the module's version, a pseudo-version in a git
-	// checkout and `(devel)` in the .git-less release image, never the tag.
-	//
-	// The stamp route is not free of cost, and this comment claimed until
-	// 2026-09-09 that no flag could improve on it. One could: the release image's
-	// build stage copies no .git, so in a deployed binary these three read
-	// `unknown`, `unknown` and the zero instant, and only service.version
-	// actually answers OP5. Read as a known gap, not as a property.
 
 	ResourceServiceVersion: {
 		Name:        "ResourceServiceVersion",

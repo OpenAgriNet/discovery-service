@@ -11,7 +11,7 @@ import (
 
 // Observation is one recorded fact, already bounded and already typed. A
 // projection reads Kind and takes the matching field; it never switches on Key,
-// which is what stops a projection from acquiring its own opinion about a value.
+// so it cannot acquire its own opinion about a value.
 type Observation struct {
 	Key  Key
 	Kind Kind
@@ -22,18 +22,16 @@ type Observation struct {
 	Bool  bool
 	List  []string
 
-	// Truncated is true when the Definition's MaxEntries or MaxRunes bit. The
-	// projection turns it into the Definition's TruncationFlag; a value silently
-	// cut short reads as the value the caller sent.
+	// Truncated is true when the Definition's MaxEntries or MaxRunes bound was
+	// hit. The projection turns it into the Definition's TruncationFlag.
 	Truncated bool
 
 	// Time is the moment of the write, and it is what the span events are built
 	// out of: an event is anchored at the earliest of the facts belonging to it,
 	// so request_info sits where the envelope parsed and retrieval_info where the
-	// store answered. Stamping at projection time instead — the shape that falls
-	// out of not thinking about it — collapses all of them onto the span's end,
-	// and does so silently: the total stays right and only the breakdown, which
-	// is the reason the events exist, becomes zeros.
+	// store answered. Stamping at projection time instead collapses every event
+	// onto the span's end, silently — the total stays right and only the
+	// breakdown becomes zeros.
 	//
 	// It moves on a re-observation, because the value does. See put.
 	Time time.Time
@@ -42,21 +40,14 @@ type Observation struct {
 // Record is one request's observed facts.
 //
 // Every method tolerates a nil receiver, and that is load-bearing rather than
-// convenient. The probes chain (router.go:158-163) mounts RequestID + Recover
-// only and allocates no record — deliberately, because a probe every few
-// seconds carrying eid: API would be most of the stream and none of the signal
-// — so a panic in /healthz reaches logNack with no record in context and must
-// answer 500 rather than panic a second time inside the recovery that was
-// answering the first. The acceptance and dbtest suites call controllers with
-// no middleware at all and rely on the same property.
+// convenient: the probes chain in router.go allocates no record, so a panic in
+// /healthz reaches logNack with none in context and must answer 500 rather than
+// panic inside the recovery. The acceptance and dbtest suites call controllers
+// with no middleware at all and rely on the same property.
 //
-// Unlike middlewares.correlation, which documents that it needs no
-// synchronisation, this holds a mutex. The difference is real: correlation is
-// unexported, written from exactly one middleware and read after everything
-// below it has returned, whereas Record is exported and written from both
-// controllers, the response writer and any middleware below Trace. A handler
-// that fans out across goroutines is a thing this type cannot prevent, and an
-// uncontended mutex costs less than the race it removes.
+// The mutex is real work, not ceremony: Record is exported and written from both
+// controllers, the response writer and any middleware below Trace, and a handler
+// that fans out across goroutines is a thing this type cannot prevent.
 type Record struct {
 	mutex    sync.Mutex
 	observed []Observation
@@ -70,8 +61,7 @@ type recordKey struct{}
 //
 // Trace calls this unconditionally, including under OTEL_EXPORTER=none. Making
 // allocation conditional on a live tracer is the tempting optimisation and it is
-// the bug: RequestLogger would then allocate on some deployments and adopt on
-// others, so the record's lifetime would vary by environment variable.
+// the bug: the record's lifetime would then vary by environment variable.
 func New(ctx context.Context) (context.Context, *Record) {
 	record := &Record{}
 	return context.WithValue(ctx, recordKey{}, record), record
@@ -87,17 +77,13 @@ func From(ctx context.Context) *Record {
 	return nil
 }
 
-// The context forms. These are what a controller calls; the method forms exist
-// for the two holders that already have the pointer — Trace, which allocated
-// it, and responseRecorder, which is handed it because WriteHeader records a
-// status through a record it holds rather than a context it does not.
-//
-// The AST walk in 23c matches the selector regardless of which form is used,
-// because both spell the key as a fact.Key and neither can spell it as a string.
+// The context forms, which are what a controller calls. The method forms exist
+// for the two holders that already have the pointer: Trace, which allocated it,
+// and responseRecorder, which records a status from WriteHeader.
 
 // ObserveString records a KindString fact on the context's record, if there is
-// one. Each of the five is a one-line forward to the method of the same name,
-// where the behaviour and its reasons are documented.
+// one. Each of the five forwards to the method of the same name, where the
+// behaviour is documented.
 func ObserveString(ctx context.Context, k Key, v string) { From(ctx).ObserveString(k, v) }
 
 // ObserveInt64 records a KindInt64 fact on the context's record, if there is one.
@@ -147,10 +133,9 @@ func (r *Record) ObserveBool(k Key, v bool) {
 // ObserveStrings records a KindStrings fact.
 //
 // An explicitly empty list is recorded rather than dropped: absent and empty are
-// different answers. beckn.schemaContext absent means no schema predicate at
-// all — every capability matches, which is the seeking-anything bucket and
-// likely a large one — and empty means a seeker who sent an empty array.
-// Collapsing them loses the larger of the two.
+// different answers. beckn.schemaContext absent means no schema predicate at all
+// — the seeking-anything bucket, and a large one — where empty means a seeker
+// who sent an empty array.
 func (r *Record) ObserveStrings(k Key, v []string) {
 	def := requireKind(k, KindStrings)
 
@@ -190,11 +175,9 @@ func (r *Record) Lookup(k Key) (Observation, bool) {
 }
 
 // All iterates what was observed, in the order it was first observed. Safe on a
-// nil receiver, which is what lets a projection run over a probe's absent
-// record without asking first.
-//
-// It yields from a snapshot so a projection cannot deadlock against an Observe
-// on another goroutine, and so a slow consumer does not hold the lock.
+// nil receiver, so a projection can run over a probe's absent record without
+// asking first. It yields from a snapshot, so a slow consumer neither holds the
+// lock nor deadlocks against an Observe on another goroutine.
 func (r *Record) All() iter.Seq[Observation] {
 	return func(yield func(Observation) bool) {
 		if r == nil {
@@ -214,14 +197,10 @@ func (r *Record) All() iter.Seq[Observation] {
 
 // put stores an observation, replacing any earlier one for the same key.
 //
-// Replacing rather than appending is what WriteHeader needs: it can fire more
-// than once on a response the handler started writing and then faulted on, and
-// the status the span reports has to be the one that went out. The stamp is
-// replaced with it: a corrected value carrying the moment of the value it
-// corrected would date the fact to a time at which it was not yet true.
-//
-// The stamp is taken here rather than at each of the five Observe methods, so
-// there is one clock read per write and one place it can be got wrong.
+// Replacing rather than appending is what WriteHeader needs: it can fire twice
+// on a response the handler started and then faulted on, and the status the span
+// reports has to be the one that went out. The stamp is replaced with it, and is
+// taken here rather than in the five Observe methods — one clock read per write.
 func (r *Record) put(observation Observation) {
 	if r == nil {
 		return
@@ -238,26 +217,24 @@ func (r *Record) put(observation Observation) {
 	r.observed = append(r.observed, observation)
 }
 
-// indexOf is a linear scan, and that is the right shape here: a request records
-// on the order of twenty facts, so a scan beats an array indexed by every one of
-// numKeys, which would cost a per-request allocation the size of the whole table
-// to hold mostly nothing. The caller holds the mutex.
+// indexOf is a linear scan, which is the right shape for the twenty-odd facts a
+// request records: an array indexed by numKeys would cost a per-request
+// allocation the size of the whole table to hold mostly nothing. The caller
+// holds the mutex.
 func (r *Record) indexOf(k Key) int {
 	return slices.IndexFunc(r.observed, func(o Observation) bool { return o.Key == k })
 }
 
 // requireKind panics when a key is observed as the wrong type.
 //
-// Loudly, per telemetry-seam.md, and the reason a panic is safe on a request
-// path is that the mistake is not data-dependent: ObserveString(ResultCatalogCount, …)
-// is wrong for every request, so it fails on the first test that walks the path
-// and never first in production. The alternative — dropping the fact — is found
-// by whoever queries for the attribute that is missing, which is the failure
-// mode this table exists to end.
+// A panic is safe on a request path here because the mistake is not
+// data-dependent: ObserveString(ResultCatalogCount, …) is wrong for every
+// request, so it fails on the first test that walks the path and never first in
+// production. Dropping the fact instead is found by whoever queries for the
+// attribute that is missing.
 //
-// It runs BEFORE any nil-receiver check, so a mismatch written on the probes
-// chain still fails rather than being swallowed by nil-tolerance. Nil-tolerance
-// is for a missing record, not for a wrong call.
+// It runs BEFORE any nil-receiver check: nil-tolerance is for a missing record,
+// not for a wrong call.
 func requireKind(k Key, kind Kind) Definition {
 	def := Of(k)
 	if def.Kind != kind {
@@ -268,10 +245,8 @@ func requireKind(k Key, kind Kind) Definition {
 
 // clampRunes cuts a string to at most limit runes, reporting whether it cut.
 // Runes rather than bytes: a byte cut can split a UTF-8 sequence and produce a
-// replacement character in an attribute value nobody can search for.
-//
-// Clamping happens here, where the value enters the record, rather than at the
-// projections — there are four exits and one entrance.
+// replacement character in an attribute value nobody can search for. It happens
+// here, where the value enters the record — one entrance, four exits.
 func clampRunes(value string, limit int) (string, bool) {
 	if limit <= 0 || len(value) <= limit {
 		// len is a byte count and so a cheap lower bound on the rune count; a

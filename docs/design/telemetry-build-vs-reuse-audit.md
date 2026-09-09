@@ -113,7 +113,7 @@ Every `Definition` column, counted by consumers outside `fact/`:
 | `Signals` | 10 |
 | `PresentFlag` | 6 |
 | `Cardinality` | 1 |
-| `ZeroIsAbsent` | 0 outside `fact/` — but read by `record.go:126,135` and `fact.go:327` |
+| `ZeroIsAbsent` | 0 outside `fact/` — but read by `record.go:112,121` and `definition.go:368` |
 | `Layer` | 0 outside `fact/` — but read by the cross-layer fixture, `registry_test.go:403-416` |
 | **`Visibility`** | **0 runtime consumers, anywhere.** Two test consumers inside `fact/`: `registry_test.go:56` asserts no row is left `VisibilityUnspecified`, and `:89` sets it on a synthetic fixture. Neither checks that the value *does* anything — the first checks only that the table is fully populated. |
 

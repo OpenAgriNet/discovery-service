@@ -1,26 +1,19 @@
 // Package fact is the attribute registry: one table naming every fact this
 // service observes, how it is spelled on each signal, and what may be done with
-// it. Its entire dependency set is a closed list of standard-library packages,
-// pinned by tests/architecture/boundary_test.go — that property is what lets
-// src/discover and src/publish observe facts without linking the OpenTelemetry
-// SDK, so a controller's build cannot break on an SDK release.
+// it. Adding an attribute or renaming one is one edit, in one file, that lands
+// on the span, the log line, the metric label and the Resource — or fails the
+// build saying which one it could not reach. The design is
+// docs/design/telemetry-seam.md.
 //
-// The property the table exists to make true, from docs/design/telemetry-seam.md:
+// The package emits nothing and imports only the standard library, pinned by
+// tests/architecture/boundary_test.go: that property is what lets src/discover
+// and src/publish observe facts without linking the OpenTelemetry SDK. The
+// projections that read the table live beside the signal each one writes —
+// traces.go in src/platform/telemetry, fields.go in src/platform/logger.
 //
-//	Adding an attribute, renaming one, changing its cardinality, or deciding it
-//	may not leave the process is one edit, in one file, and it lands correctly on
-//	the span, the log line, the metric label and the Resource — or fails the
-//	build saying which one it could not reach.
-//
-// This package emits nothing. It is a table and its guards; the projections that
-// read it live beside the signal each one writes — traces.go in
-// src/platform/telemetry, fields.go in src/platform/logger — so that logger
-// stays OpenTelemetry-free and a controller naming a key links no exporter.
-//
-// The files: definition.go is what a fact is and the rules a row must satisfy,
-// registry.go the table of them, record.go what one request observed, and
-// instruments.go the metric instruments with the rules an instrument must
-// satisfy.
+// definition.go is what a fact is and the rules a row must satisfy, registry.go
+// the table, record.go what one request observed, instruments.go the metric
+// instruments.
 package fact
 
 import (
@@ -30,16 +23,12 @@ import (
 )
 
 // Key names one observable fact. It indexes the registry array directly, so the
-// const block below and the rows in registry.go are the same list read two ways
-// and a key with no row is a test failure rather than a silent zero.
+// const block in registry.go and the rows beside it are one list read two ways.
 type Key uint8
 
-// Signal is where a fact may appear.
-//
-// Four bits, and note which four: there is no Measure bit. A measured value is
-// not a key at all — it is the number an instrument reports — so the fourth bit
-// is Resource instead, which is what makes "the same Resource across all three
-// signals" true by construction rather than by Task 24 remembering.
+// Signal is where a fact may appear. Four bits, and note which four: there is no
+// Measure bit, because a measured value is not a key at all — it is the number
+// an instrument reports.
 type Signal uint8
 
 const (
@@ -78,9 +67,8 @@ const (
 type Cardinality uint8
 
 const (
-	// CardinalityUnspecified is the zero. Refused, because defaulting it either
-	// way is wrong: Bounded would authorise a label the value set cannot back,
-	// Unbounded would silently forbid one somebody meant to declare.
+	// CardinalityUnspecified is the zero, and is refused: defaulting it either
+	// way is wrong.
 	CardinalityUnspecified Cardinality = iota
 	// Bounded means Values lists every value this key can take. A metric label
 	// requires it.
@@ -124,14 +112,11 @@ const (
 	CrossLayer
 )
 
-// Alias is a second key carrying the same value.
-//
-// It exists for exactly two cases and must not be stretched: the cross-layer
-// join spellings onix's collectors key on (I1), and http.status.code beside
-// http.status_code. Both are one value written once under two keys, which is
-// what makes them unable to drift — unlike a duplicated duration, which is free
-// to disagree with the span it duplicates. AsString renders an Int64 as a
-// string, which divergence 3 requires and nothing else does.
+// Alias is a second key carrying the same value. It exists for exactly two
+// cases and must not be stretched: the cross-layer join spellings onix's
+// collectors key on (I1), and http.status.code beside http.status_code. AsString
+// renders an Int64 as a string, which divergence 3 requires and nothing else
+// does.
 type Alias struct {
 	Key      string
 	AsString bool
@@ -154,10 +139,8 @@ type Definition struct {
 
 	Cardinality Cardinality
 
-	// Values is the closed value set for a Bounded key. It is what turns Bounded
-	// from a claim written by the same person, in the same commit, as the code
-	// that uses the key into something the label projection can enforce and
-	// Task 25's instrument test can multiply.
+	// Values is the closed value set for a Bounded key — what turns Bounded from
+	// a claim into something the label projection can enforce.
 	Values []string
 
 	// Bounds on a caller-supplied value. beckn.schemaContext is a URI the caller
@@ -178,17 +161,13 @@ type Definition struct {
 	ZeroIsAbsent bool
 
 	// PromoteToSpan carries an event fact onto the span as well, and only ever
-	// as well: the events are the interop contract and promotion copies rather
-	// than moves. Requires both an Event and the Span bit, because on a row
-	// with neither it is a bool that reads as meaningful and does nothing.
+	// as well: the events are the interop contract, so promotion copies rather
+	// than moves. Requires both an Event and the Span bit.
 	//
-	// The cost is one attribute shipped twice per span, so it is a row-by-row
-	// opt-in rather than a rule. Two things buy it: span attributes are a
-	// queryable map where event attributes are not, and the collector's
-	// spanmetrics connector can name a span attribute as a metric dimension and
-	// cannot reach an event at all. Which means every promoted row is also a
-	// candidate dimension whose Values multiply that connector's series count —
-	// promote a row and check fact.MaxLabelSeries against otel/collector.yaml.
+	// It buys a queryable span attribute and a dimension the spanmetrics
+	// connector can reach, which is also its risk: every promoted row is a
+	// candidate dimension whose Values multiply that connector's series count.
+	// Promote a row and check MaxLabelSeries against otel/collector.yaml.
 	PromoteToSpan bool
 
 	// Required on the Resource. Signals must include Resource. Empty at boot
@@ -202,11 +181,9 @@ type Definition struct {
 
 // Of returns the row for a key.
 //
-// It panics on a key with no row rather than returning the zero Definition,
-// because a projection handed an empty SpanKey ships an attribute with no name:
-// every backend accepts it and no query finds it. The completeness test makes
-// this unreachable, and the panic is what keeps it unreachable if that test is
-// ever skipped.
+// It panics rather than returning the zero Definition, because a projection
+// handed an empty SpanKey ships an attribute with no name: every backend accepts
+// it and no query finds it.
 func Of(k Key) Definition {
 	if int(k) >= len(registry) {
 		panic(fmt.Sprintf("fact: key %d has no row; the const block and registry.go are one list", k))
@@ -214,8 +191,8 @@ func Of(k Key) Definition {
 	return registry[k]
 }
 
-// All iterates the table in key order. Projections and guards both walk it, so
-// a new row reaches every one of them without being added to a second list.
+// All iterates the table in key order, so a new row reaches every projection
+// and every guard without being added to a second list.
 func All() iter.Seq2[Key, Definition] {
 	return func(yield func(Key, Definition) bool) {
 		for index := range registry {
@@ -257,18 +234,12 @@ func (e Event) String() string {
 		"ResponseInfo", "ErrorEvent"})
 }
 
-// EventName is the name the event goes out under, and it is a second spelling
-// rather than a lowercasing of String().
+// EventName is the name the event goes out under. Deliberately a second
+// spelling rather than a lowercasing of String(): String names the Go constant
+// for failure messages, this one is on the wire where a facilitator keys on it,
+// and deriving one from the other would tie a contract to a debugging string.
 //
-// String() names the Go constant and appears only in failure messages; this one
-// is on the wire, where a facilitator keys on it. Deriving one from the other
-// would tie a debugging string to a contract, so that renaming ErrorEvent to
-// something clearer in a panic message would rename the event a collector
-// filters on.
-//
-// NoEvent answers empty, and the projection reads that as "not an event". It is
-// the zero value, so a Definition that simply forgot to set Event would
-// otherwise land its fact on a fifth event carrying the whole span again.
+// NoEvent answers empty, which the projection reads as "not an event".
 func (e Event) EventName() string {
 	switch e {
 	case RequestInfo:
@@ -292,7 +263,7 @@ func (l Layer) String() string {
 
 // name is the shared tail of the String methods above. An out-of-range value
 // prints its number rather than a blank, because a blank in a failure message
-// is how an unhandled enum member gets read as the zero one.
+// reads as the zero member.
 func name(value int, names []string) string {
 	if value < 0 || value >= len(names) {
 		return fmt.Sprintf("%%!(unknown:%d)", value)
@@ -302,16 +273,13 @@ func name(value int, names []string) string {
 
 // --- The rules a row must satisfy -----------------------------------------
 
-// Validate returns every way a Definition contradicts itself, as prose a failure
-// message can print directly.
+// Validate returns every way a Definition contradicts itself, as prose a
+// failure message can print directly.
 //
-// Exported because the guard that runs it over the live table must also run it
-// over rows the table does not have today: no row carries the Label bit, and a
-// rule that has never rejected anything is a rule nobody knows works.
-//
-// It does not check the enums for their Unspecified zeros — those are the
-// completeness test's, which reports them per row with the reason each matters.
-// Folding them in here would give one failure two voices.
+// Exported so the guard can run it over rows the table does not have today: no
+// row carries the Label bit, and a rule that has never rejected anything is a
+// rule nobody knows works. The Unspecified zeros are the completeness test's,
+// not checked here — folding them in would give one failure two voices.
 func Validate(def Definition) []string {
 	report, collect := newProblems()
 
@@ -323,9 +291,7 @@ func Validate(def Definition) []string {
 	return collect()
 }
 
-// reporter is the shared signature. Named rather than repeated at every checker,
-// because a func(string, ...any) in a parameter list reads as plumbing and this
-// one is the whole output.
+// reporter is how a checker states a problem.
 type reporter func(format string, args ...any)
 
 // newProblems returns a reporter and the accumulated list, so the caller keeps
@@ -339,13 +305,11 @@ func newProblems() (reporter, func() []string) {
 		}
 }
 
-// checkKeysMatchSignals: every signal a row claims has a key to write under, and
-// every key it carries has a signal that writes it. A key with no signal is dead
-// and a signal with no key ships an attribute with no name.
+// checkKeysMatchSignals: every signal a row claims has a key to write under,
+// and every key it carries has a signal that writes it.
 func checkKeysMatchSignals(def Definition, report reporter) {
-	// SpanKey carries the Resource spelling too — eid and producer are
-	// attribute.KeyValues like any other, stamped once at boot rather than per
-	// request. So only a row reaching neither may leave it empty.
+	// SpanKey carries the Resource spelling too, so only a row reaching neither
+	// Span nor Resource may leave it empty.
 	if def.Signals&(Span|Resource) != 0 && def.SpanKey == "" {
 		report("Signals includes %v and SpanKey is empty", def.Signals&(Span|Resource))
 	}
@@ -387,9 +351,8 @@ func checkLabelIsBounded(def Definition, report reporter) {
 	}
 }
 
-// checkBoundsAreFlagged: a bound with no flag truncates silently, and a value
-// silently cut short reads as the value the caller sent. A flag with no bound is
-// the same mistake facing the other way — an attribute nothing can ever set.
+// checkBoundsAreFlagged: a bound with no flag truncates silently, and a flag
+// with no bound is an attribute nothing can ever set.
 func checkBoundsAreFlagged(def Definition, report reporter) {
 	if def.MaxEntries != 0 && def.Kind != KindStrings {
 		report("MaxEntries is set on a %v key; an entry count bounds a list", def.Kind)
@@ -412,9 +375,7 @@ func checkBoundsAreFlagged(def Definition, report reporter) {
 	}
 }
 
-// checkPlacement: where a fact sits, as opposed to what it says. The Resource is
-// stamped once at boot, so a Resource attribute on a span event names a moment
-// that has already passed by the time anything could record it.
+// checkPlacement: where a fact sits, as opposed to what it says.
 func checkPlacement(def Definition, report reporter) {
 	if def.Required && def.Signals&Resource == 0 {
 		report("Required is set but Signals omits Resource. Required means \"the " +
