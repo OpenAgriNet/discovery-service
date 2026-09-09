@@ -8,8 +8,11 @@
 // build breaks on an SDK release, and whose test binary starts a batch
 // processor nobody asked for.
 //
-// 23a builds the package, the Resource and the exporter. It starts no spans —
-// the Trace middleware that will is 23c.
+// The package holds the Resource, the exporter and the W3C propagator, and it
+// still starts no span itself: Provider hands out a tracer and SpanAttributes
+// hands back the projected attributes, and the Trace middleware is the one
+// caller that puts the two together. That is what keeps the SDK behind a seam
+// rather than merely behind an import.
 package telemetry
 
 import (
@@ -21,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
@@ -89,7 +93,7 @@ type Provider struct {
 // a global would let any package in the service reach the SDK through
 // otel.Tracer(), which is precisely the coupling A23 and the import guard exist
 // to prevent — the provider travels as a value to the one middleware that needs
-// it (23c).
+// it, which reaches it through App.Telemetry.Tracer().
 //
 // The incoherent configurations are already gone: validateOTel refuses at boot
 // an exporter this build does not have, an otlp with no endpoint, and an otlp
@@ -110,28 +114,9 @@ func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
 		sdktrace.WithSpanProcessor(spanUUID{}),
 	}
 
-	if cfg.OTel.Exporter == config.ExporterOTLP {
-		exporter, err := newExporter(ctx, cfg.OTel.Endpoint)
-		if err != nil {
-			return nil, err
-		}
-		options = append(options,
-			sdktrace.WithBatcher(exporter),
-
-			// Unsampled, deliberately. This service answers a query rate a
-			// human network produces, not a machine one, and the questions the
-			// verdict table asks — did anyone ask and nobody serve it, which
-			// participants talked to which — are counting questions that a
-			// sample answers wrongly rather than approximately.
-			sdktrace.WithSampler(sdktrace.AlwaysSample()),
-		)
-	} else {
-		// Under `none` the provider is otherwise identical, so a collector-less
-		// boot exercises the same construction as a real one. What makes it
-		// free is this: a non-recording span allocates nothing, holds no
-		// attributes and runs no processor, so 23c's middleware costs a
-		// comparison per request on a deployment nobody is watching.
-		options = append(options, sdktrace.WithSampler(sdktrace.NeverSample()))
+	options, err = withExport(ctx, cfg, options)
+	if err != nil {
+		return nil, err
 	}
 
 	provider := sdktrace.NewTracerProvider(options...)
@@ -141,13 +126,63 @@ func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
 	}, nil
 }
 
+// withExport appends the option that decides where spans go, and it is one
+// function because the two branches are one decision.
+//
+// Unsampled, deliberately, and by NOT passing WithSampler rather than by passing
+// AlwaysSample. This service answers a query rate a human network produces, not
+// a machine one, and the questions the verdict table asks — did anyone ask and
+// nobody serve it, which participants talked to which — are counting questions
+// that a sample answers wrongly rather than approximately. So the answer is
+// "keep everything", and there are two ways to say it that are not the same
+// thing.
+//
+// The SDK's default with no option is ParentBased(AlwaysSample): it keeps every
+// trace this service starts, and it DEFERS to a caller who already decided.
+// AlwaysSample discards that decision, so with four layers each sampling for
+// itself a trace arrives with holes in it — and a hole reads as a dropped hop,
+// which is the one diagnosis this telemetry exists to make. It would also
+// silently override OTEL_TRACES_SAMPLER, which an operator can see in their
+// manifest and reasonably believe is doing something.
+//
+// A line that is not here cannot be reviewed, so the behaviour is pinned
+// instead: TestTheSamplerRespectsAnInboundDecision fails the moment anyone adds
+// the option back (opentelemetry.md open question 6).
+func withExport(ctx context.Context, cfg config.Config, options []sdktrace.TracerProviderOption) ([]sdktrace.TracerProviderOption, error) {
+	if cfg.OTel.Exporter != config.ExporterOTLP {
+		// Under `none` the provider is otherwise identical, so a collector-less
+		// boot exercises the same construction as a real one. What makes it free
+		// is this: a non-recording span allocates nothing, holds no attributes
+		// and runs no processor, so the Trace middleware costs a comparison per
+		// request on a deployment nobody is watching.
+		return append(options, sdktrace.WithSampler(sdktrace.NeverSample())), nil
+	}
+
+	exporter, err := newExporter(ctx, cfg.OTel.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return append(options, sdktrace.WithBatcher(exporter)), nil
+}
+
 // Tracer is the one tracer this service has.
 //
 // Obtained once here rather than per request, because the instrumentation scope
 // is fixed when the tracer is obtained and cannot be set at span creation —
 // which is the finding that ruled out otelhttp (A23) and would equally rule out
 // any caller doing provider.Tracer("") for itself.
+//
+// Nil-tolerant, like Shutdown and for the same population: chain() reads this
+// while assembling the router, and a router can be assembled without a Provider
+// — router_test.go builds an App by hand, and any future caller wanting routes
+// without telemetry is in the same position. The noop tracer's spans are not
+// recording, so Trace runs unchanged and observes onto a span that costs nothing,
+// rather than the alternative of a nil check at every call site or a nil panic
+// during boot.
 func (p *Provider) Tracer() trace.Tracer {
+	if p == nil || p.tracer == nil {
+		return noop.NewTracerProvider().Tracer(ScopeName)
+	}
 	return p.tracer
 }
 

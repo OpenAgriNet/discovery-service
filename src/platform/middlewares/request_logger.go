@@ -124,8 +124,8 @@ func (w *responseRecorder) complete(ctx context.Context) {
 	}
 
 	// What the request cost, observed onto the record rather than appended to the
-	// line directly, so the span and 23e's metrics read the same numbers from the
-	// same place. The correlators Envelope observed are already on it and were
+	// line directly, so the span, the line and Task 25's metrics read the same
+	// numbers from the same place. The correlators Envelope observed are already on it and were
 	// observed first, which is what keeps a line reading as what the request was
 	// before what it cost — Record.All yields first-observed order, and the
 	// projection preserves it.

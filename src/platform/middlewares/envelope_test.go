@@ -321,6 +321,14 @@ func correlated(t *testing.T, body string) map[string]any {
 // else: the transaction is what joins them to the BAP's logs and to the other
 // hops, and it is the join an operator actually starts a debugging session
 // from.
+//
+// The action is the NORMALISED one, and the request deliberately sends the other
+// spelling. `catalog/publish` and `publish` are one action arriving under two
+// names — both accepted, because context.action is a field inside a body this
+// service did not write — and beckn.action is Bounded over the normalised pair
+// because reporting both splits every publish query in two. The log field
+// follows the span rather than the wire: the two answering differently about
+// what one request was is worse than either answer.
 func TestTheParsedEnvelopeCorrelatesEverythingBelowIt(t *testing.T) {
 	const correlating = `{"context":{"action":"catalog/publish","transactionId":"a3f0",` +
 		`"messageId":"2f6b"},"message":{"catalogs":[]}}`
@@ -329,7 +337,7 @@ func TestTheParsedEnvelopeCorrelatesEverythingBelowIt(t *testing.T) {
 	for key, want := range map[string]string{
 		"transaction_id": "a3f0",
 		"message_id":     "2f6b",
-		"action":         "catalog/publish",
+		"action":         "publish",
 	} {
 		if got := fields[key]; got != want {
 			t.Errorf("%s = %v, want %q", key, got, want)

@@ -100,12 +100,44 @@ var factIsNotTheSDK = []string{
 // keeps request_logger.go free of a telemetry dependency. An allow-list entry
 // nobody needs is an allow-list entry nobody will notice being used.
 //
-// 23c widens this: Trace takes a tracer, so router.go and middlewares/trace.go
-// join the list then. Granting them now would be granting them before anything
-// can check the grant was used for what it says.
+// The rest are 23c's, and they are individual FILES rather than packages on
+// purpose: `src/platform/middlewares` as a prefix would let every future
+// middleware link the SDK, which is most of what this rule is for. Each entry
+// below is one file that has to touch the SDK to do something the design named,
+// and adding a seventh should be as awkward as these six were.
+//
+// src/platform/logger is deliberately still NOT here. It projects a fact.Record
+// into zap fields and so reads a Definition, but fact is not banned, so the
+// exemption it would receive is one it does not need — and granting it would
+// permit exactly the SDK import that keeps request_logger.go free of a telemetry
+// dependency. An allow-list entry nobody needs is an entry nobody will notice
+// being used.
+//
+// Note src/app/router.go is NOT here either, though 23c was expected to need it.
+// It calls a.Telemetry.Tracer() through a field whose type container.go already
+// declares, so it names no telemetry package itself — the narrower outcome, kept
+// because the guard reported it.
+var mayImportOtelFiles = []string{
+	// Trace starts the span and needs trace.Tracer, trace.SpanKind and codes.
+	filepath.Join("src", "platform", "middlewares", "trace.go"),
+
+	// Its tests read spans back, which no amount of indirection avoids: the
+	// question they ask is what the SDK exported.
+	filepath.Join("src", "platform", "middlewares", "trace_test.go"),
+
+	// Task 20's chain-order assertion, moved off X-Beckn-Chain and onto the span.
+	filepath.Join("src", "app", "router_test.go"),
+
+	// The two outbound clients, which inject the traceparent so the far side can
+	// join this trace. Both reach only telemetry.Inject, not the SDK.
+	filepath.Join("src", "platform", "validation", "http_fetcher.go"),
+	filepath.Join("src", "indexing", "embeddings", "ollama.go"),
+}
+
 func mayImportOtel(path string) bool {
 	return strings.HasPrefix(path, filepath.Join("src", "platform", "telemetry")+string(filepath.Separator)) ||
-		path == filepath.Join("src", "app", "container.go")
+		path == filepath.Join("src", "app", "container.go") ||
+		slices.Contains(mayImportOtelFiles, path)
 }
 
 // dbtestOnly is tests/dbtest itself: whether a package requires a real

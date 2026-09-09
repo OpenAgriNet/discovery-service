@@ -259,31 +259,69 @@ func scalar(stack []jsonFrame, token json.Token) (string, bool) {
 // RequestLogger follows for error_type on a success.
 func correlate(ctx context.Context, envelope beckn.Context) context.Context {
 	fields := make([]zap.Field, 0, 3)
-	for _, correlator := range []struct {
-		value string
-		key   fact.Key
-		field func(string) zap.Field
-	}{
-		{envelope.TransactionID, fact.BecknTransactionID, logger.TransactionID},
-		{envelope.MessageID, fact.BecknMessageID, logger.MessageID},
-		{envelope.Action, fact.BecknAction, logger.Action},
-	} {
+
+	for _, correlator := range correlators(envelope) {
 		if correlator.value == "" {
 			continue
 		}
 
 		// Down to everything below, as pre-populated fields on the request-scoped
 		// logger.
-		fields = append(fields, correlator.field(correlator.value))
+		if correlator.field != nil {
+			fields = append(fields, correlator.field(correlator.value))
+		}
 
 		// And back up: to RequestLogger's completion line, written by a middleware
-		// that ran before this one could know any of it, and from 23c to the span
-		// Trace started for the same reason. One table with both spellings rather
-		// than two loops, so a correlator cannot reach one and not the other.
+		// that ran before this one could know any of it, and to the span Trace
+		// started for the same reason. One table with both spellings rather than
+		// two loops, so a correlator cannot reach one and not the other.
 		fact.ObserveString(ctx, correlator.key, correlator.value)
 	}
 
 	return logger.With(ctx, fields...)
+}
+
+// correlator is one envelope field under both of its spellings.
+type correlator struct {
+	value string
+	key   fact.Key
+	field func(string) zap.Field
+}
+
+// correlators is the table, and it is one table rather than two.
+//
+// Three of these reach both the log and the span; four reach only the span. A
+// nil field constructor is what says so, rather than a second loop, because two
+// loops are two places a new correlator has to be added and one of them is the
+// one that gets forgotten.
+//
+// The action is normalised on the way in. `catalog/publish` and `publish` are
+// one action under two names — both accepted, because context.action is a field
+// inside a body this service did not write — and reporting both splits every
+// publish query in two with nothing in the data saying a union was needed.
+// beckn.action is Bounded over the normalised pair for exactly that reason. It
+// changes the `action` log field too, which is the point: the log and the span
+// must not disagree about what this request was.
+func correlators(envelope beckn.Context) []correlator {
+	return []correlator{
+		{envelope.TransactionID, fact.BecknTransactionID, logger.TransactionID},
+		{envelope.MessageID, fact.BecknMessageID, logger.MessageID},
+		{beckn.NormalizeAction(envelope.Action), fact.BecknAction, logger.Action},
+
+		// Span-only. These are what a facilitator joins on and what a query
+		// against one network's traffic filters by; on the completion line they
+		// would be four fields identical on every request from a given caller,
+		// which is four fields nothing can be filtered by and bytes on every line.
+		//
+		// receiverId is who the CALLER addressed, and it is not recipient.id,
+		// which Trace observes from APP_SUBSCRIBER_ID. They agree whenever a
+		// request is correctly addressed, which is why one field holding both
+		// would be undetectably wrong.
+		{envelope.SenderID, fact.SenderID, nil},
+		{envelope.Version, fact.BecknVersion, nil},
+		{envelope.NetworkID, fact.BecknNetworkID, nil},
+		{envelope.ReceiverID, fact.BecknReceiverID, nil},
+	}
 }
 
 func stash(ctx context.Context, body []byte, envelope RawEnvelope) context.Context {

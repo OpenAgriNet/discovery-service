@@ -133,7 +133,7 @@ func protocolRoutes(a *App) http.Handler {
 func chain(a *App) func(http.Handler) http.Handler {
 	links := []func(http.Handler) http.Handler{
 		middlewares.RequestID(a.Log),
-		middlewares.Trace,
+		middlewares.Trace(a.Telemetry.Tracer(), a.Config.App.Subscriber),
 		middlewares.RequestLogger,
 		middlewares.Recover(a.Config.Errors),
 		middlewares.Envelope(a.Config.Errors, a.Config.Server.MaxRequestBodyBytes),

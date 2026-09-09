@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
 )
 
 // embedPath is Ollama's embedding route.
@@ -61,6 +63,13 @@ func (o *Ollama) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, fmt.Errorf("build the embedding request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+
+	// The trace continues into the embedding service, if it is instrumented. This
+	// is the call that turns a slow discover into a slow discover WITH A REASON —
+	// retrieval.embedding_ms says how long it took, and the traceparent is what
+	// lets somebody see where inside the model server it went. A no-op when no
+	// span is in flight, which is why it is unconditional rather than guarded.
+	telemetry.Inject(ctx, request.Header)
 
 	vector, err := o.send(request)
 	if err != nil {

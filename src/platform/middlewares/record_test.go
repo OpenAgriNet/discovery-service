@@ -59,13 +59,14 @@ func serveChained(t *testing.T, body string, links []func(http.Handler) http.Han
 // Unconditionally, including under OTEL_EXPORTER=none. Making the allocation
 // depend on a live tracer would make the record's lifetime vary by environment
 // variable, which is exactly the kind of difference that turns a green test
-// suite into a production-only failure. Trace takes no configuration today,
-// which is what makes that free — and this test is what notices if 23c gives it
-// some and puts the allocation behind it.
+// suite into a production-only failure. 23c did give Trace configuration — a
+// tracer and a subscriber id — and this is what says neither of them gates the
+// allocation.
 func TestTraceAllocatesTheRecord(t *testing.T) {
 	var found *fact.Record
+	trace, _ := tracing(t)
 
-	serveChained(t, "", []func(http.Handler) http.Handler{Trace, capturing(&found)},
+	serveChained(t, "", []func(http.Handler) http.Handler{trace, capturing(&found)},
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	if found == nil {
@@ -78,15 +79,16 @@ func TestTraceAllocatesTheRecord(t *testing.T) {
 // exercises it — Trace runs first, so it always allocates.
 //
 // That is exactly why it needs a test. An unconditional fact.New here would be
-// invisible today and would SHADOW an inherited record the moment 23c or a later
-// chain change puts something above Trace: two records holding the same facts,
-// because Envelope writes whichever is nearer, and every assertion about the log
-// line still passing while the span read the other one.
+// invisible today and would SHADOW an inherited record the moment a chain change
+// puts something above Trace: two records holding the same facts, because
+// Envelope writes whichever is nearer, and every assertion about the log line
+// still passing while the span read the other one.
 func TestTraceAdoptsARecordAlreadyInContext(t *testing.T) {
 	var found *fact.Record
+	trace, _ := tracing(t)
 
 	core, _ := observer.New(zapcore.DebugLevel)
-	handler := Trace(capturing(&found)(
+	handler := trace(capturing(&found)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })))
 
 	request := httptest.NewRequest(http.MethodPost, "/publish", nil)
@@ -105,14 +107,15 @@ func TestTraceAdoptsARecordAlreadyInContext(t *testing.T) {
 // If RequestLogger allocated its own, the two records would hold the same facts
 // — Envelope runs below both and would observe onto whichever is nearer — and
 // every assertion about the completion line would still pass. What would break
-// is 23c: Trace's span would read Trace's record, Envelope would write
+// is the span: Trace would project Trace's record, Envelope would write
 // RequestLogger's, and the span would lose the correlators while the log kept
 // them. A pointer comparison is the only thing that sees that coming.
 func TestRequestLoggerAdoptsTheRecordTraceAllocated(t *testing.T) {
 	var atTrace, atHandler *fact.Record
+	trace, _ := tracing(t)
 
 	serveChained(t, "", []func(http.Handler) http.Handler{
-		Trace, capturing(&atTrace), RequestLogger, capturing(&atHandler),
+		trace, capturing(&atTrace), RequestLogger, capturing(&atHandler),
 	}, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	if atTrace == nil {
@@ -156,8 +159,10 @@ func TestTheCompletionLineKeepsItsFieldOrder(t *testing.T) {
 	const correlating = `{"context":{"action":"catalog/publish","transactionId":"a3f0",` +
 		`"messageId":"2f6b"},"message":{"catalogs":[]}}`
 
+	trace, _ := tracing(t)
+
 	_, logged := serveChained(t, correlating, []func(http.Handler) http.Handler{
-		Trace, RequestLogger, Envelope(config.Errors{}, roomy),
+		trace, RequestLogger, Envelope(config.Errors{}, roomy),
 	}, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	want := []string{"transaction_id", "message_id", "action", "status", "duration_ms"}

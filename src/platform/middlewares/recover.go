@@ -12,6 +12,25 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 )
 
+// HeaderChain records which links of the chain ran, in the order they ran.
+//
+// Header().Add appends, so Values(HeaderChain) reads back as insertion order —
+// which is what makes the chain's *order* assertable rather than merely its
+// membership. Only the links whose ordering nothing else observes stamp here:
+// every other middleware is placed by a side effect it already has (a header, a
+// context value, a status), and a marker for one of those would be a second
+// thing to keep true.
+//
+// Declared here rather than in trace.go, where it used to live, because Recover
+// is now the only link that stamps it. 23c gave Trace a side effect of its own —
+// the span — so its marker went, and a constant declared in a file that no
+// longer uses it is a constant the next reader looks for a second writer of.
+const HeaderChain = "X-Beckn-Chain"
+
+// chainRecover is the one entry. Spelled once, because recover_test.go reads the
+// header by name and a second spelling is an entry that silently never matches.
+const chainRecover = "recover"
+
 // committer answers the one question Recover cannot answer for itself: has the
 // response already gone? RequestLogger's recorder implements it and sits
 // directly above, so in the assembled chain the answer is always available; a
@@ -44,8 +63,7 @@ func Recover(cfg config.Errors) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Before next, and on every request rather than only on the ones
-			// caught: this entry is what places Recover against Trace in the
-			// chain, and a marker that appeared only on a panicking route would
+			// caught: a marker that appeared only on a panicking route would
 			// leave the ordinary route's order unobservable. See HeaderChain.
 			w.Header().Add(HeaderChain, chainRecover)
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
 )
@@ -71,6 +73,69 @@ func TestOtlpBootsWithoutACollectorListening(t *testing.T) {
 	}
 	if err := provider.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown with an unreachable collector: %v", err)
+	}
+}
+
+// TestTheSamplerRespectsAnInboundDecision is the pin on a line that is not
+// there, and it is the only kind of pin such a line can have.
+//
+// Init passes no WithSampler on the OTLP path. The default with no option is
+// ParentBased(AlwaysSample): unsampled at the root, and — the half that matters
+// — deferring to whatever the caller decided. Passing AlwaysSample explicitly
+// looks like the same thing and is not: it discards the parent's decision, so
+// four layers each sampling independently produce traces with holes, and a hole
+// reads as a dropped hop rather than as a sampling artefact. It also silently
+// overrides OTEL_TRACES_SAMPLER, which an operator can see in their manifest and
+// believe is doing something.
+//
+// There is no code to review for that, which is why open question 6 asked for
+// the behaviour to be encoded instead. This is that encoding: it fails the
+// moment anyone adds the option back.
+func TestTheSamplerRespectsAnInboundDecision(t *testing.T) {
+	cfg := baseConfig(config.ExporterOTLP)
+	cfg.OTel.Endpoint = "127.0.0.1:1"
+
+	provider, err := telemetry.Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+
+	for _, decision := range []struct {
+		name  string
+		flags trace.TraceFlags
+		want  bool
+	}{
+		{"the caller did not sample", 0, false},
+		{"the caller sampled", trace.FlagsSampled, true},
+	} {
+		t.Run(decision.name, func(t *testing.T) {
+			parent := trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    trace.TraceID{0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6},
+				SpanID:     trace.SpanID{0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7},
+				TraceFlags: decision.flags,
+				Remote:     true,
+			})
+
+			// Started and never ended, which is the point rather than an
+			// oversight: End is what hands the span to the batcher, and a batcher
+			// pointed at a closed port spends its full export timeout failing to
+			// deliver it. The sampling decision is made at Start, so there is
+			// nothing left to learn from ending it.
+			_, span := provider.Tracer().Start(
+				trace.ContextWithSpanContext(context.Background(), parent), "discover")
+
+			if got := span.IsRecording(); got != decision.want {
+				t.Errorf("IsRecording() = %v under a parent with sampled=%v, want %v — "+
+					"the sampler is not parent-based, so this node decides on its own and "+
+					"the cross-layer trace comes out with holes in it",
+					got, decision.flags.IsSampled(), decision.want)
+			}
+		})
 	}
 }
 

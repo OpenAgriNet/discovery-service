@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
 )
 
 // specFetchTimeout bounds the whole fetch — connect, headers and body.
@@ -51,6 +52,13 @@ func fetchSpec(ctx context.Context, url string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("build the request: %w", err)
 	}
 
+	// Propagated even though this one runs at boot, outside any request. There is
+	// no span in flight then and Inject writes nothing — but fetchSpec is also
+	// reachable from EXT_ALLOW_NETWORK_FETCH, where there is, and a propagator
+	// applied at only some of a client's call sites is one whose absence somewhere
+	// reads as a hop that was never made.
+	telemetry.Inject(ctx, request.Header)
+
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", url, err)
@@ -65,6 +73,12 @@ func fetchSpec(ctx context.Context, url string, limit int64) ([]byte, error) {
 		}
 	}()
 
+	return readSpec(response, url, limit)
+}
+
+// readSpec turns a response the caller will close into the document, or says
+// why it is not one.
+func readSpec(response *http.Response, url string, limit int64) ([]byte, error) {
 	if response.StatusCode != http.StatusOK {
 		// The status is in the message because it is the whole of what an
 		// operator needs: a 404 is a wrong URL, a 403 is a credential, a 502 is

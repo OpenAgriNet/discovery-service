@@ -13,9 +13,10 @@
 //	build saying which one it could not reach.
 //
 // This package emits nothing. It is a table and its guards; the projections that
-// read it live beside the signal each one writes — project_span.go here,
-// project_log.go in src/platform/logger — so that logger stays OpenTelemetry-free
-// and a controller naming a key links no exporter.
+// read it live beside the signal each one writes — project_span.go in
+// src/platform/telemetry, project_fact.go in src/platform/logger — so that
+// logger stays OpenTelemetry-free and a controller naming a key links no
+// exporter.
 package fact
 
 import (

@@ -30,6 +30,26 @@ const (
 	ActionOnDiscover       = "on_discover"
 )
 
+// NormalizeAction folds the two spellings of publish into the one this service
+// reports, and leaves every other action alone.
+//
+// It exists for telemetry rather than for routing. `catalog/publish` and
+// `publish` are the same action arriving under two names, and both are accepted
+// on the wire because context.action is a field inside a body this service did
+// not write. Reporting both is what splits every publish query in two — and the
+// person writing the query has no way to know they needed a union, because
+// nothing in the data says the two names are one thing. beckn.action is
+// therefore Bounded over ["discover","publish"], and this is what keeps it so.
+//
+// Deliberately not applied to what goes back on the wire: a caller who said
+// `catalog/publish` is answered in the terms they used.
+func NormalizeAction(action string) string {
+	if action == ActionCatalogPublish {
+		return ActionPublish
+	}
+	return action
+}
+
 // CatalogPublishAction is the `message` of a publish request.
 type CatalogPublishAction struct {
 	Catalogs          []Catalog          `json:"catalogs"`
