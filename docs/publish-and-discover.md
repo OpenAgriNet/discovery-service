@@ -18,11 +18,41 @@ That is the whole of it:
 | `GET /healthz` | the platform | is the process alive |
 | `GET /readyz` | the platform | can it also reach PostgreSQL |
 
-Four routes, no wildcard mount, no aliases. Both APIs speak
-[Beckn v2.0.0](../tests/testdata/beckn-v2.0.0.yaml): every request is an
-envelope of `context` (who is asking, about what, when) plus `message` (the
-actual payload), and every response is the matching callback shape returned
-inline rather than posted back to a URI.
+Four routes, no wildcard mount, no aliases. Both APIs are implemented against
+the published Beckn v2.0.0 specification —
+[`beckn/protocol-specifications-v2`](https://github.com/beckn/protocol-specifications-v2/blob/main/api/v2.0.0/beckn.yaml),
+pinned in this repo as
+[`tests/testdata/beckn-v2.0.0.yaml`](../tests/testdata/beckn-v2.0.0.yaml). That
+document *is* the validator: the service loads it and validates every request
+against it, rather than restating the protocol in Go.
+
+Every request is an envelope of `context` (who is asking, about what, when)
+plus `message` (the actual payload).
+
+**Every transaction is synchronous.** The answer arrives in the body of the
+same HTTP response — there is no callback, no callback URI to register, and
+nothing is posted back to the caller later. The response carries the `on_`
+action name the protocol gives the asynchronous form, and that naming is all
+that survives of it. Two actions in each direction:
+
+| Request | Response |
+|---|---|
+| `catalog/publish` | `catalog/on_publish` |
+| `discover` | `on_discover` |
+
+`publish` is accepted as a synonym for `catalog/publish` and answered in the
+caller's own spelling.
+
+The two parties are `context.senderId` and `context.receiverId`, and the
+response **swaps** them — the legs reverse, so this service's `senderId` is
+whatever the caller put in `receiverId`. They are DIDs, which resolve to the
+document holding that party's verification keys, so one field answers both
+*who* and *with what key*. Neither is verified today; signature verification
+belongs to the adopter's layer.
+
+The v1 participant fields are **not modelled** — not deprecated, absent. A
+caller may still send them and gets a 200; they are accepted and ignored, and
+they do not come back.
 
 Two things about this service are worth knowing up front, because they explain
 most of the design:
@@ -112,8 +142,10 @@ index lookups and array overlaps, not JSON traversal.
 {
   "context": {
     "domain": "agriculture",
-    "action": "publish",
+    "action": "catalog/publish",
     "version": "2.0.0",
+    "senderId": "weather.karnataka.example.org",
+    "receiverId": "discovery.local-network.oan",
     "transactionId": "3f9a1c62-4d5e-4a7b-9c8d-1e2f3a4b5c6d",
     "messageId": "8b7c6d5e-4f3a-42b1-a0c9-d8e7f6a5b4c3",
     "timestamp": "2026-08-27T06:30:00Z",
