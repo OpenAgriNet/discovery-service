@@ -88,18 +88,20 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 
 # The one value this build injects at link time, and it is deliberately one.
 #
-# cmd/discovery-service/main.go:56-59 records the standing preference: read the
-# toolchain's own build stamp rather than inject with -ldflags, so Makefile,
-# Dockerfile and CI do not have to agree on a flag string. Three of the four
-# build attributes on the telemetry Resource take that route — commit, tree
-# state and commit date all come from debug.ReadBuildInfo and need no flag.
+# cmd/discovery-service/main.go's writeBuildInfo records the standing preference:
+# read the toolchain's own build stamp rather than inject with -ldflags, so
+# Makefile, Dockerfile and CI do not have to agree on a flag string. Three of the
+# four build attributes on the telemetry Resource take that route — commit, tree
+# state and commit date all come from debug.ReadBuildInfo and need no flag. They
+# also come out `unknown` in the release image, whose build stage copies no .git;
+# the route is free but it is not populated there. See build.go.
 #
-# service.version cannot. debug.BuildInfo.Main.Version reads `(devel)` for every
-# plain `go build` and has no way to carry VERSION above, which is the value
-# OP5 wants on the Resource so a deploy that broke something can be named. So
-# the exception is exactly one -X wide, which is the smallest thing three build
-# systems can be asked to agree on. An image built without it reports `dev`
-# rather than an empty string — see src/platform/telemetry/build.go.
+# service.version cannot take it at all. Main.Version carries the MODULE's
+# version, never VERSION above: a git checkout on go1.25 yields a pseudo-version
+# and the .git-less image yields `(devel)`, and OP5 wants the tag so a deploy
+# that broke something can be named. So the exception is exactly one -X wide,
+# which is the smallest thing three build systems can be asked to agree on. An
+# image built without it reports `dev` rather than an empty string.
 LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)

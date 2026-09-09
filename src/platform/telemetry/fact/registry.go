@@ -787,12 +787,18 @@ var registry = [numKeys]Definition{
 	// repos wants the stem, not the owner.
 	//
 	// Only service.version comes from -ldflags. The other three are read from
-	// the toolchain's own VCS stamp, which cmd/discovery-service/main.go:56-59
-	// already prefers for exactly the reason it gives — Makefile, Dockerfile and
-	// CI do not have to agree on a flag string — and which no flag can improve
-	// on. service.version is the one exception because `git describe --tags` has
-	// no equivalent in debug.BuildInfo: Main.Version reads `(devel)` for every
-	// plain `go build`.
+	// the toolchain's own VCS stamp, which main.go's writeBuildInfo already
+	// prefers for exactly the reason it gives: Makefile, Dockerfile and CI do not
+	// have to agree on a flag string. service.version is the one exception
+	// because `git describe --tags` has no equivalent in debug.BuildInfo —
+	// Main.Version carries the module's version, a pseudo-version in a git
+	// checkout and `(devel)` in the .git-less release image, never the tag.
+	//
+	// The stamp route is not free of cost, and this comment claimed until
+	// 2026-09-09 that no flag could improve on it. One could: the release image's
+	// build stage copies no .git, so in a deployed binary these three read
+	// `unknown`, `unknown` and the zero instant, and only service.version
+	// actually answers OP5. Read as a known gap, not as a property.
 
 	ResourceServiceVersion: {
 		Name:        "ResourceServiceVersion",

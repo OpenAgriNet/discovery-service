@@ -6,14 +6,24 @@ import "runtime/debug"
 //
 //	-ldflags "-X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)"
 //
-// cmd/discovery-service/main.go:56-59 states the standing preference — read the
-// toolchain's own build stamp rather than inject with -ldflags, so Makefile,
-// Dockerfile and CI do not have to agree on a flag string. That preference holds
-// for the other three attributes below and they take it. It cannot hold for
-// this one: debug.BuildInfo.Main.Version reads `(devel)` for every plain
-// `go build` and has no way to carry the Makefile's `git describe --tags`, which
-// is the value OP5 wants on the Resource. So the exception is exactly one flag
-// wide, which is the smallest thing three build systems can be asked to agree on.
+// cmd/discovery-service/main.go's writeBuildInfo states the standing preference —
+// read the toolchain's own build stamp rather than inject with -ldflags, so
+// Makefile, Dockerfile and CI do not have to agree on a flag string. That
+// preference holds for the other three attributes below and they take it. It
+// cannot hold for this one, because debug.BuildInfo.Main.Version carries the
+// MODULE's version and never the release tag the Makefile computes: in a git
+// checkout on go1.25 it reads a pseudo-version, and in the release image, whose
+// build stage copies no .git, it reads `(devel)`. Neither is the value OP5 wants
+// on the Resource. So the exception is exactly one flag wide, which is the
+// smallest thing three build systems can be asked to agree on.
+//
+// The three below take the stamp and inherit its gap rather than escaping it. In
+// that same image they read `unknown`, `unknown` and the zero instant, for the
+// same missing .git — so on a deployed binary this Resource answers OP5 from the
+// flag alone and the VCS trio says nothing. Flagged rather than fixed: closing
+// it means passing commit and date as build args too, which is the coordination
+// cost the preference above exists to avoid, and that is a call to make on
+// purpose.
 //
 // `dev` rather than "" because an empty Resource attribute is indistinguishable
 // from an unset one: a facilitator seeing nothing cannot tell whether the

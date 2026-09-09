@@ -26,12 +26,14 @@ var buildFilesThatStamp = []string{"Makefile", "Dockerfile"}
 // release after. The only thing that notices is somebody asking OP5's question
 // months later and finding the answer has been wrong the whole time.
 //
-// cmd/discovery-service/main.go:56-59 avoided the problem entirely by refusing
-// -ldflags. That is still the right default and three of the four build
+// cmd/discovery-service/main.go's writeBuildInfo avoided the problem entirely by
+// refusing -ldflags. That is still the right default and three of the four build
 // attributes still take it; service.version is the one that cannot, because
-// debug.BuildInfo.Main.Version is `(devel)` for every plain `go build`. This
-// test is the price of the exception, and it is the encoded form of the pin
-// rather than a comment asking the next person to remember.
+// debug.BuildInfo.Main.Version carries the module's version and never the
+// release tag — a pseudo-version in a git checkout on go1.25, `(devel)` in the
+// .git-less release image. This test is the price of the exception, and it is
+// the encoded form of the pin rather than a comment asking the next person to
+// remember.
 func TestBothBuildFilesStampTheSameSymbol(t *testing.T) {
 	targets := map[string]string{}
 

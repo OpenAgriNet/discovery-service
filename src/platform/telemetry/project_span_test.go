@@ -74,10 +74,13 @@ func TestTheProjectionSpellsEveryKeyFromTheRegistry(t *testing.T) {
 // TestOneObservationBecomesBothStatusSpellings is divergence 3, and it is the
 // reason Alias carries AsString at all.
 //
-// onix writes http.status.code as a STRING; the semantic conventions say
-// http.status_code as an int. A collector rule keying on either has to find it,
-// so both go out — from one observation, so they cannot drift the way two
-// separate observations of "the status" would.
+// The spec declares http.status.code as Int in its structure and emits a STRING
+// in all three of its examples; the semantic conventions say http.status_code as
+// an int. A collector rule keying on either has to find it, so both go out —
+// from one observation, so they cannot drift the way two separate observations
+// of "the status" would. Neither spelling is onix's: it sends
+// http.response.status_code, so this is a spec disagreement and not a
+// cross-repo one.
 func TestOneObservationBecomesBothStatusSpellings(t *testing.T) {
 	attributes := projected(t, func(record *fact.Record) {
 		record.ObserveInt64(fact.HTTPStatusCode, 404)
@@ -89,12 +92,12 @@ func TestOneObservationBecomesBothStatusSpellings(t *testing.T) {
 	}
 
 	if len(def.SpanAliases) != 1 {
-		t.Fatalf("HTTPStatusCode carries %d aliases, want the one onix spelling", len(def.SpanAliases))
+		t.Fatalf("HTTPStatusCode carries %d aliases, want the one spec spelling", len(def.SpanAliases))
 	}
 	alias := def.SpanAliases[0]
 	got, present := attributes[alias.Key]
 	if !present {
-		t.Fatalf("no %s on the span; a collector rule keyed on onix's spelling finds nothing", alias.Key)
+		t.Fatalf("no %s on the span; the facilitator reads this spelling and finds nothing", alias.Key)
 	}
 	if got.Type() != attribute.STRING || got.AsString() != "404" {
 		t.Errorf("%s = %v (%s), want the string \"404\" — AsString is what divergence 3 asks for",

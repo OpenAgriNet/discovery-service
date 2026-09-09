@@ -171,9 +171,18 @@ func spanValue(kind fact.Kind, observation fact.Observation) attribute.Value {
 
 // aliasValue renders the value under the alias's key.
 //
-// AsString exists for exactly one row: onix writes http.status.code as a string
-// where the semantic conventions say http.status_code is an int, so both go out
-// and a collector rule keyed on either finds it. strconv rather than fmt because
+// AsString exists for exactly one row, and the reason is the SPEC's rather than
+// onix's. The network telemetry spec declares Attribute("http.status.code", Int)
+// in its structure and emits {"stringValue": "200"} in all three of its
+// examples; we follow the examples, because a facilitator was built against them
+// (divergence 3). The semantic conventions' int stays on http.status_code for
+// ClickStack, so both go out and a collector rule keyed on either finds it.
+//
+// onix emits NEITHER spelling — it sends http.response.status_code as an int
+// (docs/design/telemetry-examples/inventory.md, the cross-repo divergence
+// table). So the authority for changing this line is the spec and the
+// facilitator, not that repo, which is the opposite of what this comment said
+// until 2026-09-09. strconv rather than fmt because
 // the input is already known to be an int64 and a %v would render a non-int64
 // Kind as something that looks deliberate.
 func aliasValue(value attribute.Value, alias fact.Alias) attribute.Value {
