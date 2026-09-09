@@ -132,6 +132,23 @@ var mayImportOtelFiles = []string{
 	// join this trace. Both reach only telemetry.Inject, not the SDK.
 	filepath.Join("src", "platform", "validation", "http_fetcher.go"),
 	filepath.Join("src", "indexing", "embeddings", "ollama.go"),
+
+	// The mirror of trace_test.go above, and exempt on the same sentence. That
+	// one reads spans back out of the SDK; this one puts them in — it drives a
+	// real collector with otel/collector.yaml to check what the five
+	// `metric.code` streams come out as, and the only way to ask a collector
+	// anything is to send it OTLP. No indirection avoids that either.
+	//
+	// It cannot go through src/platform/telemetry, though that would be the
+	// tidier-looking answer. Init batches, so every span would arrive in one
+	// request as one ResourceSpans — and the defect this package caught only
+	// appears across SEVERAL requests. A harness built on the batcher would
+	// have passed against the broken config.
+	//
+	// Not a _test.go file, and the entry is the file rather than the package:
+	// tests/otelpipeline is a harness two tests import, and a prefix here would
+	// let anything added beside it link the SDK unnoticed.
+	filepath.Join("tests", "otelpipeline", "collector.go"),
 }
 
 func mayImportOtel(path string) bool {
