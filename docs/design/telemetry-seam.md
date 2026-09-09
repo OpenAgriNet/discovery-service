@@ -537,7 +537,7 @@ than the allow-list it replaces:
 ```
 
 There are **8 exported constructors and 4 production call sites across 3 files**
-(`request_logger.go:136`, `response_writer.go:133-134`, `request_id.go:47`), so
+(`request_logger.go:136`, `response_writer.go`'s `logNack`, `request_id.go:47`), so
 folding them onto the registry is cheap. And three of the eight —
 `TransactionID`, `MessageID`, `Action` — have **no production caller at all**
 today; they are called only from tests. The projection would be their first real
