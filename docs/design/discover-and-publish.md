@@ -284,7 +284,7 @@ src/platform/                       knows nothing of publish or discover
   crypto/signature/                 deferred, but built
   validation/  spec_index, schema_validator(L1), envelope_rules(C6),
                schema_source, schema_cache, extended_validator(L2)
-  telemetry/   doc, provider, identity, span, metrics, testsupport
+  telemetry/   provider, traces, metrics, testsupport — one file per signal
                fact/ — the attribute registry;  redact.go (23f)
   middlewares/ recover, request_logger, envelope, signature,
                ratelimit, schema_validator, trace

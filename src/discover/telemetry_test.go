@@ -19,7 +19,7 @@ import (
 // A23 keeps the OTel SDK out of this package entirely, so a test here that
 // wanted a span would have to build a provider it is forbidden to import; the
 // projection from record to span is pinned once, in
-// telemetry/span_test.go, and pinning it again per controller would be
+// telemetry/traces_test.go, and pinning it again per controller would be
 // three more copies of the same assertion to keep true.
 
 // recorded serves one discover request and gives back the facts it produced.

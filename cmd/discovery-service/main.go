@@ -59,7 +59,7 @@ func run(ctx context.Context, out io.Writer) error {
 // string for a binary to identify itself.
 //
 // That preference is repo-wide and has exactly one exception, which is not this
-// line: src/platform/telemetry/identity.go's version IS injected, with a single
+// line: src/platform/telemetry/traces.go's version IS injected, with a single
 // -X. Why, and what the release image's stamp does not carry:
 // docs/design/opentelemetry.md, "Build identity". Do not restate the reasoning
 // here — it was wrong at four sites until it was measured on 2026-09-09.

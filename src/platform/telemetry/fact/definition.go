@@ -13,13 +13,14 @@
 //	build saying which one it could not reach.
 //
 // This package emits nothing. It is a table and its guards; the projections that
-// read it live beside the signal each one writes — span.go in
+// read it live beside the signal each one writes — traces.go in
 // src/platform/telemetry, fields.go in src/platform/logger — so that logger
 // stays OpenTelemetry-free and a controller naming a key links no exporter.
 //
 // The files: definition.go is what a fact is and the rules a row must satisfy,
 // registry.go the table of them, record.go what one request observed, and
-// instrument.go the metric instruments with the rules an instrument must satisfy.
+// instruments.go the metric instruments with the rules an instrument must
+// satisfy.
 package fact
 
 import (
@@ -328,7 +329,7 @@ func Validate(def Definition) []string {
 type reporter func(format string, args ...any)
 
 // newProblems returns a reporter and the accumulated list, so the caller keeps
-// one list in one order. ValidateInstrument in instrument.go uses it too.
+// one list in one order. ValidateInstrument in instruments.go uses it too.
 func newProblems() (reporter, func() []string) {
 	var problems []string
 	return func(format string, args ...any) {

@@ -13,7 +13,7 @@ import (
 // Against the record rather than an exported span, for the reason
 // src/discover/telemetry_test.go gives at length: A23 keeps the OTel SDK out of
 // this package, and the record-to-span projection is pinned once in
-// telemetry/span_test.go.
+// telemetry/traces_test.go.
 
 // recorded serves one publish request and gives back the facts it produced. The
 // wrapper stands in for Trace, which cannot be mounted here because it needs a

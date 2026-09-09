@@ -514,7 +514,7 @@ func TestSpanAttributesAreNotRepeatedOnEvents(t *testing.T) {
 // TestEveryEventKeyComesFromTheRegistry is the seam property for the event half.
 //
 // Asserted the same way as its span counterpart: the projection may emit no key
-// the table does not spell. A literal "result.empty" in span.go would
+// the table does not spell. A literal "result.empty" in traces.go would
 // pass every other test here and stop following a rename in registry.go.
 func TestEveryEventKeyComesFromTheRegistry(t *testing.T) {
 	spelled := make(map[string]bool)

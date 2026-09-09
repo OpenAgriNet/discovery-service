@@ -83,7 +83,7 @@ var otelOnly = []string{
 }
 
 // factIsNotTheSDK is the one exception to otelOnly, and it is a subpath rather
-// than a package list because fact/ will grow files (instrument.go in Task 25)
+// than a package list because fact/ will grow files (instruments.go in Task 25)
 // and each one would otherwise need adding here.
 var factIsNotTheSDK = []string{
 	modulePath + "/src/platform/telemetry/fact",

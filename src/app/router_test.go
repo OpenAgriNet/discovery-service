@@ -261,7 +261,7 @@ func eventNames(span telemetry.Span) []string {
 // TestTheEventsOfOneRequestLandOnOneSpanInOrder — 23d end to end.
 //
 // Every other test of the events works on one layer: the projection is pinned
-// in telemetry/span_test.go, the timestamping in middlewares, and each
+// in telemetry/traces_test.go, the timestamping in middlewares, and each
 // call site against its own record. None of them can show that the three
 // point-in-time facts of a discover — written by the controller, by the service
 // below it and by the controller again — reach the SAME span, in the order they

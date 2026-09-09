@@ -30,7 +30,7 @@ import (
 // Postgres truncates this at 63 bytes, so a long one would be silently cut. It
 // matches telemetry's service.name deliberately and is duplicated rather than
 // shared, because the import guard puts that constant in a package this one may
-// not import — see telemetry/identity.go's serviceName.
+// not import — see telemetry/traces.go's serviceName.
 //
 // Kept beside NewPool rather than in a constants file so the one line that sets
 // it and the one test that pins it read the same declaration.

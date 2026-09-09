@@ -93,17 +93,17 @@ first person who has not read it:
 
 ```
 src/platform/telemetry/
-  doc.go                   the package doc, the file map, and why fact/ is split
   fact/                    context, fmt, iter, slices, strings, sync, time. NO SDK.
     definition.go          Key, Signal, Kind, Cardinality, Layer, Event, Alias,
                            Definition, and Validate — the rules a row must satisfy
     registry.go            var registry [numKeys]Definition   ← THE ONE TABLE
     record.go              Record, New, From, Observe{String,Int64,Float64,Bool,Strings}
-    instrument.go          var instruments [numInstruments]Instrument   (Task 25)
-  provider.go              Init, Provider, ScopeName, ScopeVersion, the two OTLP
+    instruments.go         var instruments [numInstruments]Instrument   (Task 25)
+  provider.go              the package doc and the file map, why fact/ is split,
+                           Init, Provider, ScopeName, ScopeVersion, the two OTLP
                            exporters, and the W3C trace context propagator
-  identity.go              Identity, the Resource, and the build stamp on it    (23a)
-  span.go                  span attributes, events, span_uuid    (23a/23c/23d)
+  traces.go                Identity, the Resource and the build stamp on it (23a),
+                           span attributes, events, span_uuid    (23a/23c/23d)
   metrics.go               pool-stats instruments and label sets    (Task 25)
   redact.go                the facilitator deny-list        (23f)
 src/platform/logger/
@@ -497,19 +497,19 @@ not grow monotonically.
 
 ```
 --- FAIL: TestEveryInstrumentLabelIsALabel
-    instrument_test.go:33: instrument "oan_discover_requests" names
+    instruments_test.go:33: instrument "oan_discover_requests" names
         fact.BecknMessageID as a label, but that Definition is Cardinality:
         Unbounded — one message id per request, so this instrument mints a time
         series per request.
-    instrument_test.go:41: instrument "oan_publish_resources" names
+    instruments_test.go:41: instrument "oan_publish_resources" names
         fact.PublishBppIDs, whose Signals omit Label: it is declared span-and-log
         only. A key reaching a metric label without the Label bit has bypassed
         the cardinality review that bit exists for.
-    instrument_test.go:52: instrument "oan_discover_duration" has 4 labels whose
+    instruments_test.go:52: instrument "oan_discover_duration" has 4 labels whose
         Values sets multiply to 800 series. Ceiling is 200. Every label is
         honestly Bounded and no single Definition is wrong — the accident is
         multiplicative, which is why it is checked here and not there.
-    instrument_test.go:60: fact.ResultEmpty carries the Label bit and no
+    instruments_test.go:60: fact.ResultEmpty carries the Label bit and no
         instrument consumes it. Dead declaration.
 ```
 
