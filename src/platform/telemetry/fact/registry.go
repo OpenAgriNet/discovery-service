@@ -98,7 +98,7 @@ const (
 // The closed value sets, each cited to the declaration it mirrors rather than
 // retyped from the design document.
 var (
-	// src/platform/errors/beckn_error.go:21-25.
+	// src/platform/errors/beckn_error.go's Type* constants.
 	errorTypes = []string{"CONTEXT", "CORE", "DOMAIN", "POLICY", "SYSTEM"}
 	// src/domain/query.go:192-196.
 	retrievalModes = []string{"lexical", "fuzzy", "semantic", "spatial", "jsonpath"}

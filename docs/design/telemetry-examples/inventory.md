@@ -90,7 +90,7 @@ Event names use **underscores**: `request_info`, `retrieval_info`,
 `response_info`. `error` is bare.
 
 **Error taxonomy** — `errors.TypeOf` splits on the code prefix
-(`beckn_error.go:41-54`): `CTX_`→`CONTEXT`, `AUT_`→`CORE`,
+(`beckn_error.go`'s `TypeOf`): `CTX_`→`CONTEXT`, `AUT_`→`CORE`,
 `SCH_`/`BIZ_`/`DOM_`→`DOMAIN`, `POL_`→`POLICY`, else `SYSTEM`. The event's `type`
 must match the `X-Beckn-Error-Type` header byte for byte; 23d asserts it.
 

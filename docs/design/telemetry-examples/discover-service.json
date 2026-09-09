@@ -198,7 +198,7 @@
       "$watchFor": [
         "The `error` event keys are UNPREFIXED — type / code / msg / path (opentelemetry.md:740-744). The SPAN-level attribute is error_type. Both spellings are deliberate and 23d pins them.",
         "error_type on the span AND type on the event, so a facilitator can filter a span set without unpacking events. Same value, one source: the fault logNack already holds, so span and log cannot disagree.",
-        "`type` is derived, not chosen: errors.TypeOf splits on the code prefix — CTX→CONTEXT, AUT→CORE, SCH/BIZ/DOM→DOMAIN, POL→POLICY, anything else→SYSTEM (beckn_error.go:41-54).",
+        "`type` is derived, not chosen: errors.TypeOf splits on the code prefix — CTX→CONTEXT, AUT→CORE, SCH/BIZ/DOM→DOMAIN, POL→POLICY, anything else→SYSTEM (beckn_error.go's TypeOf).",
         "The event's `type` must match the X-Beckn-Error-Type response header byte for byte. 23d asserts it."
       ]
     },
@@ -422,7 +422,7 @@
         ]
       },
       "$watchFor": [
-        "TypePolicy normally maps to 403, but CodePolicyNPCapacityExceeded is special-cased to 413 ahead of the type switch (beckn_error.go:88-90). So error_type POLICY with a 413 is correct and expected; POLICY with a 403 is a different fault.",
+        "TypePolicy normally maps to 403, but CodePolicyNPCapacityExceeded is special-cased to 413 ahead of the type switch (beckn_error.go's Status). So error_type POLICY with a 413 is correct and expected; POLICY with a 403 is a different fault.",
         "The spec pairs this code with 429 for an ENGAGEMENT capacity limit. This service has no engagement lifecycle, so the code is unambiguous here — but a deployment that grows one must revisit the mapping rather than add a second meaning (C14). A dashboard reading POL_NP_CAPACITY_EXCEEDED as 'too many requests' would be wrong today and right later, which is worse than either."
       ]
     },
