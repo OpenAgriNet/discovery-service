@@ -13,7 +13,7 @@ code invented locally will not match the one a facilitator later publishes, and
 a stream of unrecognised codes is worse than no stream. This document is the
 input to the conversation, not permission to skip it.
 
-`discover-and-publish.md` remains the binding plan. Where it and this disagree,
+`implementation-plan.md` remains the binding plan. Where it and this disagree,
 it wins.
 
 ---
@@ -304,7 +304,7 @@ refers to the plan's "open question 7", which is a different sequence.
 
 4. **What are granularity and frequency, per code?** Task 24 must run one query
    per code *on the registry's stated* granularity and frequency
-   (`discover-and-publish.md:5162-5166`). We propose a 1-minute window shipped
+   (`implementation-plan.md` Task 23f). We propose a 1-minute window shipped
    every 60s uniformly, which is a guess and is stated as one. Levels such as
    `publish_api_catalog_age_seconds` do not have a window at all.
 

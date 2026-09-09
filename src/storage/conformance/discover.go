@@ -70,7 +70,7 @@ var lexical = []domain.Capability{domain.CapabilityLexical}
 //
 // Inside the document rather than on the ResourcePatch because ResourcePatch
 // deliberately has no such fields: search text and the schema pair are `derive`
-// output (A8, discover-and-publish.md:133).
+// output (A8, implementation-plan.md).
 func searchable(id, name, text, schemaContext, schemaType string) domain.ResourcePatch {
 	document, err := json.Marshal(map[string]any{
 		"id": id,
@@ -172,7 +172,8 @@ var (
 
 // pageLimit is the limit every case searches with. Eight rather than a larger
 // round number because a page past MaxCandidatesPerMode is refused outright
-// rather than answered empty (discover-and-publish.md:2340), so a fixture asking
+// rather than answered empty (implementation-plan.md
+// §Discover — How It Works), so a fixture asking
 // for more would fail as a fault rather than as a disagreement.
 const pageLimit = 8
 
@@ -337,7 +338,7 @@ func theGateHidesWhatIsNotLive() Case {
 }
 
 // The case that separates a correct daily window from a BETWEEN
-// (discover-and-publish.md:1101, :1322).
+// (implementation-plan.md §Data Model, the SQL functions)..
 //
 // now+2min to now+1min WRAPS: open for all but one minute of the day, and it
 // contains this instant. The forward twin, now+1min to now+2min, is the control
@@ -406,7 +407,7 @@ func schemaFilteringComparesContextAndTypeAsAPair() Case {
 // Lexical retrieval ORs its terms: "wheat seeds for sale" must not match
 // nothing because no listing carries all four words. A backend that ANDed would
 // return an empty page for every multi-word intent
-// (discover-and-publish.md:1078-1095).
+// (implementation-plan.md §Data Model, the SQL functions)..
 func lexicalMatchesAnyTermRatherThanAllOfThem() Case {
 	return Case{
 		Name: "a multi-word query matches a resource carrying any one of its terms",

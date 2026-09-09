@@ -1,7 +1,7 @@
 # Implementation Prompts — Discover & Publish
 
 Copy-paste prompts for driving a fresh Claude Code session/agent through
-`docs/design/discover-and-publish.md`, one task at a time. The template below
+`docs/design/implementation-plan.md`, one task at a time. The template below
 is the same for every task — only the task number/name changes.
 
 ## How to use this
@@ -65,7 +65,7 @@ network collector joins on those spellings and orphans anything else. See `opent
 ## Per-task prompt
 
 ```
-Implement Task {N} — {TASK_NAME} from docs/design/discover-and-publish.md,
+Implement Task {N} — {TASK_NAME} from docs/design/implementation-plan.md,
 and only Task {N}.
 
 Rules:
@@ -85,7 +85,7 @@ Rules:
   Conflicts, Amendments, and Open Items first — most things are already
   decided there), stop and ask me rather than guessing.
 - Before you say you're done, self-review: re-read this task's own section of
-  docs/design/discover-and-publish.md side-by-side with your diff. Check every
+  docs/design/implementation-plan.md side-by-side with your diff. Check every
   file, type, function signature, and behavior it names is actually there,
   under the name it uses, and that nothing you wrote drifted from it or from
   the Global Constraints table. Include this as a short checklist in your
@@ -112,7 +112,7 @@ in, and it is worth keeping only because it saves the paste.
 
 ```
 Implement Task 23a — Telemetry foundation and the Resource from
-docs/design/discover-and-publish.md, and only 23a.
+docs/design/implementation-plan.md, and only 23a.
 
 Rules:
 - Follow the task's own steps literally, in TDD order (failing test first, run

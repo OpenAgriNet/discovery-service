@@ -66,7 +66,7 @@ declared fails that bar more completely than any of the cases the rule was
 written to catch, and a promise table listing one is a table a reader cannot
 check against the tree.
 
-`Keyring` is designed, in Task 6 of `docs/design/discover-and-publish.md`, and
+`Keyring` is designed, in Task 6 of `docs/design/implementation-plan.md`, and
 that task is **parked**: nothing below its heading is implemented, and it is
 kept so Phase 2 restarts from a written design rather than from scratch. What
 holds the line in the meantime is `validateAuth` in `src/platform/config`, which

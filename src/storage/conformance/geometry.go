@@ -28,7 +28,7 @@ const providerGeoSource = `$['catalogs'][*]['provider']['availableAt'][%d]['geo'
 //
 // Owners is empty because a catalog's provider location is catalog-level —
 // stored once with a NULL resource id and shared (A15,
-// discover-and-publish.md:140). The fixtures needing an offer's location give
+// implementation-plan.md). The fixtures needing an offer's location give
 // Owners the ids it covers.
 func PointGeometryAt(index int, point domain.GeoPoint) domain.Geometry {
 	return domain.Geometry{

@@ -15,7 +15,7 @@ measurement and what it means.
   uber/h3-go v4 · kin-openapi · zap · testify · testcontainers-go.
 
 The design is specified in
-[`docs/design/discover-and-publish.md`](docs/design/discover-and-publish.md),
+[`docs/design/implementation-plan.md`](docs/design/implementation-plan.md),
 with the span shape Task 23 must emit in
 [`docs/design/opentelemetry.md`](docs/design/opentelemetry.md) and the registry
 schema in [`docs/registry.md`](docs/registry.md); the

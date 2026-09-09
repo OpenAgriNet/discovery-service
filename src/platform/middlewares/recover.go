@@ -13,7 +13,7 @@ import (
 )
 
 // HeaderChain records which links of the chain ran, in the order they ran
-// (discover-and-publish.md:3693). Recover is the only link that stamps it:
+// (implementation-plan.md Task 8). Recover is the only link that stamps it:
 // every other middleware is placed by a side effect it already has, and a
 // marker for one of those would be a second thing to keep true.
 const HeaderChain = "X-Beckn-Chain"
@@ -85,7 +85,7 @@ func answer(w http.ResponseWriter, r *http.Request, cfg config.Errors) {
 
 // abort gives up on a response that has already partly gone, by re-panicking
 // with http.ErrAbortHandler: net/http drops the connection, which is the honest
-// answer once bytes are on the wire (A11, discover-and-publish.md:3663).
+// answer once bytes are on the wire (A11, implementation-plan.md Task 8).
 //
 // The one path that logs here rather than through WriteNack, and it is the only
 // account of the fault rather than a second one — the writer that would have

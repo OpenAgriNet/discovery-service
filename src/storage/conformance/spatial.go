@@ -35,8 +35,8 @@ var (
 //
 // The negative rows carry the weight, and they are written out ONE PER OPERATOR
 // on purpose: a predicate phrased over `cells_full` passes all of them
-// vacuously, since a Point's full set is empty (discover-and-publish.md:2504,
-// :2519). Both backends would then be wrong in the same direction and agreeing,
+// vacuously, since a Point's full set is empty (implementation-plan.md
+// §Discover — How It Works, the spatial predicate). Both backends would then be wrong in the same direction and agreeing,
 // which is the one failure a conformance suite cannot catch by construction.
 func SpatialCases() []SpatialCase {
 	inside := PolygonGeometryAt(0, fixtureCenter, 0.05)
@@ -58,7 +58,7 @@ func SpatialCases() []SpatialCase {
 		{"a Point 290 km away is not within 5 km", far, here, domain.OpDWithin, 5000, false},
 	}
 
-	// Refused, not approximated (A10, discover-and-publish.md:211), and asserted
+	// Refused, not approximated (A10, implementation-plan.md §Out of Scope), and asserted
 	// as ordinary rows so a backend that quietly starts answering one fails here
 	// rather than in production.
 	for _, op := range []domain.SpatialOp{domain.OpTouches, domain.OpCrosses} {

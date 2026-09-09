@@ -31,7 +31,7 @@ type bucket struct {
 // says: until a signature is verified that field is a string the caller chose,
 // so keying on it would let any caller exhaust a named third party's bucket by
 // claiming their id. The departure and the task that ends it are
-// discover-and-publish.md:3675.
+// implementation-plan.md Task 8.
 type limiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket

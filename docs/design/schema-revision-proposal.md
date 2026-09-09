@@ -1,7 +1,7 @@
 # Schema revision proposal — measured, not asserted
 
 Status: **RESOLVED 2026-08-27.** The decisions were taken and folded into
-`discover-and-publish.md` as **A18** (the `filter_doc` composite) and **A19**
+`implementation-plan.md` as **A18** (the `filter_doc` composite) and **A19**
 (the count query removed); the geometry measurement became a note under
 the `resource_geometries` schema. That plan is the spec — this file is kept only for the EVIDENCE,
 which does not fit in an amendment row and which the next person to question one

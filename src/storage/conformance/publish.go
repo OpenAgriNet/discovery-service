@@ -330,7 +330,7 @@ func theUpsertReturnsTheStoredRowOnConflict() Case {
 	}
 }
 
-// A8 (discover-and-publish.md:133) at the column, not at the function: the
+// A8 (implementation-plan.md) at the column, not at the function: the
 // domain test proves MergePatch, this proves the merged document is what the
 // column ends up holding.
 func fieldLevelMergeSurvivesTheRoundTrip() Case {
@@ -579,7 +579,8 @@ func republishingReplacesAGeometry() Case {
 }
 
 // Three provider locations across forty resources are three rows, not 120 —
-// the locations belong to the CATALOG (discover-and-publish.md:1924-1926).
+// the locations belong to the CATALOG (implementation-plan.md
+// §Publish — How It Works).
 func providerLocationsAreStoredOnceForTheCatalog() Case {
 	locations := PointGeometries(
 		domain.GeoPoint{Lat: 12.97, Lon: 77.64},

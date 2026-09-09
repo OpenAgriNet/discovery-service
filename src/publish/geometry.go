@@ -15,12 +15,12 @@ import (
 
 // MaxCatalogWalkDepth bounds how far into a published document the geometry walk
 // descends. A bound, not a hope: the walk is recursive over publisher-supplied
-// JSON (discover-and-publish.md:3046).
+// JSON (implementation-plan.md §Geospatial Design).
 const MaxCatalogWalkDepth = 32
 
 // MaxGeometriesPerCatalog bounds how many shapes one catalog may contribute to
 // the index. The geometry over it is reported as a partial fault, never dropped
-// in silence (discover-and-publish.md:3047).
+// in silence (implementation-plan.md §Geospatial Design).
 const MaxGeometriesPerCatalog = 256
 
 // geometryTypes is the RFC 7946 set, all seven of which are indexed.
@@ -40,7 +40,7 @@ var geometryTypes = map[string]bool{
 // The MERGED catalog rather than the patch, called from derive inside the write
 // transaction: a patch that never mentioned a geo field must not erase the
 // geometries the stored document still implies. The walk recognises GeoJSON by
-// shape, not by field name (discover-and-publish.md:1968).
+// shape, not by field name (implementation-plan.md §Publish — How It Works).
 func ExtractGeometries(catalogIndex int, merged domain.Catalog) ([]domain.Geometry, []domain.Fault) {
 	walk := &catalogWalk{}
 	root := []segment{{name: "catalogs"}, {index: catalogIndex}}

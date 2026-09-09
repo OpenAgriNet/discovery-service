@@ -5,7 +5,7 @@ that turns out wrong is **superseded** by a new record, not rewritten. The
 point of the log is to answer *why does this look the way it does*, and a
 rewritten record cannot answer it.
 
-`docs/design/discover-and-publish.md` is the specification and stays the
+`docs/design/implementation-plan.md` is the specification and stays the
 binding document. These records carry the reasoning behind it: what was
 rejected, and the specific property that disqualified it.
 

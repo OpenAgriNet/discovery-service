@@ -35,7 +35,7 @@ type Context struct {
 	// The two participant identities this service reads, and the only two:
 	// `bapId`, `bapUri`, `bppId` and `bppUri` are not modelled at all, and a
 	// body carrying them is accepted and simply does not get them back (A24,
-	// discover-and-publish.md:149). `Catalog.BppID` is unaffected — it describes
+	// implementation-plan.md). `Catalog.BppID` is unaffected — it describes
 	// the provider a catalog belongs to, not who sent the message.
 	//
 	// NEITHER IS VERIFIED. The controllers build a response by SWAPPING them, so

@@ -21,7 +21,7 @@ func jsonLDKeyword(key string) bool {
 // resource: its name, the text of its descriptor, and the VALUES in its
 // attributes. Keys are stripped because they are a vocabulary, not content.
 //
-// Task 13 of discover-and-publish.md carries the rest: why the output is not
+// Task 13 of implementation-plan.md carries the rest: why the output is not
 // stored, and why a change to what this emits lands with a reindex. It must stay
 // deterministic — the result is hashed into `embedding_source_hash`, which is the
 // A5 re-embed decision.

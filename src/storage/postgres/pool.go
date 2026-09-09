@@ -46,7 +46,7 @@ func NewPool(ctx context.Context, database config.Database) (*pgxpool.Pool, erro
 	// read path has the shape `$1 IS NULL OR <indexable predicate>`, which a
 	// generic plan cannot answer from an index. The reasoning, and why the slow
 	// plan is the one a WARM connection settles into, is
-	// discover-and-publish.md:1273. A RuntimeParam, so it travels in the startup
+	// implementation-plan.md §Data Model. A RuntimeParam, so it travels in the startup
 	// packet rather than as a round trip per acquire.
 	settings.ConnConfig.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
 

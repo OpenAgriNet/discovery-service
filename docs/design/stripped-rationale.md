@@ -7,7 +7,7 @@ refused spatial operators, the daily-window wrap — and was simply a second cop
 
 What is below is the residue: reasoning that existed **only** in a comment and is
 recorded here so a later design-doc pass can place it properly. When a fact from
-here lands in `discover-and-publish.md` or an ADR, delete its section. When the
+here lands in `implementation-plan.md` or an ADR, delete its section. When the
 file is empty, delete the file.
 
 Each entry names the symbol it came from, so `git log -S` finds the original

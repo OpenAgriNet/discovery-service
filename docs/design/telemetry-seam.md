@@ -15,7 +15,7 @@ test fails, and the gap is discovered by whoever queries for the field that is
 missing. So the property has to be structural — the projections must be unable
 to name a key, and every call site must be unable to spell one.
 
-Binding: `discover-and-publish.md` still wins on task shape and acceptance
+Binding: `implementation-plan.md` still wins on task shape and acceptance
 criteria, and `opentelemetry.md` still wins on what each attribute means. This
 document is subordinate to both and governs only the code layout.
 

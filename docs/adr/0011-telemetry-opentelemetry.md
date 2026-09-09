@@ -45,7 +45,7 @@ this service (an add-on, e.g. Obsrv, owns them).
 Hand-rolling the middleware means roughly thirty lines this repository owns and
 tests, in exchange for control of the instrumentation scope. Emitting no network
 metrics means the participant's mandatory METRIC obligation is discharged
-elsewhere, and `docs/design/discover-and-publish.md` Task 24 is where that is
+elsewhere, and `docs/design/implementation-plan.md` Task 24 is where that is
 tracked so it is not mistaken for solved. Task 25 is the operator set that stays
 here.
 

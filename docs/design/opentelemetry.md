@@ -9,7 +9,7 @@ the `beckn.*` attributes and the four events are ours. Monitoring stack is
 ClickStack (ClickHouse + HyperDX + bundled OTel collector), which ingests OTLP
 natively.
 
-**Binding on the shape of a span.** Where this and `discover-and-publish.md`
+**Binding on the shape of a span.** Where this and `implementation-plan.md`
 disagree about a span, this wins; about anything else, the plan does.
 
 **Companion.** This document is the *what*. `telemetry-seam.md` is the *where the

@@ -9,7 +9,7 @@ Supersedes [ADR-0001](0001-router-chi-v5.md).
 
 ADR-0001 chose chi v5. The service shipped on `net/http.ServeMux` and chi was
 never added to `go.mod` — so for the whole of Phase 1 the accepted record named
-a dependency the binary does not have, and `docs/design/discover-and-publish.md`
+a dependency the binary does not have, and `docs/design/implementation-plan.md`
 repeated it in its Tech Stack line and in D1.
 
 This record is written after the fact. That is worth saying plainly rather than

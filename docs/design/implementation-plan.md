@@ -297,7 +297,7 @@ tests/   acceptance/  dbtest/  testdata/
   architecture/boundary_test.go     import graph — the TRD §5 swap boundary
 docs/
   adr/                               ADR-0001–0015, template, README
-  design/discover-and-publish.md    this document
+  design/implementation-plan.md    this document
 Makefile  Dockerfile  docker-compose.yml  sqlc.yaml  .golangci.yml
 ```
 

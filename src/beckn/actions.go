@@ -116,7 +116,8 @@ type CatalogProcessingResult struct {
 
 // The three verdicts the spec's status enum admits. StatusPartial is for the
 // catalog that landed with a geometry dropped, and is never reported as
-// StatusAccepted with a non-empty Errors (discover-and-publish.md:1567-1573).
+// StatusAccepted with a non-empty Errors (implementation-plan.md
+// §Publish — How It Works).
 const (
 	StatusAccepted = "ACCEPTED"
 	StatusRejected = "REJECTED"

@@ -508,7 +508,7 @@ Named here so it is not mistaken for a defect:
 
 - [`quickstart.md`](quickstart.md) — run it locally in about five minutes
 - [`telemetry.md`](telemetry.md) — traces, metrics and logs
-- [`design/discover-and-publish.md`](design/discover-and-publish.md) — the
+- [`design/implementation-plan.md`](design/implementation-plan.md) — the
   binding specification: the DDL, the wire contracts, every acceptance scenario
   and the reasoning behind each schema decision
 - [`adr/`](adr/) — why the significant technical choices went the way they did

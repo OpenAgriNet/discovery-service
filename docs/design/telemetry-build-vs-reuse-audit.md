@@ -67,9 +67,9 @@ Five locations state instead that the spec **requires** `scope.name` and
 | File | Line | |
 |---|---|---|
 | `docs/adr/0011-telemetry-opentelemetry.md` | 65-66 | **corrected** |
-| `docs/design/discover-and-publish.md` (A23) | 148 | **corrected** |
-| `docs/design/discover-and-publish.md` | 5006-5007 | **corrected** |
-| `docs/design/discover-and-publish.md` | 5049 | **not a misquote** — "ours and not a dependency's" is what the test pins and is true |
+| `docs/design/implementation-plan.md` (A23) | 148 | **corrected** |
+| `docs/design/implementation-plan.md` | 5006-5007 | **corrected** |
+| `docs/design/implementation-plan.md` | 5049 | **not a misquote** — "ours and not a dependency's" is what the test pins and is true |
 | `src/platform/middlewares/trace.go` | 24-25 | **corrected** |
 | `docs/design/implementation-prompts.md` | 186 | **corrected** |
 | `docs/design/opentelemetry.md` | 1282 | **missed by this audit**, found on 2026-09-09 while applying it — a verbatim quote of `trace.go`'s old comment, kept as a quote with the error marked, because a quote silently improved stops being evidence |
@@ -139,7 +139,7 @@ when 23f unblocks is the same work in reverse, and 23f would be the commit that
 knows what the deny-list actually needs — which today nobody does.
 
 **Applied on 2026-09-09.** The column is gone from `fact.go`, from all 54 rows,
-from the completeness test and from the golden file. `discover-and-publish.md`'s
+from the completeness test and from the golden file. `implementation-plan.md`'s
 Deferred table carries the entry that puts it back with 23f, and
 `telemetry-seam.md` §3 keeps the type declaration and its rationale verbatim so
 23f restores the design rather than re-deriving it.

@@ -19,7 +19,7 @@ const HeaderRequestID = "X-Request-Id"
 //
 // First in the chain, because until it has run logger.FromContext returns the
 // no-op logger and a request refused by Envelope is a request with no record
-// (discover-and-publish.md:3637).
+// (implementation-plan.md Task 8).
 //
 // It MINTS rather than trusts: an inbound X-Request-Id is a value an
 // unauthenticated caller chose, and honouring it lets one caller collide two

@@ -84,7 +84,7 @@ func MapCatalog(
 // arrays that own their own rows (A17), with `isActive` resolved.
 //
 // Resolving `isActive` here is the one place A9 and RFC 7396 disagree and
-// something has to settle it — discover-and-publish.md:4807-4814 carries the
+// something has to settle it — implementation-plan.md Task 21b carries the
 // argument. Writing the resolved value in before the merge runs means the merge
 // sees a patch that always mentions it, and it keeps the document and the
 // `active` column agreeing by construction: both are this same bool.

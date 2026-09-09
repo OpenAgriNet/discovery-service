@@ -6,7 +6,7 @@ package beckn
 //
 // A named type rather than a bare string because `Error.code` is declared
 // `type: string`, so L1 accepts an invented code and it would ship green. The
-// rule is asymmetric (discover-and-publish.md:3460-3472), so this type
+// rule is asymmetric (implementation-plan.md Task 5), so this type
 // constrains what this service MINTS while `Error.Code` stays assignable from a
 // relayed string — how a downstream `DOM_` code passes through a chain
 // untouched.
@@ -82,7 +82,7 @@ const (
 	// BIZ_ — the request is well-formed and asks for something the catalog
 	// cannot support. CodeBusinessItemNotFound answers an offer whose
 	// `resourceIds` names a resource the merged catalog does not hold
-	// (discover-and-publish.md:1192). An item is what the spec calls a resource,
+	// (implementation-plan.md §Data Model). An item is what the spec calls a resource,
 	// so this member says exactly what happened rather than merely not lying.
 	CodeBusinessItemNotFound ErrorCode = "BIZ_ITEM_NOT_FOUND"
 
