@@ -360,7 +360,8 @@ processors:
           - set(datapoint.attributes["metric.code"], metric.name)
           - set(datapoint.attributes["metric_uuid"], UUID())
           # A STRING of unix nanos, not an Int. That is what onix emits and what
-          # our own spans carry — see telemetry-examples/inventory.md:55. An Int
+          # our own spans carry — see `observedTimeUnixNano` in
+          # telemetry-examples/inventory.md. An Int
           # here is a divergence a consumer has to special-case.
           - set(datapoint.attributes["observedTimeUnixNano"], String(UnixNano(Now())))
           - set(datapoint.attributes["metric.category"], "Discovery")
