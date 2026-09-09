@@ -14,14 +14,17 @@ measurement and what it means.
   pgvector 0.8 ·
   uber/h3-go v4 · kin-openapi · zap · testify · testcontainers-go.
 
-The design is specified in
-[`docs/design/implementation-plan.md`](docs/design/implementation-plan.md),
-with the span shape Task 23 must emit in
-[`docs/design/opentelemetry.md`](docs/design/opentelemetry.md) and the registry
-schema in [`docs/registry.md`](docs/registry.md); the
-decisions behind them are recorded in [`docs/adr/`](docs/adr/README.md). Read
-the design document before changing anything here — the constraints it states
-are binding, not advisory.
+**[`docs/`](docs/README.md) is the way in.** Four short documents — a
+[quickstart](docs/quickstart.md), [how publish and
+discover work](docs/publish-and-discover.md), the
+[telemetry](docs/telemetry.md) and the [registry](docs/registry.md) — plus the
+[API artefacts](docs/api/README.md) and the sixteen
+[ADRs](docs/adr/README.md).
+
+The specification is
+[`docs/design/implementation-plan.md`](docs/design/implementation-plan.md), and
+it is binding rather than advisory. Read it before changing anything here; where
+it and one of the four documents above disagree, it wins.
 
 ## Requirements
 
