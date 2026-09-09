@@ -204,9 +204,21 @@ type Validation struct {
 	EnableL1Schema bool `env:"VALIDATION_ENABLE_L1_SCHEMA" envDefault:"true"`
 
 	// beckn.yaml is fetched at boot rather than baked into the image, so a
-	// deployment names the document it validates against. No default: which spec
-	// URL a network trusts is not a repository-wide decision.
-	SpecURL string `env:"VALIDATION_SPEC_URL"`
+	// deployment names the document it validates against.
+	//
+	// The default is a TAG, and that is the whole reason there can be one. This
+	// field carried no default until 2026-09-09, on the argument that which spec
+	// a network trusts is not a repository-wide decision — true of a branch,
+	// which would let an upstream merge change the validator under a running
+	// deployment without a deploy. refs/tags/core-v2.0.0-lts cannot move, so the
+	// default names one immutable document and a network that trusts a different
+	// one still overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical
+	// to it, so the fetch path and an air-gapped mount agree.
+	//
+	// The cost is that boot now makes a network call before falling back to
+	// SpecCachePath. LoadSpecIndex already warns loudly and falls back, so an
+	// offline boot is slower and noisier, not broken.
+	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml"`
 
 	// Where the fetched spec is cached, and what an air-gapped deployment
 	// mounts in place of the fetch.

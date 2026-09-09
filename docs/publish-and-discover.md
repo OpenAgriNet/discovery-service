@@ -467,7 +467,7 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 | `EMBEDDING_MODEL` / `_ENDPOINT` / `_DIMENSIONS` | `nomic-embed-text` / `http://localhost:11434` / `768` | the Ollama seam |
 | `RATE_LIMIT_RPS` / `_BURST` | `20` / `40` | per-client limit; `burst >= rps` is enforced |
 | `VALIDATION_ENABLE_L1_SCHEMA` | `true` | Beckn schema validation of the payload |
-| `VALIDATION_SPEC_URL` | — | where to fetch the spec if it is not cached; use the `core-v2.0.0-lts` raw URL, not `main` |
+| `VALIDATION_SPEC_URL` | the `core-v2.0.0-lts` raw URL | where to fetch the spec; a tag, so it cannot move under a running deployment |
 | `VALIDATION_SPEC_CACHE_PATH` | `.cache/beckn/beckn.yaml` | where the spec is read from |
 | `AUTH_ENABLE_SIGNATURE_VERIFICATION` | `false` | `true` refuses the boot — see below |
 | `EXT_ALLOW_NETWORK_FETCH` | `false` | may a URL from a *request body* be fetched |

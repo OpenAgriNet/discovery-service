@@ -110,7 +110,9 @@ overrides; that file is gitignored. **Secrets — `DATABASE_URL` above all —
 belong in neither YAML file.**
 
 The Beckn specification is fetched at boot from `VALIDATION_SPEC_URL` and
-cached under `.cache/beckn/`. It is deliberately not committed and not baked
+cached under `.cache/beckn/`. It defaults to the `core-v2.0.0-lts` tag of
+`beckn/protocol-specifications-v2` — a tag rather than a branch, so an upstream
+merge cannot change the validator under a running deployment. It is not baked
 into the image; air-gapped deploys mount a cache file at
 `VALIDATION_SPEC_CACHE_PATH`.
 

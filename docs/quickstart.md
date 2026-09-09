@@ -3,9 +3,9 @@
 Get the service running locally, publish a catalog, and find it again. About
 five minutes, most of it the first image build.
 
-You need Docker with Compose v2. Everything else — the Go toolchain, the
-linters, the migration tool — is either pinned in the repo or already inside
-the image.
+You need Docker with Compose v2. To *try* the service that is all — the image
+carries its own Go toolchain. To *change* it you also want Go 1.25; the linters
+and the migration tool are pinned in `tools/` and built into `bin/` on demand.
 
 ## 1. Start the stack
 
@@ -16,6 +16,22 @@ make run
 That builds the image and starts PostgreSQL (with pgvector) plus the service on
 `:8080`. Migrations are compiled into the binary and applied on boot, so there
 is no separate migrate step and no sidecar.
+
+There is one `docker-compose.yml` and three profiles. The `make` targets are
+thin wrappers, and the raw commands are worth knowing because they are what you
+reach for when you want something in between:
+
+| Target | Is | Starts |
+|---|---|---|
+| `make up` | `docker compose up -d --wait` | PostgreSQL only |
+| `make run` | `docker compose --profile app up -d --build` | + the service on `:8080` |
+| `make telemetry` | `OTEL_EXPORTER=otlp docker compose --profile app --profile telemetry up -d --build` | + an OTel collector on `:8889` |
+| `make down` | `docker compose --profile app down -v` | — stops and discards volumes |
+
+`OTEL_EXPORTER` is the only environment difference between the second row and
+the third; the profile adds the collector container. Until 2026-09-09 the third
+row was a separate `docker-compose.telemetry.yml` overlay, which no longer
+exists.
 
 There is no Compose healthcheck to wait on — the runtime stage is
 `distroless/static` and has no shell to run one — so give it a few seconds and
@@ -32,7 +48,8 @@ is expected and is not a failure — see [The Beckn spec, offline](#the-beckn-sp
 > `make up` starts **PostgreSQL only**. That is the default Compose profile and
 > the day-to-day development setup: you run the binary from the host against
 > it. `make run` adds the service container via `--profile app`, which is what
-> you want when you are trying the service rather than changing it.
+> you want when you are trying the service rather than changing it. See
+> [Building and testing](#building-and-testing) for that loop.
 
 ## 2. Publish a catalog
 
@@ -174,13 +191,73 @@ what it does not.
 ## 6. Stop
 
 ```
-make down            # or telemetry-down, if you started the overlay
+make down            # or telemetry-down, if you started that profile
 ```
 
 Both discard volumes, and the `-v` matters: migrations are edited in place
 during development and golang-migrate tracks only version *numbers*, so a
 volume migrated by an older revision of the same file keeps its old columns
 forever and fails at the first write instead of at boot.
+
+## Building and testing
+
+Everything above runs the service from an image. This is the loop for changing
+it. `make help` lists every target, one line each.
+
+### Build
+
+```
+make build          # compile every package into bin/, including the binary
+make docker         # build the service image instead
+```
+
+`make build` needs Go 1.25. Nothing else needs installing: `golangci-lint`,
+`migrate` and `sqlc` are pinned in a separate `tools/go.mod` and built into
+`bin/` the first time a target wants them.
+
+### Test
+
+```
+make test           # go test -race ./... — the gate
+make test-short     # only the suites that need no container
+make lint           # vet, format check and static analysis; must be 0 issues
+```
+
+`make test` pins `EMBEDDING_PROVIDER=hashing` rather than inheriting it.
+Production defaults to `noop`, so without the pin the entire semantic path —
+query embedding, HNSW, RRF, the dimension guard — would go untested.
+
+Integration suites reach PostgreSQL through **testcontainers**, not through
+Compose, so they start and discard their own database and do not care whether
+`make up` is running. Docker has to be up; nothing else does.
+
+Coverage: `make cover` writes a profile, then `make cover-total` for the one
+number, `make cover-report` per package, or `make cover-html` for annotated
+source.
+
+### Run it from the host
+
+The development loop is the binary on the host against Compose's PostgreSQL —
+no image rebuild between edits.
+
+```
+make up             # PostgreSQL only. NOT make run: the app container
+                    # would hold :8080 and the host binary cannot bind it
+make build
+
+APP_NETWORK_ID=local-network \
+DATABASE_AUTO_MIGRATE=true \
+DATABASE_URL='postgres://discovery:discovery@localhost:5432/discovery?sslmode=disable' \
+  ./bin/discovery-service
+```
+
+Those three are all it needs. `APP_NETWORK_ID` is required and the boot refuses
+without it; `DATABASE_AUTO_MIGRATE` saves a separate `make migrate`. The Beckn
+spec is fetched on first boot and cached under `.cache/beckn/`, so this works
+from a clean checkout with no mount and no further configuration — see below.
+
+If you already have the stack up, `docker compose --profile app stop
+discovery-service` frees `:8080` and leaves PostgreSQL alone.
 
 ## Notes
 
@@ -190,20 +267,26 @@ The service loads the Beckn v2.0.0 specification before it serves and refuses
 to start without it. The check is unconditional — turning L1 validation off
 does not remove the requirement.
 
-Compose mounts `tests/testdata/beckn-v2.0.0.yaml` straight into the cache, which
-is what makes the local stack work with no registry reachable and no network at
-all. The boot logs one warning about the fetch it skipped; that warning is
-accurate and is not a failure.
-
-To exercise the fetch path instead, drop that volume line and set
+It is fetched from `VALIDATION_SPEC_URL`, which now defaults to
 
 ```
-VALIDATION_SPEC_URL=https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml
+https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml
 ```
 
-That is a **tag**, not a branch, and the mounted file is byte-identical to it —
-so the fetch path and the offline path validate against the same document.
-Pointing it at `main` instead would pin nothing.
+and cached under `VALIDATION_SPEC_CACHE_PATH` (`.cache/beckn/beckn.yaml`). That
+is why running the binary from the host needs no spec configuration at all: it
+fetches once and reads the cache afterwards.
+
+A **tag**, not a branch, which is the whole reason there can be a default. A
+branch would let an upstream merge change the validator under a running
+deployment without a deploy; `refs/tags/core-v2.0.0-lts` cannot move. A network
+that trusts a different document still overrides it.
+
+Compose additionally mounts `tests/testdata/beckn-v2.0.0.yaml` straight into
+the cache path. That file is byte-identical to the tag, so the two paths agree
+— and the mount is what lets the container stack come up with no network at
+all. If the fetch fails, the boot logs one loud warning and falls back to the
+cache; that warning is accurate and is not a failure.
 
 ### Rate limiting is effectively off locally
 
