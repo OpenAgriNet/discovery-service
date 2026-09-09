@@ -633,7 +633,7 @@ open question 1.
 implementation is wrong in a way no test would catch by accident.
 
 The chain is `RequestID → Trace → RequestLogger → Recover → …`
-(`src/app/router.go:134-141`). The status is only knowable from *inside*, which is
+(`src/app/router.go`'s `chain`). The status is only knowable from *inside*, which is
 why `RequestLogger` wraps the writer in a `responseRecorder`
 (`request_logger.go:35-47`). `Trace` sits **above** that wrapper: it holds the
 outer `http.ResponseWriter` and never observes `WriteHeader`'s int. Nor, today,

@@ -449,7 +449,7 @@ value allow-list has. Six becomes twenty becomes `t.Skip`.
 
 Worse, the list would be wrong on arrival. There are **7 distinct non-registry
 string log keys across 8 lines in 4 files** today — `path`, `code`, `reason`
-(`src/discover/service.go:319-321`), `address` (`src/app/server.go:46`),
+(`src/discover/service.go:319-321`), `address` (`src/app/server.go`'s `Run`),
 `spec_url` and `cache_path` (`src/platform/validation/spec_index.go:185,224`),
 `catalog_id` (`src/publish/service.go:127,150`) — and three are telemetry in
 disguise. `code` and `reason` duplicate `error_code` and the fault message that
@@ -656,7 +656,7 @@ never be added to.
 
 ## 7. The record, and the paths that have none
 
-Chain order (`src/app/router.go:134-141`), index: `0 RequestID · 1 Trace ·
+Chain order (`src/app/router.go`'s `chain`), index: `0 RequestID · 1 Trace ·
 2 RequestLogger · 3 Recover · 4 Envelope · 5 RateLimit · 6 SchemaValidator`.
 `apply` nests so index 0 is outermost.
 

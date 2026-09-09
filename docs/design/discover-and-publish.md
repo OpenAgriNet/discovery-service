@@ -5224,7 +5224,7 @@ Three configured ceilings exist and not one is observable:
 | Body size | `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB) | Same shape, and the weakest of the three: refusals are spanned, and no evidence exists that any caller approaches 10 MiB |
 
 An earlier draft justified this task by claiming a 429 produces no span. It does
-produce one: `Trace` is index 1 in `src/app/router.go:134-141` and both `Envelope`
+produce one: `Trace` is index 1 in `src/app/router.go`'s `chain` and both `Envelope`
 and `RateLimit` sit inside it, refusing through the `httpx.WriteNack` → `logNack`
 path that 23d projects the `error` event from. The claim was checked and it was
 wrong, and the task is smaller than it was sized to be.

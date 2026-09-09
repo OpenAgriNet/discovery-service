@@ -107,7 +107,7 @@ reversed.
    middleware above the handler and therefore produces no span, no event and no
    counter". **That is false, and it is corrected here rather than quietly
    dropped, because it was the sentence the task was sized against.** `Trace` is
-   index 1 in `src/app/router.go:134-141`; `Envelope` and `RateLimit` are inside
+   index 1 in `src/app/router.go`'s `chain`; `Envelope` and `RateLimit` are inside
    it and refuse through the one `httpx.WriteNack` → `logNack` path 23d projects
    the `error` event from. A 429 is a span with a status, an `error_type` and an
    `error` event. Only "no counter" held, and a counter restating a span fact is
