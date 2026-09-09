@@ -284,7 +284,8 @@ src/platform/                       knows nothing of publish or discover
   crypto/signature/                 deferred, but built
   validation/  spec_index, schema_validator(L1), envelope_rules(C6),
                schema_source, schema_cache, extended_validator(L2)
-  telemetry/   telemetry.go  redact.go
+  telemetry/   doc, provider, identity, span, metrics, testsupport
+               fact/ — the attribute registry;  redact.go (23f)
   middlewares/ recover, request_logger, envelope, signature,
                ratelimit, schema_validator, trace
 
@@ -4959,7 +4960,7 @@ not network transactions and emit no span.
 
 #### 23a — Telemetry foundation and the Resource
 
-**Files:** `src/platform/telemetry/telemetry.go`;
+**Files:** `src/platform/telemetry/provider.go`;
 Modify: `src/platform/config/config.go`, `src/app/container.go`, `src/app/server.go`
 
 **Produces:** `telemetry.Init(cfg)`, the Resource, the tracer provider, the OTLP
