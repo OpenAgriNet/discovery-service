@@ -111,6 +111,12 @@ IMAGE_REPOS = ghcr.io/$(OWNER)/$(IMAGE_NAME)
 # would go untested from the day semantic search was deferred.
 TEST_ENV := EMBEDDING_PROVIDER=hashing
 
+# The telemetry overlay is a second compose file rather than a profile, because
+# it changes the service container's environment and a profile can only add
+# containers. Spelled once here so the four telemetry targets cannot drift into
+# disagreeing about which files make up the stack.
+TELEMETRY_FILES := -f docker-compose.yml -f docker-compose.telemetry.yml
+
 # Coverage instruments these packages regardless of which test binary is
 # running. Without it Go instruments only the package under test, and
 # tests/acceptance and tests/dbtest are separate packages holding almost no
@@ -530,6 +536,55 @@ run:
 logs:
 	docker compose --profile app logs -f discovery-service
 
+## telemetry: the same stack plus an OTel collector, with the service exporting
+##            to it. Metrics appear at localhost:8889/metrics — including
+##            discover call count and latency, which are DERIVED from the spans
+##            by the spanmetrics connector and are instrumented nowhere in Go.
+telemetry:
+	docker compose $(TELEMETRY_FILES) --profile app up -d --build
+
+## telemetry-metrics: the derived streams, which is the point of the overlay.
+##                    Waits, because a bare scrape right after `make telemetry`
+##                    reports zeros that are not the answer — see below.
+telemetry-metrics:
+	@# TWO waits, in this order, because they are for different things and the
+	@# second cannot be skipped. A stream appears only on the connector's flush
+	@# interval AND only after a request of that shape, so for up to a minute
+	@# there is nothing at all. Then the histogram arrives carrying its true
+	@# count while `discovery_calls_total` still reads 0 for roughly another
+	@# minute — measured: three consecutive scrapes at 0, then 3/15/1 exactly
+	@# matching discovery_duration_milliseconds_count, stable thereafter.
+	@#
+	@# So waiting on the histogram alone still prints a zero counter, which is
+	@# the trap this target exists to close. But it has to come first: a zero
+	@# counter on its own is indistinguishable from an idle service, whereas a
+	@# nonzero _count PROVES traffic was seen — which is what makes the second
+	@# wait sound rather than a guess that something will turn up.
+	@printf 'waiting for the connector to flush'
+	@for i in $$(seq 1 30); do \
+		curl -fsS localhost:8889/metrics 2>/dev/null \
+			| grep -qE '^discovery_duration_milliseconds_count\{.* [1-9][0-9]*$$' && break; \
+		printf '.'; sleep 5; \
+	done
+	@printf ' traffic seen; waiting for the counter to converge'
+	@for i in $$(seq 1 30); do \
+		curl -fsS localhost:8889/metrics 2>/dev/null \
+			| grep -qE '^discovery_calls_total\{.* [1-9][0-9]*$$' && break; \
+		printf '.'; sleep 5; \
+	done
+	@printf ' ok\n'
+	@curl -fsS localhost:8889/metrics | grep -E '^discovery_|^pgxpool_' || \
+		{ echo "nothing yet — the connector emits on its flush interval, and a stream appears only after a request of that shape. Drive some: ./examples/verify.sh"; exit 1; }
+
+## telemetry-logs: the collector's view of the spans, since the local stack has
+##                 no trace backend to send them to
+telemetry-logs:
+	docker compose $(TELEMETRY_FILES) logs -f otel-collector
+
+## telemetry-down: stop the telemetry stack and discard its volumes
+telemetry-down:
+	docker compose $(TELEMETRY_FILES) --profile app down -v
+
 ## verify: publish the sample catalog and assert text, spatial and filter
 ##         retrieval against a stack already running via `make run`
 verify:
@@ -614,4 +669,5 @@ $(TRIVY):
 	sqlc-verify migrate run logs migrate-down security trivy-deps \
 	trivy-image trivy-release-gate trivy-report trivy-gate docker \
 	image-build image-push image-publish require-image-repos up down \
-	verify newman audit tools clean
+	verify newman audit tools clean telemetry telemetry-metrics \
+	telemetry-logs telemetry-down

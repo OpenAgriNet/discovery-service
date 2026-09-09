@@ -1,0 +1,231 @@
+# The local stack's OpenTelemetry collector.
+#
+# This is what makes anything this service emits visible. Until it existed the
+# whole telemetry build — 54 attribute rows across four events, two metric
+# instruments — went nowhere: `otel.exporter` defaults to `none` and there was
+# no collector in the repo, so a span was constructed and dropped.
+#
+# It also produces the two numbers most often asked for, discover call count
+# and discover latency, WITHOUT either being instrumented in Go. A span already
+# carries a start, an end, a status and `beckn.action`; the `span_metrics`
+# connector reads the trace stream and emits a counter and a histogram from
+# exactly those. That is why OP2 was struck from Task 25 rather than built —
+# see opentelemetry.md:1048-1060.
+
+receivers:
+  otlp:
+    protocols:
+      # gRPC only. The service's exporters are otlptracegrpc and
+      # otlpmetricgrpc, so an http/protobuf listener here would be a port
+      # nothing connects to and one more thing to keep working.
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+connectors:
+  # The whole low-code claim, in one block: no new instrument, no fact.Instrument
+  # row, no import in the service.
+  span_metrics:
+    # Named explicitly, and this is a pin rather than a preference. The
+    # connector's default stream names have been renamed across collector
+    # releases, so a dashboard written against the defaults breaks on an image
+    # pull. With this set the streams are `discovery_calls_total` and
+    # `discovery_duration_milliseconds` and those names are the contract.
+    #
+    # Deliberately NOT `discover_api_total_count`. That shape is a `metric.code`
+    # and belongs to the spec's METRIC signal, which this is not and cannot be:
+    # the spec permits only non-monotonic sum, and this connector emits a
+    # monotonic counter and a histogram (otel-specification.md:437). Naming a
+    # node-local operator stream as though it were a network metric code is how
+    # the two get conflated and how an unregistered code reaches a facilitator.
+    namespace: discovery
+
+    # Beyond these the connector always adds service.name, span.name, span.kind
+    # and status.code.
+    #
+    # `error_type` is therefore NOT redundant with status.code, and this is the
+    # one thing about this config worth knowing. opentelemetry.md:1053-1055 says
+    # success-versus-failure needs only `beckn.action` and "the span's own
+    # status" — that is wrong for THIS service, and measurably so. setStatus
+    # (middlewares/trace.go:202-207) moves the span status only at 5xx, on the
+    # documented reasoning that a 400 is the caller's mistake and counting it as
+    # a server error reports how often this service broke when it did not. So
+    # every 4xx refusal — the whole of C1's CONTEXT, DOMAIN, POLICY and most of
+    # CORE — arrives with status_code=STATUS_CODE_UNSET, indistinguishable from
+    # a success. Verified against a live stack: the three DOMAIN refusals in
+    # examples/verify.sh land as error_type=DOMAIN, status_code=UNSET.
+    #
+    # A dashboard must therefore compute the error rate from error_type!="none",
+    # NOT from status_code. Deriving it from status alone reports a 0% error rate
+    # on a service refusing every request it receives.
+    #
+    # EVERY dimension must name a fact.Key that already carries Bounded, because
+    # each one multiplies the series count exactly as a `Label` bit does while
+    # sitting in YAML where fact's guards cannot see it. Checked against
+    # registry.go before being written down:
+    #
+    #   beckn.action  Bounded, 2 values (discover, publish)   — on the span
+    #   error_type    Bounded, 5 values + absent on success   — on the span
+    #
+    # Series: 2 actions x 6 error states x 2 reachable status codes = 24 per
+    # stream, well under fact.MaxLabelSeries. Two rather than three because only
+    # UNSET and ERROR are reachable — nothing here sets Ok explicitly. The
+    # dimensions the connector adds by itself (see exclude_dimensions below) do
+    # not enter that product: service.name and span.kind are constants, and
+    # span.name tracks beckn.action one-to-one because the span is named for the
+    # action. Confirmed on a live scrape — 24 is the ceiling, not a floor.
+    #
+    # `sender.id` is the tempting addition and the one that makes the count grow
+    # with the participant list — it is Unbounded in the registry and must not
+    # be added here.
+    #
+    # Two facts that would be worth having are NOT available, and the reason is
+    # structural rather than an omission: `result.empty` (unmet demand — the one
+    # metric no other participant can produce) and `retrieval.modes_degraded`
+    # both sit on span EVENTS (ResponseInfo and RetrievalInfo), and this
+    # connector reads span attributes only. opentelemetry.md:1000-1005 already
+    # names `result.empty` as the candidate to promote onto the span; doing so
+    # is a `fact` change, not a collector change, and it is what would let a
+    # third dimension be added here.
+    dimensions:
+      - name: beckn.action
+      - name: error_type
+        # Present on failures only. Without a default the connector drops the
+        # dimension on successful spans, which splits one stream in two and
+        # makes a rate query miss every success.
+        default: none
+
+    # The connector adds service.name, span.name, span.kind, status.code AND
+    # collector.instance.id to every stream whether or not they are listed
+    # above. The last is a UUID regenerated on every collector restart, so
+    # leaving it on means each restart orphans the previous series and a rate()
+    # across one sees a counter reset — the same defect as putting build.commit
+    # in a label, arriving from a different direction. Measured, not assumed:
+    # it appeared on the connector's streams and not on the service's own
+    # pgxpool ones.
+    #
+    # It exists to stop two collectors writing the same series and violating
+    # the Prometheus single-writer principle. Dropping it is safe here and only
+    # here: the metrics pipeline below has exactly one connector instance
+    # feeding one exporter, which is the topology the connector's own README
+    # prescribes for Prometheus. FAN THIS OUT TO A SECOND COLLECTOR WRITING THE
+    # SAME PROMETHEUS AND THIS LINE HAS TO GO.
+    exclude_dimensions: ["collector.instance.id"]
+
+    # Buckets in milliseconds. The default set tops out well below what a cold
+    # semantic query costs, and a histogram whose last bucket catches most of
+    # the distribution reports a p95 that is really "at least the top bucket".
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s]
+
+    # Off. An exemplar carries a trace id into the metric stream, which is
+    # useful in a UI that can follow it and is an unbounded attribute on a
+    # metric point everywhere else. Turn it on with a backend that reads it.
+    exemplars:
+      enabled: false
+
+    # `discovery_calls_total` READS 0 FOR ABOUT A MINUTE AFTER THE COLLECTOR
+    # STARTS, even though the requests were served and the histogram beside it
+    # already carries their true count. Measured, on the default flush
+    # interval: three consecutive scrapes at 0, then 3/15/1 exactly matching
+    # discovery_duration_milliseconds_count, stable from then on.
+    #
+    # Nothing is wrong and there is nothing here to tune — a cumulative counter
+    # needs a second data point before the scrape endpoint has a total to
+    # report. It is written down because a zero counter looks exactly like a
+    # broken pipeline, and the first thing anyone does after `make telemetry`
+    # is scrape it. Verify against the histogram's _count, which is right
+    # immediately; `make telemetry-metrics` polls on that for this reason.
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # Traces, to the terminal. The local stack has no trace backend, and this is
+  # the difference between "the pipeline works" and "nothing errored".
+  # `make telemetry-logs` is the intended reader. A real deployment replaces
+  # this with the ClickStack OTLP endpoint and keeps everything else.
+  debug:
+    verbosity: detailed
+
+  # Metrics, as a scrape endpoint on :8889 — the port beckn-onix's node
+  # collectors already use for this, so a Prometheus that scrapes one scrapes
+  # the other.
+  #
+  # Both streams arrive here: the connector's, and the two instruments the
+  # service exports itself over OTLP (pgxpool.empty_acquire and its wait time).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+    # Drops otel_scope_name, otel_scope_version and otel_scope_schema_url.
+    # Scope is constant per metric name — the connector's streams are all
+    # `spanmetricsconnector` and the service's own are all `discovery_service`
+    # — so the three labels partition nothing that the metric name does not
+    # already partition, and schema_url is permanently empty. The version is
+    # the reason this is worth a line rather than tidiness: otel_scope_version
+    # is "1.0" today and bumping the instrumentation scope would orphan every
+    # pgxpool series, which is the collector.instance.id defect again.
+    without_scope_info: true
+
+    # An ALLOW-LIST, and it has to be one. Without any of this the Resource is
+    # dropped and every stream loses the thing that says which participant
+    # produced it. But the obvious setting — `resource_to_telemetry_conversion:
+    # enabled: true`, now deprecated in favour of this key — promotes the WHOLE
+    # Resource, which was measured here and is a cardinality bug: it made
+    # `build_commit`, `build_date`, `build_tree_state` and `service_version`
+    # into labels. All four change on a deploy, so each deploy would orphan the
+    # previous series and start a new one, and a rate() across a deploy would
+    # see a counter reset.
+    #
+    # The collector's own instance id is the same defect from a different
+    # source and is NOT fixed here — it never came through the Resource at all.
+    # See exclude_dimensions on the connector above.
+    #
+    # These four are per-deployment constants, which is the whole test for
+    # belonging here. Each is Unbounded or Bounded in the registry, but that
+    # classifies the value space across the network — within one process every
+    # one of them is fixed at boot, so they add no series here.
+    #
+    # These are RESOURCE ATTRIBUTE KEYS as fact spells them, not the label
+    # names that come out: `network.id` is the key, and Prometheus sanitises it
+    # to `network_id` on the way out. Matching is exact (wildcards `*` and `?`
+    # are supported and not used). Getting this backwards silently drops the
+    # attribute rather than failing, so check against fact/registry.go and not
+    # against a scrape.
+    resource_constant_labels:
+      included:
+        - producer
+        - domain
+        - eid
+        - network.id
+
+service:
+  telemetry:
+    logs:
+      level: info
+
+  pipelines:
+    # Traces fan out twice: once to be read, once to be counted. The connector
+    # is an exporter here and a receiver below, which is how a connector joins
+    # two pipelines.
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, span_metrics]
+
+    # Everything node-local, and there is deliberately no second metrics
+    # pipeline pointed at a facilitator.
+    #
+    # That absence is load-bearing. A connector-derived stream must never reach
+    # the network's METRIC signal — it has no `metric.code` and the wrong
+    # aggregation type, so it would be an unregistered stream a facilitator
+    # cannot interpret. Today the guarantee holds by construction: there is no
+    # facilitator exporter to leak into. WHOEVER ADDS ONE must add a filter
+    # admitting only the registered codes, the way onix's
+    # `filter/network_metrics` does. Do not widen this pipeline to reach it.
+    metrics:
+      receivers: [otlp, span_metrics]
+      processors: [batch]
+      exporters: [prometheus]
