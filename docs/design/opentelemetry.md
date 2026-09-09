@@ -1532,6 +1532,26 @@ cumulative, which is not what the METRIC signal permits — and it produces the
 `pkg/telemetry/pluginMetrics.go:41` but never sets it on a datapoint; ours
 carries a real UUID per point.
 
+#### The one weakness of deriving these from spans, and what pins it
+
+All five are counted from the **exported** span stream. A span that is not
+recorded is not exported, and a span that is not exported is not counted — so
+the sampling rate on root spans *is* the accuracy of every one of these codes.
+An in-process instrument would not have that property, and question 7 below
+raises it as something the registry may care about.
+
+It is not left to a comment. `TestARootSpanIsAlwaysRecordedBecauseTheMetricsAreCountedFromIt`
+starts a parentless span and fails if it is not recording. The pin needed to be
+its own test rather than a third case in
+`TestTheSamplerRespectsAnInboundDecision`, because a ratio sampler still defers
+to a parent: `ParentBased(TraceIDRatioBased(0.1))` keeps both of that test's
+subtests green while every root samples at one in ten, and
+`discover_api_total_count` quietly reports a tenth of the traffic served.
+
+What is deliberately **not** pinned: an inbound `traceparent` carrying
+`sampled=0` produces no span and therefore no count. That undercount is the
+network's decision and not this service's to override.
+
 ### Candidates to propose to the registry
 
 Everything below is derivable from the spans this document specifies, so
