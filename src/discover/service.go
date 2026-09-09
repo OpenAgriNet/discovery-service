@@ -17,16 +17,14 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 )
 
-// Service is the discover request path: one intent, one page of catalogs, and
-// an honest account of what could not be run.
-//
-// It holds no request state, so one instance serves every caller.
+// Service is the discover request path: one intent, one page of catalogs, and an
+// honest account of what could not be run. It holds no request state, so one
+// instance serves every caller.
 type Service struct {
 	repo domain.SearchRepository
 
 	// The whole config rather than config.Search, because MapIntent reads Geo
-	// as well and a second struct threaded beside it would be a second thing to
-	// keep in step.
+	// as well.
 	cfg config.Config
 }
 
@@ -36,11 +34,8 @@ func NewService(repo domain.SearchRepository, cfg config.Config) *Service {
 }
 
 // Discover answers one intent with one page of catalogs and the retrieval modes
-// that did not contribute.
-//
-// The degraded list is returned beside the catalogs rather than inside them:
-// OnDiscoverAction is additionalProperties:false with `catalogs` as its only
-// property, so it reaches the caller as the X-Beckn-Degraded header (C11).
+// that did not contribute. The degraded list is returned beside the catalogs
+// rather than inside them, because it reaches the caller as a header (C11).
 func (s *Service) Discover(
 	ctx context.Context, envelope beckn.Context, intent beckn.Intent, page Page,
 ) ([]beckn.Catalog, []string, error) {
@@ -51,12 +46,10 @@ func (s *Service) Discover(
 	reportPartials(ctx, partial)
 
 	// From the ENVELOPE, and NOT defaulted to config.App.Network. Empty means
-	// EVERY network: the repository emits no network predicate at all, the same
-	// way an empty schemaContext emits no schema predicate. config.App.Network
-	// is publish's default for an empty visibleTo (C8) — a different field
-	// answering a different question — and reusing it here would quietly put
-	// discover back to single-network scoping under a name that suggests it is
-	// unscoped (scenario 29).
+	// EVERY network and the repository emits no network predicate at all.
+	// config.App.Network is publish's default for an empty visibleTo (C8) — a
+	// different field answering a different question — and reusing it here puts
+	// discover back to single-network scoping (scenario 29).
 	query.NetworkID = envelope.NetworkID
 
 	modes, degraded, err := s.negotiate(query)
@@ -69,10 +62,9 @@ func (s *Service) Discover(
 		return nil, nil, typedSearchFailure(ctx, err)
 	}
 
-	// Both halves of the degraded list, joined once: negotiate's are the modes
-	// this deployment cannot run at all, result.Degraded the ones that failed on
-	// this request. The header and the attribute have to be the same list, so
-	// they are built from the same variable.
+	// Both halves, joined once: negotiate's are the modes this deployment cannot
+	// run at all, result.Degraded the ones that failed on this request. The
+	// header and the span attribute must be the same list.
 	degraded = append(degraded, result.Degraded...)
 	observeRetrieval(ctx, modes, degraded)
 
@@ -81,20 +73,14 @@ func (s *Service) Discover(
 
 // typedSearchFailure says whose mistake a failed search was.
 //
-// Two of the store's errors are the CALLER's, and both have an answer of their
-// own; everything else is the deployment's and is a 500 with nothing about the
-// backend in it. Lifted out of Discover so that the classification has a name
-// and a place to grow, rather than living inside the happy path it interrupts.
+// Two of the store's errors are the CALLER's and get an answer of their own;
+// everything else is the deployment's and is a 500 with nothing about the backend
+// in it.
 func typedSearchFailure(ctx context.Context, err error) error {
-	// A page past the retrieval depth: MapIntent refuses the same bound against
-	// the same config.Search and mints SCH_INVALID_FORMAT at $['offset'], so a
-	// backend raising it must not turn the same request into a 500. Which of the
-	// two guards caught it is this service's business, not the caller's, and a
-	// 500 would also invite a retry of a request that cannot succeed.
-	//
-	// Matched here rather than left to the mapper alone because the mapper is
-	// the guard in FRONT: this is what answers when a caller reaches the
-	// repository by another route.
+	// A page past the retrieval depth. MapIntent is the guard in FRONT and mints
+	// the same code at the same path; this is what answers when a caller reaches
+	// the repository by another route, because a 500 would invite a retry of a
+	// request that cannot succeed.
 	if errors.Is(err, domain.ErrRetrievalDepth) {
 		return apperrors.
 			Schema(beckn.CodeSchemaInvalidFormat, err.Error()).
@@ -102,14 +88,11 @@ func typedSearchFailure(ctx context.Context, err error) error {
 	}
 
 	// An expression the store's own parser refused is the caller's mistake too,
-	// and it gets the same code the gate mints for one it refuses itself: which
-	// of the two caught them is not the caller's business.
+	// and gets the code the gate mints for one it refuses itself.
 	//
-	// The sentinel's OWN text, never err.Error(). The backend wraps this with
-	// the operation it was running and with PostgreSQL's clause, and both are
-	// internals — `run the candidate retrieval` tells the caller nothing about
-	// their filter, and the clause moves when PostgreSQL is upgraded. They reach
-	// the operator through the log line instead.
+	// The sentinel's OWN text, never err.Error(): the backend wraps this with the
+	// operation and with PostgreSQL's clause, both internals, and both reach the
+	// operator through the log line instead.
 	if errors.Is(err, domain.ErrInvalidFilterExpression) {
 		logger.FromContext(ctx).Warn("the filter expression was refused by the store",
 			zap.Error(err))
@@ -127,12 +110,9 @@ func typedSearchFailure(ctx context.Context, err error) error {
 
 // modesFor is the set of retrieval modes an intent asks for.
 //
-// Text asks for all three ranked modes rather than for lexical alone: RRF
-// fuses whatever answers, and a deployment that has fuzzy or semantic should
-// use them without the caller naming a mode the wire has no field for. Spatial
-// and jsonpath are asked for by the presence of the constraint they serve —
-// they are filters rather than ranked modes, and a backend that cannot run one
-// must say so rather than answer a narrower question than it was asked.
+// Text asks for all three ranked modes rather than lexical alone: RRF fuses
+// whatever answers, and the wire has no field for naming a mode. Spatial and
+// jsonpath are asked for by the presence of the constraint they serve.
 func modesFor(query domain.SearchQuery) []domain.Capability {
 	modes := make([]domain.Capability, 0, 5)
 	if query.Text != "" {
@@ -151,8 +131,7 @@ func modesFor(query domain.SearchQuery) []domain.Capability {
 // negotiate settles what this backend will actually be asked to run.
 //
 // Degrade-and-report, or refuse — never silently ignore. A caller who filtered
-// for one manufacturer and got every manufacturer has been actively misled, so
-// silence is the one option that is never taken.
+// for one manufacturer and got every manufacturer has been actively misled.
 func (s *Service) negotiate(query domain.SearchQuery) ([]domain.Capability, []string, error) {
 	wanted := modesFor(query)
 	capabilities := s.repo.Capabilities()
@@ -180,29 +159,14 @@ func (s *Service) negotiate(query domain.SearchQuery) ([]domain.Capability, []st
 
 // render turns stored catalogs into the response's.
 //
-// The whole stored catalog, not a projection of it. Since A17 the catalog a
-// publisher sent is kept verbatim in `catalogs.document` with its two child
-// arrays lifted onto their own tables, so rendering is: decode the document,
-// put the children back, and let beckn.Catalog's MarshalJSON write the bytes
-// out again. `descriptor`, `bppId`, `bppUri` and `validity` come back for free
-// — this function does not name them, and would not have to name the next
-// member the protocol adds either.
-//
-// That is what closes the gap this comment used to describe: Catalog in
-// beckn.yaml is required:[id, descriptor, provider], and while the row held a
-// `provider` column and nothing else, the response could not satisfy its own
-// schema no matter what was projected here.
+// The whole stored catalog, not a projection of it: since A17 the document is
+// verbatim with its two child arrays on their own tables, so rendering is decode,
+// put the children back, and let beckn.Catalog's MarshalJSON write it out. The
+// next member the protocol adds needs no edit here.
 //
 // A document that will not decode is dropped rather than half-rendered, for the
-// reason renderOffers gives below. An EMPTY one is a different thing and is not
-// dropped: `catalogs.document` defaults to an empty object, so a row that
-// predates a document — or a caller that built a domain.Catalog in Go rather
-// than through publish — still has an id, and the id is the row's own primary
-// key rather than anything the document has to supply.
-//
-// SearchResult.Total is still dropped: OnDiscoverAction admits `catalogs`
-// alone. That one is not free — the repository issues a count query to produce
-// it — and it is in the plan's Deferred table.
+// reason renderOffers gives. An EMPTY one is not dropped: the column defaults to
+// an empty object, and the id is the row's own primary key.
 func render(catalogs []domain.Catalog) []beckn.Catalog {
 	rendered := make([]beckn.Catalog, 0, len(catalogs))
 	for _, catalog := range catalogs {
@@ -220,15 +184,12 @@ func render(catalogs []domain.Catalog) []beckn.Catalog {
 	return rendered
 }
 
-// renderResources gives back each stored Document, which is the resource
-// exactly as its publisher wrote it — the same contract renderOffers has had
-// since the offer column was added, now that resources have a document rather
-// than two shredded columns.
+// renderResources gives back each stored Document, which is the resource exactly
+// as its publisher wrote it.
 //
-// An empty document falls back to the row's id for the reason render gives
-// above: `id` is the only member a Resource requires, the row has it, and a
-// resource that vanished from the response would look to the caller exactly
-// like one the gate refused.
+// An empty document falls back to the row's id: `id` is the only member a
+// Resource requires, and a resource that vanished from the response would look
+// to the caller exactly like one the gate refused.
 func renderResources(resources []domain.Resource) []beckn.Resource {
 	rendered := make([]beckn.Resource, 0, len(resources))
 	for _, resource := range resources {
@@ -243,17 +204,15 @@ func renderResources(resources []domain.Resource) []beckn.Resource {
 	return rendered
 }
 
-// renderOffers gives back the stored Document, which is the offer exactly as
-// its publisher wrote it.
+// renderOffers gives back the stored Document, which is the offer exactly as its
+// publisher wrote it.
 //
 // Decoded and not re-projected: beckn.Offer's UnmarshalJSON keeps the bytes it
-// decoded, and its MarshalJSON writes them back, so a member this service's own
-// struct never named survives the round trip. The `offer` JSONB column is
-// stored verbatim for precisely this, and a response that dropped those members
-// would make that column's whole claim false for the publishers who needed it
-// to be true.
+// decoded and its MarshalJSON writes them back, so a member this service's own
+// struct never named survives the round trip — which is the whole claim of
+// storing the column verbatim.
 //
-// A Document that will not decode is dropped rather than half-rendered. It can
+// A Document that will not decode is dropped rather than half-rendered: it can
 // only be a row this service did not write, and an offer whose shape is unknown
 // is not one to guess at in a response.
 func renderOffers(offers []domain.Offer) []beckn.Offer {
@@ -268,12 +227,9 @@ func renderOffers(offers []domain.Offer) []beckn.Offer {
 	return rendered
 }
 
-// refusal folds the mapper's fatal faults into the one error the response
-// writer renders, each becoming the details.cause of the one before it (C7).
-//
-// The paths are rendered in dot form because that is the spelling C7's own
-// example uses and the one a human comparing it against the body they sent will
-// recognise.
+// refusal folds the mapper's fatal faults into the one error the response writer
+// renders, each becoming the details.cause of the one before it (C7). The paths
+// are in dot form because that is the spelling C7's own example uses.
 func refusal(faults []domain.Fault) error {
 	chained := make([]*apperrors.AppError, 0, len(faults))
 	for _, fault := range faults {
@@ -282,21 +238,17 @@ func refusal(faults []domain.Fault) error {
 	return apperrors.Chain(chained...)
 }
 
-// typed turns a mapper fault's code back into a typed fault, and it is a switch
-// over literals rather than a conversion for one reason: the minted-codes pin in
-// src/platform/errors walks for family constructors called with a CONSTANT, and
-// a code that reaches one through a variable is invisible to that walk.
+// typed turns a mapper fault's code back into a typed fault.
 //
-// The walk is what keeps a SCH_ code from being reported as a CTX_ one, and
-// this mapper mints both families — an unreadable schemaContext entry is a
-// context fault, and everything else here is a schema one. A single
-// apperrors.Schema over every code would have shipped CTX_INVALID_FIELD as a
-// DOMAIN error with a 400 that categorises wrongly.
+// A switch over literals rather than a conversion, because the minted-codes pin
+// in src/platform/errors walks for family constructors called with a CONSTANT and
+// a code reaching one through a variable is invisible to it. That walk is what
+// keeps this mapper's two families apart — a single apperrors.Schema over every
+// code would report CTX_INVALID_FIELD as a schema fault.
 //
-// A code this switch does not know is a fault in THIS file rather than in the
-// request, so it becomes a 500 rather than a guessed family. Nothing has to
-// remember to extend it: TestEveryCodeTheMapperMintsIsTyped fails the day the
-// mapper grows a code this does not name.
+// A code this switch does not know is a fault in THIS file, so it becomes a 500
+// rather than a guessed family; TestEveryCodeTheMapperMintsIsTyped fails the day
+// the mapper grows one this does not name.
 func typed(code, message string) *apperrors.AppError {
 	switch beckn.ErrorCode(code) {
 	case beckn.CodeContextInvalidField:
@@ -312,14 +264,12 @@ func typed(code, message string) *apperrors.AppError {
 	}
 }
 
-// reportPartials records the faults that qualify a request without refusing it
-// — today, only a distanceMeters sent with an operator that ignores it.
+// reportPartials records the faults that qualify a request without refusing it —
+// today, only a distanceMeters sent with an operator that ignores it.
 //
-// The log is the only channel: OnDiscoverAction is additionalProperties:false
-// with `catalogs` as its only property, and X-Beckn-Degraded names retrieval
-// modes rather than fields. Giving the caller one is an open question against
-// this task, recorded in docs/design/implementation-prompts.md rather than left
-// as a comment here.
+// The log is the only channel: the response body admits `catalogs` alone (C11)
+// and X-Beckn-Degraded names retrieval modes rather than fields. Giving the
+// caller one is an open question in docs/design/implementation-prompts.md.
 func reportPartials(ctx context.Context, partial []domain.Fault) {
 	for _, fault := range partial {
 		logger.FromContext(ctx).Warn("part of the intent was not applied",

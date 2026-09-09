@@ -560,7 +560,7 @@ emitted**; user agent is on the deny-list.
 **On discover, `beckn.schemaContext` is what the seeker is asking for.** It is
 not metadata that happens to ride along: `mapSchemaContext` reads the predicate
 off the **envelope**, not the intent
-(`src/discover/intent_mapper.go:113`), splits each entry on `#` into
+(`src/discover/intent_mapper.go`), splits each entry on `#` into
 `domain.SchemaFilter{Context, Type}`, and the repository turns it into a schema
 clause in the SQL. So `beckn.schemaContext` + `beckn.schemaType` answer *what are
 they seeking* at capability granularity — `WeatherObservation`, `MandiPrice` —

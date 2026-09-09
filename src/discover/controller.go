@@ -18,21 +18,17 @@ import (
 
 // degradedHeader carries the retrieval modes that did not contribute.
 //
-// A header and not a body key (C11): OnDiscoverAction declares
+// A header and not a body key (C11): OnDiscoverAction is
 // additionalProperties:false with `catalogs` as its only property, so a
-// `degraded` member inside `message` is not an extension — it is a response
-// that fails its own schema, and it would ship on precisely the path that
-// matters.
+// `degraded` member inside `message` is not an extension but a response that
+// fails its own schema.
 const degradedHeader = "X-Beckn-Degraded"
 
-// messageRoot is where a fault about the action as a whole points. The action
-// lives in the body, so `$.message`.
+// messageRoot is where a fault about the action as a whole points.
 const messageRoot = "$.message"
 
-// Controller is the HTTP face of the discover path.
-//
-// It owns its own route registration rather than being mounted by the router,
-// so the mount and the handler cannot drift apart.
+// Controller is the HTTP face of the discover path. It owns its own route
+// registration, so the mount and the handler cannot drift apart.
 type Controller struct {
 	service *Service
 	errors  config.Errors
@@ -43,9 +39,9 @@ func NewController(service *Service, errors config.Errors) *Controller {
 	return &Controller{service: service, errors: errors}
 }
 
-// Register mounts the discover route, and only it. There is no `/search`
-// alias: the action lives in the body, so a second path would be a second thing
-// to route, rate-limit, log and document for no gain.
+// Register mounts the discover route, and only it. There is no `/search` alias:
+// the action lives in the body, so a second path is a second thing to route,
+// rate-limit, log and document for no gain.
 func (c *Controller) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /discover", c.Discover)
 }
@@ -104,10 +100,9 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 // pageFrom reads pagination off the query string, where it lives rather than
 // inside the intent.
 //
-// An unreadable value is refused, not defaulted. Zero already means "the
-// default page size" to the mapper, so reading `limit=twenty` as zero would
-// answer a page the caller never asked for and say nothing about it — the same
-// silent widening every branch of the intent mapper refuses.
+// An unreadable value is refused, not defaulted: zero already means "the default
+// page size" to the mapper, so reading `limit=twenty` as zero would answer a page
+// the caller never asked for and say nothing about it.
 func pageFrom(query url.Values) (Page, error) {
 	limit, err := intParam(query, "limit")
 	if err != nil {
@@ -136,20 +131,18 @@ func intParam(query url.Values, name string) (int, error) {
 	return value, nil
 }
 
-// responseContext turns the request's envelope into the response's.
-//
-// The correlation handles are echoed rather than regenerated: transactionId and
-// messageId are how the caller — and every log downstream of it — ties this
-// answer to the request it made.
+// responseContext turns the request's envelope into the response's. The
+// correlation handles are echoed rather than regenerated: they are how the caller
+// ties this answer to the request it made.
 func responseContext(request beckn.Context) beckn.Context {
 	return beckn.Context{
 		Action:  beckn.ActionOnDiscover,
 		Version: beckn.Version,
 
-		// The legs reverse. On the request this service was the receiver; on
-		// the answer it is the sender, so echoing these unswapped would put the
-		// caller's DID on a message the caller did not send.
-		// Neither is verified; beckn.Context spells out what that costs here.
+		// The legs reverse (A24): on the request this service was the receiver,
+		// so echoing these unswapped puts the caller's DID on a message the
+		// caller did not send. Neither is verified; beckn.Context says what
+		// that costs.
 		SenderID:   request.ReceiverID,
 		ReceiverID: request.SenderID,
 
@@ -157,9 +150,8 @@ func responseContext(request beckn.Context) beckn.Context {
 		MessageID:     request.MessageID,
 		NetworkID:     request.NetworkID,
 
-		// This service's own clock. The request's timestamp says when the
-		// caller sent; a response repeating it would claim the answer was ready
-		// before it was computed.
+		// This service's own clock: the request's timestamp says when the caller
+		// sent, and repeating it claims the answer was ready before it existed.
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 }

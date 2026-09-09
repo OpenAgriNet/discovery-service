@@ -546,7 +546,7 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Unbounded,
 		Note: "Filters.Type — the grammar NAMED, never the expression. Unbounded " +
-			"although filter_parser.go:20 answers only \"jsonpath\": this fires at " +
+			"although filter_parser.go's filterGrammar answers only \"jsonpath\": this fires at " +
 			"intake, so an unrecognised grammar reaches it before it is refused, and " +
 			"who is asking for a grammar we do not serve is the question worth having.",
 	},
@@ -560,7 +560,7 @@ var registry = [numKeys]Definition{
 		Cardinality: Unbounded,
 		Note: "Each SpatialConstraint.op verbatim. Unbounded for the same reason as " +
 			"intent.filter_type — domain.SpatialOp declares nine and a caller can send " +
-			"a tenth, which intent_mapper.go:366 refuses after this has fired.",
+			"a tenth, which intent_mapper.go's validateConstraint refuses after this has fired.",
 	},
 	IntentScoped: {
 		Name:        "IntentScoped",

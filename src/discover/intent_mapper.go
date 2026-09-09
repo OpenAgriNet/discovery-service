@@ -15,11 +15,8 @@ import (
 )
 
 // Page is the request's pagination, which arrives as HTTP query parameters
-// rather than inside the intent.
-//
-// A struct rather than two adjacent ints: `limit, offset` and `offset, limit`
-// compile identically and mean different pages, and nothing downstream would
-// notice the swap.
+// rather than inside the intent. A struct rather than two adjacent ints, because
+// `limit, offset` and `offset, limit` compile identically.
 type Page struct {
 	Limit  int
 	Offset int
@@ -37,8 +34,7 @@ var answeredOps = map[string]domain.SpatialOp{
 }
 
 // quantifiers, with the empty string reading as ANY. An unrecognised one is
-// refused rather than downgraded: NONE and ANY ask opposite questions, so a
-// typo would invert the caller's intent and answer it confidently.
+// refused rather than downgraded: NONE and ANY ask opposite questions.
 var quantifiers = map[string]domain.Quantifier{
 	"":                   domain.QuantifierAny,
 	beckn.QuantifierAny:  domain.QuantifierAny,
@@ -46,9 +42,9 @@ var quantifiers = map[string]domain.Quantifier{
 	beckn.QuantifierNone: domain.QuantifierNone,
 }
 
-// The SRID spellings that all mean WGS 84. Anything else is refused, never
-// ignored: EPSG:3857 coordinates are metres, and reading them as degrees puts
-// the query in the Atlantic and returns an honest-looking empty page.
+// wgs84 is the SRID spellings that all mean WGS 84. Anything else is refused,
+// never ignored: EPSG:3857 coordinates are metres, and reading them as degrees
+// puts the query in the Atlantic and answers an honest-looking empty page.
 var wgs84 = map[string]bool{
 	"":                           true,
 	"EPSG:4326":                  true,
@@ -73,14 +69,11 @@ var geometryTypes = map[string]bool{
 //
 // It rejects rather than skips. Every refusal here is a case where continuing
 // would WIDEN the query — an unreadable targets pointer read as "every
-// geometry", an unknown quantifier read as ANY, an ignored SRID read as
-// degrees — and a widened answer is indistinguishable at the caller from a
-// correct one.
+// geometry", an unknown quantifier read as ANY, an ignored SRID read as degrees
+// — and a widened answer is indistinguishable at the caller from a correct one.
 //
-// NetworkID is deliberately not set: the service reads it from the envelope,
-// and empty means EVERY network. Defaulting it here to config.App.Network would
-// borrow publish's visibleTo default (C8) — a different field answering a
-// different question — and quietly return discover to single-network scoping.
+// NetworkID is deliberately not set here; Service.Discover reads it off the
+// envelope, and says why.
 func MapIntent(
 	intent beckn.Intent, envelope beckn.Context, page Page, cfg config.Config,
 ) (domain.SearchQuery, []domain.Fault, []domain.Fault) {
@@ -89,19 +82,15 @@ func MapIntent(
 	limit, offset, pageFaults := mapPage(page, cfg.Search)
 
 	// Trimmed ONCE, here, and every reader below takes it from this variable.
-	// Whitespace is not a term: it produces an empty tsquery and a trigram
-	// comparison against padding, so `"   "` is a text search that narrows
-	// nothing while being non-empty — which is exactly the input that walks
-	// past a guard spelled `intent.TextSearch != ""`. Two readers doing their
-	// own trimming would be two places to forget it.
+	// Whitespace is not a term: `"   "` is non-empty and narrows nothing, which
+	// is exactly the input that walks past a guard spelled
+	// `intent.TextSearch != ""`.
 	text := strings.TrimSpace(intent.TextSearch)
 
-	// Whether anything else has already cut the corpus down, which is what
-	// decides between an unindexable filter costing one slow query and costing
-	// a read of every gated row in the catalogue. Read from the MAPPED values
-	// rather than from the intent: a spatial constraint that faulted is not a
-	// constraint, and treating it as one would let the guard be defeated by
-	// sending a broken one.
+	// Whether anything else has already cut the corpus down. Read from the
+	// MAPPED values rather than from the intent: a spatial constraint that
+	// faulted is not a constraint, and treating it as one would let mapFilters'
+	// guard be defeated by sending a broken one.
 	narrowed := text != "" || spatial != nil || len(schemas) > 0
 	filters, filterFaults := mapFilters(intent.Filters, narrowed)
 
@@ -119,29 +108,15 @@ func MapIntent(
 	}, fatal, partial
 }
 
-// criterionFaults refuses an intent that gives the search nothing to run.
+// criterionFaults refuses an intent that gives the search nothing to run: one of
+// textSearch, spatial or filters must be present, because modesFor reads those
+// three and nothing else. examples/README.md, case 17, is the reasoning.
 //
-// One of textSearch, spatial or filters must be present, because each of the
-// three is what asks for a retrieval mode: modesFor reads them and nothing
-// else, so an intent with none asks for no modes, fuses no lists and answers
-// `"catalogs": []` with a 200 — a page indistinguishable from a search that
-// ran and matched nothing. schemaContext is deliberately not one of the three.
-// It contributes a WHERE clause rather than a retriever, so it narrows a search
-// it cannot drive, and an intent carrying only it reaches the same dead end.
-//
-// Read off the RAW intent, unlike `narrowed` above, which reads the mapped
-// values. The two want opposite things from a broken constraint: `narrowed`
-// must not count a spatial that faulted, because an unindexable filter would
-// then be admitted by sending a bad geometry beside it; this must count it,
-// because the caller did name a criterion and "you sent no criteria" would be a
-// false sentence stacked on top of the fault that already names the real
-// mistake.
-//
-// The one exception is `text`, which arrives already trimmed and is taken as a
-// parameter for that reason: modesFor reads the TRIMMED value, so a guard
-// testing the raw field would admit `"   "` and hand it a search asking for no
-// mode at all — the same empty page under a 200 that this refusal exists to
-// prevent, reached by a caller who pressed the space bar.
+// Read off the RAW intent, unlike `narrowed` above: a faulted spatial must not
+// count there and must count here, or "you sent no criteria" is a false sentence
+// stacked on the fault that already names the real mistake. `text` is the
+// exception and is taken as a parameter because it must be the TRIMMED value —
+// modesFor reads that one, so a raw guard would admit `"   "`.
 func criterionFaults(intent beckn.Intent, text string) []domain.Fault {
 	if text != "" || len(intent.Spatial) > 0 || intent.Filters != nil {
 		return nil
@@ -158,8 +133,7 @@ func criterionFaults(intent beckn.Intent, text string) []domain.Fault {
 // mapSchemaContext reads the schema predicate off the ENVELOPE, not the intent.
 //
 // Absent or empty returns nil, and the repository then emits no schema clause.
-// Returning an empty non-nil slice would be the bug that empties every
-// response.
+// An empty non-nil slice would be the bug that empties every response.
 func mapSchemaContext(envelope beckn.Context) ([]domain.SchemaFilter, []domain.Fault) {
 	if len(envelope.SchemaContext) == 0 {
 		return nil, nil
@@ -176,10 +150,9 @@ func mapSchemaContext(envelope beckn.Context) ([]domain.SchemaFilter, []domain.F
 				Code:    string(beckn.CodeContextInvalidField),
 				Message: "schemaContext entry has no context URI",
 			})
-			// continue, not fall-through. Emitting SchemaFilter{Context: ""}
-			// after faulting appends a predicate that matches nothing —
-			// harmless only for as long as this fault stays fatal, and
-			// silently emptying every response the day someone softens it.
+			// continue, not fall-through: SchemaFilter{Context: ""} is a
+			// predicate matching nothing, harmless only for as long as this
+			// fault stays fatal.
 			continue
 		}
 		// Cut splits on the FIRST '#', so a second one stays in the fragment.
@@ -193,11 +166,9 @@ func mapSchemaContext(envelope beckn.Context) ([]domain.SchemaFilter, []domain.F
 // mapPage resolves the page, clamping what can be clamped honestly and refusing
 // what cannot.
 //
-// A limit over MaxPageSize is clamped because the caller still gets the results
-// they asked about. A page past the retrieval depth is refused because `fused`
-// holds at most MaxCandidatesPerMode ids: the slice would come back empty while
-// Total correctly reports thousands, and an empty page 26 is indistinguishable
-// from having reached the end.
+// A limit over MaxPageSize is clamped, because the caller still gets the results
+// they asked about. A page past MaxCandidatesPerMode is refused, because it would
+// come back empty and an empty page 26 is indistinguishable from the end.
 func mapPage(page Page, search config.Search) (limit, offset int, faults []domain.Fault) {
 	limit = page.Limit
 	if limit <= 0 {
@@ -224,11 +195,9 @@ func mapPage(page Page, search config.Search) (limit, offset int, faults []domai
 	return limit, offset, faults
 }
 
-// mapSpatial reduces the single supported spatial constraint to cells.
-//
-// It validates everything before covering anything: a fault list built from a
-// half-covered constraint would name the symptom rather than the input, and the
-// caller needs the input.
+// mapSpatial reduces the single supported spatial constraint to cells. It
+// validates everything before covering anything, so that a fault names the input
+// rather than the symptom.
 func mapSpatial(
 	constraints []beckn.SpatialConstraint, cfg config.Config,
 ) (*domain.SpatialFilter, []string, []domain.Fault, []domain.Fault) {
@@ -253,8 +222,7 @@ func mapSpatial(
 }
 
 // validateConstraint checks every field of a constraint and reports all of them
-// rather than the first, because a caller fixing one at a time round-trips once
-// per mistake.
+// rather than the first, so a caller does not round-trip once per mistake.
 func validateConstraint(
 	c beckn.SpatialConstraint, cfg config.Config,
 ) (op domain.SpatialOp, targets []string, fatal, partial []domain.Fault) {
@@ -264,10 +232,8 @@ func validateConstraint(
 	switch {
 	case ok:
 	case c.Op == beckn.OpSTouches, c.Op == beckn.OpSCrosses:
-		// Not "not yet": a cell decomposition has no measure-zero boundary, so
-		// no resolution answers these. The message says which operator, because
-		// a caller deciding whether to wait for a later release needs to know
-		// it will never arrive.
+		// Refused, not deferred (A10) — so the message names the operator, for
+		// a caller deciding whether to wait for a later release.
 		fatal = append(fatal, spatialFault(at+"['op']", beckn.CodeSchemaTypeNotSupported,
 			c.Op+" cannot be approximated by a cell decomposition at any resolution"))
 	default:
@@ -317,8 +283,7 @@ func validateGeometry(c beckn.SpatialConstraint, at string) []domain.Fault {
 // one sent where it has no meaning.
 //
 // The second is a PARTIAL rather than silence: `beckn.yaml` says distanceMeters
-// is "Ignored for other ops", ignoring it is what we do, and a caller who sent
-// one believes it is filtering.
+// is "Ignored for other ops", and a caller who sent one believes it filters.
 func validateDistance(
 	c beckn.SpatialConstraint, at string, cfg config.Config,
 ) (fatal, partial []domain.Fault) {
@@ -349,10 +314,9 @@ func validateDistance(
 // publish walker used, which is what makes `target_path = ANY($1)` plain
 // equality.
 //
-// A pointer that does not canonicalise is a fault and is DROPPED. Letting it
-// through as "" would match no stored path; dropping it silently would leave an
-// empty TargetPaths, which every backend reads as "every geometry" — the
-// widened answer this mapper exists to refuse.
+// A pointer that does not canonicalise is a fault and is DROPPED — "" would match
+// no stored path, and dropping it silently would leave an empty TargetPaths,
+// which every backend reads as "every geometry".
 func canonicalTargets(targets beckn.Targets, at string) ([]string, []domain.Fault) {
 	if len(targets) == 0 {
 		return nil, nil
@@ -383,9 +347,8 @@ func canonicalTargets(targets beckn.Targets, at string) ([]string, []domain.Faul
 // repository compares against.
 //
 // A cover that declines — antimeridian, over budget — leaves the cell sets nil
-// TOGETHER and lets Bounds decide. That is a widening, and it is the one this
-// service accepts: the cells are an optimisation over the box, not the
-// predicate itself.
+// TOGETHER and lets Bounds decide. That is a widening, and the one this service
+// accepts: the cells are an optimisation over the box, not the predicate.
 func coverConstraint(c beckn.SpatialConstraint, op domain.SpatialOp, cfg config.Config) *domain.SpatialFilter {
 	raw := queryGeoJSON(c.Geometry)
 	query := domain.Geometry{Type: c.Geometry.Type, GeoJSON: raw}
@@ -409,8 +372,8 @@ func coverConstraint(c beckn.SpatialConstraint, op domain.SpatialOp, cfg config.
 	}
 
 	// Populated ONLY for Point-to-Point S_DWITHIN, the single case the exact
-	// haversine refinement applies to. A non-nil Center on any other operator
-	// would silently narrow that operator's answer.
+	// haversine refinement applies to: a non-nil Center on any other operator
+	// silently narrows that operator's answer.
 	if op == domain.OpDWithin && c.Geometry.Type == beckn.GeometryPoint {
 		var position []float64
 		if err := json.Unmarshal(c.Geometry.Coordinates, &position); err == nil && len(position) >= 2 {
@@ -421,11 +384,9 @@ func coverConstraint(c beckn.SpatialConstraint, op domain.SpatialOp, cfg config.
 	return &filter
 }
 
-// queryGeoJSON re-renders a decoded query geometry.
-//
-// Unlike a published one, a query geometry is never stored, so re-marshalling
-// loses nothing a caller can ask for back. Coordinates is already a
-// json.RawMessage, so the numbers themselves survive verbatim.
+// queryGeoJSON re-renders a decoded query geometry. Unlike a published one it is
+// never stored, so re-marshalling loses nothing a caller can ask back —
+// Coordinates is already a json.RawMessage, so the numbers survive verbatim.
 func queryGeoJSON(geometry *beckn.GeoJSONGeometry) json.RawMessage {
 	raw, err := json.Marshal(geometry)
 	if err != nil {
