@@ -112,7 +112,7 @@ var (
 	retrievalModes = []string{"lexical", "fuzzy", "semantic", "spatial", "jsonpath"}
 	// src/domain/catalog.go:310,315.
 	updateModes = []string{"FULL", "MERGE"}
-	// src/beckn/actions.go:90-91.
+	// src/beckn/actions.go:89-90.
 	catalogTypes = []string{"REGULAR", "MASTER"}
 	// The four intent shapes src/discover/intent_mapper.go reads off the envelope.
 	intentKinds = []string{"textSearch", "filters", "spatial", "mediaSearch"}
@@ -345,7 +345,7 @@ var registry = [numKeys]Definition{
 		Cardinality: Bounded,
 		Values:      []string{"discover", "publish"},
 		Note: "Normalised, not verbatim: catalog/publish is accepted on the wire " +
-			"(beckn/actions.go:26-27) and both spellings resolve to one handler, so " +
+			"(beckn/actions.go:20-21) and both spellings resolve to one handler, so " +
 			"both record publish. Emitting context.action as sent would split every " +
 			"publish query in two. No Label bit: Task 25's acquire-wait pair is " +
 			"per-pool and names no dimension, and rate/errors/duration by action " +

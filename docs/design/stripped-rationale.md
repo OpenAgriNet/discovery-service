@@ -198,3 +198,19 @@ each resource — but not where the rejected shape came from. It is the Java
 `beckn-discovr` layout, which is why the conformance case exists at all: the
 suite pins the catalog-level answer against the design the reader is most likely
 to have seen first.
+
+## 15. Declining `bapId`/`bppId` costs nothing, and that is a schema fact
+
+`src/beckn/types.go`, `Context.SenderID`
+
+A24 (`discover-and-publish.md:149`) gives every reason the four legacy
+participant fields went, but not the one that makes the removal safe rather than
+merely preferred. The spec's PROSE says the context "MUST include at minimum …
+`bapId` or `bppId`" — and `Context` carries no `required`, no
+`additionalProperties` and no `oneOf`/`anyOf`, so the demand is unenforceable
+and an envelope carrying only `senderId`/`receiverId` validates clean.
+`senderId` and `receiverId` are declared properties of that same schema, which
+makes A24 a SELECTION from the spec's property list rather than a deviation from
+it. `Catalog` is the opposite case and is why `Catalog.BppID` stays: it closes
+with `additionalProperties: false`, so `bppId` is the only spelling validation
+there will accept.

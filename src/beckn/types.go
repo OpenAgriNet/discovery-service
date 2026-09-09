@@ -3,24 +3,17 @@
 // body. Nothing here does I/O and nothing here knows about publish, discover or
 // storage: a spec bump has exactly one package to land in.
 //
-// Three rules govern how a schema property becomes a Go field, and each exists
-// to keep a downstream task honest rather than to look tidy here.
+// Three rules govern how a schema property becomes a Go field:
 //
-// A field with no declared default is a pointer or a json.RawMessage, because
-// MERGE is RFC 7396 (A8) and encoding/json is the only thing in the chain that
-// still knows the difference between a key the publisher omitted and one they
-// set to null. Flatten that here and the merge downstream cannot tell "keep
-// what is stored" from "delete it".
-//
-// A field the service stores verbatim is a json.RawMessage rather than a parsed
-// shape. `provider`, `descriptor` and `resourceAttributes` land in JSONB
-// columns and are rendered back out unchanged, so parsing them would only give
-// this package a second, lossier copy of a document it does not interpret.
-//
-// A field whose Go type would narrow the schema is not narrowed. `timestamp`
-// stays a string so a malformed one is a CTX_ fault carrying its own path
-// rather than a decoder error that takes the whole envelope down with it, and
-// the same reasoning keeps `validity`'s four members raw.
+//   - No declared default means a pointer or a json.RawMessage. MERGE is RFC
+//     7396 (A8) and encoding/json is the only thing left in the chain that can
+//     tell an omitted key from an explicit null.
+//   - Stored verbatim means json.RawMessage, not a parsed shape. Parsing
+//     `provider` or `resourceAttributes` would only give this package a second,
+//     lossier copy of a document it does not interpret.
+//   - A Go type that would narrow the schema is not used. `timestamp` stays a
+//     string so a malformed one is a CTX_ fault naming its own path rather than
+//     a decoder error that takes the whole envelope down.
 package beckn
 
 import (
@@ -32,76 +25,47 @@ import (
 // Context is the Beckn envelope header that accompanies every request and
 // callback.
 //
-// The spec declares no `required` list on Context, so L1 schema validation
-// alone cannot reject a body missing `transactionId` (C6). The envelope rules
-// that do reject it live in src/platform/validation and run even when L1 is
-// switched off, because a response context cannot be built without them.
+// The spec declares no `required` list on it (C6), so the envelope rules that
+// reject a missing `transactionId` live in src/platform/validation — and they
+// run even when L1 is off, a response context being unbuildable without them.
 type Context struct {
 	Action  string `json:"action,omitempty"`
 	Version string `json:"version,omitempty"`
 
-	// The two participant identities this service reads, and the only two.
-	// Each is a DID resolving to the document that carries the party's
-	// verification keys, so one field answers both "who" and "with what key" —
-	// which is what the parked signature layer will need.
+	// The two participant identities this service reads, and the only two:
+	// `bapId`, `bapUri`, `bppId` and `bppUri` are not modelled at all, and a
+	// body carrying them is accepted and simply does not get them back (A24,
+	// discover-and-publish.md:149). `Catalog.BppID` is unaffected — it describes
+	// the provider a catalog belongs to, not who sent the message.
 	//
-	// `bapId`, `bapUri`, `bppId` and `bppUri` are deliberately NOT here. OAN is
-	// a new network, so the spec's own reason for keeping them — backward
-	// compatibility with existing integrations — is not a reason that applies
-	// to it. A caller may still send them; they are ignored rather than
-	// modelled, because a field this service echoes but never reads is one a
-	// reader has to check is unused, and one an operator can mistake for an
-	// identity that was verified. A body carrying them is still accepted —
-	// Context declares no `additionalProperties: false` and the decoder is not
-	// strict — it simply does not get them back.
-	//
-	// Declining them costs nothing, and that is a schema fact rather than a
-	// hope. The spec's prose says the context "MUST include at minimum …
-	// `bapId` or `bppId`", but Context carries no `required`, no
-	// `additionalProperties` and no `oneOf`/`anyOf`, so the demand is
-	// unenforceable and an envelope with only these two validates. `senderId`
-	// and `receiverId` are declared properties of that same schema, so this is
-	// a selection from the spec's property list and not a deviation from it.
-	// `Catalog` is the opposite case and stays as it is: it closes with
-	// `additionalProperties: false`, which makes `bppId` the only spelling
-	// validation there will accept.
-	//
-	// NEITHER IS VERIFIED, and on a callback that has a sharp edge. The two
-	// controllers build a response by swapping them, so this service's own
-	// `senderId` is whatever the caller put in `receiverId` — a caller can name
-	// a third party there and be handed a callback asserting that DID as the
-	// sender. It is the same "a string the caller chose" hazard the rate
-	// limiter refuses to key on, and it closes the same way: the signature
-	// layer resolves the DID document, and a configured self-DID replaces the
-	// echo. Until then a caller sending neither gets a callback naming neither,
-	// which is honest — an absent identity claims less than an unverified one.
+	// NEITHER IS VERIFIED. The controllers build a response by SWAPPING them, so
+	// this service's own `senderId` is whatever the caller put in `receiverId`
+	// and a caller can be handed a callback asserting a third party's DID. It
+	// closes outside this repo — the adopter's layer owns participant signature
+	// verification — so do not add a self-DID config here expecting to fix it.
 	SenderID   string `json:"senderId,omitempty"`
 	ReceiverID string `json:"receiverId,omitempty"`
 
 	TransactionID string `json:"transactionId,omitempty"`
 	MessageID     string `json:"messageId,omitempty"`
 
-	// Optional on both paths, and the two paths read its absence differently.
-	// On publish, absent means APP_NETWORK_ID — used only to fill an empty
-	// visibleTo (C8). On discover, absent means no network predicate at all:
-	// every network's catalogs match. Same field, two questions, and no shared
-	// fallback between them.
+	// Optional on both paths, which read its absence differently: on publish it
+	// means APP_NETWORK_ID, used only to fill an empty visibleTo (C8), and on
+	// discover it means no network predicate at all. No shared fallback.
 	NetworkID string `json:"networkId,omitempty"`
 
-	// RFC 3339, kept as a string. A bad timestamp has to come back as a fault
-	// naming `$.context.timestamp`, which a time.Time field cannot do — it
-	// fails the whole json.Unmarshal and the caller learns only that the body
-	// was unreadable.
+	// RFC 3339, kept as a string so a bad one comes back as a fault naming
+	// `$.context.timestamp` rather than a json.Unmarshal failure that tells the
+	// caller only that the body was unreadable.
 	Timestamp string `json:"timestamp,omitempty"`
 
 	Key string `json:"key,omitempty"`
 	Try *bool  `json:"try,omitempty"`
 	TTL string `json:"ttl,omitempty"`
 
-	// A Context field, not an Intent one. The reference implementation moved it
-	// to message.intent, which Intent's additionalProperties:false forbids
-	// outright; this plan follows the spec. Each entry is a JSON-LD context URI
-	// whose optional #fragment names the @type.
+	// A Context field, not an Intent one — Intent's additionalProperties:false
+	// forbids it outright. Each entry is a JSON-LD context URI whose optional
+	// #fragment names the @type.
 	SchemaContext []string `json:"schemaContext,omitempty"`
 
 	RequestDigest json.RawMessage `json:"requestDigest,omitempty"`
@@ -118,29 +82,22 @@ type Catalog struct {
 	Descriptor json.RawMessage `json:"descriptor,omitempty"`
 	Provider   json.RawMessage `json:"provider,omitempty"`
 
-	// A pointer because `isActive` has a declared default of true (A9) and the
-	// mapper is what resolves it. A plain bool cannot say whether the publisher
-	// sent false or sent nothing, so the default would silently overwrite every
-	// deliberate deactivation.
+	// A pointer because `isActive` defaults to true (A9) and the mapper resolves
+	// it: a plain bool cannot tell a sent false from nothing sent, so the
+	// default would overwrite every deliberate deactivation.
 	IsActive *bool `json:"isActive,omitempty"`
 
 	Resources []Resource `json:"resources,omitempty"`
 	Offers    []Offer    `json:"offers,omitempty"`
 
-	// Raw rather than *TimePeriod because RFC 7396 (A8) gives `null` a meaning
-	// a pointer cannot carry: absent means "leave the stored window alone",
-	// while an explicit null means "clear it". A *TimePeriod collapses both to
-	// nil, so a publisher trying to clear a validity would be answered with
-	// silence and a window that never went away.
+	// Raw rather than *TimePeriod because RFC 7396 (A8) gives `null` a meaning a
+	// pointer cannot carry: absent leaves the stored window alone, explicit null
+	// clears it, and a *TimePeriod collapses both to nil.
 	Validity json.RawMessage `json:"validity,omitempty"`
 
-	// Raw is the catalog exactly as it arrived, and it is what reaches the
+	// Raw is the catalog exactly as it arrived, and what reaches the
 	// catalogs.document column once its two child arrays are lifted off (A17).
-	//
-	// The same reason Offer has one: re-marshalling the struct would emit the
-	// members this file happens to name and drop the rest, and a column that
-	// claims to hold what the publisher sent would be lying to exactly the
-	// publishers who checked.
+	// Same reason as Offer.Raw.
 	Raw json.RawMessage `json:"-"`
 }
 
@@ -164,26 +121,21 @@ func (c *Catalog) UnmarshalJSON(data []byte) error {
 // MarshalJSON writes the stored document back with the two child arrays
 // spliced in.
 //
-// Not the plain verbatim write Offer does, because a catalog's document is the
-// one that had members REMOVED before storage: `resources` and `offers` live in
-// their own tables (A17), so the bytes are only a whole catalog again once they
-// are put back. Splicing here rather than at the caller is what lets discover
-// return `descriptor`, `bppId`, `bppUri` and `validity` without this service
-// naming them anywhere — they ride along in Raw.
+// Not the plain verbatim write Offer does: `resources` and `offers` live in
+// their own tables (A17), so the bytes are a whole catalog again only once they
+// are put back. Splicing here is what lets discover return `descriptor`,
+// `bppId`, `bppUri` and `validity` without this service naming them anywhere.
 //
-// It carries Offer's caveat and one of its own. A field edited on a decoded
-// Catalog does not reach the output; only Resources and Offers do. Nothing
-// edits one — publish stores the document and discover renders it — and the two
-// exceptions are exactly the two members that must be assembled.
+// Carries Offer's caveat with one addition — a field edited on a decoded
+// Catalog does not reach the output, and only Resources and Offers do.
 func (c Catalog) MarshalJSON() ([]byte, error) {
 	members, err := c.WithoutChildren()
 	if err != nil {
 		return nil, err
 	}
 
-	// Absent rather than empty when there is nothing: `resources` is not in
-	// Catalog's required list, so a catalog of offers alone is legal, and an
-	// empty array would be this service asserting the publisher sent one.
+	// Absent rather than empty when there is nothing: a catalog of offers alone
+	// is legal, and an empty array would assert the publisher sent one.
 	if len(c.Resources) > 0 {
 		if members["resources"], err = json.Marshal(c.Resources); err != nil {
 			return nil, err
@@ -201,14 +153,10 @@ func (c Catalog) MarshalJSON() ([]byte, error) {
 // WithoutChildren is the catalog's own members: everything the publisher sent
 // except `resources` and `offers`.
 //
-// A map rather than bytes because the publish mapper has a member of its own to
-// resolve into the document before storing it — `isActive`, which A9 defaults
-// and RFC 7396 would otherwise leave to the merge — and handing back bytes
-// would make that a second decode of the same document.
-//
-// A Catalog with no Raw was built in Go rather than decoded, so its members are
-// whatever the struct holds. That path exists for tests and for the conformance
-// suite; every catalog that arrives over the wire has Raw.
+// A map rather than bytes because the publish mapper has `isActive` to resolve
+// into the document before storing it (A9), and bytes would make that a second
+// decode. A Catalog with no Raw was built in Go rather than decoded — the path
+// tests and the conformance suite take — and yields whatever the struct holds.
 func (c Catalog) WithoutChildren() (map[string]json.RawMessage, error) {
 	raw := c.Raw
 	if len(raw) == 0 {
@@ -245,10 +193,8 @@ type Resource struct {
 	Descriptor         json.RawMessage `json:"descriptor,omitempty"`
 	ResourceAttributes json.RawMessage `json:"resourceAttributes,omitempty"`
 
-	// Raw is the resource exactly as it arrived, and it is what reaches the
-	// resources.document column (A17). Same reason as Offer.Raw: the spec
-	// leaves additionalProperties unset, so re-marshalling the three named
-	// members would drop whatever else a publisher sent.
+	// Raw is the resource exactly as it arrived, and what reaches the
+	// resources.document column (A17). Same reason as Offer.Raw.
 	Raw json.RawMessage `json:"-"`
 }
 
@@ -296,21 +242,16 @@ type Offer struct {
 	Validity        json.RawMessage `json:"validity,omitempty"`
 	OfferAttributes json.RawMessage `json:"offerAttributes,omitempty"`
 
-	// Raw is the offer exactly as it arrived, and it is what reaches the
-	// offers.offer column.
-	//
-	// The spec leaves Offer.additionalProperties unset, so a publisher may send
-	// members this struct never named. Re-marshalling the struct would drop
-	// them, and the column's whole claim — "the offer document, verbatim" —
-	// would be false for precisely the publishers who needed it to be true.
+	// Raw is the offer exactly as it arrived, and what reaches the offers.offer
+	// column. The spec leaves Offer.additionalProperties unset, so a publisher
+	// may send members this struct never named; re-marshalling would drop them
+	// and make the column's "verbatim" claim false for whoever relied on it.
 	Raw json.RawMessage `json:"-"`
 }
 
-// UnmarshalJSON decodes an offer and keeps the bytes it decoded.
-//
-// The alias breaks the recursion; without it this method calls itself. The
-// captured bytes are the caller's slice, which encoding/json does not retain
-// after the call, so they are copied.
+// UnmarshalJSON decodes an offer and keeps the bytes it decoded. The alias
+// breaks the recursion; the bytes are copied because encoding/json does not
+// retain the caller's slice after the call.
 func (o *Offer) UnmarshalJSON(data []byte) error {
 	type wire Offer
 
@@ -324,19 +265,13 @@ func (o *Offer) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON writes the offer back exactly as it arrived.
+// MarshalJSON writes the offer back exactly as it arrived, which is what lets
+// the discover response claim to render `offers.offer` verbatim.
 //
-// The counterpart to UnmarshalJSON above, and the reason the discover response
-// can claim to render `offers.offer` verbatim: the spec leaves
-// Offer.additionalProperties unset, so a publisher may send members this struct
-// never named, and re-marshalling the fields alone would drop them for
-// precisely the publishers who relied on the column keeping them.
-//
-// Raw is the bytes this value was DECODED from, so a caller that decodes an
-// offer and then edits a field would marshal the original. Nothing does — an
-// offer is stored verbatim and rendered verbatim, and there is no step between
-// that rewrites one. A value built in Go carries no Raw and marshals from its
-// fields, which is what keeps a hand-constructed Offer honest.
+// Raw is the bytes this value was DECODED from, so editing a field on a decoded
+// Offer and marshalling would emit the original. Nothing does — an offer is
+// stored verbatim and rendered verbatim, with no step between. A value built in
+// Go carries no Raw and marshals from its fields.
 func (o Offer) MarshalJSON() ([]byte, error) {
 	if len(o.Raw) > 0 {
 		return o.Raw, nil
@@ -349,14 +284,10 @@ func (o Offer) MarshalJSON() ([]byte, error) {
 // Attributes reads the JSON-LD pair out of an extensibility container —
 // `resourceAttributes`, `offerAttributes` and their kin.
 //
-// Both members are scalar strings and both are required (C4). Typed that way,
-// an array payload fails L1 validation instead of silently having element zero
-// picked for it, which is how two publishers come to disagree about the shape
-// of the field discover filters on.
-//
-// It reads the pair and nothing else. The container is additionalProperties:
-// true and its domain keys are stored verbatim on the parent's RawMessage, so
-// this type is a lens over a document rather than a replacement for it.
+// Both members are scalar strings and both required (C4), so an array payload
+// fails L1 rather than silently having element zero picked for it. The pair and
+// nothing else: the container's domain keys stay verbatim on the parent's
+// RawMessage, making this a lens over a document, not a replacement for it.
 type Attributes struct {
 	Context string `json:"@context"`
 	Type    string `json:"@type"`
@@ -364,13 +295,12 @@ type Attributes struct {
 
 // TimePeriod is the validity window on a catalog or an offer. It expands into
 // four independent columns, not two: `startDate`/`endDate` are RFC 3339
-// instants and `startTime`/`endTime` are a recurring daily window, and the two
-// halves may appear separately.
+// instants, `startTime`/`endTime` a recurring daily window, and the two halves
+// may appear separately.
 //
-// The four members are raw for the same reason the catalog's optional documents
-// are. RFC 7396 permits a patch that clears `endDate` and keeps `startDate`, so
-// each member needs three states — absent, explicit null, value — and a *string
-// collapses the first two into nil.
+// All four are raw because RFC 7396 permits a patch that clears `endDate` and
+// keeps `startDate`, so each needs three states — absent, null, value — and a
+// *string collapses the first two.
 type TimePeriod struct {
 	StartDate json.RawMessage `json:"startDate,omitempty"`
 	EndDate   json.RawMessage `json:"endDate,omitempty"`
@@ -430,8 +360,7 @@ type SpatialConstraint struct {
 	Geometry *GeoJSONGeometry `json:"geometry,omitempty"`
 
 	// A pointer because the spec documents distanceMeters as "Ignored for other
-	// ops", and ignoring it silently is the one thing this service will not do:
-	// a caller who sent one believes it is filtering. Telling them requires
+	// ops", and telling the caller instead of ignoring it silently requires
 	// distinguishing a sent 0 from an unsent field.
 	DistanceMeters *float64 `json:"distanceMeters,omitempty"`
 
@@ -440,9 +369,9 @@ type SpatialConstraint struct {
 }
 
 // The nine CQL2 operators the spec's enum admits. S_TOUCHES and S_CROSSES are
-// named here because L1 validation accepts them — they are legal enum values —
-// and the only thing standing between a caller and a silently wrong answer is
-// the refusal the intent mapper raises against these two constants.
+// named because L1 accepts them as legal enum values, and the intent mapper's
+// refusal against these two constants is all that stands between a caller and a
+// silently wrong answer (A10).
 const (
 	OpSIntersects = "S_INTERSECTS"
 	OpSDisjoint   = "S_DISJOINT"
@@ -465,26 +394,20 @@ const (
 
 // Targets is SpatialConstraint's `targets`: one JSONPath pointer or several.
 //
-// `beckn.yaml` declares a oneOf over a string and an array of strings and real
-// senders use both, so the oneOf is resolved here, once, and everything
-// downstream sees a slice. A mapper that had to branch on the wire form would
-// be a second place for the two forms to diverge.
+// `beckn.yaml` declares a oneOf over a string and an array of strings, and real
+// senders use both, so it is resolved here once and everything downstream sees a
+// slice — a mapper branching on the wire form would be a second place for the
+// two to diverge.
 type Targets []string
 
 // UnmarshalJSON accepts the scalar and the array form and refuses everything
-// else.
+// else. A shape read as "no targets" would drop the spatial predicate and answer
+// with the whole index, the silently-widened result the plan rejects everywhere.
 //
-// Refusing matters more than it looks: a shape read as "no targets" would drop
-// the spatial predicate and answer with the whole index, which is exactly the
-// silently-widened result the plan rejects on every branch of the spatial path.
-//
-// `null` is checked before anything else because encoding/json hands it to this
-// method like any other value, and unmarshalling it into a string succeeds as a
-// no-op — so reading the arms in order would turn `targets: null` into one
-// empty pointer that no sender wrote, with no error to show for it. The array
-// is read as []*string for the same reason one level down: `["$.a", null]` is
-// not an array of strings, and []string would quietly render that null as "".
-// Neither shape satisfies the oneOf, so neither is this package's to interpret.
+// `null` is checked FIRST because unmarshalling it into a string succeeds as a
+// no-op, so reading the arms in order would turn `targets: null` into one empty
+// pointer no sender wrote. The array is []*string one level down for the same
+// reason: []string would render `["$.a", null]`'s null as "".
 func (t *Targets) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return fmt.Errorf("targets is null, which is neither a string nor an array of strings")
