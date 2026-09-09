@@ -362,17 +362,17 @@ answered the wrong questions.
 
 | | Expectation, and where it stands | Lands in |
 |---|---|---|
-| OP1 | **Is the node up and serving?** Span rate is a proxy, and a poor one: a node that stopped receiving looks exactly like a network that went quiet | Task 25 |
+| OP1 | **Is the node up and serving?** Span rate is a proxy, and a poor one: a node that stopped receiving looks exactly like a network that went quiet. **But the answer is already deployed and is not ours to emit.** `router.go:97-98` serves `/healthz` and `/readyz`, kubelet already polls both, and kube-state-metrics already exports `kube_pod_status_ready` and `kube_pod_container_status_restarts_total` from them. A gauge this process emits *about itself* is strictly worse than an external prober, because a process wedged enough to stop serving can usually still set a gauge — self-reported liveness is the one kind that lies in exactly the outage it exists to catch | **Nothing here.** kubelet + kube-state-metrics. Struck from Task 25 on 2026-09-09 |
 | OP2 | **Rate, errors, duration per action.** Derivable from spans the moment 23c lands. Needs aggregation, not instrumentation — the `spanmetrics` connector, no Go at all; see *How the derivation happens* under **Metrics** | **Collector config**, not Task 25 |
-| OP3 | **Saturation — is it about to fall over?** Three ceilings exist and not one has a *level* anyone can see: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). The refusals themselves are already visible — `Trace` is index 1 in `router.go:134-141`, above both `Envelope` and `RateLimit`, so a 429 and a body-ceiling refusal each produce a span, a status off the record and, post-23d, an `error` event from the one `logNack` they both pass through. What no span can carry is the pool sitting at 30 of 32 for ten minutes while every request succeeds: a ceiling is a **level**, a span is an **event**, and the distance to a ceiling is observable only by sampling it on a clock. That is the whole of OP3 and it is enough | **Task 25** |
-| OP4 | **Dependency health** — Postgres acquire-wait and query latency; Ollama when semantic is on. `retrieval.embedding_ms` covers Ollama only while it is enabled, and nothing covers Postgres | Task 25 |
+| OP3 | **Saturation — is it about to fall over?** Three ceilings exist and not one has a *level* anyone can see: `DATABASE_MAX_CONNS` (32), `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (20/40), `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB). The refusals themselves are already visible — `Trace` is index 1 in `router.go:134-141`, above both `Envelope` and `RateLimit`, so a 429 and a body-ceiling refusal each produce a span, a status off the record and, post-23d, an `error` event from the one `logNack` they both pass through. What no span can carry is the pool sitting at 30 of 32 for ten minutes while every request succeeds: a ceiling is a **level**, a span is an **event**, and the distance to a ceiling is observable only by sampling it on a clock. **Narrowed on 2026-09-09 against the layers that already emit:** a *utilisation* gauge is not the instrument this needs. `pg_stat_activity` grouped by `application_name` already shows connections per pod — which we do not get today only because `pool.go` never sets `application_name`, a one-line fix rather than an instrument — and what it shows is *established* connections, which pgxpool holds open when idle, so 32 open with 2 acquired is indistinguishable from 32 acquired. The number that actually answers *about to fall over* is not utilisation at all: it is `EmptyAcquireCount`, acquires that had to **wait** because the pool was empty, which rises before anything fails and is invisible to every layer outside this process. The other two ceilings need nothing — a 429 and a body-ceiling refusal each already produce a span, a status off the record and an `error` event from the one `logNack` they both pass through (`Trace` is index 1 in `router.go:134-141`, above both `Envelope` and `RateLimit`) | **Task 25**, as acquire-wait only. `RATE_LIMIT_*` and `SERVER_MAX_REQUEST_BODY_BYTES` get no instrument |
+| OP4 | **Dependency health** — Postgres acquire-wait; Ollama when semantic is on. `retrieval.embedding_ms` covers Ollama only while it is enabled. **Query latency leaves this row:** it is the span's own duration once a repository span exists, and `postgres_exporter` plus `pg_stat_statements` answer it server-side better than a client histogram would. Acquire-wait is the half nothing else can see — it is queueing *inside this process, before any syscall*, so cAdvisor sees only the container's resource envelope and Postgres never sees a statement that was not sent. This is the one operator number in this document that no other layer can produce | **Task 25** — the whole of it |
 | OP5 | **Which build is running?** onix stamps `service.version` and three `onix.build.*`. We have no version variable and no `-ldflags` in the Makefile, so *did the deploy break it* is unanswerable here | **23a** — the Resource is already being constructed; this is the cheapest moment it will ever be |
 | OP6 | **Data freshness per provider.** In agriculture a stale weather catalog is worse than an absent one: it answers confidently and wrongly. Derivable from publish spans keyed on `publish.provider_ids` | Task 25 |
 | OP7 | **Is the telemetry itself working?** Trace completeness — the share of transactions carrying spans from every layer that should have handled them. Catches a layer silently dropping out, which every other dashboard renders as "traffic went down" | onix **U4**, at the network collector |
 | OP8 | **Cardinality and cost.** Export here is always-on and unsampled. Defensible at Phase 1 volumes, not at network scale, and cheaper to decide before ingestion is paid for than after | **Decision 6** |
 | OP9 | **An SLO, so a latency number has a verdict attached.** "p95 is 300 ms" means nothing without a target, and the plan's 20 ms retrieval budget is an internal figure rather than a served-request objective | Decision 7 |
-| OP10 | **What pages a human.** An alert list falls out of OP1, OP3 and OP4 — the three levels — plus OP2's error rate once the connector runs. Out of nothing else | Task 25 for the levels; the error-rate alert needs no code |
-| OP11 | **The deny-list is testable.** Today it is a rule 23a–23e comply with and nothing enforces. A conformance test over the facilitator exporter is the only thing that turns it into a pin. It asserts over the exported **bytes**, regexing the deny-list across string *values* rather than key names — `Visibility` is closed-world over keys and the risk is in values: a caller-supplied `beckn.schemaContext` URI, a `status.message`, a `zap.Error(err)` carrying wrapped driver text | **Task 26**, and it needs only an in-memory exporter — so **23d**, not 23f |
+| OP10 | **What pages a human.** An alert list falls out of OP1 (kubelet's, not ours), OP3/OP4's acquire-wait, and OP2's error rate once the connector runs. Out of nothing else | **No code anywhere.** Every input is either already deployed or is Task 25's single instrument; the list itself is a rule file with no acceptance criterion, which is why it was struck |
+| OP11 | **The deny-list is testable.** Today it is a rule 23a–23e comply with and nothing enforces. A conformance test over the facilitator exporter is the only thing that turns it into a pin. It asserts over the exported **bytes**, regexing the deny-list across string *values* rather than key names — `Visibility` is closed-world over keys and the risk is in values: a caller-supplied `beckn.schemaContext` URI, a `status.message`, a `zap.Error(err)` carrying wrapped driver text | **Task 26**, and it follows **23f** — corrected 2026-09-09. This row previously said 23d on the grounds that "an in-memory exporter is all it needs", which is true about the exporter *type* and misses that the thing under test is `telemetry/redact.go`, and that file is 23f's deliverable. A conformance test cannot precede the projection it asserts on |
 | OP12 | **Clock discipline.** Four layers, four clocks, one stitched trace: skew shows up as a child span starting before its parent, and as negative inter-layer deltas. Cheap to require, expensive to debug once someone is charting it | onix **U4** |
 
 ### What this changes in the plan
@@ -382,8 +382,8 @@ answered the wrong questions.
 | **23a** | Add build identity to the Resource — OP5. `-ldflags -X` in the Makefile and a `version` variable, matching what onix already does. This does not enlarge 23a's shape: the Resource is being built there anyway |
 | **23c** | Add the I1 alias attributes beside the `beckn.*` pair. Propagation (I3) was already in scope |
 | **23d** | Unchanged, and *smaller*: P7 moves to the provider adapter, so the H3-coarsening question raised against 23d is **withdrawn as a discovery-service concern**. See open question 11 |
-| **Task 25** (new) | **Node-operator metrics.** The saturation *levels* of OP3, Postgres dependency health, one liveness gauge, and a duration histogram conditional on Decision 6. Deliberately *not* Task 24: these are `onix_*`-style operational numbers for the node pipeline and are **not blocked** on the metric-code registry that blocks the facilitator's METRIC signal. Equally deliberately not a mirror of the spans — a metric that restates a span fact is the `duration_ms` mistake one signal up. What earns a metric here is a number the span layer cannot hold: a level between events, or a distribution that survives the sampler Decision 6 hands to deployments. Per-provider freshness and the alert list are **struck** — see Task 25's own section |
-| **Task 26** (new) | **Deny-list conformance test** — OP11. Asserted over exported bytes, not key names, and gated on 23d rather than 23f: an in-memory exporter is all it needs |
+| **Task 25** (new) | **Node-operator metrics — one instrument.** Postgres pool acquire-wait, and nothing else. Deliberately *not* Task 24: this is an `onix_*`-style operational number for the node pipeline and is **not blocked** on the metric-code registry that blocks the facilitator's METRIC signal. The scope was cut from three instruments to one on **2026-09-09**, against the test the first draft never ran — see *What earns an instrument here* below. Per-provider freshness (OP6), the alert list (OP10) and the liveness gauge (OP1) are all **struck**, and `ratelimit.go` and `envelope.go` leave the file list with them |
+| **Task 26** (new) | **Deny-list conformance test** — OP11. Asserted over exported bytes, not key names. Gated on **23f**, which builds the `redact.go` it asserts against; an in-memory exporter is all it needs *beyond* that |
 
 Four items in onix, none of which this repo can land:
 
@@ -1090,8 +1090,8 @@ Three things this pins, each of which is a way to get it wrong:
 **Why this cannot be the `METRIC` signal, stated once so nobody tries.** The
 spec permits exactly one aggregation: "only the 'sum' aggregation and
 non-monotonic only" (`otel-specification.md:437`). `spanmetrics` emits a
-**monotonic** counter and a **histogram**, and Task 25's three instruments are a
-gauge and a histogram — every node-local stream in this design is outside the
+**monotonic** counter and a **histogram**, and Task 25's one instrument is a pair
+of monotonic counters — every node-local stream in this design is outside the
 spec's METRIC profile on aggregation type alone, before `metric.code` is even
 reached. That is not a defect in either; it is the split `ref-impl-design.md`
 describes, with node-operator observability on one side and the network's
@@ -1124,6 +1124,74 @@ the boundary, not the bug.
 
 ---
 
+## Node-operator metrics — Task 25
+
+Task 24 above is the facilitator's METRIC signal, blocked on a `metric.code`
+registry OAN does not have. This is the other thing entirely: the numbers the
+person *running this node* needs. Separating them is why the service has metrics
+at all; conflating them is why it had none.
+
+### What earns an instrument here
+
+**Only a number invisible to the layer below.** The first draft of this task
+named three instruments without running that test, and running it removes two.
+
+| Layer | Already emits | Blind to |
+|---|---|---|
+| kubelet / cAdvisor / kube-state-metrics | the container's resource envelope; pod ready, restarts, OOM kills | anything inside the application |
+| `postgres_exporter` / `pg_stat_statements` | the server's own state — connections, locks, replication lag, statement latency | anything that never arrived |
+| this process | — | — |
+
+Applied honestly:
+
+- **Liveness (OP1) — struck.** `/healthz` and `/readyz` already exist and kubelet
+  already polls them. A self-reported gauge is worse than an external prober at
+  the one moment it matters.
+- **Pool utilisation — struck.** `pg_stat_activity` grouped by `application_name`
+  gives connections per pod. **`pool.go` must set `application_name`**; that is
+  the whole change, and it is one line, not an instrument.
+- **Rate, errors, duration (OP2) — struck.** The `spanmetrics` connector, in YAML.
+- **Acquire-wait (OP3/OP4) — kept.** Queueing inside this process, before any
+  syscall. No layer below can see it, and it rises *before* anything fails.
+
+### The one instrument
+
+Source is `pgxpool.Stat()`, which computes everything already — `container.go:200`
+reads `EmptyAcquireCount()` for `/readyz` today. So this is a sampling callback
+over an existing struct, not new bookkeeping.
+
+| Reported | From |
+|---|---|
+| acquires that had to wait on an empty pool | `Stat().EmptyAcquireCount()` |
+| cumulative time spent in that wait | `Stat().EmptyAcquireWaitTime()` |
+
+**Two observable counters, not a histogram, and this is a constraint rather than
+a preference.** pgxpool exposes only cumulative totals; a real distribution would
+mean wrapping every `Acquire` call on the hot path. Two counters let the consumer
+divide one rate by the other for mean wait per acquire, which answers the
+saturation question without touching the request path at all.
+
+### Tests pin
+
+- Acquire-wait observed under a pool deliberately sized to 1, so a second
+  concurrent caller must wait and the counters must move.
+- Registered under our own scope, never the global meter.
+- Every label names a `fact.Key` carrying the `Label` bit with a `Bounded` value
+  set — the cardinality guard `fact` already enforces.
+- **A count: one instrument.** A second arrives with a reviewer attached, and the
+  reviewer's question is the table above — which layer is blind to it?
+- **No request counters and no rejection counters.** Every refusal already
+  produces a span, a status and an `error` event. A counter restating them is the
+  `duration_ms` mistake one signal up.
+
+### Not blocked
+
+Nothing here needs the network to answer anything. Open question 7's SLO fed
+OP10's alert list, and OP10 is struck — so **the SLO does not gate this task**,
+which an earlier version of that row claimed.
+
+---
+
 ## Build order
 
 A23 split Task 23 into six. One review gate between each. **`telemetry-seam.md`
@@ -1145,8 +1213,8 @@ Two tasks follow 23, and neither is blocked by what blocks 23f:
 
 | | Task | Files | Tests pin |
 |---|---|---|---|
-| **25** | **Node-operator metrics** — OP1, OP3 and OP4. **Three instruments, and no more.** OP2 also left this row: it is `spanmetrics` in the collector, not a counter here, so "conditionally" is now decided and the condition is *no*. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `project_label.go`; `storage/postgres/` | Pool acquire-wait and in-use are observed under a pool deliberately sized to 1 — a **level**, sampled on a clock, which is the whole of OP3 and the only part of it no span can carry. One liveness gauge, held to the standard of beating `/readyz` at something. Every instrument is registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters, and no request counters either.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up. The test that pins this is a count: three instruments registered, so a fourth arrives with a reviewer attached |
-| **26** | **Deny-list conformance** — OP11. Runnable **after 23d**, not after 23f | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it — and over its string *values*, not its keys, since the risk is a caller-supplied URI or a wrapped driver error and neither is a key `Visibility` can reach. Facilitator projection only: asserting it on the ClickStack stream would forbid the local analysis the split exists to permit. Fixture-driven, so adding a denied field is a fixture line, and it carries a vacuity guard — a conformance test that passes over zero inputs is a failure this repo has already met once |
+| **25** | **Node-operator metrics** — OP3 and OP4 only. **One instrument, and no more** (cut from three on 2026-09-09; OP1 went to kubelet, pool utilisation went to `pg_stat_activity` + an `application_name` line in `pool.go`). See *Node-operator metrics — Task 25* above for the layer test that removed them. OP2 also left this row: it is `spanmetrics` in the collector, not a counter here, so "conditionally" is now decided and the condition is *no*. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `project_label.go`; `storage/postgres/` | Acquire-wait is observed under a pool deliberately sized to 1, so a second concurrent caller must wait and `EmptyAcquireCount`/`EmptyAcquireWaitTime` must both move. **Two observable counters off `pgxpool.Stat()`, not a histogram** — pgxpool exposes only cumulative totals, so a distribution would mean wrapping every `Acquire` on the hot path; the consumer divides one rate by the other. **No in-use gauge** and **no liveness gauge** — the first is `pg_stat_activity`'s once `pool.go` sets `application_name`, the second is kubelet's. Registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters, and no request counters either.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up. The test that pins this is a count: **one** instrument registered, so a second arrives with a reviewer attached — and the reviewer's question is the layer table, *which layer below us is blind to this number?* |
+| **26** | **Deny-list conformance** — OP11. Follows **23f**, which builds the `redact.go` under test. This row said "after 23d, not after 23f" until 2026-09-09 and directly contradicted `implementation-prompts.md`; that row was the correct one | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it — and over its string *values*, not its keys, since the risk is a caller-supplied URI or a wrapped driver error and neither is a key `Visibility` can reach. Facilitator projection only: asserting it on the ClickStack stream would forbid the local analysis the split exists to permit. Fixture-driven, so adding a denied field is a fixture line, and it carries a vacuity guard — a conformance test that passes over zero inputs is a failure this repo has already met once |
 
 Notes that bite:
 
@@ -1211,7 +1279,7 @@ both are cheaper to answer before the thing they govern is built than after:
 | | Decision | Recommendation | Needed by |
 |---|---|---|---|
 | 6 | **Sampling — what fraction of spans is exported?** Today's design is always-on and unsampled. That is defensible at Phase 1 volumes and indefensible at network scale, and the cost lands on whoever pays for ingestion, who is not us. **OP8** | **Set no sampler.** The default you get by writing nothing is exactly the one we want, and writing the one we want is what destroys it — see below the table | Before **23c**, and it is one line *not* written |
-| 7 | **What is the served-request SLO?** The plan's 20 ms retrieval budget is an internal figure covering one phase of one path. Without an end-to-end objective a p95 is a number with no verdict attached, and OP10's alert list has nothing to fire on. **OP9** | **Do not invent one here.** It is the network's to set, and a target this document picks becomes a target someone charts. Ask for it as one number per action, at the served-response boundary, and record it beside the metrics that measure it | Before **Task 25** |
+| 7 | **What is the served-request SLO?** The plan's 20 ms retrieval budget is an internal figure covering one phase of one path. Without an end-to-end objective a p95 is a number with no verdict attached, and OP10's alert list has nothing to fire on. **OP9** | **Do not invent one here.** It is the network's to set, and a target this document picks becomes a target someone charts. Ask for it as one number per action, at the served-response boundary, and record it beside the metrics that measure it | **Not before Task 25** — corrected 2026-09-09. The SLO fed OP10's alert list, and OP10 is struck, so Task 25's one instrument needs no target to be worth emitting. This gates dashboards and paging, which are nobody's task in this repo |
 
 **Decision 6 in full, because the obvious implementation is self-defeating.** The
 recommendation reads like a null decision and is not. Passing
