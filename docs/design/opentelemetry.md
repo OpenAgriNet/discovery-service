@@ -1278,12 +1278,20 @@ Notes that bite:
   place Task 23 puts `otelhttp`", and instructed 23c to delete them. Both halves
   were wrong. `:22-23` names the slot — "a pass-through today, and the place Task
   23 starts the span" — and does not mention the library. `:31-37` states the
-  **rejection** and its reason: "NOT otelhttp: the network telemetry spec requires
-  scope.name/scope.version on every exported batch, and the instrumentation scope
-  is fixed when the span is created, so a span otelhttp started would carry that
-  package's scope for ever (A23, ADR-0011)." That is this document's own argument
-  under *Scope*, written at the one file someone would reach for the library in.
-  Deleting it is the failure the note was trying to prevent, inverted.
+  **rejection** and its reason, which at the time read: "NOT otelhttp: the
+  network telemetry spec requires scope.name/scope.version on every exported
+  batch, and the instrumentation scope is fixed when the span is created, so a
+  span otelhttp started would carry that package's scope for ever (A23,
+  ADR-0011)." That is this document's own argument under *Scope*, written at the
+  one file someone would reach for the library in. Deleting it is the failure the
+  note was trying to prevent, inverted.
+
+  **The quoted half about `requires` was itself wrong**, which the 2026-09-09
+  audit caught and `trace.go` no longer says — the block is Optional and the
+  collision is `scope.version`'s meaning, not a missing mandatory field. Quoted
+  verbatim above because the finding was about *deleting the rejection*, and a
+  quote silently improved is no longer evidence of what was there. The rejection
+  stands; only its stated reason narrowed.
 
   What 23c **does** delete is the chain-entry machinery and nothing else: the
   `w.Header().Add(HeaderChain, chainTrace)` line, the `chainTrace` constant, and

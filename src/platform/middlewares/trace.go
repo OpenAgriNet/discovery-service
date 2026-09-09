@@ -21,10 +21,18 @@ import (
 // It takes the tracer rather than obtaining one, and that is the whole of A23.
 // The instrumentation scope is fixed when the tracer is obtained and cannot be
 // set at span creation, so a span started by otelhttp would carry that package's
-// scope for ever; scope.name and scope.version are Required on every exported
-// batch in the network telemetry spec, so that is a batch a facilitator rejects
-// and nothing else about the span looks wrong (ADR-0011). One tracer, obtained
-// once in telemetry.Init, passed here.
+// scope for ever.
+//
+// What that costs is a spec/OTel data-model collision, and NOT a rejected batch
+// — the earlier comment here said scope was Required and that was a misreading
+// the 2026-09-09 audit caught. The scope block is Optional
+// (otel-specification.md:140); its own two fields are Required only within it.
+// The collision is scope.version, which the spec defines as the version of the
+// NETWORK TELEMETRY SPECIFICATION in a field OTel defines as the instrumentation
+// library's. otelhttp would report v0.69.0 where the spec wants "1.0", and no
+// instrumentation library will ever do otherwise. So the batch is accepted and
+// quietly carries the wrong answer in a field a facilitator uses for validity
+// checks (ADR-0011). One tracer, obtained once in telemetry.Init, passed here.
 //
 // recipient is this service's own subscriber id, from APP_SUBSCRIBER_ID. It is
 // NOT the caller's receiverId, which Envelope observes separately: the two agree

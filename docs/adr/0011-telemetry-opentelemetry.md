@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-25
-**Amended:** 2026-09-07, 2026-09-08 — see Amendments
+**Amended:** 2026-09-07, 2026-09-08, 2026-09-09 — see Amendments
 
 ## Context
 
@@ -62,12 +62,26 @@ inside it, and both moved for the same reason: tracing stopped being local
 debugging and became an interop contract with the Sunbird-Obsrv network
 telemetry spec, which a facilitator consumes.
 
-1. **`otelhttp` cannot be used.** The spec requires `scope.name` and
-   `scope.version` on every exported batch. The instrumentation scope is fixed
-   when the span is created and is immutable afterwards, so a span started by
-   `otelhttp` carries *that package's* name and version permanently and no later
-   call can correct it. This was not a consideration when the ADR was written,
-   because nothing then read the scope.
+1. **`otelhttp` cannot be used**, and the reason on record here was wrong until
+   the 2026-09-09 audit. The claim was that the spec *requires* `scope.name` and
+   `scope.version` on every exported batch. It does not: the `scope` block is
+   **Optional** (`otel-specification.md:140`), the two fields are Required only
+   *within* it, and scope carries "transport information and metadata ...
+   intended only for transport & validity checks, without any impact on the
+   actual data and its usage" (`:86`). A batch without it is not rejected.
+
+   The conclusion survives on better and narrower ground. `scope.version` is
+   defined by the spec as "a version number of the **network telemetry
+   specification**" — a field OTel defines as the *instrumentation library's*
+   version, which the spec has repurposed. So `otelhttp` would report `v0.69.0`
+   there where the spec wants `"1.0"`, and no instrumentation library will ever
+   put a specification version in that field. The instrumentation scope is fixed
+   when the tracer is obtained and is immutable afterwards, so no later call can
+   correct it.
+
+   The decision is unchanged; what it rests on is a data-model collision, not a
+   missing mandatory field. That is a smaller claim, and it justifies exactly one
+   file — `src/platform/middlewares/trace.go`.
 
 2. **Metrics leave the process.** A stateless service behind N replicas
    computing a counter in memory emits N partial counts that no consumer can

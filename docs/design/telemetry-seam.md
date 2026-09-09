@@ -594,7 +594,8 @@ Three mitigations, ranked honestly:
    than detecting it, because it converts the dangerous operation (rename) into
    the safe one (alias). Under it a stale copy means "late adopting an alias", not
    "invisible spans".
-2. **Put the contract version in `scope.version`.** It is a Required field we are
+2. **Put the contract version in `scope.version`.** Required inside the `scope`
+   block — which is itself Optional, so this is a field we chose to send and are
    otherwise wasting on a constant. One panel grouping spans by `scope.version`
    then shows a participant on a stale contract, in production, with neither repo
    doing anything.

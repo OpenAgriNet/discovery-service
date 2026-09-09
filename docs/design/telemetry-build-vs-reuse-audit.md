@@ -64,14 +64,24 @@ any impact on the actual data and its usage."*
 Five locations state instead that the spec **requires** `scope.name` and
 `scope.version` **on every exported batch**:
 
-| File | Line |
-|---|---|
-| `docs/adr/0011-telemetry-opentelemetry.md` | 65-66 |
-| `docs/design/discover-and-publish.md` (A23) | 148 |
-| `docs/design/discover-and-publish.md` | 5006-5007 |
-| `docs/design/discover-and-publish.md` | 5049 |
-| `src/platform/middlewares/trace.go` | 24-25 |
-| `docs/design/implementation-prompts.md` | 186 |
+| File | Line | |
+|---|---|---|
+| `docs/adr/0011-telemetry-opentelemetry.md` | 65-66 | **corrected** |
+| `docs/design/discover-and-publish.md` (A23) | 148 | **corrected** |
+| `docs/design/discover-and-publish.md` | 5006-5007 | **corrected** |
+| `docs/design/discover-and-publish.md` | 5049 | **not a misquote** — "ours and not a dependency's" is what the test pins and is true |
+| `src/platform/middlewares/trace.go` | 24-25 | **corrected** |
+| `docs/design/implementation-prompts.md` | 186 | **corrected** |
+| `docs/design/opentelemetry.md` | 1282 | **missed by this audit**, found on 2026-09-09 while applying it — a verbatim quote of `trace.go`'s old comment, kept as a quote with the error marked, because a quote silently improved stops being evidence |
+
+So the count was five and the locations were six, one of which was innocent and
+one of which was elsewhere. `opentelemetry.md:442-443` had it right all along
+and is the sentence the corrections were written against. `telemetry-seam.md:597`
+called `scope.version` "a Required field" without saying required *inside an
+optional block*; tightened rather than counted, since it is not the otelhttp
+argument.
+
+**All corrected on 2026-09-09.** The finding below is what they now say.
 
 The block is **Optional**, and `version` is *the spec's* version, not a library's.
 
@@ -132,7 +142,7 @@ knows what the deny-list actually needs — which today nobody does.
 
 | Candidate | Latest | Would it replace ours? | Verdict |
 |---|---|---|---|
-| `otelhttp` v0.69.0 (already in `go.mod`, unused) | — | `trace.go`, 228 lines | **No.** Finding 1's `scope.version` collision. But delete the unused dependency or use it. |
+| `otelhttp` v0.69.0 (in `go.mod` as `// indirect`) | — | `trace.go`, 228 lines | **No.** Finding 1's `scope.version` collision. ~~But delete the unused dependency or use it.~~ **That half was wrong and is resolved: it is not ours to delete.** `go mod why` traces it to `tests/dbtest` → `testcontainers-go/modules/postgres` → `moby/moby/client`, which imports it directly. `// indirect` is the correct marking, `go mod tidy` leaves `go.mod` byte-identical, and removing the line by hand would be undone by the next tidy. Verified 2026-09-09. |
 | `contrib/bridges/otelzap` | v0.20.1 | Not 23e. | **No, and my earlier framing was wrong.** The bridge routes zap records into an OTel **LoggerProvider** — the logs signal over OTLP. `telemetry.go:102-123` builds a `TracerProvider` only; logs leave this process as zap JSON on stdout for the collector to scrape. Adopting otelzap is a *transport change* for logs, not a way to delete 23e's ~35 lines. Worth considering on its own merits, separately, and it is a bigger change than the one it was proposed to avoid. |
 | `github.com/exaring/otelpgx` | v0.11.1 | Task 25's one instrument, plus DB query spans we do not have | **Genuinely promising, and the single best candidate here.** It is a `pgx` tracer, which is exactly our seam (`storage/postgres/pool.go`). Needs checking against pgx v5 and against whether its spans carry our scope — if it obtains its own tracer, Finding 1's collision applies to it too, and that is the thing to test first. |
 | `contrib/exporters/autoexport` | — | `telemetry.go:151-226`, ~75 lines | **Marginal.** Replaces a small, working, well-understood function with a dependency, and gives up the explicit `OTEL_EXPORTER=none` path the tests rely on. Low value. |
