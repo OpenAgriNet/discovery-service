@@ -135,8 +135,14 @@ func (p *spanProjection) absent() {
 // free to disagree with the first. NoEvent drops the facts that belong on span
 // EVENTS: they are on the same record, and emitting them here as well would put
 // every one of them on the span too.
+//
+// PromoteToSpan is the per-row exception to that second bit, not a softening of
+// it — the row still ships on its event, and only the rows that declare the
+// bool are copied here. See the field's own comment for what buys the
+// duplication; fact.Validate refuses the bool on a row where it would mean
+// nothing.
 func onTheSpan(def fact.Definition) bool {
-	return def.Signals&fact.Span != 0 && def.Event == fact.NoEvent
+	return def.Signals&fact.Span != 0 && (def.Event == fact.NoEvent || def.PromoteToSpan)
 }
 
 // spanValue converts one observation to an attribute value.

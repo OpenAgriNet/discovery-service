@@ -179,6 +179,30 @@ func TestValidateRefusesTheRowsTheRegistryHappensNotToHaveToday(t *testing.T) {
 			}),
 			want: "ZeroIsAbsent",
 		},
+		{
+			// PromoteToSpan means "carry this onto the span AS WELL AS its
+			// event". A row with no event is already on the span, so the bool
+			// says nothing there — and a bool that reads as meaningful and does
+			// nothing is how someone concludes the mechanism is broken.
+			name: "a promotion on a row that has no event",
+			def: with(func(d *fact.Definition) {
+				d.PromoteToSpan = true
+			}),
+			want: "PromoteToSpan",
+		},
+		{
+			// The Log-only case. Promotion with no Span bit is a request to put
+			// an attribute on a span this row never reaches.
+			name: "a promotion on a row that is not on the span",
+			def: with(func(d *fact.Definition) {
+				d.Signals = fact.Log
+				d.SpanKey = ""
+				d.LogKey = "synthetic"
+				d.Event = fact.ResponseInfo
+				d.PromoteToSpan = true
+			}),
+			want: "PromoteToSpan",
+		},
 	}
 
 	for _, testCase := range cases {

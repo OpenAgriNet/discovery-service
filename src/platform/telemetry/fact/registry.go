@@ -693,19 +693,26 @@ var registry = [numKeys]Definition{
 			"identity's name. It answers how many providers SERVED, never how many exist.",
 	},
 	ResultEmpty: {
-		Name:        "ResultEmpty",
-		SpanKey:     "result.empty",
-		Signals:     Span,
-		Event:       ResponseInfo,
-		Kind:        KindBool,
-		Layer:       Local,
-		Cardinality: Bounded,
-		Values:      boolValues,
-		Visibility:  Public,
+		Name:          "ResultEmpty",
+		SpanKey:       "result.empty",
+		Signals:       Span,
+		Event:         ResponseInfo,
+		PromoteToSpan: true,
+		Kind:          KindBool,
+		Layer:         Local,
+		Cardinality:   Bounded,
+		Values:        boolValues,
+		Visibility:    Public,
 		Note: "The most valuable signal this service gives the network: somebody " +
 			"asked and nobody serves it. Its cost is real — it says unmet demand " +
 			"happened, not what for, and that half is recovered in ClickStack where " +
-			"the query text may go because the data does not leave.",
+			"the query text may go because the data does not leave. THE ONLY " +
+			"PromoteToSpan ROW, and the reason it is the only one: being the metric " +
+			"no other participant can produce, it is read hot by every consumer of " +
+			"this telemetry, and the spanmetrics connector that would count it sees " +
+			"span attributes only and cannot reach response_info at all. Two values " +
+			"and absent on publish, so as a connector dimension it triples a series " +
+			"count, not more.",
 	},
 
 	// ---- publish: request_info -----------------------------------------------

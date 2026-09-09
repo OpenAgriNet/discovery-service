@@ -282,6 +282,57 @@ func TestEventFactsStayOffTheSpanItself(t *testing.T) {
 	}
 }
 
+// TestAPromotedEventFactIsAlsoOnTheSpan is the exception to the test above, and
+// it exists as a row-by-row opt-in rather than a relaxation of the rule.
+//
+// opentelemetry.md's ClickStack note: span attributes are a queryable map and
+// event attributes are harder to aggregate, so a fact a dashboard reads hot is
+// worth carrying twice. result.empty is the one — unmet demand is the single
+// metric no other participant in the network can produce, so it is read by
+// every consumer of this telemetry and by the spanmetrics connector, which sees
+// span attributes ONLY and cannot reach an event at all.
+//
+// "Individually, not wholesale; the events are the interop contract" is the
+// whole design of PromoteToSpan: a bool per row, not a change to onTheSpan's
+// meaning. Promoting every event fact would duplicate 54 attributes to save
+// one query.
+func TestAPromotedEventFactIsAlsoOnTheSpan(t *testing.T) {
+	attributes := projected(t, func(record *fact.Record) {
+		record.ObserveBool(fact.ResultEmpty, true)
+	})
+
+	value, present := attributes[fact.Of(fact.ResultEmpty).SpanKey]
+	if !present {
+		t.Fatalf("%s is not on the span; the spanmetrics connector reads span "+
+			"attributes only, so unmet demand cannot be counted without it",
+			fact.Of(fact.ResultEmpty).SpanKey)
+	}
+	if value.AsBool() != true {
+		t.Errorf("%s = %v on the span, want true", fact.Of(fact.ResultEmpty).SpanKey, value.AsBool())
+	}
+}
+
+// TestOnlyTheDeclaredRowsArePromoted keeps the opt-in honest. The failure this
+// catches is someone reaching for the bool to save a query and quietly turning
+// the events into a second copy of the span.
+func TestOnlyTheDeclaredRowsArePromoted(t *testing.T) {
+	var promoted []string
+	for _, def := range fact.All() {
+		if def.PromoteToSpan {
+			promoted = append(promoted, def.SpanKey)
+		}
+	}
+
+	want := []string{fact.Of(fact.ResultEmpty).SpanKey}
+	if !slices.Equal(promoted, want) {
+		t.Errorf("promoted rows = %v, want %v.\n"+
+			"Adding one is a deliberate cost: the attribute ships on both the span "+
+			"and its event, and every promoted row is also a candidate dimension "+
+			"whose value set multiplies the connector's series count. If the new row "+
+			"is right, say why in its Note and update this list.", promoted, want)
+	}
+}
+
 // TestTheSpanUUIDIsNotProjected is a boundary between two things that both write
 // span attributes.
 //

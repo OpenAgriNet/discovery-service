@@ -111,7 +111,8 @@ distinction matters in exactly one direction:
 | Fact | Placement | Verified |
 |---|---|---|
 | `beckn.action`, `error_type`, `http.route`, `sender.unidentified` | span attribute | `registry.go` — `Event` unset |
-| `result.empty`, `result.provider_ids` | event `ResponseInfo` | `registry.go:695`, `:676` |
+| `result.empty` | event `ResponseInfo` **and span attribute** | `registry.go:695` — the one `PromoteToSpan` row |
+| `result.provider_ids` | event `ResponseInfo` | `registry.go:676` |
 | `retrieval.modes_degraded` | event `RetrievalInfo` | `registry.go:633` |
 | `publish.resource_count`, `publish.provider_ids` | event `RequestInfo` | `registry.go:743`, `:717` |
 
@@ -122,12 +123,19 @@ aggregate in HyperDX than span attributes, which are a queryable map, and names
 `result.empty` as the one candidate worth promoting to a span attribute for
 exactly that reason. That note is about *this* path, not only the collector's.
 
-The collector's `spanmetrics` connector is a second, stricter case: it reads
-span attributes **only**, which is why `otel/collector.yaml` can dimension on
-`beckn.action` and `error_type` and on nothing else. So promoting `result.empty`
-would serve both paths — cheaper aggregation here, and a dimension that is
-currently impossible there. Promote individually and not wholesale; the events
-are the interop contract.
+The collector's `spanmetrics` connector is a second and stricter case: it reads
+span attributes **only** and cannot reach an event at all. That is what settled
+`result.empty` — it is now carried on both the event and the span
+(`Definition.PromoteToSpan`), so it is cheap to aggregate here *and* nameable
+as a collector dimension, which it was not before. The promotion copies rather
+than moves, so `response_info`'s shape is unchanged; `fact.Validate` and
+`TestOnlyTheDeclaredRowsArePromoted` keep it individual rather than wholesale,
+because the events are the interop contract.
+
+**The third state is load-bearing.** A promoted attribute is *absent*, not
+false, on a publish span and on a discover that errored before responding.
+`result.empty != false` therefore counts every failure as demand that was met;
+the query is `result.empty = true`.
 
 ---
 
@@ -148,11 +156,26 @@ Deviations are called out per row.
 | `publish_api_total_count` | `1` | publish requests served | span count where `http.route` = `/publish` |
 | `discover_api_failure_percent` | `%` | share of discover requests refused or failed | spans with `error_type` present ÷ total; label `error_type` |
 | `publish_api_failure_percent` | `%` | same, for publish | as above |
+| `discover_api_empty_result_percent` | `%` | **unmet demand** — asked, and we had nothing | spans with `result.empty` = true ÷ total |
 
-These four are the ones to ratify first if the registry wants to move
+These five are the ones to ratify first if the registry wants to move
 incrementally. `discover_api_total_count` is deliberately byte-identical in
 shape to onix's computed `<action>_api_total_count`, so a facilitator already
 consuming onix needs no new case.
+
+**`discover_api_empty_result_percent` is the one worth arguing for hardest. It
+is the only code on this list that no other participant can produce.** An
+adapter sees that a request was answered; only the service that ran the query
+knows the answer was empty. Unmet demand is the number that tells a network
+operator which sectors have no supply, and it exists nowhere else in the stack.
+
+It is in Tier A rather than Tier B because `result.empty` was promoted onto the
+span — `Definition.PromoteToSpan`, the only row that sets it. It remains on
+`response_info` as well, so the event shape a facilitator reads is unchanged.
+Note the third state: the attribute is **absent** on publish and on a discover
+that errored before responding, and absent is not false. A query must say
+`result.empty = true`, never `!= false`, or it counts every failed request as
+demand that was met.
 
 **One caveat that a dashboard author must be told, because it is counter-intuitive
 and it is measured, not assumed.** Do not compute failure from span status.
@@ -166,20 +189,21 @@ live stack: the three `DOMAIN` refusals in `examples/verify.sh` land as
 not status.** A percentage derived from status alone reports 0% on a service
 refusing every request it receives.
 
-### Tier B — ready, but each needs an event join
+### Tier B — computable today, but each has one thing to settle first
 
-| Code | Unit | Measures | Computed from |
-|---|---|---|---|
-| `discover_api_empty_result_percent` | `%` | **unmet demand** — asked, and we had nothing | `result.empty` on `ResponseInfo` ÷ total |
-| `discover_api_degraded_mode_count` | `1` | retrieval running without a mode | `retrieval.modes_degraded` on `RetrievalInfo`; label `mode` |
-| `discover_api_unattributed_percent` | `%` | requests with no identifiable sender | `sender.unidentified` ÷ total |
-| `discover_api_response_time_avg` | `ms` | mean discover latency | span end − start |
+| Code | Unit | Measures | Computed from | To settle |
+|---|---|---|---|---|
+| `discover_api_degraded_mode_count` | `1` | retrieval running without a mode | `retrieval.modes_degraded` on `RetrievalInfo`; label `mode` | needs an event join |
+| `discover_api_unattributed_percent` | `%` | requests with no identifiable sender | `sender.unidentified`, a span attribute, ÷ total | is the number worth publishing |
+| `discover_api_response_time_avg` | `ms` | mean discover latency | span end − start | question 1 |
 
-`discover_api_empty_result_percent` is the one worth arguing for hardest. **It is
-the only metric on this list that no other participant can produce.** An adapter
-sees that a request was answered; only the service that ran the query knows the
-answer was empty. Unmet demand is the number that tells a network operator which
-sectors have no supply, and it exists nowhere else in the stack.
+Only the first needs an event join, and it is the only fact left on this list
+that does. `retrieval.modes_degraded` is `KindStrings` on `RetrievalInfo`, and
+unlike `result.empty` it was not promoted onto the span: a string-slice
+dimension is a series per distinct *combination* of degraded modes, so
+promoting it needs a scalar form — a count, or a bool per mode — which is a
+design question rather than a one-line change. Until then this code is a query
+over stored spans and cannot be derived by a collector.
 
 `discover_api_unattributed_percent` measures the size of a hole rather than a
 service property: `sender.id` is optional, unverified and often absent because

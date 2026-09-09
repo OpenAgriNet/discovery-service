@@ -192,6 +192,20 @@ type Definition struct {
 	// no embedding.
 	ZeroIsAbsent bool
 
+	// PromoteToSpan carries an event fact onto the span as well, and only ever
+	// as well: the events are the interop contract and promotion copies rather
+	// than moves. Requires both an Event and the Span bit, because on a row
+	// with neither it is a bool that reads as meaningful and does nothing.
+	//
+	// The cost is one attribute shipped twice per span, so it is a row-by-row
+	// opt-in rather than a rule. Two things buy it: span attributes are a
+	// queryable map where event attributes are not, and the collector's
+	// spanmetrics connector can name a span attribute as a metric dimension and
+	// cannot reach an event at all. Which means every promoted row is also a
+	// candidate dimension whose Values multiply that connector's series count —
+	// promote a row and check fact.MaxLabelSeries against otel/collector.yaml.
+	PromoteToSpan bool
+
 	// Required on the Resource. Signals must include Resource. Empty at boot
 	// with the exporter on is a config error, not a span rejected later.
 	Required bool
@@ -346,6 +360,19 @@ func checkPlacement(def Definition, report reporter) {
 	if def.Signals&Resource != 0 && def.Event != NoEvent {
 		report("a Resource attribute is placed on the %v event; the Resource is "+
 			"set once at boot", def.Event)
+	}
+
+	if def.PromoteToSpan {
+		if def.Event == NoEvent {
+			report("PromoteToSpan is set on a row with no Event. Promotion means " +
+				"\"onto the span AS WELL AS its event\"; with no event the row is " +
+				"already a span attribute and the bool changes nothing, which is " +
+				"how someone concludes the mechanism is broken")
+		}
+		if def.Signals&Span == 0 {
+			report("PromoteToSpan is set and Signals omits Span, so the promotion " +
+				"targets a span this row never reaches")
+		}
 	}
 }
 

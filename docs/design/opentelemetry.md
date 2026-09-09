@@ -1004,6 +1004,22 @@ HyperDX. If a dashboard needs one hot — `result.empty` is the candidate —
 promote that one to a span attribute too. Individually, not wholesale; the events
 are the interop contract.
 
+**Done, and it is the mechanism rather than the one row that matters.**
+`Definition.PromoteToSpan` is a bool per row; `onTheSpan` honours it and the
+event projection is untouched, so a promoted fact ships on both and the
+interop contract is unchanged. `fact.Validate` refuses the bool on a row with
+no `Event` or without the `Span` bit, and `TestOnlyTheDeclaredRowsArePromoted`
+fails the moment a second row sets it — the "individually, not wholesale" half
+of the note above is now a test rather than a sentence.
+
+A second reason arrived after this note was written, and it is the stronger
+one: the collector's `spanmetrics` connector can name a span attribute as a
+metric dimension and **cannot reach an event at all**. So the promotion is what
+makes unmet demand countable, not merely cheaper to query. `retrieval.modes_degraded`
+is the remaining event-only fact worth having and is deliberately not promoted —
+it is `KindStrings`, and a string-slice dimension is a series per distinct
+combination of degraded modes. Promoting it needs a scalar first.
+
 ---
 
 ## Metrics — Task 24, and blocked
@@ -1056,9 +1072,26 @@ survives, with no attribute defined to carry it, is the fact not surviving.
 is how a derivation quietly becomes a counter someone adds later. The mechanism
 is the collector's **`spanmetrics` connector**: it consumes the trace stream and
 emits a request count and a latency histogram, with the label set named in its
-`dimensions` list. For success versus failure per API that list is
-`beckn.action` and the span's own status — nothing else is needed, because
-*Rate, errors, duration* is exactly what the connector was built to produce.
+`dimensions` list, because *Rate, errors, duration* is exactly what the
+connector was built to produce.
+
+**Success versus failure needs `error_type`, and NOT the span's own status.**
+An earlier draft of this section said the opposite — `beckn.action` plus the
+status, "nothing else needed" — and it is wrong for this service, measurably.
+`setStatus` (`middlewares/trace.go:202-207`) moves the span status only at 5xx,
+on the deliberate reasoning that a 400 is the caller's mistake and counting it
+as a server error reports how often this service broke when it did not. So
+every 4xx refusal — the whole of C1's `CONTEXT`, `DOMAIN` and `POLICY`, and
+most of `CORE` — arrives with `status_code=STATUS_CODE_UNSET`, indistinguishable
+from a success. Verified against a live stack: the three `DOMAIN` refusals in
+`examples/verify.sh` land as `error_type=DOMAIN, status_code=UNSET`.
+
+A dashboard must therefore compute the error rate from `error_type != "none"`.
+Deriving it from the status alone reports a **0% error rate on a service
+refusing every request it receives** — which is the one failure mode a
+success-versus-failure panel exists to catch. `error_type` needs a
+`default: none` on the dimension, or the connector drops it on successful spans
+and splits one stream in two.
 
 **This is why OP2 leaves Task 25 and needs no Go.** Everything it requires is
 already deployed:
@@ -1072,6 +1105,15 @@ already deployed:
 So the change is a `connectors:` block, the connector added as a second exporter
 on the existing `traces/app` pipeline, and one `metrics/spanmetrics` pipeline
 reading from it. No new instrument, no `fact.Instrument` row, no import.
+
+**Built. `otel/collector.yaml`, brought up by `docker-compose.telemetry.yml`.**
+It is an overlay rather than a compose profile because it has to change the
+service's own environment, which a profile cannot do. The streams are
+`discovery_calls_total` and `discovery_duration_milliseconds`; `make telemetry`
+starts it and `make telemetry-metrics` scrapes it. Read that file rather than
+this section for the label set — it records three things only a live stack
+teaches, including that `discovery_calls_total` legitimately reads 0 for about
+a minute after startup while the histogram beside it is already correct.
 
 Three things this pins, each of which is a way to get it wrong:
 

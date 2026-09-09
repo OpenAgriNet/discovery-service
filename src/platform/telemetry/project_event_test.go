@@ -164,6 +164,30 @@ func TestEveryEventKeyComesFromTheRegistry(t *testing.T) {
 	}
 }
 
+// TestAPromotedFactStaysOnItsEvent is the other half of PromoteToSpan, and it
+// is the half that is easy to lose.
+//
+// Promotion copies result.empty onto the span; it must not MOVE it. The events
+// are the interop contract — response_info's shape is what a facilitator reads
+// — so a promotion that emptied the event to avoid duplicating the attribute
+// would optimise away the thing the events exist for. The duplication is the
+// deliberate cost, paid once, on one row.
+func TestAPromotedFactStaysOnItsEvent(t *testing.T) {
+	projected := events(t, func(record *fact.Record) {
+		record.ObserveBool(fact.ResultEmpty, true)
+	})
+
+	event := named(t, projected, fact.ResponseInfo.EventName())
+	for _, kv := range event.Attributes {
+		if string(kv.Key) == fact.Of(fact.ResultEmpty).SpanKey {
+			return
+		}
+	}
+	t.Errorf("%s is not on response_info; promotion copies a fact onto the span, "+
+		"it does not move it off the event a facilitator reads",
+		fact.Of(fact.ResultEmpty).SpanKey)
+}
+
 // TestAnEventIsAnchoredAtTheEarliestOfItsFacts, not the latest.
 //
 // The event marks when the phase HAPPENED, and a phase happens over an interval

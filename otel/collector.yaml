@@ -65,9 +65,10 @@ connectors:
     #
     #   beckn.action  Bounded, 2 values (discover, publish)   — on the span
     #   error_type    Bounded, 5 values + absent on success   — on the span
+    #   result.empty  Bounded, 2 values + absent off discover — PromoteToSpan
     #
-    # Series: 2 actions x 6 error states x 2 reachable status codes = 24 per
-    # stream, well under fact.MaxLabelSeries. Two rather than three because only
+    # Series: 2 actions x 6 error states x 2 reachable status codes x 3 result
+    # states = 72 per stream, well under fact.MaxLabelSeries. Two rather than three because only
     # UNSET and ERROR are reachable — nothing here sets Ok explicitly. The
     # dimensions the connector adds by itself (see exclude_dimensions below) do
     # not enter that product: service.name and span.kind are constants, and
@@ -78,14 +79,18 @@ connectors:
     # with the participant list — it is Unbounded in the registry and must not
     # be added here.
     #
-    # Two facts that would be worth having are NOT available, and the reason is
-    # structural rather than an omission: `result.empty` (unmet demand — the one
-    # metric no other participant can produce) and `retrieval.modes_degraded`
-    # both sit on span EVENTS (ResponseInfo and RetrievalInfo), and this
-    # connector reads span attributes only. opentelemetry.md:1000-1005 already
-    # names `result.empty` as the candidate to promote onto the span; doing so
-    # is a `fact` change, not a collector change, and it is what would let a
-    # third dimension be added here.
+    # `result.empty` reaches this list only because it was PROMOTED. It sits on
+    # the ResponseInfo event, and this connector reads span attributes only —
+    # so until fact's ResultEmpty row grew `PromoteToSpan: true` the one metric
+    # no other participant can produce was structurally uncountable here. The
+    # ordering matters if this ever breaks: the fix for a missing dimension is
+    # in registry.go, not in this file.
+    #
+    # `retrieval.modes_degraded` is the same shape of problem and is NOT fixed:
+    # it is on RetrievalInfo, is KindStrings, and a string-slice dimension is a
+    # series per distinct COMBINATION of degraded modes. Promoting it would need
+    # a scalar — a count, or a bool — which is a fact change with a real design
+    # question in it, not a second line here.
     dimensions:
       - name: beckn.action
       - name: error_type
@@ -93,6 +98,15 @@ connectors:
         # dimension on successful spans, which splits one stream in two and
         # makes a rate query miss every success.
         default: none
+      - name: result.empty
+        # NO default here, and that is the difference from error_type above.
+        # Absent is a third meaningful state rather than a gap to paper over: a
+        # publish has no result to be empty, and a discover that errored before
+        # responding has none either. Defaulting it to false would count both as
+        # "demand was met", which is the opposite of true. The empty label
+        # Prometheus renders for an absent dimension is the honest answer, and
+        # a query for unmet demand must say result_empty="true" rather than
+        # != "false".
 
     # The connector adds service.name, span.name, span.kind, status.code AND
     # collector.instance.id to every stream whether or not they are listed
