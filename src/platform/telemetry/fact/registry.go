@@ -364,9 +364,9 @@ var registry = [numKeys]Definition{
 		Note: "Normalised, not verbatim: catalog/publish is accepted on the wire " +
 			"(beckn/actions.go:26-27) and both spellings resolve to one handler, so " +
 			"both record publish. Emitting context.action as sent would split every " +
-			"publish query in two. No Label bit until Task 25 declares an instrument " +
-			"that consumes one; rate/errors/duration by action come from the " +
-			"collector's spanmetrics connector, not from a counter here.",
+			"publish query in two. No Label bit: Task 25's acquire-wait pair is " +
+			"per-pool and names no dimension, and rate/errors/duration by action " +
+			"come from the collector's spanmetrics connector, not a counter here.",
 	},
 	BecknVersion: {
 		Name:        "BecknVersion",

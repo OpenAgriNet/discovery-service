@@ -19,6 +19,23 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
+// applicationName is what this service calls itself to Postgres, and it is the
+// reason Task 25 emits no pool-utilisation gauge: grouped by this, the server
+// already reports connections per service, and client_addr already separates
+// the pods. Unset — which is what this was until 2026-09-09 — it is the empty
+// string, so every connection from every deployment pools into one anonymous
+// group and the layer the design delegated to could not actually answer.
+//
+// A literal rather than config.App.Subscriber: the subscriber id is an FQDN and
+// Postgres truncates this at 63 bytes, so a long one would be silently cut. It
+// matches telemetry's service.name deliberately and is duplicated rather than
+// shared, because the import guard puts that constant in a package this one may
+// not import — see project_resource.go:24.
+//
+// Kept beside NewPool rather than in a constants file so the one line that sets
+// it and the one test that pins it read the same declaration.
+const applicationName = "discovery-service"
+
 // NewPool opens the service's connection pool.
 //
 // The DSN arrives from config, which reads it from DATABASE_URL and from
@@ -51,6 +68,9 @@ func NewPool(ctx context.Context, database config.Database) (*pgxpool.Pool, erro
 	// how a performance problem is usually shaped and invisible to any EXPLAIN
 	// run once.
 	settings.ConnConfig.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
+
+	// application_name is what makes pg_stat_activity legible; see the constant.
+	settings.ConnConfig.RuntimeParams["application_name"] = applicationName
 
 	// pgvector's `vector` is an extension type, so its OID is assigned per
 	// database and cannot be compiled in. Registering on every connection is

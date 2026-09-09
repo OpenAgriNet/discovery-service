@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -153,15 +154,9 @@ func wire(
 	catalogs := postgres.NewCatalogRepository(pool, cfg.Geo.ResolutionCells)
 	search := postgres.NewSearchRepository(pool, cfg.Search, embedder)
 
-	// Last, and deliberately so. Build owns exactly one cleanup point for the
-	// pool and adding a second resource with a second cleanup is how the fourth
-	// failure path gets added without one — so this goes where nothing can fail
-	// after it. Under OTEL_EXPORTER=none it starts no exporter and reaches no
-	// network; under otlp it creates a lazy client that dials on first export,
-	// so a collector that is not up yet does not hold up the boot.
-	tracing, err := telemetry.Init(ctx, cfg)
+	tracing, err := startTelemetry(ctx, cfg, pool)
 	if err != nil {
-		return nil, fmt.Errorf("start telemetry: %w", err)
+		return nil, err
 	}
 
 	return &App{
@@ -177,6 +172,45 @@ func wire(
 		Discover: discover.NewController(discover.NewService(search, cfg), cfg.Errors),
 		pool:     pool,
 	}, nil
+}
+
+// startTelemetry builds the providers and registers Task 25's one instrument.
+//
+// Called last from wire, and deliberately so: Build owns exactly one cleanup
+// point for the pool, and adding a second resource with a second cleanup is how
+// the fourth failure path gets added without one. Under OTEL_EXPORTER=none it
+// starts no exporter and reaches no network; under otlp it creates a lazy
+// client that dials on first export, so a collector that is not up yet does not
+// hold up the boot.
+//
+// It is a function rather than four lines inline because the registration has a
+// failure path, and that path must shut the provider down: wire's caller closes
+// the pool and nothing else, so a bare `return nil, err` after Init would leak a
+// tracer provider and, under otlp, its gRPC client. Keeping both statements in
+// one function is what makes that pairing visible.
+//
+// This is also the only place in the service that knows both names. The import
+// guard keeps pgx inside src/storage/postgres and the OpenTelemetry SDK inside
+// src/platform/telemetry, so postgres.PoolStats satisfies
+// telemetry.PoolStatsSource without either package naming the other, and the
+// composition root is where the two meet.
+func startTelemetry(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (*telemetry.Provider, error) {
+	tracing, err := telemetry.Init(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("start telemetry: %w", err)
+	}
+
+	// Registers a callback and starts nothing: under OTEL_EXPORTER=none the meter
+	// provider has no reader, so the callback is never invoked and the whole
+	// registration costs one closure for the process lifetime.
+	if registerErr := telemetry.RegisterPoolStats(tracing.MeterProvider(), postgres.NewPoolStats(pool)); registerErr != nil {
+		if shutdownErr := tracing.Shutdown(ctx); shutdownErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("register the pool metrics: %w", registerErr), shutdownErr)
+		}
+		return nil, fmt.Errorf("register the pool metrics: %w", registerErr)
+	}
+	return tracing, nil
 }
 
 // EmptyAcquireCount reports how many pool acquires found no idle connection and

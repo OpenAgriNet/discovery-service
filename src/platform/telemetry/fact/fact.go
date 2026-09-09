@@ -230,9 +230,9 @@ func All() iter.Seq2[Key, Definition] {
 // Validate returns every way a Definition contradicts itself, as prose a
 // failure message can print directly. It is exported because the guard that
 // runs it over the live table also has to run it over rows the table happens
-// not to have today — no row carries the Label bit until Task 25 declares an
-// instrument to consume one, and a rule that has never rejected anything is a
-// rule nobody knows works.
+// not to have today — no row carries the Label bit, because Task 25's one
+// instrument turned out to need no dimension, and a rule that has never
+// rejected anything is a rule nobody knows works.
 //
 // It deliberately does not check the enums for their Unspecified zeros. Those
 // are the completeness test's, which reports them per row with the reason each

@@ -19,9 +19,16 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -46,6 +53,10 @@ const (
 	// release that does not exist.
 	ScopeVersion = "1.0"
 )
+
+// metricExportTimeout bounds one metric export, and therefore also bounds how
+// long a shutdown waits on a collector that is not there.
+const metricExportTimeout = 5 * time.Second
 
 // Identity is who this deployment says it is, read off config once at boot.
 //
@@ -85,6 +96,16 @@ func NewIdentity(cfg config.Config) Identity {
 type Provider struct {
 	provider *sdktrace.TracerProvider
 	tracer   trace.Tracer
+
+	// meters is Task 25's half, and it is a second SDK provider rather than a
+	// second signal on the first: OpenTelemetry has no combined type, and the
+	// two have genuinely different exports — spans batch, metrics are collected
+	// on a period.
+	meters *sdkmetric.MeterProvider
+
+	// metersOnce is ours, not the SDK's. sdktrace.TracerProvider.Shutdown is
+	// idempotent; sdkmetric.MeterProvider.Shutdown is not.
+	metersOnce sync.Once
 }
 
 // Init builds the Resource, the exporter and the tracer provider.
@@ -120,10 +141,65 @@ func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
 	}
 
 	provider := sdktrace.NewTracerProvider(options...)
+
+	meters, err := newMeterProvider(ctx, cfg, res)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Provider{
 		provider: provider,
 		tracer:   provider.Tracer(ScopeName, trace.WithInstrumentationVersion(ScopeVersion)),
+		meters:   meters,
 	}, nil
+}
+
+// newMeterProvider builds the metrics half, over the same Resource.
+//
+// The same Resource object, not an equal one: `producer` and `domain` are
+// spec-Required on all three signals, and constructing it once is what makes
+// "the same Resource everywhere" true by construction rather than by Task 24
+// remembering to match it. `eid` is the single attribute that differs per
+// signal, and it is a registry row with a per-signal projection rule rather
+// than a literal here.
+//
+// Under any exporter but otlp it gets no reader at all. A MeterProvider with no
+// reader collects nothing and never invokes a callback, so a collector-less boot
+// pays nothing for the registration — the metrics equivalent of NeverSample,
+// and expressed as an absent reader because there is no metrics sampler.
+func newMeterProvider(ctx context.Context, cfg config.Config, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
+	options := []sdkmetric.Option{sdkmetric.WithResource(res)}
+
+	if cfg.OTel.Exporter != config.ExporterOTLP {
+		return sdkmetric.NewMeterProvider(options...), nil
+	}
+
+	exporter, err := newMetricExporter(ctx, cfg.OTel.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return sdkmetric.NewMeterProvider(append(options, sdkmetric.WithReader(
+		// The timeout is bounded well under the SDK's 30s default because it is
+		// also what a shutdown into a dead collector waits for. Left at the
+		// default, a pod whose collector is down takes half a minute to exit
+		// and gets SIGKILLed by a terminationGracePeriodSeconds nobody
+		// connected to a telemetry setting.
+		sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithTimeout(metricExportTimeout)),
+	))...), nil
+}
+
+// MeterProvider hands out the metrics provider for the composition root to
+// register instruments against.
+//
+// Nil-tolerant for the same population as Tracer: router_test.go builds an App
+// by hand and the acceptance suite calls controllers with no Provider at all. A
+// noop provider rather than nil, so RegisterPoolStats needs no nil check of its
+// own and a metrics registration is never the thing that panics a healthy boot.
+func (p *Provider) MeterProvider() metric.MeterProvider {
+	if p == nil || p.meters == nil {
+		return metricnoop.NewMeterProvider()
+	}
+	return p.meters
 }
 
 // withExport appends the option that decides where spans go, and it is one
@@ -191,14 +267,64 @@ func (p *Provider) Tracer() trace.Tracer {
 // Nil-tolerant and idempotent, because app.Close runs on paths where Init never
 // ran and on paths where this already has. The SDK's own Shutdown is idempotent
 // after the first call; the nil check is ours.
+// Both providers are shut down on one call, and the meter provider's own
+// Shutdown is guarded by a sync.Once because — unlike the tracer's — it is not
+// idempotent: a second call returns "reader is shutdown". app.Close runs on the
+// happy path and on paths where main already deferred it, so idempotency is a
+// requirement rather than a nicety, and TestShutdownIsSafeTwiceAndOnNothing is
+// what found this.
+//
+// The meter provider's error is deliberately NOT returned, and this is the one
+// asymmetry between the two signals here. A PeriodicReader flushes on shutdown,
+// so with no collector listening it fails — which is precisely the condition
+// newExporter's comment says must never be a service failure: the service
+// answers farmers' queries whether or not anyone is watching it. The tracer's
+// batcher already drops the same failure internally, so returning it for
+// metrics only would make the two signals disagree about one event, and would
+// make every clean shutdown on a cluster with a down collector log an error
+// that names nothing the operator can act on from this side.
+// TestOtlpBootsWithoutACollectorListening pins it.
 func (p *Provider) Shutdown(ctx context.Context) error {
-	if p == nil || p.provider == nil {
+	if p == nil {
+		return nil
+	}
+
+	if p.meters != nil {
+		//nolint:errcheck,gosec // deliberate, and the doc comment above is the
+		// reason: a flush into a collector that is not there must not read as a
+		// failed shutdown. TestOtlpBootsWithoutACollectorListening pins it.
+		p.metersOnce.Do(func() { p.meters.Shutdown(ctx) })
+	}
+
+	if p.provider == nil {
 		return nil
 	}
 	if err := p.provider.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shut down the tracer provider: %w", err)
 	}
 	return nil
+}
+
+// newMetricExporter is newExporter's metrics twin, and the endpoint is parsed by
+// the same two rules for the same reason: a bare host:port must not reach
+// WithEndpointURL, which reads "localhost:4317" as scheme "localhost" with an
+// empty host and yields an exporter pointed at nothing.
+//
+// It does not dial, for the reason the trace exporter does not: the service
+// answers queries whether or not anyone is watching it.
+func newMetricExporter(ctx context.Context, endpoint string) (sdkmetric.Exporter, error) {
+	var options []otlpmetricgrpc.Option
+	if hasScheme(endpoint) {
+		options = append(options, otlpmetricgrpc.WithEndpointURL(endpoint))
+	} else {
+		options = append(options, otlpmetricgrpc.WithEndpoint(endpoint), otlpmetricgrpc.WithInsecure())
+	}
+
+	exporter, err := otlpmetricgrpc.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("build the otlp metric exporter for %q: %w", endpoint, err)
+	}
+	return exporter, nil
 }
 
 // newExporter builds the OTLP/gRPC exporter (decision 2: gRPC is the OTel
