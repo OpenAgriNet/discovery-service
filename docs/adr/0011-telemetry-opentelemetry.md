@@ -131,6 +131,26 @@ reversed.
    answers what*; recorded here because "we propagate `traceparent`" is the
    sentence that makes someone think the interop question is closed.
 
+**2026-09-09, by the build-vs-reuse audit.** Amendment 1's *reason* for
+rejecting `otelhttp` was wrong and is corrected in place above rather than
+appended here, because leaving the false sentence standing with a retraction
+three screens below is how a reader picks up the wrong one. What it said: the
+spec *requires* `scope.name` and `scope.version` on every exported batch. What
+the spec says: the `scope` block is **Optional**, its two fields Required only
+within it, and scope is "intended only for transport & validity checks, without
+any impact on the actual data and its usage".
+
+The decision stands on narrower ground — `scope.version` is a field the spec
+repurposed to mean the *specification's* version, where OTel defines it as the
+instrumentation library's, so `otelhttp` reports `v0.69.0` where `1.0` belongs
+and always will. The failure is a batch **accepted** with a wrong validity
+field, not one rejected.
+
+Worth recording as an amendment rather than a typo fix: the claim had been
+copied into five other documents, and a reason repeated in six places instead of
+cited from one is a reason that drifts. `opentelemetry.md:442-443` is the
+accurate sentence; cite it rather than restating it.
+
 The wire shape those spans must have is `docs/design/opentelemetry.md`, which is
 binding on the shape of a span. This ADR remains the decision to use
 OpenTelemetry at all.
