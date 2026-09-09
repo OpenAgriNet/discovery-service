@@ -154,3 +154,36 @@ FQDN, so binding the two would silently cut long ones — and a truncated value 
 worse than a fixed one here, because `pg_stat_activity` grouped by this column is
 the whole reason Task 25 ships no pool-utilisation gauge
 (`opentelemetry.md:1246`).
+
+## 12. The limiter's eviction is amortised, and `horizon` is derived rather than configured
+
+`src/platform/middlewares/ratelimit.go`
+
+The plan says only "evicts idle buckets so the map is not a leak"
+(`discover-and-publish.md:3673`). Two decisions behind that are not written down.
+
+**`sweep` runs at most once per horizon, from inside `allow`.** A walk of the map
+on every request is O(callers) on the hot path, and what is being prevented is
+unbounded growth over hours rather than a transient. A background goroutine is
+the other answer and is worse: a second lifetime to manage and something to shut
+down, for a map only ever read under one mutex.
+
+**`horizon` is `burst / rps`, and there is no knob for it.** That is the time an
+empty bucket takes to refill to full, past which a bucket holds exactly what a
+new one would — so eviction is unobservable to a caller rather than a second,
+hidden allowance. It has exactly one correct value given the other two, and a
+knob no scenario sets is not shipped.
+
+## 13. `Trace` no longer stamps `X-Beckn-Chain`, and the plan still says it does
+
+`src/platform/middlewares/recover.go`, `trace.go`
+
+The plan describes `Trace` as a pass-through whose only side effect is appending
+`trace` to `X-Beckn-Chain`, so that Task 20's order test has something to observe
+at its slot (`discover-and-publish.md:3688`, `:3718`, `:5030`). 23c gave `Trace` a
+side effect of its own — the server span — and the marker went with it; the
+constant moved to `recover.go`, which is now its only writer.
+
+`Recover` still stamps, so the header is still the order oracle for the one link
+that has no other observable placement. The plan is binding and it is the plan
+that needs the edit, in all three places.
