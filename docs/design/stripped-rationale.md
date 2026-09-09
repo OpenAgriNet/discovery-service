@@ -187,3 +187,14 @@ constant moved to `recover.go`, which is now its only writer.
 `Recover` still stamps, so the header is still the order oracle for the one link
 that has no other observable placement. The plan is binding and it is the plan
 that needs the edit, in all three places.
+
+## 14. Per-resource geometry was the reference implementation's shape
+
+`src/storage/conformance/publish.go`
+
+`discover-and-publish.md:1924-1926` carries the measurement — three provider
+shapes on a 40-resource catalog become 120 rows and 120 H3 fills if attached to
+each resource — but not where the rejected shape came from. It is the Java
+`beckn-discovr` layout, which is why the conformance case exists at all: the
+suite pins the catalog-level answer against the design the reader is most likely
+to have seen first.

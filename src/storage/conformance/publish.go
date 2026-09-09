@@ -11,20 +11,19 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 )
 
-// network is the one network id every publish fixture below publishes into.
-//
-// Spelled once because two of these cases turn on the empty-VisibleTo fail-safe
-// resolving to exactly this value, and a fixture carrying its own copy would
-// pass against a backend that defaulted to something else entirely.
+// network is the one network id every publish fixture publishes into. Spelled
+// once because two cases turn on the empty-VisibleTo fail-safe resolving to
+// exactly this value, and a fixture with its own copy would pass against a
+// backend that defaulted to something else.
 const network = "local-network"
 
 // PublishCases is the write-path suite: everything UpsertCatalog must do that
 // can be seen through the ports.
 //
-// Everything it must do that CANNOT be seen through the ports — that a touched
-// resource is written once rather than twice, that the statement count does not
-// grow with the catalog — is a Postgres test in tests/dbtest, because xmin and
-// a round-trip counter are not things a port has.
+// What CANNOT be seen through them — that a touched resource is written once
+// rather than twice, that the statement count does not grow with the catalog —
+// is a Postgres test in tests/dbtest, because xmin and a round-trip counter are
+// not things a port has.
 func PublishCases() []Case {
 	cases := []Case{
 		deriveWritesReachTheStore(),
@@ -51,13 +50,10 @@ func PublishCases() []Case {
 // fixture builders
 // ---------------------------------------------------------------------------
 
-// catalogPatch is the minimum a publish needs: an id, a network and the two
-// A9-resolved fields the mapper has already defaulted by the time a patch
-// reaches the repository.
-//
-// ProtocolVersion is set for the same reason: the mapper resolves it before a
-// patch ever reaches a backend, so a fixture that left it empty would be
-// testing a state the write path cannot produce.
+// catalogPatch is the minimum a publish needs: an id, a network, and the fields
+// the mapper has already resolved by the time a patch reaches the repository
+// (A9, ProtocolVersion). A fixture leaving any of them empty would test a state
+// the write path cannot produce.
 func catalogPatch(id string, resources ...domain.ResourcePatch) domain.CatalogPatch {
 	return domain.CatalogPatch{
 		ID:              id,
@@ -70,12 +66,10 @@ func catalogPatch(id string, resources ...domain.ResourcePatch) domain.CatalogPa
 }
 
 // resourcePatch is one resource carrying an attributes document and nothing
-// else, which is the shape most of these cases care about.
-//
-// The attributes are nested under `resourceAttributes` inside the resource
-// document rather than standing alone, because since A17 that is where they
-// live — and RFC 7396 merges recursively, so a case patching one leaf two
-// levels down still means what it meant when the column was flat.
+// else, which is the shape most of these cases care about. The attributes nest
+// under `resourceAttributes` because since A17 that is where they live, and RFC
+// 7396 merges recursively — so a case patching one leaf two levels down still
+// means what it meant when the column was flat.
 func resourcePatch(id, attributes string) domain.ResourcePatch {
 	return domain.ResourcePatch{
 		ID:       id,
@@ -85,19 +79,18 @@ func resourcePatch(id, attributes string) domain.ResourcePatch {
 
 // noDerive is the derive a case supplies when it is not testing derivation.
 //
-// Explicitly nil-returning rather than a nil DeriveFunc, so that every case
-// exercises the same call path: a backend that skipped a nil derive and a
-// backend that ran one would both pass a suite where half the fixtures passed
-// nil, and they would disagree the moment a real one arrived.
+// Explicitly nil-returning rather than a nil DeriveFunc, so every case
+// exercises the same call path: a backend that skipped a nil derive and one that
+// ran it would both pass a suite where half the fixtures passed nil, and would
+// disagree the moment a real one arrived.
 func noDerive(*domain.Catalog, []string) []domain.Fault { return nil }
 
 // deriveGeometries is a stand-in for Task 17's walker: it puts geometry on the
-// merged catalog the way ExtractGeometries will, without depending on a walker
-// that does not exist yet.
+// merged catalog the way ExtractGeometries will.
 //
-// It writes through the pointer, which is the entire point of the seam — see
-// A15. Owners empty means catalog-level, so these land once with a NULL
-// resource id however many resources the catalog holds.
+// It writes through the pointer, which is the point of the seam (A15). Owners
+// empty means catalog-level, so these land once with a NULL resource id however
+// many resources the catalog holds.
 func deriveGeometries(geometries ...domain.Geometry) domain.DeriveFunc {
 	return func(merged *domain.Catalog, _ []string) []domain.Fault {
 		merged.Geometries = geometries
@@ -105,11 +98,9 @@ func deriveGeometries(geometries ...domain.Geometry) domain.DeriveFunc {
 	}
 }
 
-// mustTime parses an RFC 3339 instant a fixture spelled as a literal.
-//
-// Panics rather than returning an error: these are constants in the source of
-// this file, so a failure here is a typo in the fixture, not a condition a case
-// could be written to handle.
+// mustTime parses an RFC 3339 instant a fixture spelled as a literal. Panics
+// rather than returning an error: these are constants in this file, so a failure
+// is a typo in the fixture.
 func mustTime(literal string) time.Time {
 	instant, err := time.Parse(time.RFC3339, literal)
 	if err != nil {
@@ -166,14 +157,10 @@ func mustGet(t *testing.T, backends Backends, id string) domain.Catalog {
 
 // The derive seam itself, asserted before anything that depends on it.
 //
-// derive is where search text, embeddings and geometry are computed (A8), and
-// every one of those is a WRITE onto the merged catalog rather than a value
-// returned — DeriveFunc returns only faults. So a backend whose derive cannot
-// write is a backend that stores an underived catalog while reporting success:
-// no tsvector, no hash, no geometry rows, and no error anywhere.
-//
-// This is first in the list because six cases below assert something derive
-// produced, and all six would fail with the same confusing symptom.
+// derive delivers search text, embeddings and geometry (A8) by WRITING onto the
+// merged catalog — DeriveFunc returns only faults. A backend whose derive cannot
+// write stores an underived catalog and still reports success. First in the list
+// because six cases below would then fail with the same confusing symptom.
 func deriveWritesReachTheStore() Case {
 	geometry := PointGeometryAt(0, domain.GeoPoint{Lat: 12.97, Lon: 77.64})
 
@@ -189,8 +176,8 @@ func deriveWritesReachTheStore() Case {
 
 				// Per-resource: reachable either way, since a slice element
 				// write goes through the shared backing array. Both are
-				// asserted, so a backend that made only the second work is
-				// still caught.
+				// asserted, so a backend where only this half works is caught
+				// (A14, stripped-rationale.md §3).
 				for index := range merged.Resources {
 					if !slices.Contains(touched, merged.Resources[index].ID) {
 						continue
@@ -281,10 +268,10 @@ func fullRemovesAnOmittedResource() Case {
 	}
 }
 
-// The fail-safe: a catalog visible to nobody is findable by nobody while
-// reporting success, so the writer fills an empty list with the request's own
-// network. The mapper already did this (A9); this pins the belt-and-braces copy
-// in the repository, which is the one that survives a mapper change.
+// The fail-safe: a catalog visible to nobody reports success and is findable by
+// nobody, so the writer fills an empty list with the request's own network. The
+// mapper already did this (A9); this pins the repository's own copy, the one
+// that survives a mapper change.
 func anEmptyVisibleToBecomesTheNetwork() Case {
 	patch := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
 	patch.VisibleTo = nil
@@ -307,11 +294,9 @@ func anEmptyVisibleToBecomesTheNetwork() Case {
 	}
 }
 
-// The lock-and-load upsert has to RETURN the stored row on conflict.
-//
-// `ON CONFLICT DO NOTHING` returns zero rows, which would make every republish
-// a merge against an empty document — and would pass every MERGE case that
-// publishes only once.
+// The lock-and-load upsert has to RETURN the stored row on conflict. `ON
+// CONFLICT DO NOTHING` returns zero rows, making every republish a merge against
+// an empty document — and it would pass every MERGE case that publishes once.
 func theUpsertReturnsTheStoredRowOnConflict() Case {
 	first := catalogPatch("c1")
 	first.Document = json.RawMessage(
@@ -345,8 +330,9 @@ func theUpsertReturnsTheStoredRowOnConflict() Case {
 	}
 }
 
-// A8 at the column, not at the function. The domain test proves MergePatch;
-// this proves the merged document is what the column ends up holding.
+// A8 (discover-and-publish.md:133) at the column, not at the function: the
+// domain test proves MergePatch, this proves the merged document is what the
+// column ends up holding.
 func fieldLevelMergeSurvivesTheRoundTrip() Case {
 	return Case{
 		Name: "a field-level MERGE keeps, replaces and deletes the right attributes",
@@ -433,10 +419,9 @@ func recordDescriptorName() domain.DeriveFunc {
 			var descriptor struct {
 				Name string `json:"name"`
 			}
-			// A resource with no descriptor at all decodes as "unexpected end
-			// of JSON input", which is not a fixture problem — it is the
-			// ordinary shape of a patch that carried only attributes. It
-			// contributes no name.
+			// No descriptor at all decodes as "unexpected end of JSON input"
+			// and contributes no name: the ordinary shape of a patch carrying
+			// only attributes, not a fixture problem.
 			if err := json.Unmarshal(merged.Resources[index].Descriptor(), &descriptor); err != nil {
 				continue
 			}
@@ -485,12 +470,9 @@ func fullResetsTheCatalogRowItself() Case {
 	}
 }
 
-// The statement that makes the denormalised gate safe, tested on the publish
-// that makes it necessary: one carrying NO resources at all.
-//
-// All six columns, because Resource has no validity of its own — a column this
-// UPDATE forgets keeps yesterday's value forever, and no later publish can
-// correct it.
+// The gate propagate, tested on the publish that makes it necessary: one
+// carrying NO resources at all. All six columns, because Resource has no
+// validity of its own — one this UPDATE forgets no later publish can correct.
 func theGateReachesEveryResource() Case {
 	seeded := catalogPatch("c1",
 		resourcePatch("r1", `{"grade":"A"}`),
@@ -544,11 +526,9 @@ func theGateReachesEveryResource() Case {
 
 // sameJSON compares two documents by value rather than by byte.
 //
-// A jsonb column stores a PARSED value, not the text it was sent: whitespace
-// goes, keys are reordered and numbers are renormalised, so a byte comparison
-// would fail against PostgreSQL for a document it stored perfectly. Comparing
-// decoded values is what the suite actually means by "the same document", and
-// it is a comparison both backends can pass honestly.
+// A jsonb column stores a PARSED value, not the text it was sent — whitespace
+// goes, keys are reordered, numbers are renormalised — so a byte comparison
+// would fail against PostgreSQL for a document it stored perfectly.
 func sameJSON(t *testing.T, got, want json.RawMessage) bool {
 	t.Helper()
 
@@ -598,11 +578,8 @@ func republishingReplacesAGeometry() Case {
 	}
 }
 
-// Three provider locations across forty resources are three rows, not 120.
-//
-// The locations belong to the CATALOG. Attaching them to each resource was the
-// reference implementation's shape and it multiplies both the row count and the
-// H3 fill count by the size of the catalog.
+// Three provider locations across forty resources are three rows, not 120 —
+// the locations belong to the CATALOG (discover-and-publish.md:1924-1926).
 func providerLocationsAreStoredOnceForTheCatalog() Case {
 	locations := PointGeometries(
 		domain.GeoPoint{Lat: 12.97, Lon: 77.64},
@@ -735,9 +712,9 @@ func deletingACatalogRemovesEverythingUnderIt() Case {
 				t.Fatal("the catalog is still readable after a delete")
 			}
 
-			// Idempotent: a publisher retrying a delete it already completed is
-			// ordinary, and a store that failed the second attempt would make
-			// the retry the thing that reports a problem.
+			// Idempotent: retrying a completed delete is ordinary, and a store
+			// that failed the second attempt would make the retry the thing
+			// that reports a problem.
 			if err := backends.Catalogs.DeleteCatalog(t.Context(), "c1"); err != nil {
 				t.Errorf("deleting c1 a second time: %v, want nil — delete is idempotent", err)
 			}
@@ -765,10 +742,9 @@ func theProtocolVersionRoundTrips() Case {
 	}
 }
 
-// A republish under a different version moves the stored one. This is what the
-// column's DEFAULT cannot do on its own: DEFAULT fires on INSERT, so an upsert
-// that did not name the column would leave the first publish's version in place
-// for ever and report a version the latest request never sent.
+// A republish under a different version moves the stored one. DEFAULT fires on
+// INSERT alone, so an upsert not naming the column would keep the first
+// publish's version for ever and report one the latest request never sent.
 func aRepublishMovesTheProtocolVersion() Case {
 	first := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
 	first.ProtocolVersion = "2.0.0"

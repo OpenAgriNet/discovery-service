@@ -16,34 +16,26 @@ import (
 // DiscoverCases is the read-path suite: everything Search must do that both
 // backends have to agree on.
 //
-// The resolution is a parameter rather than a constant here because it is the
-// one setting the two backends must hold EQUAL for a spatial case to mean
-// anything: Postgres covers stored geometry at publish time and the memory
-// backend covers it at search time, and two covers taken at different
-// resolutions produce cell sets that never intersect — a disagreement that
-// reads as "nothing matched" rather than as an error.
+// The resolution is a parameter because it is the one setting the two backends
+// must hold EQUAL for a spatial case to mean anything — Postgres covers stored
+// geometry at publish time, the memory backend at search time, and two covers
+// taken at different resolutions produce cell sets that never intersect.
 //
-// Three things constrain what can be asked here, and every case below is
-// written around them:
+// Four rules bound what can be asked here, all of them the same rule: pin an
+// agreement, never a difference.
 //
-//   - Only `lexical` is requested. Postgres declares `fuzzy` and the memory
-//     backend does not, so any case naming it would pin a difference between
-//     the backends rather than an agreement.
-//   - Assertions are over the SET of ids, not the order, wherever the query
-//     carries text. Postgres orders by ts_rank_cd first and the memory backend
-//     has no relevance to rank by; they agree on the stable (catalog_id, id)
-//     tail, which is what the one pagination case — deliberately text-free —
-//     pins.
-//   - No case asserts a total, because there is none (A19). What a paginating
-//     caller actually depends on is pinned instead: that the offset SLICES a
-//     stable order rather than re-ranking it.
-//   - No case names `jsonpath` to SEARCH with. Since Task 22 Postgres executes
-//     the subset and the memory backend declines it, so a filter case would pin
-//     the difference between them rather than an agreement — which is what
-//     puts the filter's own tests on the Postgres side. The one case that names
-//     it at all asserts what a backend owes if it DECLARES the mode, and skips
-//     on one that does not; it is the only conditional case here and it says
-//     why at its own definition.
+//   - Only `lexical` is requested. Postgres declares `fuzzy` and memory does
+//     not.
+//   - Wherever the query carries text, assertions are over the SET of ids and
+//     not the order: Postgres ranks by ts_rank_cd, memory has no relevance to
+//     rank by. They agree on the stable (catalog_id, id) tail, which the one
+//     deliberately text-free pagination case pins.
+//   - No case asserts a total; there is none (A19). What a paginating caller
+//     depends on is pinned instead — the offset SLICES a stable order.
+//   - No case names `jsonpath` to SEARCH with: since Task 22 Postgres executes
+//     the subset and memory declines it, which is what puts the filter's own
+//     tests on the Postgres side. The one case naming it asserts what a backend
+//     owes if it DECLARES the mode, and skips on one that does not.
 func DiscoverCases(resolution int) []Case {
 	return []Case{
 		anOmittedNetworkSearchesEveryNetwork(),
@@ -72,14 +64,13 @@ func DiscoverCases(resolution int) []Case {
 // "which modes" is the setting these fixtures are least free to vary.
 var lexical = []domain.Capability{domain.CapabilityLexical}
 
-// searchable carries the four derived fields as an attributes document, so that
-// a fixture spells what a resource IS in one place and deriveSearchable puts it
+// searchable carries the four derived fields as an attributes document, so a
+// fixture spells what a resource IS in one place and deriveSearchable puts it
 // where the query reads it.
 //
-// Inside the document rather than onto the ResourcePatch directly because
-// ResourcePatch has no such fields, deliberately: search text and the schema
-// pair are `derive` output (A8), and a patch carrying them would be a second
-// place they could disagree with the document they describe.
+// Inside the document rather than on the ResourcePatch because ResourcePatch
+// deliberately has no such fields: search text and the schema pair are `derive`
+// output (A8, discover-and-publish.md:133).
 func searchable(id, name, text, schemaContext, schemaType string) domain.ResourcePatch {
 	document, err := json.Marshal(map[string]any{
 		"id": id,
@@ -96,10 +87,10 @@ func searchable(id, name, text, schemaContext, schemaType string) domain.Resourc
 // deriveSearchable is the stand-in for Task 17's derivation: it reads what
 // `searchable` wrote back out of the MERGED document and onto the resource.
 //
-// Off the merged document and not off the patch, which is the whole reason this
-// runs as a derive rather than in the fixture: a MERGE publish that changes only
-// the name has to re-derive the search text from the merge result, and a
-// fixture that pre-computed it would be asserting against its own arithmetic.
+// Off the merged document and not the patch, which is why this runs as a derive
+// rather than in the fixture: a MERGE publish changing only the name must
+// re-derive the search text from the merge result, and a fixture that
+// pre-computed it would assert against its own arithmetic.
 func deriveSearchable(merged *domain.Catalog, _ []string) []domain.Fault {
 	for index := range merged.Resources {
 		var document struct {
@@ -132,11 +123,9 @@ func deriveInOrder(steps ...domain.DeriveFunc) domain.DeriveFunc {
 }
 
 // deriveResourceGeometry puts a shape on ONE resource, which is what the walker
-// does for a geometry found inside that resource's own document.
-//
-// The catalog-level counterpart is deriveGeometries in publish.go, and the
-// difference between them is the whole of A15: a catalog's shape is stored once
-// with a NULL resource id and is shared, a resource's shape is not.
+// does for a geometry found inside that resource's own document. Its
+// catalog-level counterpart is deriveGeometries in publish.go, and the
+// difference between them is the whole of A15.
 func deriveResourceGeometry(resourceID string, geometries ...domain.Geometry) domain.DeriveFunc {
 	return func(merged *domain.Catalog, _ []string) []domain.Fault {
 		for index := range merged.Resources {
@@ -149,12 +138,8 @@ func deriveResourceGeometry(resourceID string, geometries ...domain.Geometry) do
 }
 
 // within builds the S_DWITHIN filter a case searches with, covering the query
-// geometry the same way the discover mapper will.
-//
-// Center is populated only because the query geometry IS a Point: that is the
-// single case the exact haversine refinement applies to, and a Center set on
-// any other shape would silently narrow an operator it was never meant to
-// touch.
+// geometry the way the discover mapper will. Center is populated only because
+// the query geometry IS a Point — see CenterOf.
 func within(center domain.GeoPoint, metres float64, resolution int) *domain.SpatialFilter {
 	geometry := PointGeometryAt(0, center)
 
@@ -185,12 +170,10 @@ var (
 	chennai   = domain.GeoPoint{Lat: 13.0827, Lon: 80.2707}
 )
 
-// pageLimit is the limit every case searches with.
-//
-// Eight, and not a larger round number, because Postgres refuses a page past
-// its MaxCandidatesPerMode outright rather than answering it empty — so a
-// fixture asking for more than the backend retrieves would fail as a fault
-// rather than as a disagreement.
+// pageLimit is the limit every case searches with. Eight rather than a larger
+// round number because a page past MaxCandidatesPerMode is refused outright
+// rather than answered empty (discover-and-publish.md:2340), so a fixture asking
+// for more would fail as a fault rather than as a disagreement.
 const pageLimit = 8
 
 // searched runs one query and fails the case rather than returning a zero
@@ -210,11 +193,9 @@ func searched(
 	return result
 }
 
-// matchedIDs is the page's resource ids, SORTED.
-//
-// Sorted because the backends agree on membership everywhere and on order only
-// where there is no relevance to rank by. The one case that cares about order
-// reads pageOrder below instead.
+// matchedIDs is the page's resource ids, SORTED — the backends agree on
+// membership everywhere and on order only where there is no relevance to rank
+// by. The one case that cares about order reads pageOrder instead.
 func matchedIDs(result domain.SearchResult) []string {
 	ids := pageOrder(result)
 	slices.Sort(ids)
@@ -254,13 +235,12 @@ func assertPage(t *testing.T, result domain.SearchResult, wantIDs []string) {
 	}
 }
 
-// atOffset builds a validity patch whose daily window opens and closes at the
-// given offsets from now, in UTC.
+// dailyWindow builds a validity patch whose daily window opens and closes at
+// the given offsets from now, in UTC.
 //
-// Offsets rather than literals because neither backend's clock can be set:
-// Postgres's gate calls now() inside the transaction. A fixture pinned to
-// 22:00 would therefore pass or fail depending on the hour the suite ran, which
-// is the one property a conformance case cannot have.
+// Offsets rather than literals because neither backend's clock can be set —
+// Postgres's gate calls now() inside the transaction. A fixture pinned to 22:00
+// would pass or fail depending on the hour the suite ran.
 func dailyWindow(fromOffset, toOffset time.Duration) *domain.TimePeriodPatch {
 	now := time.Now().UTC()
 	from, to := now.Add(fromOffset), now.Add(toOffset)
@@ -284,13 +264,12 @@ func dateRange(from, to time.Time) *domain.TimePeriodPatch {
 // the cases
 // ---------------------------------------------------------------------------
 
-// An empty scope network is UNSCOPED, and that is not the same as a network id
-// that matches nothing.
+// An empty scope network is UNSCOPED, not a network id that matches nothing.
 //
-// A backend that read "" as a literal would return an empty page, and a backend
-// that fell back to this service's own APP_NETWORK_ID would return one network's
-// rows while reporting a total for all of them. The two failures are
-// indistinguishable at the caller, which is why both halves are asserted here.
+// Both halves are asserted because the two failures are indistinguishable at
+// the caller: a backend reading "" as a literal returns an empty page, and one
+// falling back to this service's own APP_NETWORK_ID returns a single network's
+// rows.
 func anOmittedNetworkSearchesEveryNetwork() Case {
 	return Case{
 		Name: "an omitted network searches every network and a given one narrows",
@@ -322,11 +301,10 @@ func anOmittedNetworkSearchesEveryNetwork() Case {
 	}
 }
 
-// The gate, read off the resource's own denormalised copy of it.
-//
-// All three halves in one case because they fail the same way — a row that
-// should be invisible answering a query — and a suite that pinned only `active`
-// would let an expired catalog keep selling.
+// The gate, read off the resource's own denormalised copy of it. All three
+// halves in one case because they fail the same way — a row that should be
+// invisible answering a query — and a suite pinning only `active` would let an
+// expired catalog keep selling.
 func theGateHidesWhatIsNotLive() Case {
 	lastMonth := time.Now().UTC().AddDate(0, -1, 0)
 	nextMonth := time.Now().UTC().AddDate(0, 1, 0)
@@ -358,18 +336,13 @@ func theGateHidesWhatIsNotLive() Case {
 	}
 }
 
-// The case the whole daily-window rule exists for, and the one that separates a
-// correct implementation from a BETWEEN.
+// The case that separates a correct daily window from a BETWEEN
+// (discover-and-publish.md:1101, :1322).
 //
-// A window from now+2min to now+1min WRAPS midnight: it is open for all but one
-// minute of the day, and it contains this instant. A backend comparing
-// `now BETWEEN from AND to` answers false — a shop open all night reading as a
-// shop never open, which is an absent search result and therefore a failure
-// nobody reports.
-//
-// Its forward twin, now+1min to now+2min, is the control. It does NOT wrap and
-// does NOT contain now, so a backend that "fixed" the wrap by ignoring the
-// window entirely would pass the first half and fail this one.
+// now+2min to now+1min WRAPS: open for all but one minute of the day, and it
+// contains this instant. The forward twin, now+1min to now+2min, is the control
+// — it does not wrap and does not contain now, so a backend that "fixed" the
+// wrap by ignoring the window entirely passes the first half and fails this one.
 func aWindowThatWrapsMidnightIsLiveAndItsForwardTwinIsNot() Case {
 	wrapping := catalogPatch("c-wrapping", searchable("r-wrapping", "wrapping", "", "", ""))
 	wrapping.Validity = dailyWindow(2*time.Minute, time.Minute)
@@ -390,11 +363,9 @@ func aWindowThatWrapsMidnightIsLiveAndItsForwardTwinIsNot() Case {
 	}
 }
 
-// Context and type are compared as a PAIR.
-//
-// The cross-product case is the one that matters: a request for
-// [agri#SeedLot, mobility#RideService] must not match agri#RideService, which is
-// exactly what two independent IN lists return.
+// Context and type are compared as a PAIR. The cross-product row is the one
+// that matters: a request for [agri#SeedLot, mobility#RideService] must not
+// match agri#RideService, which is exactly what two independent IN lists return.
 func schemaFilteringComparesContextAndTypeAsAPair() Case {
 	const (
 		agri     = "https://beckn.org/Agri"
@@ -432,12 +403,10 @@ func schemaFilteringComparesContextAndTypeAsAPair() Case {
 	}
 }
 
-// Lexical retrieval ORs its terms.
-//
-// `discover_tsquery` rewrites websearch_to_tsquery's `&` into `|` on purpose:
-// "wheat seeds for sale" must not match nothing because no listing carries all
-// four words. Recall is the retriever's job, precision is the fusion's — and a
-// backend that ANDed would return an empty page for every multi-word intent.
+// Lexical retrieval ORs its terms: "wheat seeds for sale" must not match
+// nothing because no listing carries all four words. A backend that ANDed would
+// return an empty page for every multi-word intent
+// (discover-and-publish.md:1078-1095).
 func lexicalMatchesAnyTermRatherThanAllOfThem() Case {
 	return Case{
 		Name: "a multi-word query matches a resource carrying any one of its terms",
@@ -462,13 +431,12 @@ func lexicalMatchesAnyTermRatherThanAllOfThem() Case {
 	}
 }
 
-// The exact refinement, which is the one place a distance decides anything.
+// The exact refinement, the one place a distance decides anything.
 //
-// Both shops sit inside their own H3 cells and the query's cover is a superset
-// by construction, so the cells alone would admit neither or both depending on
-// the resolution. What separates them is `geo_distance_m` on one side and
-// geo.NearestGeometryM on the other, and this case is what holds those two
-// functions to the same answer through the port.
+// Both shops sit in their own H3 cells and the query's cover is a superset by
+// construction, so the cells alone admit neither or both depending on the
+// resolution. What separates them is `geo_distance_m` on one side and
+// geo.NearestGeometryM on the other, and this holds those two to one answer.
 func aRadiusSelectsTheNearShopAndNotTheFarOne(resolution int) Case {
 	near := catalogPatch("c-near", searchable("r-near", "near", "", "", ""))
 	far := catalogPatch("c-far", searchable("r-far", "far", "", "", ""))
@@ -501,10 +469,9 @@ func aRadiusSelectsTheNearShopAndNotTheFarOne(resolution int) Case {
 // A catalog's provider location belongs to every resource under it; a
 // resource's own belongs to that resource alone.
 //
-// This is the read half of A15. The write half — that a catalog-level shape is
-// stored ONCE with a NULL resource id rather than copied per resource — is
-// pinned by providerLocationsAreStoredOnceForTheCatalog in the publish suite;
-// what this asserts is that storing it once still finds all of them.
+// The read half of A15: that storing a shape once still finds all of them. The
+// write half is providerLocationsAreStoredOnceForTheCatalog in the publish
+// suite.
 func aCatalogGeometryMatchesEveryResourceAndAResourceOneOnlyItsOwn(resolution int) Case {
 	shared := catalogPatch("c-shared",
 		searchable("r-a", "a", "", "", ""),
@@ -533,14 +500,14 @@ func aCatalogGeometryMatchesEveryResourceAndAResourceOneOnlyItsOwn(resolution in
 	}
 }
 
-// `targets` picks between two shapes on ONE resource.
+// `targets` picks between two shapes on ONE resource. Without it, a resource
+// with a shopfront in Bengaluru and a service area around Chennai answers every
+// query either matches — right for "where can I be found", wrong for "where do
+// you deliver".
 //
-// Without it, a resource with a shopfront in Bengaluru and a service area
-// around Chennai answers every query either of them matches — which is right
-// for "where can I be found" and wrong for "where do you deliver". The two
-// shapes here are deliberately under different target paths and 290km apart, so
-// a backend that ignored `targets` returns the resource for both queries and a
-// backend that applied it to the wrong shape returns it for neither.
+// The two shapes are under different target paths and 290 km apart, so a
+// backend ignoring `targets` returns the resource for both queries and one
+// applying it to the wrong shape returns it for neither.
 func targetsSelectsBetweenTwoGeometriesOnOneResource(resolution int) Case {
 	shopfront := PointGeometryAt(0, bengaluru)
 	serviceArea := PointGeometryAt(0, chennai)
@@ -582,11 +549,10 @@ func targetsSelectsBetweenTwoGeometriesOnOneResource(resolution int) Case {
 
 // Hydration returns the offers touching the page, plus the catalog-wide ones.
 //
-// An EMPTY ResourceIDs is CATALOG-WIDE and is never "no resources": a backend
-// reading it as "none" drops every promotion a publisher wrote against the
-// whole catalog, and does it silently. The scoped offer on the resource that is
-// NOT on the page is the other half — a hydration keyed on the catalog rather
-// than on the page would return it.
+// An EMPTY ResourceIDs is CATALOG-WIDE and never "no resources": a backend
+// reading it as "none" silently drops every promotion written against the whole
+// catalog. The scoped offer on the resource NOT on the page is the other half —
+// a hydration keyed on the catalog would return it.
 func offersAreTheOnesTouchingThePagePlusTheCatalogWideOnes() Case {
 	patch := catalogPatch("c1",
 		searchable("r-onpage", "onpage", "", "", ""),
@@ -615,11 +581,10 @@ func offersAreTheOnesTouchingThePagePlusTheCatalogWideOnes() Case {
 	}
 }
 
-// An offer's validity is its own, and nothing else checks it.
-//
-// A live catalog routinely carries last month's promotion: the catalog's gate
-// says nothing about it, so a backend that hydrated offers without their own
-// date check would return an expired price beside a current listing.
+// An offer's validity is its own, and nothing else checks it. A live catalog
+// routinely carries last month's promotion, so a backend that hydrated offers
+// without their own date check would return an expired price beside a current
+// listing.
 func anExpiredOfferIsNotReturnedWithALiveCatalog() Case {
 	lastMonth := time.Now().UTC().AddDate(0, -1, 0)
 
@@ -646,12 +611,12 @@ func anExpiredOfferIsNotReturnedWithALiveCatalog() Case {
 	}
 }
 
-// Pagination walks a stable order and the total does not move under it.
+// Pagination slices a stable order.
 //
 // No text, deliberately: with nothing to rank by both backends fall through to
-// the stable (catalog_id, id) key, which is the only order they are required to
-// agree on. It is also what lets this assert the ORDER rather than the set —
-// two pages that overlapped by one id would still be a correct set.
+// the stable (catalog_id, id) key, the only order they must agree on. That is
+// also what lets this assert the ORDER rather than the set — two pages
+// overlapping by one id would still be a correct set.
 func pageTwoDoesNotOverlapPageOne() Case {
 	resources := make([]domain.ResourcePatch, 0, 5)
 	for index := range 5 {
@@ -684,17 +649,14 @@ func pageTwoDoesNotOverlapPageOne() Case {
 	}
 }
 
-// A mode neither backend can run is REPORTED, not silently dropped.
+// A mode a backend cannot run is REPORTED, not silently dropped, and the page
+// is still the page: a request for two modes of which one is missing is a
+// degraded answer, and a degraded answer is not an error.
 //
-// The mode is a name NO backend declares, and that is deliberate. Since Task 22
-// there is no real capability both decline — Postgres executes the jsonpath
-// subset and the memory backend does not, Postgres declares `fuzzy` and the
-// memory backend does not — so naming a real one would pin which backend lacks
-// what, when the contract being pinned is what happens to a mode a backend
-// cannot run, whichever mode that turns out to be.
-//
-// The page must still be the page: a request for two modes of which one is
-// missing is a degraded answer, and a degraded answer is not an error.
+// The mode is a name NO backend declares, deliberately. Since Task 22 there is
+// no real capability both decline, so naming one would pin which backend lacks
+// what — where the contract is what happens to an unrunnable mode, whichever it
+// turns out to be.
 func aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch() Case {
 	return Case{
 		Name: "a mode this backend cannot run is degraded and does not fail the search",
@@ -719,10 +681,9 @@ func aModeTheBackendCannotRunIsDegradedAndDoesNotFailTheSearch() Case {
 // No modes at all is an empty answer, not the whole corpus.
 //
 // The negotiation in front of Search decides the mode list, so an empty one
-// means it decided on nothing. A backend that answered it with everything the
-// gate admits would be answering a query nobody made — and would do it with a
-// full page and a plausible total, which is the kind of wrong that survives
-// review.
+// means it decided on nothing. A backend answering it with everything the gate
+// admits would answer a query nobody made, with a full and plausible page —
+// the kind of wrong that survives review.
 func askingForNoRetrievalModeAtAllReturnsNothing() Case {
 	return Case{
 		Name: "asking for no retrieval mode at all returns nothing rather than everything",
@@ -739,17 +700,13 @@ func askingForNoRetrievalModeAtAllReturnsNothing() Case {
 // A spatial constraint is a filter, not a ranked mode, and an intent carrying
 // only one is still a query.
 //
-// This is the case the suite was missing, and its absence is what let the two
-// backends diverge unnoticed: every geo case above asks with `lexical`, because
-// that is the mode list a TEXT query produces, while the discover service asks
-// a geo-only intent with `spatial` and nothing else. Postgres then found no
-// retriever under that key and reported the mode missing; the memory backend
-// found no ranked mode left and emptied the page. Both answered nothing, and
-// both told the caller the geometry had been ignored — while it was the only
-// thing that had been applied.
+// Every geo case above asks with `lexical`, the mode list a TEXT query
+// produces; the discover service asks a geo-only intent with `spatial` and
+// nothing else. What this refuses is answering nothing while reporting the
+// geometry ignored — when the geometry was the only thing applied.
 //
-// The fixture and the radius are aRadiusSelectsTheNearShopAndNotTheFarOne's, on
-// purpose: the two mode lists are then held to ONE answer rather than to two
+// The fixture and radius are aRadiusSelectsTheNearShopAndNotTheFarOne's on
+// purpose, so the two mode lists are held to ONE answer rather than to two
 // separately plausible ones.
 func aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution int) Case {
 	near := catalogPatch("c-near", searchable("r-near", "near", "", "", ""))
@@ -783,21 +740,16 @@ func aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution int) Case {
 // A backend that DECLARES jsonpath owes the caller a named refusal for an
 // expression it cannot parse.
 //
-// The only conditional case in this file, and the condition is the point: the
-// suite otherwise pins agreements, and here the backends do not agree on
-// whether the mode runs at all. What they can be held to is the implication —
-// declare the mode and you own its refusals — so the case reads Capabilities
-// and skips where the mode is declined. A skip is visible in the run; a case
-// deleted for being awkward is not.
+// The only conditional case here, and the condition is the point: the backends
+// do not agree on whether the mode runs, so what they are held to is the
+// implication — declare the mode and you own its refusals. A skip is visible in
+// the run; a case deleted for being awkward is not.
 //
-// It belongs on the PORT rather than beside the Postgres retrievers, where an
-// equivalent test already lives, because domain.ErrInvalidFilterExpression is
-// declared on the port for src/discover to match — and src/discover cannot
-// import a backend. An expression is the one part of a query this service hands
-// to the store as TEXT, so every backend that executes it has a parser of its
-// own that can refuse it, and the request path has exactly one way to tell that
-// refusal from a broken deployment. A backend that returns something else
-// returns a 500 for the caller's typo, which is the defect this pins shut.
+// It belongs on the PORT because domain.ErrInvalidFilterExpression is declared
+// there for src/discover to match, and src/discover cannot import a backend
+// (stripped-rationale.md §4). An expression is the one part of a query handed to
+// the store as TEXT, so a backend returning anything else answers the caller's
+// typo with a 500.
 func aBackendThatRunsFiltersRefusesOneItCannotParse() Case {
 	return Case{
 		Name: "a backend that runs filters refuses one it cannot parse",
