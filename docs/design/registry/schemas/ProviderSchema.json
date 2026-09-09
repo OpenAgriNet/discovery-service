@@ -8,7 +8,7 @@
   "definitions": {
 
     "ProviderSchema": {
-      "description": "One row is one provider and one capability. What varies per Beckn action — the URL, the method, the mapping, the timeout — varies inside actions[].",
+      "description": "The internal binding between ONE participant and ONE capability. For each supported Beckn action it records the HTTP method, relative path, request and response mapping, timeout, retry policy, and status. This is a Sunbird entity and therefore internal: the OAN Registry interface exposes the resolved invocation details WITHOUT exposing this entity.",
       "type": "object",
       "additionalProperties": false,
       "required": ["bindingKey", "participantId", "capabilityCode", "status", "actions"],
@@ -64,7 +64,8 @@
       "pattern": "^mappings/(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]*\\.(discover|select|init|confirm|status|track|cancel|update|rate|support)\\.ya?ml$"
     },
 
-    "ParticipantId": { "type": "string", "maxLength": 253, "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$" },
+    "ParticipantId": { "description": "Must name an active Participant of type upstream_api. Unenforced by this schema.",
+                       "type": "string", "maxLength": 253, "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$" },
     "CapabilityCode": { "type": "string",
                         "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$",
                         "not": { "pattern": "^openagrinet:Agriculture(Capability|Resource)$" } },

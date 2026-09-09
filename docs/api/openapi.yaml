@@ -585,10 +585,11 @@ paths:
       tags:
         - Participant
       operationId: createParticipant
-      summary: Create a node or an upstream
+      summary: Create a network_adapter or an upstream_api
       description: |-
-        `type` decides which of the remaining fields apply. A node needs `role` and `keys` and a
-        hostname `participantId`; an upstream is refused both.
+        `type` decides which of the remaining fields apply. A `network_adapter` needs `role` and
+        `keys` and a hostname `participantId`; an `upstream_api` is refused both. Internal
+        surface — external callers use the OAN envelope and the OAN Registry interface.
       requestBody:
         required: true
         content:
@@ -596,31 +597,29 @@ paths:
             schema:
               $ref: "#/components/schemas/ParticipantWrapper"
             examples:
-              node:
+              network_adapter:
                 summary: A provider node — speaks Beckn, so it has a role and a key
                 value:
                   Participant:
                     participantId: provider-network-vistaar.da.gov.in
-                    name: OpenAgriNet provider adapter
-                    type: node
+                    name: OpenAgriNet Network Adapter
+                    type: network_adapter
                     status: active
                     baseUrl: https://provider-network-vistaar.da.gov.in/beckn
-                    role: BPP
+                    role: provider
                     keys:
-                      keyId: k1
-                      use: sign
                       alg: ed25519
-                      key: base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=
+                      key: xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=
                       validFrom: "2026-08-01T00:00:00Z"
                       validUntil: "2026-11-01T00:00:00Z"
                       status: active
-              upstream:
+              upstream_api:
                 summary: An upstream API — has not heard of Beckn, so no role and no keys
                 value:
                   Participant:
                     participantId: mausamgram
                     name: IMD Mausamgram NWP
-                    type: upstream
+                    type: upstream_api
                     status: active
                     baseUrl: https://mausamgram.imd.gov.in
       responses:
@@ -652,7 +651,7 @@ paths:
             example:
               filters:
                 type:
-                  eq: upstream
+                  eq: upstream_api
                 status:
                   eq: active
       responses:
@@ -689,7 +688,8 @@ paths:
       operationId: replaceParticipant
       summary: Replace a participant in full — also how you suspend or rotate
       description: |-
-        Replaces a participant in full. Flip `status` to `inactive` to suspend. Rotating a node's
+        Replaces a participant in full. Flip `status` to `inactive` to suspend. Rotating a
+        network adapter's
         key is such a `PUT`: the `keys` object is replaced, and verifiers pick it up on their next
         reload.
       requestBody:
@@ -702,7 +702,7 @@ paths:
               Participant:
                 participantId: agmarknet
                 name: Agmarknet Vistaar (Directorate of Marketing & Inspection)
-                type: upstream
+                type: upstream_api
                 status: inactive
                 baseUrl: https://api.agmarknet.gov.in
       responses:
@@ -1895,23 +1895,25 @@ components:
         One participant on the network. `type` says which kind, and decides which of the
         remaining fields apply.
 
-        A **node** speaks Beckn — a consumer node, the network node, or a provider node. It needs
-        a `role` and `keys`, and its `participantId` must be a hostname, because that id is how
-        the network addresses it.
+        A **`network_adapter`** speaks Beckn — a consumer node, the network node, or a provider
+        node. It needs a `role` and `keys`, and its `participantId` must be a hostname, because
+        that id is how the network addresses it.
 
-        An **upstream** is an external provider's ordinary HTTP API. It has never heard of Beckn,
-        so it has no role and no keys, and its `participantId` is the provider id consumers see.
+        An **`upstream_api`** is an external provider's ordinary HTTP API. It has never heard of
+        Beckn, so it has no role and no keys, and its `participantId` is the provider id
+        consumers see.
 
-        An external API and the node that fronts it are two separate participants, so two rows.
+        An external API and the adapter that fronts it are two separate participants, so two rows.
       properties:
         participantId:
           type: string
           maxLength: 253
           pattern: ^[a-z0-9][a-z0-9._:-]{2,252}$
           description: |
-            Stable id, and the only id. For a `node` this is additionally constrained to a
-            hostname — so `oan-provider` is refused there and
-            `provider-network-vistaar.da.gov.in` is not.
+            Stable id, and the only id. For a `network_adapter` this is additionally constrained
+            to a hostname — so `oan-provider` is refused there and
+            `provider-network-vistaar.da.gov.in` is not. It is what goes on the wire as
+            `senderId` / `receiverId`.
         name:
           type: string
           minLength: 1
@@ -1919,8 +1921,8 @@ components:
         type:
           type: string
           enum:
-            - node
-            - upstream
+            - network_adapter
+            - upstream_api
         status:
           $ref: "#/components/schemas/Status"
         baseUrl:
@@ -1928,58 +1930,57 @@ components:
           maxLength: 2000
           pattern: ^https?://(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$
           description: |-
-            The base something is appended to: a Beckn action for a node, a binding's `path` for an
-            upstream. Stops at the host. Must be `https` for a node; an upstream may be plaintext.
+            The base something is appended to: a Beckn action for a `network_adapter`, a
+            binding's `path` for an `upstream_api`. Stops at the host. Must be `https` for a
+            `network_adapter`; an `upstream_api` may be plaintext.
         role:
           type: string
           enum:
-            - BAP
-            - BPP
-            - NETWORK
+            - provider
+            - consumer
+            - network
           description: |-
-            Required for a `node`, refused for an `upstream`. `BAP` asks; `BPP` answers; `NETWORK`
-            exposes publish and discover.
+            The OAN role. Required for a `network_adapter`, refused for an `upstream_api`.
+            `consumer` asks; `provider` answers; `network` exposes publish and discover.
         keys:
           allOf:
             - $ref: "#/components/schemas/PublicKey"
-          description: Required for a `node`, **refused** for an `upstream`.
+          description: Required for a `network_adapter`, **refused** for an `upstream_api`.
     PublicKey:
       type: object
       additionalProperties: false
       required:
-        - keyId
-        - use
         - alg
         - key
         - validFrom
         - status
       description: |-
-        A node's public key. One key, not a list — a node holds a signing key or an encryption
-        key, and rotation is a full replace.
+        A network adapter's active signing or encryption key. One key, not a list — an adapter
+        holds a signing key or an encryption key, and rotation is a full replace.
       properties:
         keyId:
           type: string
           pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
           description: |
-            Field 2 of the `Authorization` keyId, so a sender can say which key it signed with.
-            One name out of one — which is what makes the field survivable if a second key is
-            ever needed.
+            Optional. Field 2 of the `Authorization` keyId, so a sender can say which key it
+            signed with. One name out of one — which is what makes the field survivable if a
+            second key is ever needed.
         use:
           type: string
           enum:
             - sign
             - encrypt
+          description: Optional, and implied by `alg`.
         alg:
           type: string
           enum:
             - ed25519
             - x25519
           description:
-            "Fixed by `use`: `sign` → `ed25519`, `encrypt` → `x25519`. Both curves are 32-byte
-            keys."
+            "`ed25519` signs, `x25519` encrypts. Both curves are 32-byte keys."
         key:
           type: string
-          pattern: ^base64:[A-Za-z0-9+/]{43}=$
+          pattern: ^[A-Za-z0-9+/]{43}=$
           description:
             base64 of the 32 raw bytes — 44 chars, one trailing `=`. A truncated or wrong-curve
             key fails at write time.
@@ -1991,7 +1992,7 @@ components:
           format: date-time
           description: |
             Absent means open-ended. There is one key, so it has no successor to overlap with:
-            a `validUntil` in the past leaves the node unable to sign. This date is a deadline.
+            a `validUntil` in the past leaves the adapter unable to sign. This date is a deadline.
         status:
           type: string
           enum:
@@ -2037,7 +2038,7 @@ components:
           maxLength: 253
           pattern: ^[a-z0-9][a-z0-9._:-]{2,252}$
           description: |
-            An `active` upstream `Participant`. **Read from here, never from the request** — a
+            An `active` `upstream_api` `Participant`. **Read from here, never from the request** — a
             configured registry URL is trusted; a URL from a request body is not.
         capabilityCode:
           $ref: "#/components/schemas/CapabilityCode"

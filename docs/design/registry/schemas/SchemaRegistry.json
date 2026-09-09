@@ -8,6 +8,7 @@
   "definitions": {
 
     "SchemaRegistry": {
+      "description": "An admitted capability schema: its identifier, name, version, status, and schema URL. It contains NO participant endpoint and NO invocation mapping. This is a Sunbird entity and therefore internal — external callers see the OAN envelope and the OAN Registry contract, never this shape.",
       "type": "object",
       "additionalProperties": false,
       "required": ["capabilityCode", "name", "version", "schemaUrl", "status"],

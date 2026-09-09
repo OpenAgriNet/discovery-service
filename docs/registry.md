@@ -8,6 +8,16 @@ reads it — it answers `discover` from its own published catalogs. The registry
 what the ONIX adapters around it read, and it is documented here because the two
 halves only make sense together.
 
+**Sunbird Registry is the persistence implementation, not the contract.** It sits
+behind an OAN-owned Registry interface: external callers use the OAN envelope and
+that interface, and everything below — the three entities, their fields, and the
+Sunbird RC routes that carry them — is internal implementation detail. The
+Provider Onboarding Platform creates and updates these records through the OAN
+Registry wrapper, and the wrapper is what exposes a *resolved* invocation without
+exposing the binding entity that produced it. This page documents the internals
+because whoever operates the registry needs them; nothing outside the wrapper
+should depend on them.
+
 > [`design/registry/schemas/`](design/registry/schemas/) holds the draft-07 files
 > and **those are the contract**. This page is the reading of them. Nothing
 > mechanically checks that the two agree — the `verify/` checkers that did were
@@ -109,40 +119,46 @@ All five fields required. Vocabulary only — nothing in the call path reads it.
 
 ### `Participant`
 
-Five fields always, then `type` decides the rest. One level, no wrapper object:
+An admitted participant or service endpoint. Five fields always, then `type`
+decides the rest. One level, no wrapper object:
 
-| | Always | `node` | `upstream` |
+| | Always | `network_adapter` | `upstream_api` |
 |---|---|---|---|
 | required | `participantId`, `name`, `type`, `status`, `baseUrl` | `role`, `keys` | — |
 | refused | | | `role`, `keys` |
 
-A **node** speaks Beckn, and its `participantId` *is* its network identity — what
-goes on the wire as `senderId` / `receiverId`, and field 1 of the `Authorization`
-keyId. There is no second id field, because a node id that is also a hostname is
-one name for one thing. The schema enforces the hostname shape when `type` is
-`node`, so `oan-provider` is refused there and
+> The source text declared the `type` enum as `network_adapter` / `upstream_api`
+> but wrote `"upstream"` in its second worked example. The declared enum wins:
+> the example is normalised to `upstream_api` here and in the schema.
+
+A **`network_adapter`** speaks Beckn, and its `participantId` *is* its network
+identity — what goes on the wire as `senderId` / `receiverId`, and field 1 of the
+`Authorization` keyId. There is no second id field, because an adapter id that is
+also a hostname is one name for one thing. The schema enforces the hostname shape
+when `type` is `network_adapter`, so `oan-provider` is refused there and
 `provider-network-vistaar.da.gov.in` is not.
 
-An **upstream** is an ordinary API. It has not heard of Beckn, so it has no role
-and no keys, and its `participantId` is the `offer.provider.id` the farmer sees.
+An **`upstream_api`** is an ordinary API. It has not heard of Beckn, so it has no
+role and no keys, and its `participantId` is the `offer.provider.id` the farmer
+sees.
+
+`role` is the OAN role: `provider`, `consumer` or `network`.
 
 `baseUrl` is one field because it was always one idea: the base something is
-appended to — a Beckn action for a node, a binding's `path` for an upstream. It
-is `https` for a node, unconditionally.
+appended to — a Beckn action for a `network_adapter`, a binding's `path` for an
+`upstream_api`. It is `https` for a `network_adapter`, unconditionally.
 
 ```jsonc
 { "Participant": {
   "participantId": "provider-network-vistaar.da.gov.in",   // the only id, and it is the wire identity
-  "name": "OpenAgriNet provider adapter",
-  "type": "node",                                 // node | upstream
+  "name": "OpenAgriNet Network Adapter",
+  "type": "network_adapter",                      // network_adapter | upstream_api
   "status": "active",                             // active | inactive
   "baseUrl": "https://provider-network-vistaar.da.gov.in/beckn",   // https only
-  "role": "BPP",                                  // BAP = consumer node, BPP = provider node, NETWORK = the network node
+  "role": "provider",                             // provider | consumer | network
   "keys": {                                       // ONE key; rotation replaces it
-    "keyId": "k1",                                // field 2 of the Authorization keyId
-    "use": "sign",                                // sign | encrypt — one key, so one of them
-    "alg": "ed25519",                             // fixed by use: sign→ed25519, encrypt→x25519
-    "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",   // 44 chars = 32 raw bytes
+    "alg": "ed25519",                             // ed25519 signs, x25519 encrypts
+    "key": "xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",          // 44 chars = 32 raw bytes
     "validFrom": "2026-08-01T00:00:00Z",
     "validUntil": "2026-11-01T00:00:00Z",         // optional; absent = open-ended. No successor
     "status": "active"                            // to overlap with, so this date is a deadline
@@ -153,18 +169,19 @@ is `https` for a node, unconditionally.
 { "Participant": {
   "participantId": "mausamgram",                  // also the Beckn offer.provider.id
   "name": "IMD Mausamgram NWP",
-  "type": "upstream",                             // does not speak Beckn: no role, no keys
+  "type": "upstream_api",                         // does not speak Beckn: no role, no keys
   "status": "active",
   "baseUrl": "https://mausamgram.imd.gov.in"      // the host; a binding's path is appended
 } }                                               // no auth: the credential is the plugin's
 ```
 
-**`keys` is one key, not a list.** A node therefore holds a signing key *or* an
-encryption key, never both, and cannot hold an old and a new key at once:
-rotation is a full replace and a hard cutover, and anything signed between the
-write and the last verifier refreshing does not verify. `keyId` still names the
-key in the `Authorization` header — one name out of one, which is what makes that
-field survivable if a second key is ever needed.
+**`keys` is one key, not a list.** A `network_adapter` therefore holds a signing
+key *or* an encryption key, never both, and cannot hold an old and a new key at
+once: rotation is a full replace and a hard cutover, and anything signed between
+the write and the last verifier refreshing does not verify. `alg` is what says
+which of the two it is. `keyId` and `use` survive as **optional** fields — `keyId`
+still names the key in the `Authorization` header, one name out of one, which is
+what makes that field survivable if a second key is ever needed.
 
 **No credential we present lives in these schemas.** `keys` is *their* public
 material, which we use to verify what they sent, and it is publishable — it is
@@ -185,17 +202,19 @@ Why a discriminator rather than a `oneOf` over two wrapper objects: `if/then`
 tells a reader "`role` is a required property", where `oneOf` says "is not valid
 under any of the given schemas" and leaves them to work out which half they were
 in. It also makes `type` a real field, so a seeding-time check can refuse a
-binding that points at a node, and Sunbird RC's `/search` — which indexes
+binding that points at a `network_adapter`, and Sunbird RC's `/search` — which indexes
 top-level fields only — can filter on `baseUrl` and `type` at all.
 
 An API and the adapter in front of it are separate deployables, so separate
 records: `mausamgram` is IMD's API, `provider-network-vistaar.da.gov.in` is the
-node that calls it. Which upstreams a provider node fronts is that adapter's
+network adapter that calls it. Which upstreams a provider node fronts is that adapter's
 config.
 
 ### `ProviderSchema`
 
-One row is one provider and one capability. Everything that varies per **Beckn
+One row is one provider and one capability — the internal binding between one
+participant and one capability. The OAN Registry interface exposes the
+**resolved** invocation details; it does not expose this entity. Everything that varies per **Beckn
 action** — the URL, the method, the mapping file, the timeout — varies inside
 `actions[]`, because a capability can need `select` on one endpoint and `confirm`
 on another.
@@ -208,7 +227,7 @@ on another.
 ```jsonc
 { "ProviderSchema": {
   "bindingKey": "mausamgram|openagrinet:WeatherObservation",   // <participantId>|<capabilityCode>
-  "participantId": "mausamgram",                  // an active upstream — read from HERE, never from the request
+  "participantId": "mausamgram",                  // an active upstream_api — read from HERE, never from the request
   "capabilityCode": "openagrinet:WeatherObservation",   // must be an active SchemaRegistry
   "status": "active",                             // retires the whole binding
   "actions": [ {                                  // 1–10, one entry per action
@@ -273,8 +292,8 @@ does not exist validates, seeds and returns nothing useful.
 These hold and nothing enforces them:
 
 1. A binding's `participantId` must name an `active` `Participant` of type
-   `upstream` — a binding pointing at a node resolves to a call that cannot be
-   made.
+   `upstream_api` — a binding pointing at a `network_adapter` resolves to a call
+   that cannot be made.
 2. A binding's `capabilityCode` must name an `active` `SchemaRegistry`.
 3. `SchemaRegistry.version` must equal the `vN.N` segment of its `schemaUrl`.
    The schema cannot compare two fields.
@@ -283,8 +302,11 @@ These hold and nothing enforces them:
 
 ## The registry's own API
 
-Sunbird RC generates the REST surface from the three schemas. `<Entity>` is
-`Participant`, `SchemaRegistry` or `ProviderSchema`.
+**These routes are internal.** Sunbird RC generates them from the three schemas
+and the OAN Registry wrapper is what calls them; an external caller uses the OAN
+envelope and the Registry interface instead, and never sees an `osid` or a
+Sunbird entity wrapper. `<Entity>` is `Participant`, `SchemaRegistry` or
+`ProviderSchema`.
 
 | Route | Who | What |
 |---|---|---|
@@ -315,7 +337,7 @@ Content-Type: application/json
 { "Participant": {
   "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
-  "type": "upstream",
+  "type": "upstream_api",
   "status": "active",
   "baseUrl": "https://api.agmarknet.gov.in" } }
 ```
@@ -346,9 +368,9 @@ Only indexed fields can be filtered:
 | `ProviderSchema` | `bindingKey` | `participantId`, `capabilityCode`, `status` |
 
 `type` and `baseUrl` are indexed because flattening made them indexable — RC
-filters on top-level fields only, so a nested `upstream.baseUrl` could not be
-searched at all. `type` is the useful one: it separates the nodes from the
-upstreams in one `eq`.
+filters on top-level fields only, so a nested `upstream_api.baseUrl` could not be
+searched at all. `type` is the useful one: it separates the network adapters from
+the upstream APIs in one `eq`.
 
 **Search is still not public**, but it is no longer holding back a secret. What a
 read does expose is the network's shape: who its participants are, which hosts
@@ -363,14 +385,14 @@ an error.**
 send the whole record back.
 
 **Because `PUT` replaces, a field you omit is a field you delete.** Omitting
-`keys` leaves a node with no key at all — there is one, so there is no second one
+`keys` leaves a `network_adapter` with no key at all — there is one, so there is no second one
 to fall back to — and dropping an entry from a binding's `actions` removes that
 action. Both silently. Changing one action's timeout means sending the whole
 array back, so read the record first and edit what you read.
 
-Rotating a node's key is such a `PUT`. Because it has no successor to overlap
-with, every verifier must reload before the node signs with the new material.
-Rotating an **upstream** credential is not a registry write at all — it touches no
+Rotating a `network_adapter`'s key is such a `PUT`. Because it has no successor to
+overlap with, every verifier must reload before the adapter signs with the new
+material. Rotating an **`upstream_api`** credential is not a registry write at all — it touches no
 record, only the adapter's environment.
 
 ### Delete is disabled
@@ -444,7 +466,7 @@ before v1 carries traffic.
 One record serves both Advisory categories: Schemes and Crop & Pest are the same
 outcome type, told apart on the published resource by `subjectCategories`.
 
-### Nodes
+### Network adapters
 
 Keys below are demo material.
 
@@ -452,67 +474,67 @@ Keys below are demo material.
 { "Participant": {
   "participantId": "seeker-network-vistaar.da.gov.in",
   "name": "Kisan app consumer adapter",
-  "type": "node", "status": "active",
+  "type": "network_adapter", "status": "active",
   "baseUrl": "https://seeker-network-vistaar.da.gov.in/beckn",
-  "role": "BAP",
-  "keys": { "keyId": "k1", "use": "sign", "alg": "ed25519",
-            "key": "base64:s3Q/53+xYL/BgelYdsKd7DBgYDUFLsXE+GQDLSuPZ4c=",
+  "role": "consumer",
+  "keys": { "alg": "ed25519",
+            "key": "s3Q/53+xYL/BgelYdsKd7DBgYDUFLsXE+GQDLSuPZ4c=",
             "validFrom": "2026-08-01T00:00:00Z", "status": "active" } } }
 
 { "Participant": {
   "participantId": "discovery-network-vistaar.da.gov.in",
   "name": "OpenAgriNet network node",
-  "type": "node", "status": "active",
+  "type": "network_adapter", "status": "active",
   "baseUrl": "https://discovery-network-vistaar.da.gov.in/beckn",
-  "role": "NETWORK",
-  "keys": { "keyId": "k1", "use": "sign", "alg": "ed25519",
-            "key": "base64:q7fEHdFO7wNpYBARwY+qvhGhRzlrlJWRR64NIwQhO2A=",
+  "role": "network",
+  "keys": { "alg": "ed25519",
+            "key": "q7fEHdFO7wNpYBARwY+qvhGhRzlrlJWRR64NIwQhO2A=",
             "validFrom": "2026-08-01T00:00:00Z", "status": "active" } } }
 
 { "Participant": {
   "participantId": "provider-network-vistaar.da.gov.in",
-  "name": "OpenAgriNet provider adapter",
-  "type": "node", "status": "active",
+  "name": "OpenAgriNet Network Adapter",
+  "type": "network_adapter", "status": "active",
   "baseUrl": "https://provider-network-vistaar.da.gov.in/beckn",
-  "role": "BPP",
-  "keys": { "keyId": "k1", "use": "sign", "alg": "ed25519",
-            "key": "base64:xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
+  "role": "provider",
+  "keys": { "alg": "ed25519",
+            "key": "xq4+2oQ6MgSZdHHBMtNd1TmnPTmzY5UoZlqzf0yn6ZA=",
             "validFrom": "2026-08-01T00:00:00Z",
             "validUntil": "2026-11-01T00:00:00Z", "status": "active" } } }
 ```
 
-The provider node is the case that shows what one key costs: its `k1` carries
+The provider node is the case that shows what one key costs: its key carries
 `validUntil` 1 November, and because there is no successor to overlap with, that
 date is a deadline after which it cannot sign at all.
 
 One provider node fronts all five upstreams below. Which ones is that adapter's
 config.
 
-### Upstreams
+### Upstream APIs
 
 Five external APIs. None has heard of Beckn; each appears on the wire as
 `offer.provider.id`.
 
 ```json
 { "Participant": { "participantId": "mausamgram",
-  "name": "IMD Mausamgram NWP", "type": "upstream", "status": "active",
+  "name": "IMD Mausamgram NWP", "type": "upstream_api", "status": "active",
   "baseUrl": "https://mausamgram.imd.gov.in" } }
 
 { "Participant": { "participantId": "imd-city-weather",
-  "name": "IMD City Weather", "type": "upstream", "status": "active",
+  "name": "IMD City Weather", "type": "upstream_api", "status": "active",
   "baseUrl": "https://city.imd.gov.in" } }
 
 { "Participant": { "participantId": "agmarknet",
   "name": "Agmarknet Vistaar (Directorate of Marketing & Inspection)",
-  "type": "upstream", "status": "active",
+  "type": "upstream_api", "status": "active",
   "baseUrl": "https://api.agmarknet.gov.in" } }
 
 { "Participant": { "participantId": "hasura-content",
-  "name": "Vistaar Knowledge Content (Hasura)", "type": "upstream",
+  "name": "Vistaar Knowledge Content (Hasura)", "type": "upstream_api",
   "status": "active", "baseUrl": "https://content.internal" } }
 
 { "Participant": { "participantId": "oan-vector",
-  "name": "OAN Vector Index", "type": "upstream", "status": "active",
+  "name": "OAN Vector Index", "type": "upstream_api", "status": "active",
   "baseUrl": "http://3.6.146.174:8882" } }
 ```
 
@@ -527,7 +549,7 @@ host it may reach is the one its own record names.
 **`oan-vector` is a bare IP over plain HTTP.** That used to be legal *because*
 `scheme: none` said no credential rode on it. With no `auth` field the schema
 cannot distinguish a credentialled call from an uncredentialled one, so plaintext
-is now permitted for every upstream and nothing refuses a credentialled plugin
+is now permitted for every `upstream_api` and nothing refuses a credentialled plugin
 pointed at an `http://` host. Keeping that true is the plugin's job, and nothing
 checks it. This is a real loss and is listed under [Known gaps](#known-gaps).
 
@@ -1012,7 +1034,7 @@ out `timeoutMs` × attempts before seeing a `NET_*`.
 | | Gap | Status |
 |---|---|---|
 | 1 | **Prose and JSON are not checked against each other.** The `verify/` checkers were removed when this folder moved | Open. The JSON wins; read it when it matters |
-| 2 | **Plaintext is permitted for every upstream.** With no `auth` field the schema cannot condition `https` on whether a credential rides along | Open. `oan-vector` is the only plaintext row today |
+| 2 | **Plaintext is permitted for every `upstream_api`.** With no `auth` field the schema cannot condition `https` on whether a credential rides along | Open. `oan-vector` is the only plaintext row today |
 | 3 | **Roles gate the entity, not the verb.** Any token that can read these records can also write them | Must close before v1 carries traffic |
 | 4 | **`schemaUrl` points at `main`**, not at the tag the packs live on | Open |
 | 5 | **The five integrity rules above are unenforced** — no seeding-time checker exists | Open |

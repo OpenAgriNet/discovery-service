@@ -12,7 +12,7 @@
   },
   "definitions": {
     "Participant": {
-      "description": "Someone the network deals with. `type` says which kind, and decides which of the remaining fields apply: a node speaks Beckn and is addressed by its participantId; an upstream is an ordinary API our adapter calls. No credential of ours appears here — how to authenticate to an upstream is the binding's plugin's, read from the adapter's own environment.",
+      "description": "An admitted participant or service endpoint: identifier, name, integration type, status, base URL, OAN role, and active signing or encryption keys. This is a Sunbird entity and therefore internal — external callers see the OAN envelope and the OAN Registry contract, never this shape. `type` says which kind, and decides which of the remaining fields apply: a network_adapter speaks Beckn and is addressed by its participantId; an upstream_api is an ordinary API our adapter calls. No credential of ours appears here — how to authenticate to an upstream_api is the binding's plugin's, read from the adapter's own environment.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -40,19 +40,13 @@
           "$ref": "#/definitions/Status"
         },
         "baseUrl": {
-          "description": "The base something is appended to: a Beckn action for a node, a binding's path for an upstream. https for a node. An upstream may be plaintext: with no auth field the registry cannot tell whether a call to it carries a credential, so it cannot condition the transport rule on one — that guard now sits with the binding's plugin, which holds the credential.",
+          "description": "The base something is appended to: a Beckn action for a network_adapter, a binding's path for an upstream_api. https for a network_adapter. An upstream_api may be plaintext: with no auth field the registry cannot tell whether a call to it carries a credential, so it cannot condition the transport rule on one — that guard now sits with the binding's plugin, which holds the credential.",
           "type": "string",
           "maxLength": 2000,
           "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
         },
         "role": {
-          "description": "What this node does on the network. BAP asks. BPP answers. NETWORK exposes publish and discover, answering discover from published catalogs.",
-          "type": "string",
-          "enum": [
-            "BAP",
-            "BPP",
-            "NETWORK"
-          ]
+          "$ref": "#/definitions/Role"
         },
         "keys": {
           "$ref": "#/definitions/PublicKey"
@@ -60,11 +54,11 @@
       },
       "allOf": [
         {
-          "description": "A node speaks Beckn: it needs a role and a key, and its id is its wire identity so it must be a hostname.",
+          "description": "A network_adapter speaks Beckn: it needs a role and a key, and its id is its wire identity so it must be a hostname.",
           "if": {
             "properties": {
               "type": {
-                "const": "node"
+                "const": "network_adapter"
               }
             },
             "required": [
@@ -88,11 +82,11 @@
           }
         },
         {
-          "description": "An upstream does not speak Beckn: it has no role on the network and no keys we verify. It is one host and a base path, nothing more.",
+          "description": "An upstream_api does not speak Beckn: it has no role on the network and no keys we verify. It is one host and a base path, nothing more.",
           "if": {
             "properties": {
               "type": {
-                "const": "upstream"
+                "const": "upstream_api"
               }
             },
             "required": [
@@ -119,12 +113,10 @@
       ]
     },
     "PublicKey": {
-      "description": "A node's public key, held as material: it is public, so there is nothing to protect. It is the only key material in these three schemas, and there is no secret in them at all.",
+      "description": "An adapter's active signing or encryption key, held as material: it is public, so there is nothing to protect. It is the only key material in these three schemas, and there is no secret in them at all.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "keyId",
-        "use",
         "alg",
         "key",
         "validFrom",
@@ -132,12 +124,12 @@
       ],
       "properties": {
         "keyId": {
-          "description": "Second field of the Authorization keyId, so a sender can say which key it signed with.",
+          "description": "Optional. Second field of the Authorization keyId, so a sender can say which key it signed with.",
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
         },
         "use": {
-          "description": "sign verifies signatures; encrypt is for encrypted payloads. A node holds one key, so it holds one or the other.",
+          "description": "Optional, and implied by alg. sign verifies signatures; encrypt is for encrypted payloads. An adapter holds one key, so it holds one or the other.",
           "type": "string",
           "enum": [
             "sign",
@@ -145,7 +137,7 @@
           ]
         },
         "alg": {
-          "description": "Fixed by use. Both curves are 32-byte keys.",
+          "description": "ed25519 signs, x25519 encrypts. Both curves are 32-byte keys.",
           "type": "string",
           "enum": [
             "ed25519",
@@ -155,14 +147,14 @@
         "key": {
           "description": "base64 of the 32 raw bytes: 44 chars, one trailing '='. A truncated or wrong-curve key fails at write time.",
           "type": "string",
-          "pattern": "^base64:[A-Za-z0-9+/]{43}=$"
+          "pattern": "^[A-Za-z0-9+/]{43}=$"
         },
         "validFrom": {
           "type": "string",
           "format": "date-time"
         },
         "validUntil": {
-          "description": "Absent means open-ended. There is one key, so it has no successor to overlap with: a validUntil in the past leaves the node unable to sign, and rotation is a full replace of this object.",
+          "description": "Absent means open-ended. There is one key, so it has no successor to overlap with: a validUntil in the past leaves the adapter unable to sign, and rotation is a full replace of this object.",
           "type": "string",
           "format": "date-time"
         },
@@ -182,7 +174,10 @@
               "use": {
                 "const": "sign"
               }
-            }
+            },
+            "required": [
+              "use"
+            ]
           },
           "then": {
             "properties": {
@@ -198,7 +193,10 @@
               "use": {
                 "const": "encrypt"
               }
-            }
+            },
+            "required": [
+              "use"
+            ]
           },
           "then": {
             "properties": {
@@ -211,7 +209,7 @@
       ]
     },
     "ParticipantId": {
-      "description": "Stable id, and the only id. For a node this is its network identity (context.bapId / context.bppId); for an upstream it is the Beckn offer.provider.id.",
+      "description": "Stable id, and the only id. For a network_adapter this is its network identity — what goes on the wire as senderId / receiverId; for an upstream_api it is the Beckn offer.provider.id.",
       "type": "string",
       "maxLength": 253,
       "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$"
@@ -223,12 +221,21 @@
         "inactive"
       ]
     },
-    "ParticipantType": {
-      "description": "node speaks Beckn. upstream is an API we call over ordinary HTTP and does not.",
+    "Role": {
+      "description": "The OAN role this adapter plays. consumer asks. provider answers. network exposes publish and discover, answering discover from published catalogs.",
       "type": "string",
       "enum": [
-        "node",
-        "upstream"
+        "provider",
+        "consumer",
+        "network"
+      ]
+    },
+    "ParticipantType": {
+      "description": "Integration type. network_adapter speaks Beckn. upstream_api is an API we call over ordinary HTTP and does not.",
+      "type": "string",
+      "enum": [
+        "network_adapter",
+        "upstream_api"
       ]
     }
   },
