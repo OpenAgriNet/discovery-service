@@ -48,6 +48,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/OpenAgriNet/discovery-service/src/platform/buildinfo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
@@ -103,7 +104,7 @@ type Provider struct {
 // exporter that will not build: config.validateOTel has already refused the
 // incoherent combinations at boot.
 func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
-	res, err := projectResource(ctx, NewIdentity(cfg), readBuild())
+	res, err := projectResource(ctx, NewIdentity(cfg), buildinfo.Read())
 	if err != nil {
 		return nil, fmt.Errorf("build the telemetry resource: %w", err)
 	}

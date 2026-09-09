@@ -63,7 +63,7 @@ COPY migrations/ ./migrations/
 # All four now arrive as arguments. `make docker` passes them; a bare
 # `docker build .` gets the defaults below and the binary says dev/unknown, which
 # is exactly what it is. Empty is not a default here — an empty -X value is what
-# src/platform/telemetry's linkerStamp reads as "nothing supplied".
+# src/platform/buildinfo's linkerStamp reads as "nothing supplied".
 ARG VERSION=dev
 ARG COMMIT=
 ARG BUILD_DATE=
@@ -87,10 +87,10 @@ ARG TREE_STATE=
 # to.
 RUN CGO_ENABLED=1 go build -trimpath \
         -ldflags="-s -w -extldflags '-static' \
-            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=${VERSION} \
-            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.commit=${COMMIT} \
-            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.buildDate=${BUILD_DATE} \
-            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.treeState=${TREE_STATE}" \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.version=${VERSION} \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.commit=${COMMIT} \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.buildDate=${BUILD_DATE} \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.treeState=${TREE_STATE}" \
         -o /out/discovery-service ./cmd/discovery-service
 
 # dhi/static musl-alpine variant, verified against

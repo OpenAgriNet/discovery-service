@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 	"slices"
 	"strconv"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"github.com/OpenAgriNet/discovery-service/src/platform/buildinfo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
@@ -312,129 +312,17 @@ const (
 	serviceName = "discovery-service"
 )
 
-// version is injected at link time; opentelemetry.md, "Build identity", says why
-// it is the one attribute that cannot read the toolchain's build stamp. Do not
-// restate that reasoning here — it was wrong at four sites until it was measured.
-//
-// `dev` rather than "" so an unset value differs from a dropped one. Pinned by
-// tests/architecture/ldflags_test.go, because `go build -X` on a symbol that
-// does not exist succeeds silently.
-var version = "dev"
-
-// The other three, empty until the linker fills them.
-//
-// They read from the toolchain's VCS stamp where there is one, and there is one
-// for every build that happens inside a git working tree — which is every build
-// EXCEPT the release image, whose context is a copy with no .git in it. So the
-// three attributes that identify which commit is deployed were `unknown`,
-// `unknown` and the epoch on precisely the binaries nobody can identify by
-// looking at their own tree. The stamp now crosses as -ldflags and the VCS
-// settings override it where they exist, which keeps a local build honest about
-// a dirty tree the build system would have no way to know about.
-//
-// Four separate `var x = ""` declarations and not one grouped block:
-// tests/architecture/ldflags_test.go resolves each -X target back to its
-// declaration, and `go build -X` on a symbol that does not exist succeeds
-// silently, so the test reads the source rather than trusting the flag.
-var commit = ""
-var buildDate = ""
-var treeState = ""
-
-// Build is what -ldflags and the toolchain's VCS stamp know between them about
-// the binary that is running.
-type Build struct {
-	Version   string
-	Commit    string
-	TreeState string
-	Date      string
-}
-
-// The values the three VCS-derived attributes take when the binary carries no
-// stamp — every `go test` binary, and every build from an exported tree
-// including the release image.
-const (
-	unknownRevision  = "unknown"
-	unknownTreeState = "unknown"
-
-	// Not `unknown`: build.date is a timestamp everywhere else, and a consumer
-	// parsing it would have to special-case a word.
-	zeroTime = "1970-01-01T00:00:00Z"
-)
-
-// readBuild assembles the four build attributes, reporting an absence as a value
-// rather than an error: a binary with no VCS stamp is a normal thing to be, and
-// a Resource that refused to build over it is a service that cannot boot in a
-// test.
-func readBuild() Build {
-	build := linkerStamp()
-
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return build
-	}
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			build.Commit = setting.Value
-		case "vcs.time":
-			// The COMMIT's timestamp, not the moment the compiler ran — the
-			// reproducible half, and the one that answers which change is
-			// deployed. onix's onix.build.date is the other.
-			build.Date = setting.Value
-		case "vcs.modified":
-			build.TreeState = treeStateFromVCS(setting.Value)
-		}
-	}
-
-	return build
-}
-
-// linkerStamp is what -ldflags supplied, with the unknown values standing in
-// wherever it supplied nothing.
-//
-// It is the floor rather than the answer: readBuild lets the VCS settings
-// overwrite every field they cover, because the toolchain observed the tree it
-// compiled and the build system only asserted something about it. The two agree
-// on a clean checkout and disagree exactly where the observation is worth more —
-// a tree edited after the build system read `git status`.
-func linkerStamp() Build {
-	build := Build{
-		Version:   version,
-		Commit:    unknownRevision,
-		TreeState: unknownTreeState,
-		Date:      zeroTime,
-	}
-	if commit != "" {
-		build.Commit = commit
-	}
-	if buildDate != "" {
-		build.Date = buildDate
-	}
-	if treeState != "" {
-		build.TreeState = treeState
-	}
-	return build
-}
-
-// treeStateFromVCS maps debug.BuildSetting's "true"/"false" onto the registry's
-// clean/dirty/unknown. Three values and not two, because `dirty` on a production
-// Resource is a finding and must not be confusable with a missing stamp.
-func treeStateFromVCS(modified string) string {
-	switch modified {
-	case "true":
-		return "dirty"
-	case "false":
-		return "clean"
-	default:
-		return unknownTreeState
-	}
-}
+// The four build attributes moved to src/platform/buildinfo on 2026-09-10, with
+// their -ldflags targets. cmd's boot line needs the same values the Resource
+// carries — otherwise an operator reading the log and a facilitator reading a
+// span are told two different things about which build is running — and cmd may
+// not import this package. buildinfo's doc comment carries the rest.
 
 // projectResource is the Resource half of the seam: every attribute name comes
 // off the registry and none is a literal here. A Resource is built once at boot,
 // so a wrong key is wrong on every signal the process ever emits and no test of
 // a single signal catches it.
-func projectResource(ctx context.Context, id Identity, build Build) (*resource.Resource, error) {
+func projectResource(ctx context.Context, id Identity, build buildinfo.Stamp) (*resource.Resource, error) {
 	attributes := []attribute.KeyValue{
 		attribute.String(keyOf(fact.ResourceEID), eidAPI),
 		attribute.String(keyOf(fact.ResourceProducer), id.Producer),

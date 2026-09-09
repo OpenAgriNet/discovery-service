@@ -95,7 +95,7 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 # Each is `?=` for the same reason VERSION is: a build system that already knows
 # the answer should be able to say so rather than have us re-derive it. Each
 # degrades to empty outside a git checkout, and empty is what the linker stamp
-# reads as "nothing supplied" — see linkerStamp in src/platform/telemetry/traces.go,
+# reads as "nothing supplied" — see linkerStamp in src/platform/buildinfo/buildinfo.go,
 # which then falls back to unknown/unknown/epoch rather than to a lie.
 # BUILD_DATE is forced to UTC Z-form rather than %cI's local offset, because the
 # toolchain's vcs.time is UTC and OVERRIDES this value wherever it exists — so
@@ -140,10 +140,10 @@ TREE_STATE ?= $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo c
 # built a correct one from the same checkout.
 export VERSION COMMIT BUILD_DATE TREE_STATE
 
-LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION) \
-          -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.commit=$(COMMIT) \
-          -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.buildDate=$(BUILD_DATE) \
-          -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.treeState=$(TREE_STATE)
+LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.version=$(VERSION) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.commit=$(COMMIT) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.buildDate=$(BUILD_DATE) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.treeState=$(TREE_STATE)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
 

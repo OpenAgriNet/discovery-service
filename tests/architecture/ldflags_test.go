@@ -81,7 +81,7 @@ func TestTheReleaseWorkflowNamesTheTagItWasStartedBy(t *testing.T) {
 //
 // `go build -X does/not/exist.version=1.2.3` succeeds. It prints nothing, exits
 // zero and produces a binary in which the flag did nothing — so renaming
-// src/platform/telemetry, or moving `version` out of it, leaves a green build,
+// src/platform/buildinfo, or moving `version` out of it, leaves a green build,
 // a green test suite and a production Resource reporting `dev` for every
 // release after. The only thing that notices is somebody asking OP5's question
 // months later and finding the answer has been wrong the whole time.
@@ -141,7 +141,7 @@ func TestBothBuildFilesStampTheSameSymbols(t *testing.T) {
 
 	want := make([]string, 0, len(stampedSymbols))
 	for _, symbol := range stampedSymbols {
-		want = append(want, telemetryPackage+"."+symbol)
+		want = append(want, buildinfoPackage+"."+symbol)
 	}
 	slices.Sort(want)
 	if !slices.Equal(makefile, want) {
@@ -159,8 +159,11 @@ func TestBothBuildFilesStampTheSameSymbols(t *testing.T) {
 	}
 }
 
-// telemetryPackage is where all four stamped symbols are declared.
-var telemetryPackage = modulePath + "/src/platform/telemetry"
+// buildinfoPackage is where all four stamped symbols are declared. They moved
+// there from src/platform/telemetry on 2026-09-10, so cmd's boot line could read
+// the same stamp the Resource does without crossing the SDK import boundary
+// tests/architecture/boundary_test.go guards.
+var buildinfoPackage = modulePath + "/src/platform/buildinfo"
 
 // assertSymbolExists resolves the -X target back to a declaration.
 //

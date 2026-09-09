@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/OpenAgriNet/discovery-service/src/platform/buildinfo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
@@ -43,7 +44,7 @@ func attributesOf(t *testing.T, keyValues []attribute.KeyValue) map[string]strin
 // would let the Resource and the registry drift, and the drift would be
 // invisible because both halves would still pass their own tests.
 func TestTheResourceCarriesTheFiveSpecAttributes(t *testing.T) {
-	res, err := projectResource(context.Background(), testIdentity(), readBuild())
+	res, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
 	if err != nil {
 		t.Fatalf("projectResource: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestTheResourceCarriesTheFiveSpecAttributes(t *testing.T) {
 // the participant. The bug is one assignment away and it reads as a
 // simplification, so it gets its own test.
 func TestServiceNameIsNotProducer(t *testing.T) {
-	res, err := projectResource(context.Background(), testIdentity(), readBuild())
+	res, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
 	if err != nil {
 		t.Fatalf("projectResource: %v", err)
 	}
@@ -106,11 +107,15 @@ func TestServiceNameIsNotProducer(t *testing.T) {
 // unstamped case has to answer something, and `dev` is a value nobody will
 // mistake for a release.
 func TestAnUnstampedBuildReportsDev(t *testing.T) {
-	if version != "dev" {
-		t.Fatalf("version = %q in a test binary; the -ldflags default is what this asserts", version)
+	// Read through buildinfo rather than at its unexported `version`: the four
+	// stamped symbols left this package on 2026-09-10. What this test is about
+	// is the Resource the projection produces, and the premise it needs — that
+	// a test binary is unstamped — is observable from outside.
+	if stamp := buildinfo.Read(); stamp.Version != "dev" {
+		t.Fatalf("version = %q in a test binary; the -ldflags default is what this asserts", stamp.Version)
 	}
 
-	res, err := projectResource(context.Background(), testIdentity(), readBuild())
+	res, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
 	if err != nil {
 		t.Fatalf("projectResource: %v", err)
 	}
@@ -130,7 +135,7 @@ func TestAnUnstampedBuildReportsDev(t *testing.T) {
 // exact case the fallbacks exist for. It asserts they fired, not what they
 // found: asserting a commit here would assert against the checkout.
 func TestNoBuildAttributeIsEmpty(t *testing.T) {
-	res, err := projectResource(context.Background(), testIdentity(), readBuild())
+	res, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
 	if err != nil {
 		t.Fatalf("projectResource: %v", err)
 	}
@@ -164,7 +169,7 @@ func TestNoBuildAttributeIsEmpty(t *testing.T) {
 func TestTheTreeStateStaysInsideItsDeclaredValues(t *testing.T) {
 	def := fact.Of(fact.ResourceBuildTreeState)
 
-	res, err := projectResource(context.Background(), testIdentity(), readBuild())
+	res, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
 	if err != nil {
 		t.Fatalf("projectResource: %v", err)
 	}
@@ -191,7 +196,7 @@ func TestTheOperatorsResourceAttributesMergeWithoutOverridingIdentity(t *testing
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES",
 		"k8s.pod.name=discovery-7d9f,k8s.namespace.name=oan,"+fact.Of(fact.ResourceProducer).SpanKey+"=impostor")
 
-	res, err := projectResource(context.Background(), testIdentity(), readBuild())
+	res, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
 	if err != nil {
 		t.Fatalf("projectResource: %v", err)
 	}

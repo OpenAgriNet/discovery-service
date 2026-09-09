@@ -474,14 +474,29 @@ confirmed on a running stack on 2026-09-09.
 So all four cross as `-X`:
 
 ```
--X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
--X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.commit=$(COMMIT)
--X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.buildDate=$(BUILD_DATE)
--X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.treeState=$(TREE_STATE)
+-X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.version=$(VERSION)
+-X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.commit=$(COMMIT)
+-X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.buildDate=$(BUILD_DATE)
+-X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.treeState=$(TREE_STATE)
 ```
 
-**The linker stamp is the floor, not the answer.** `linkerStamp` in `traces.go`
-builds the Resource from these four, and `readBuild` then lets `vcs.revision`,
+**`src/platform/buildinfo` and not `src/platform/telemetry`,** which is where
+these were until 2026-09-10. The same defect reached the boot line `cmd` prints
+before the logger exists — it read `debug.BuildInfo` directly, so the first line
+of every release container's log was `(devel) unknown`, in the place an operator
+looks first. Fixing it means `cmd` and the Resource must read one stamp, and
+`cmd` may not import `src/platform/telemetry`:
+`tests/architecture/boundary_test.go` admits that package to
+`src/app/container.go` and five named files, and argues in its own comment that
+an allow-list entry nobody needs is an entry nobody will notice being used. A
+build stamp needs no OTel type to describe itself, so the split removes the need
+for the exemption rather than granting one. It also says the true thing about
+ownership — telemetry projects the stamp onto a Resource and `cmd` prints it;
+neither owns it.
+
+**The linker stamp is the floor, not the answer.** `linkerStamp` in
+`buildinfo.go` builds the stamp from these four, and `Read` then lets
+`vcs.revision`,
 `vcs.time` and `vcs.modified` overwrite the three they cover wherever the
 toolchain wrote them. The two agree on a clean checkout and disagree exactly
 where the observation is worth more than the assertion — a tree edited after the

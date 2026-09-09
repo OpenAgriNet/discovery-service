@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 
 	"github.com/OpenAgriNet/discovery-service/src/app"
+	"github.com/OpenAgriNet/discovery-service/src/platform/buildinfo"
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
@@ -52,49 +53,44 @@ func run(ctx context.Context, out io.Writer) error {
 	return app.Run(ctx, application)
 }
 
-// writeBuildInfo reports the module, version and VCS revision this binary was
-// linked from.
+// writeBuildInfo names the build this binary was linked from: module path,
+// release tag, commit, commit date and tree state.
 //
-// Read from the toolchain's own build stamp rather than injected with -ldflags,
-// so Makefile, Dockerfile and CI need not agree on a flag string for a binary to
-// identify itself. That preference is repo-wide, and the telemetry Resource is
-// the exception: all four of its build attributes ARE injected, because the
-// release image's build context carries no .git and the toolchain therefore
-// writes no vcs.* settings into it. Why: docs/design/opentelemetry.md, "Build
-// identity". Do not restate it here — it was wrong at four sites until it was
-// measured.
+// It reads buildinfo.Read — the SAME four values the telemetry Resource is
+// assembled from — so an operator reading the log and a facilitator reading a
+// span cannot be told two different things about which build is running.
 //
-// This line keeps the free route and so still prints `unknown` for the revision
-// inside a release image. That is a smaller surface than the Resource — an
-// operator's `--version` rather than every span a facilitator receives — and
-// wiring it to the linker stamp would mean exporting telemetry's readBuild for
-// one print.
+// It read debug.BuildInfo's Main.Version and vcs.revision until 2026-09-10, and
+// so the first line of every release container's log was:
 //
-// What this line prints differs between the two builds: in a git checkout on
-// go1.25 Main.Version reads a pseudo-version derived from the last tag, and in
-// the .git-less release image it reads `(devel)`.
+//	github.com/OpenAgriNet/discovery-service (devel) unknown
+//
+// `(devel)` because a .git-less build has no module version, `unknown` because
+// it has no VCS stamp — the same cause that left three attributes empty on every
+// exported span, surfacing in the place an operator looks first.
+// docs/design/opentelemetry.md, "Build identity" holds the reasoning; do not
+// restate it here — it was wrong at four sites until it was measured.
+//
+// Plain text rather than a zap line, which is a trade and not an oversight. run
+// emits this BEFORE config.Load, because the most common question about a
+// service that failed to start is which build failed, and the logger does not
+// exist until app.Build. Making it structured would move it after the two steps
+// most likely to fail — precisely when it is worth having.
+//
+// debug.ReadBuildInfo is still consulted, for the module path alone: that is
+// the one field here the linker stamp does not carry, and it is the same in
+// every build.
 func writeBuildInfo(w io.Writer) error {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return fmt.Errorf("read build info: not recorded in this binary")
 	}
 
-	_, err := fmt.Fprintf(w, "%s %s %s\n", info.Main.Path, info.Main.Version, vcsRevision(info))
+	build := buildinfo.Read()
+	_, err := fmt.Fprintf(w, "%s %s %s %s %s\n",
+		info.Main.Path, build.Version, build.Commit, build.Date, build.TreeState)
 	if err != nil {
 		return fmt.Errorf("write build info: %w", err)
 	}
 	return nil
-}
-
-// vcsRevision returns the commit the binary was built from.
-//
-// A build from an exported tree — and every `go test` binary — carries no VCS
-// stamp, so the absence is reported as a value rather than an error.
-func vcsRevision(info *debug.BuildInfo) string {
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
-		}
-	}
-	return "unknown"
 }
