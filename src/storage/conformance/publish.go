@@ -176,8 +176,8 @@ func deriveWritesReachTheStore() Case {
 
 				// Per-resource: reachable either way, since a slice element
 				// write goes through the shared backing array. Both are
-				// asserted, so a backend where only this half works is caught
-				// (A14, stripped-rationale.md §3).
+				// asserted, so a backend where only this half works is
+				// caught (A14, implementation-plan.md appendix A3).
 				for index := range merged.Resources {
 					if !slices.Contains(touched, merged.Resources[index].ID) {
 						continue

@@ -748,9 +748,9 @@ func aSpatialOnlyIntentIsAnsweredRatherThanDegraded(resolution int) Case {
 //
 // It belongs on the PORT because domain.ErrInvalidFilterExpression is declared
 // there for src/discover to match, and src/discover cannot import a backend
-// (stripped-rationale.md §4). An expression is the one part of a query handed to
-// the store as TEXT, so a backend returning anything else answers the caller's
-// typo with a 500.
+// (implementation-plan.md appendix A4). An expression is the one part of a
+// query handed to the store as TEXT, so a backend returning anything else
+// answers the caller's typo with a 500.
 func aBackendThatRunsFiltersRefusesOneItCannotParse() Case {
 	return Case{
 		Name: "a backend that runs filters refuses one it cannot parse",

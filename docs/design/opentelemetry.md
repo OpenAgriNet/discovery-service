@@ -1353,6 +1353,13 @@ Notes that bite:
   indirect dependency, so `import ".../otelhttp"` compiles today with no `go get`
   and no new line in `go.mod` for a reviewer to notice. A rejection recorded only
   in a design document is one that gets undone by someone reading the file.
+
+  **It is also not ours to delete, and that has been checked.** The obvious
+  reaction to an unused rejected dependency is to drop it. `go mod why` traces it
+  to `tests/dbtest` → `testcontainers-go/modules/postgres` → `moby/moby/client`,
+  which imports it directly. `// indirect` is the correct marking, `go mod tidy`
+  leaves `go.mod` byte-identical, and a hand-removal is undone by the next tidy.
+  Verified 2026-09-09.
 - **`Trace` stays above `RequestLogger`.** The chain order does not move. What
   changes is that the observation record is allocated by whichever of the two runs
   first — see *How the span learns the status*. Moving `Trace` below
