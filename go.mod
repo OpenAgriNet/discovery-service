@@ -1,6 +1,6 @@
 module github.com/OpenAgriNet/discovery-service
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/caarlos0/env/v11 v11.4.1
@@ -24,7 +24,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

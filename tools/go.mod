@@ -5,7 +5,12 @@
 // graphs are merged.
 module github.com/OpenAgriNet/discovery-service/tools
 
-go 1.25.0
+// Must be >= the service module's go directive. golangci-lint refuses to load a
+// config whose target Go version is newer than the toolchain it was built with,
+// and this module is what builds it -- so a service-side bump that is not
+// mirrored here fails `make lint` with a message about the linter's own build,
+// not about any code.
+go 1.26.0
 
 tool (
 	github.com/golang-migrate/migrate/v4/cmd/migrate
