@@ -9,28 +9,26 @@ import (
 // Fields projects a request's observed facts onto the zap fields the log line
 // carries.
 //
-// This is the log half of the seam (telemetry-seam.md:130-136), and it lives in
-// this package rather than beside the span projection on purpose: the log field
-// names are already spelled here, in the constructors below, and nowhere else.
-// Putting the projection anywhere else would make a second file that claims the
-// same spellings, which is the drift the constructors exist to prevent. What the
-// seam promises is one place to change an attribute — that place is the registry
-// TABLE, not one projection file per signal.
+// This is the log half of the seam (telemetry-seam.md), and it lives HERE rather
+// than beside the span projection because the log field names are already
+// spelled in this package's constructors and nowhere else. A projection
+// elsewhere would be a second file claiming the same spellings. What the seam
+// promises is one place to change an attribute — the registry TABLE, not one
+// projection file per signal.
 //
-// It is also the arrangement tests/architecture/boundary_test.go enforces: this
-// package may import fact and may not import src/platform/telemetry, so moving
-// this file there and calling it from here is the one relocation that breaks the
-// build. See the exemption list's comment for why request_logger.go is not on it.
+// It is also what tests/architecture/boundary_test.go enforces: this package may
+// import fact and may not import src/platform/telemetry, so moving this file
+// there and calling it from here is the one relocation that breaks the build.
+// See the exemption list's comment for why request_logger.go is not on it.
 //
 // Only keys whose Definition carries the Log signal are projected. From 23c the
-// record also carries the span's attributes — beckn.version, beckn.networkId and
-// a dozen more — and writing everything found would silently turn one completion
-// line into the whole span on every deployment.
+// record also carries the span's attributes, and writing everything found would
+// silently turn one completion line into the whole span.
 //
-// A nil record projects nothing rather than panicking. The probes chain
-// (router.go:158-163) allocates no record deliberately, so a panic in /healthz
-// arrives here with nothing to project and must not panic a second time inside
-// the recovery that was answering the first.
+// A nil record projects nothing rather than panicking. The probes chain in
+// router.go allocates no record deliberately, so a panic in /healthz arrives
+// here with nothing to project and must not panic again inside the recovery
+// answering the first.
 func Fields(record *fact.Record) []zap.Field {
 	if record == nil {
 		return nil
@@ -46,12 +44,12 @@ func Fields(record *fact.Record) []zap.Field {
 			continue
 		}
 
-		// Definition.Kind, not Observation.Kind, chooses the constructor. The two
+		// Definition.Kind, not Observation.Kind, chooses the constructor: the two
 		// cannot disagree — Record.requireKind refuses a mismatched write — so the
-		// choice is about which of the two is authoritative, and the registry is.
-		// fields_test.go asserts every Kind the Log column uses is handled
-		// here, because a Kind this switch does not know drops the field, and a
-		// dropped log field is indistinguishable from a request that never had one.
+		// question is which is authoritative, and the registry is. fields_test.go
+		// asserts every Kind the Log column uses is handled here, because a Kind
+		// this switch does not know drops the field, and a dropped field is
+		// indistinguishable from a request that never had one.
 		switch def.Kind {
 		case fact.KindString:
 			fields = append(fields, zap.String(def.LogKey, observation.Text))

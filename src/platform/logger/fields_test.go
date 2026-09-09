@@ -44,8 +44,8 @@ var agreements = []struct {
 // TestTheLogKeysAgreeWithTheRegistry is the agreement check.
 //
 // A constructor and a Definition disagreeing about the *name* means one query
-// finds nothing and nobody notices which — the failure this package's own
-// doc comment (logger.go:95-98) says the single spelling exists to prevent,
+// finds nothing and nobody notices which — the failure the comment above
+// logger.go's field constructors says the single spelling exists to prevent,
 // reintroduced the moment a second table claims the same spellings.
 func TestTheLogKeysAgreeWithTheRegistry(t *testing.T) {
 	for _, agreement := range agreements {
