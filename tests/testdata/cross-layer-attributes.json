@@ -7,7 +7,7 @@
     "would have to AST-walk literal call sites in stdHandler.go and var declarations",
     "in pluginMetrics.go, and a generator whose input is string literals ratifies",
     "whatever was last typed — including a typo — the moment it is regenerated.",
-    "Fifteen reviewed rows is the right size for a file whose whole value is that a",
+    "Sixteen reviewed rows is the right size for a file whose whole value is that a",
     "human agreed to it.",
     "",
     "What this file catches: a rename inside one repository. What it does NOT catch:",
@@ -114,6 +114,12 @@
       "where": "span",
       "fact": "HTTPRoute",
       "note": "Both sides spell the key identically; the divergence is in the value. We emit the route template, the spec's prose says URL. That is a value-derivation decision recorded on the Definition, not a naming disagreement."
+    },
+    {
+      "key": "http.status.code",
+      "where": "span-alias",
+      "fact": "HTTPStatusCode",
+      "note": "Required by the spec's mandatory span profile (otel-specification.md:307), so a facilitator reads it. On the ALIAS rather than the SpanKey, because the spec disagrees with itself on the type — its structure says Int, all three examples emit a string — and we follow the examples here while keeping the int on http.status_code for ClickStack. The contract covers the spelling the facilitator reads; the local one is ours."
     },
     {
       "key": "metric_uuid",

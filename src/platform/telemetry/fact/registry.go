@@ -302,10 +302,16 @@ var registry = [numKeys]Definition{
 		LogKey:      "status",
 		Signals:     Span | Log,
 		Kind:        KindInt64,
-		Layer:       Local,
+		Layer:       CrossLayer,
 		Cardinality: Unbounded,
 		Visibility:  Public,
-		Note: "Both spellings, because the spec disagrees with itself on the type: " +
+		Note: "CrossLayer for the ALIAS, not the SpanKey. http.status.code is " +
+			"Required by the spec's mandatory span profile, so the facilitator reads " +
+			"it and its spelling is not ours to change; http.status_code is ours and " +
+			"ClickStack's. Declared Local until 2026-09-09, which meant the fixture's " +
+			"completeness check never fired on it and the one spelling another " +
+			"component depends on was the one nothing pinned. " +
+			"Both spellings, because the spec disagrees with itself on the type: " +
 			"its structure declares Int, all three of its examples emit a string. We " +
 			"follow the examples for http.status.code and keep the int on " +
 			"http.status_code for ClickStack. One value, written once, so they cannot " +
