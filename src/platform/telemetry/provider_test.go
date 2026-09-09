@@ -80,8 +80,8 @@ func TestOtlpBootsWithoutACollectorListening(t *testing.T) {
 // there, and it is the only kind of pin such a line can have.
 //
 // Init passes no WithSampler on the OTLP path. The default with no option is
-// ParentBased(AlwaysSample): unsampled at the root, and — the half that matters
-// — deferring to whatever the caller decided. Passing AlwaysSample explicitly
+// ParentBased(AlwaysSample): sampled at the root, and — the half that matters
+// here — deferring to whatever the caller decided. Passing AlwaysSample explicitly
 // looks like the same thing and is not: it discards the parent's decision, so
 // four layers each sampling independently produce traces with holes, and a hole
 // reads as a dropped hop rather than as a sampling artefact. It also silently
@@ -136,6 +136,55 @@ func TestTheSamplerRespectsAnInboundDecision(t *testing.T) {
 					got, decision.flags.IsSampled(), decision.want)
 			}
 		})
+	}
+}
+
+// TestARootSpanIsAlwaysRecordedBecauseTheMetricsAreCountedFromIt is the other
+// half of the sampler pin, and it exists because the five `metric.code` streams
+// in otel/collector.yaml are derived from the exported span stream. A span that
+// is not recorded is not exported, and a span that is not exported is not
+// counted — so the sampling rate on roots IS the accuracy of every one of those
+// metrics, and nothing said so.
+//
+// The test above already pins the parented cases, which is why a ratio sampler
+// would slip past it: ParentBased(TraceIDRatioBased(0.1)) still defers to a
+// parent, so both of its subtests keep passing while every ROOT span samples at
+// one in ten. discover_api_total_count would then read 10% of the traffic
+// served, with no error anywhere and no way for a consumer to tell — the
+// facilitator sees a small, healthy-looking network.
+//
+// A root span is a real case here rather than a hypothetical one: an inbound
+// request with no traceparent starts one, which is every request that does not
+// arrive through an onix adapter.
+//
+// What this does NOT pin, because it is deliberate and tested above: an inbound
+// traceparent carrying sampled=0 produces no span and therefore no count. That
+// undercount is the network's decision to make and not this service's to
+// override — see opentelemetry.md §The five codes — the registry.
+func TestARootSpanIsAlwaysRecordedBecauseTheMetricsAreCountedFromIt(t *testing.T) {
+	cfg := baseConfig(config.ExporterOTLP)
+	cfg.OTel.Endpoint = "127.0.0.1:1"
+
+	provider, err := telemetry.Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+
+	// No parent in the context, which is what makes it a root. Started and
+	// never ended, for the reason given above: End hands it to a batcher
+	// pointed at a closed port.
+	_, span := provider.Tracer().Start(context.Background(), "discover")
+
+	if !span.IsRecording() {
+		t.Error("IsRecording() = false on a root span, want true — the sampler " +
+			"drops spans this node originates, so every metric.code derived from " +
+			"the trace stream in otel/collector.yaml now undercounts by the " +
+			"sampling rate, silently and with no error anywhere")
 	}
 }
 
