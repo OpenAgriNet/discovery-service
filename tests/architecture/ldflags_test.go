@@ -16,6 +16,59 @@ var ldflagTarget = regexp.MustCompile(`-X ([^\s=]+)=`)
 // name the same symbol; neither may be the only one that does.
 var buildFilesThatStamp = []string{"Makefile", "Dockerfile"}
 
+// releaseVersionOverride matches the workflow-level env entry that hands the
+// triggering tag to the Makefile.
+var releaseVersionOverride = regexp.MustCompile(`(?m)^\s*VERSION:\s*\$\{\{\s*github\.ref_name\s*\}\}\s*$`)
+
+// makefileVersionIsOverridable matches `VERSION ?=` and nothing else. `:=` or a
+// bare `=` in that position would make the assignment unconditional.
+var makefileVersionIsOverridable = regexp.MustCompile(`(?m)^VERSION\s*\?=`)
+
+// TestTheReleaseWorkflowNamesTheTagItWasStartedBy pins where a released image's
+// version comes from.
+//
+// It must be github.ref_name — the tag whose push started the run — and never
+// `git describe`, which reports whichever tag pointing at HEAD was CREATED last.
+// Tag a commit v1.0.0, add v1.0.1-rc1 to the same commit later, push v1.0.0:
+// describe says v1.0.1-rc1, the image ships under a name nobody released, and
+// because that name carries a hyphen the :latest guard silently declines to move
+// it. Nothing about the run looks wrong.
+//
+// Two things have to hold together and neither is visible from the other's file,
+// which is why one test asserts both: the workflow has to SET the variable, and
+// the Makefile's `?=` has to let it win. Change either alone and the release
+// reverts to describe on a runner.
+//
+// The `zz-decoy` tag is the manual half of this fixture — an annotated tag
+// created after v0.0.1-rc4 on the same commit, so a local `git describe` picks
+// it and a local build stamps service.version=zz-decoy-N-g<sha>. That is the
+// reproduction working, not a fault, and the Makefile says so at length. This
+// test is the half that runs unattended: the tag reproduces the bug on demand,
+// and this refuses the change that would let it back in.
+func TestTheReleaseWorkflowNamesTheTagItWasStartedBy(t *testing.T) {
+	workflow := filepath.Join(".github", "workflows", "ci-release.yml")
+
+	body, err := os.ReadFile(filepath.Join(repoRoot, workflow))
+	if err != nil {
+		t.Fatalf("read %s: %v", workflow, err)
+	}
+	if !releaseVersionOverride.Match(body) {
+		t.Errorf("%s sets no `VERSION: ${{ github.ref_name }}`.\n"+
+			"        Without it the Makefile's `git describe` fallback runs on the runner, and a\n"+
+			"        commit carrying two tags releases under whichever was created last.", workflow)
+	}
+
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	if !makefileVersionIsOverridable.Match(makefile) {
+		t.Errorf("the Makefile does not declare VERSION with `?=`.\n"+
+			"        %s's env block would then be ignored and every release would take the\n"+
+			"        `git describe` answer, which is the tag created last and not the one pushed.", workflow)
+	}
+}
+
 // TestBothBuildFilesStampTheSameSymbol closes the one silent failure -ldflags
 // has.
 //
