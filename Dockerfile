@@ -48,14 +48,26 @@ COPY src/ ./src/
 # produces one that does not compile.
 COPY migrations/ ./migrations/
 
-# The version stamp, declared here rather than at the top of the stage so a new
+# The build stamp, declared here rather than at the top of the stage so a new
 # release does not invalidate the go mod download layer above it.
 #
-# There is no .git in the build context — nothing COPYs it — so `git describe`
-# cannot run in here and the value has to arrive as an argument. `make docker`
-# passes it; a bare `docker build .` gets the default, and the binary then says
-# `dev`, which is exactly what it is.
+# There is no .git in the build context — nothing COPYs it — so neither
+# `git describe` nor `git rev-parse` can run in here, AND the Go toolchain writes
+# no vcs.revision / vcs.time / vcs.modified into the build info either. That
+# second half is the part that was missed: until 2026-09-10 only VERSION crossed,
+# so every image built here reported build.commit=unknown, build.tree_state=unknown
+# and build.date=1970-01-01T00:00:00Z — the three attributes that say WHICH build
+# is running, absent from exactly the binaries you cannot identify by looking at
+# your own checkout.
+#
+# All four now arrive as arguments. `make docker` passes them; a bare
+# `docker build .` gets the defaults below and the binary says dev/unknown, which
+# is exactly what it is. Empty is not a default here — an empty -X value is what
+# src/platform/telemetry's linkerStamp reads as "nothing supplied".
 ARG VERSION=dev
+ARG COMMIT=
+ARG BUILD_DATE=
+ARG TREE_STATE=
 
 # -trimpath strips the build machine's filesystem paths from the binary, so two
 # machines building one commit produce the same bytes.
@@ -66,16 +78,19 @@ ARG VERSION=dev
 # build — it fails the first container start, with a missing loader and no Go
 # stack to say why.
 #
-# The -X target is the one flag string this file and the Makefile must agree on
-# (OP5; docs/design/opentelemetry.md, "Build identity", says why it cannot be
-# avoided, and that this stage's missing .git is what leaves the other three
-# build attributes `unknown`). Go
-# silently ignores an -X naming a symbol that does not exist, so renaming that
-# package would leave a green build shipping `dev` — which is why
-# tests/architecture asserts the two spellings match rather than trusting them
+# The four -X targets are the flag strings this file and the Makefile must agree
+# on (OP5; docs/design/opentelemetry.md, "Build identity", says why none of them
+# can be avoided). Go silently ignores an -X naming a symbol that does not exist,
+# so renaming that package would leave a green build shipping `dev` and an
+# unknown commit — which is why tests/architecture asserts the two files stamp
+# the SAME SET and that every symbol in it is declared, rather than trusting them
 # to.
 RUN CGO_ENABLED=1 go build -trimpath \
-        -ldflags="-s -w -extldflags '-static' -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=${VERSION}" \
+        -ldflags="-s -w -extldflags '-static' \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=${VERSION} \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.commit=${COMMIT} \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.buildDate=${BUILD_DATE} \
+            -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.treeState=${TREE_STATE}" \
         -o /out/discovery-service ./cmd/discovery-service
 
 # dhi/static musl-alpine variant, verified against

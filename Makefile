@@ -86,18 +86,64 @@ ARCH ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 # out here rather than left to be rediscovered.
 VERSION ?= $(shell git describe --tags --always --dirty)
 
-# The one value this build injects at link time, and it is deliberately one.
+# The other three quarters of the build Resource.
+#
+# BUILD_DATE is the COMMIT's timestamp and not the moment the compiler ran: it
+# answers which change is deployed, and it is the half that is reproducible —
+# building the same commit twice must not produce two different stamps.
+#
+# Each is `?=` for the same reason VERSION is: a build system that already knows
+# the answer should be able to say so rather than have us re-derive it. Each
+# degrades to empty outside a git checkout, and empty is what the linker stamp
+# reads as "nothing supplied" — see linkerStamp in src/platform/telemetry/traces.go,
+# which then falls back to unknown/unknown/epoch rather than to a lie.
+# BUILD_DATE is forced to UTC Z-form rather than %cI's local offset, because the
+# toolchain's vcs.time is UTC and OVERRIDES this value wherever it exists — so
+# the same commit would otherwise stamp two different-looking timestamps
+# depending on which build produced the binary, for no difference in meaning.
+COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null)
+BUILD_DATE ?= $(shell TZ=UTC0 git show -s --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD 2>/dev/null)
+TREE_STATE ?= $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo clean || echo dirty)
+
+# All four values this build injects at link time, and it used to be one.
 #
 # The standing preference is to read the toolchain's own build stamp instead, so
-# that Makefile, Dockerfile and CI need not agree on a flag string; service.version
-# is the single attribute that cannot take that route, because Main.Version
-# carries the MODULE's version and never VERSION above. Why, and what the release
-# image's stamp does not carry: docs/design/opentelemetry.md, "Build identity".
+# that Makefile, Dockerfile and CI need not agree on a flag string. Not one of
+# the four can take that route:
 #
-# The Dockerfile must spell this exact string. tests/architecture/ldflags_test.go
-# asserts the two match and that the symbol exists, because `go build` ignores an
-# -X naming a symbol that does not, leaving a green build shipping `dev`.
-LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
+#   service.version  — Main.Version carries the MODULE's version and never
+#                      VERSION above.
+#   the other three  — debug.ReadBuildInfo's vcs.revision / vcs.time /
+#                      vcs.modified are written only when the toolchain can see
+#                      a git working tree, and the release image is built from a
+#                      copied context that has none. So build.commit,
+#                      build.tree_state and build.date read unknown, unknown and
+#                      the epoch on precisely the binaries you cannot identify by
+#                      looking at your own checkout. The toolchain's answer still
+#                      WINS where it exists; this is the floor under it.
+#
+# Why, and what the release image's stamp does not carry:
+# docs/design/opentelemetry.md, "Build identity".
+#
+# The Dockerfile must spell these exact strings. tests/architecture/ldflags_test.go
+# asserts the two files stamp the same set and that every symbol exists, because
+# `go build` ignores an -X naming a symbol that does not, leaving a green build
+# shipping `dev` and an unknown commit.
+#
+# The import path is written out four times rather than held in a make variable
+# on purpose: that test greps the FILE. A `$(TELEMETRY_PKG)` here would leave it
+# comparing a variable reference against the Dockerfile's literal, which is
+# exactly the drift it exists to catch.
+# Exported so `docker compose build` sees them. Compose cannot shell out to git,
+# so docker-compose.yml's build.args read these from the environment; without the
+# export, `make run` would build an image stamped dev/unknown while `make docker`
+# built a correct one from the same checkout.
+export VERSION COMMIT BUILD_DATE TREE_STATE
+
+LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.commit=$(COMMIT) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.buildDate=$(BUILD_DATE) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.treeState=$(TREE_STATE)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
 
@@ -461,12 +507,19 @@ security: $(GOVULNCHECK)
 	$(GOVULNCHECK) ./...
 
 ## docker: build the service image
-# VERSION crosses as a build arg because the build context carries no .git, so
-# `git describe` cannot run inside the image. Without it every deployed binary
-# reports `dev` on its telemetry Resource and OP5's question — which build is
-# running — is unanswerable in the one place it is ever asked.
+# All four stamp values cross as build args because the build context carries no
+# .git: neither `git describe` nor `git rev-parse` can run inside the image, and
+# the toolchain writes no vcs.* build settings there either. Without them every
+# deployed binary reports `dev` and an unknown commit on its telemetry Resource,
+# and OP5's question — which build is running — is unanswerable in the one place
+# it is ever asked.
 docker:
-	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+	docker build \
+	  --build-arg VERSION=$(VERSION) \
+	  --build-arg COMMIT=$(COMMIT) \
+	  --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  --build-arg TREE_STATE=$(TREE_STATE) \
+	  -t $(IMAGE) .
 
 ## image-build: build this arch's release image locally and gate it on Trivy
 # Built and loaded locally, NOT pushed: Trivy then scans the exact bytes that

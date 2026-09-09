@@ -321,6 +321,25 @@ const (
 // does not exist succeeds silently.
 var version = "dev"
 
+// The other three, empty until the linker fills them.
+//
+// They read from the toolchain's VCS stamp where there is one, and there is one
+// for every build that happens inside a git working tree — which is every build
+// EXCEPT the release image, whose context is a copy with no .git in it. So the
+// three attributes that identify which commit is deployed were `unknown`,
+// `unknown` and the epoch on precisely the binaries nobody can identify by
+// looking at their own tree. The stamp now crosses as -ldflags and the VCS
+// settings override it where they exist, which keeps a local build honest about
+// a dirty tree the build system would have no way to know about.
+//
+// Four separate `var x = ""` declarations and not one grouped block:
+// tests/architecture/ldflags_test.go resolves each -X target back to its
+// declaration, and `go build -X` on a symbol that does not exist succeeds
+// silently, so the test reads the source rather than trusting the flag.
+var commit = ""
+var buildDate = ""
+var treeState = ""
+
 // Build is what -ldflags and the toolchain's VCS stamp know between them about
 // the binary that is running.
 type Build struct {
@@ -347,11 +366,7 @@ const (
 // a Resource that refused to build over it is a service that cannot boot in a
 // test.
 func readBuild() Build {
-	build := Build{
-		Version:   version,
-		Commit:    unknownRevision,
-		TreeState: unknownTreeState,
-	}
+	build := linkerStamp()
 
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -367,20 +382,44 @@ func readBuild() Build {
 			// deployed. onix's onix.build.date is the other.
 			build.Date = setting.Value
 		case "vcs.modified":
-			build.TreeState = treeState(setting.Value)
+			build.TreeState = treeStateFromVCS(setting.Value)
 		}
 	}
 
-	if build.Date == "" {
-		build.Date = zeroTime
+	return build
+}
+
+// linkerStamp is what -ldflags supplied, with the unknown values standing in
+// wherever it supplied nothing.
+//
+// It is the floor rather than the answer: readBuild lets the VCS settings
+// overwrite every field they cover, because the toolchain observed the tree it
+// compiled and the build system only asserted something about it. The two agree
+// on a clean checkout and disagree exactly where the observation is worth more —
+// a tree edited after the build system read `git status`.
+func linkerStamp() Build {
+	build := Build{
+		Version:   version,
+		Commit:    unknownRevision,
+		TreeState: unknownTreeState,
+		Date:      zeroTime,
+	}
+	if commit != "" {
+		build.Commit = commit
+	}
+	if buildDate != "" {
+		build.Date = buildDate
+	}
+	if treeState != "" {
+		build.TreeState = treeState
 	}
 	return build
 }
 
-// treeState maps debug.BuildSetting's "true"/"false" onto the registry's
+// treeStateFromVCS maps debug.BuildSetting's "true"/"false" onto the registry's
 // clean/dirty/unknown. Three values and not two, because `dirty` on a production
 // Resource is a finding and must not be confusable with a missing stamp.
-func treeState(modified string) string {
+func treeStateFromVCS(modified string) string {
 	switch modified {
 	case "true":
 		return "dirty"

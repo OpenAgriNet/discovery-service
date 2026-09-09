@@ -41,15 +41,15 @@ and the second is not a bug.
 
 ```
 Resource attributes:
-     -> build.commit: Str(unknown)
-     -> build.date: Str(1970-01-01T00:00:00Z)
-     -> build.tree_state: Str(unknown)
+     -> build.commit: Str(83c36ca1d154ca0b9b062a423518815a77a04a34)
+     -> build.date: Str(2026-09-09T18:31:51Z)
+     -> build.tree_state: Str(dirty)
      -> domain: Str(Agriculture)
      -> eid: Str(API)
      -> network.id: Str(local-network)
      -> producer: Str(discovery-service.local-network.oan)
      -> service.name: Str(discovery-service)
-     -> service.version: Str(dev)
+     -> service.version: Str(zz-decoy-114-g83c36ca-dirty)
 InstrumentationScope discovery_service 1.0
 ```
 
@@ -61,10 +61,16 @@ column reads as data rather than as an absence. `domain` is checked against the
 declared sector list rather than a literal, so a typo fails the boot instead of
 quietly producing a second group of one.
 
-The `build.*` triple and `service.version` read `dev` / `unknown` above because
-this was a local `make telemetry` build. A release stamps them through
-`-ldflags -X`. They are Resource attributes and never metric labels — see
-[Metrics](#metrics) for why that distinction is load-bearing.
+The `build.*` triple and `service.version` all cross as `-ldflags -X`, from the
+`Makefile` for a local build and as `--build-arg`s for an image. Two things in
+the capture above are the machinery working rather than faults: `tree_state` is
+`dirty` because the checkout had uncommitted edits, and `service.version` reads
+`zz-decoy-...` because of the deliberate decoy tag the `Makefile` documents at
+length. Until 2026-09-10 the three `build.*` values came from the toolchain's
+`vcs.*` stamp instead, which the release image's `.git`-less build context does
+not produce — so every image reported `unknown` / `unknown` / the epoch. They are
+Resource attributes and never metric labels — see [Metrics](#metrics) for why
+that distinction is load-bearing.
 
 The instrumentation scope is **ours** (`discovery_service 1.0`). This is why
 `otelhttp` is not used to start the span: the scope is fixed at span creation, so

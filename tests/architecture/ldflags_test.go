@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,8 +14,14 @@ import (
 var ldflagTarget = regexp.MustCompile(`-X ([^\s=]+)=`)
 
 // buildFilesThatStamp are the two files that link the service binary. Both must
-// name the same symbol; neither may be the only one that does.
+// name the same symbols; neither may be the only one that does.
 var buildFilesThatStamp = []string{"Makefile", "Dockerfile"}
+
+// stampedSymbols are the four the Resource is assembled from. All four are
+// linker-set because three of them USED to come from the toolchain's VCS stamp
+// and silently did not in the one build that matters — see
+// TestBothBuildFilesStampTheSameSymbols.
+var stampedSymbols = []string{"version", "commit", "buildDate", "treeState"}
 
 // releaseVersionOverride matches the workflow-level env entry that hands the
 // triggering tag to the Makefile.
@@ -69,7 +76,7 @@ func TestTheReleaseWorkflowNamesTheTagItWasStartedBy(t *testing.T) {
 	}
 }
 
-// TestBothBuildFilesStampTheSameSymbol closes the one silent failure -ldflags
+// TestBothBuildFilesStampTheSameSymbols closes the one silent failure -ldflags
 // has.
 //
 // `go build -X does/not/exist.version=1.2.3` succeeds. It prints nothing, exits
@@ -80,50 +87,80 @@ func TestTheReleaseWorkflowNamesTheTagItWasStartedBy(t *testing.T) {
 // months later and finding the answer has been wrong the whole time.
 //
 // cmd/discovery-service/main.go's writeBuildInfo avoided the problem entirely by
-// refusing -ldflags. That is still the right default and three of the four build
-// attributes still take it; service.version is the one that cannot, because
-// debug.BuildInfo.Main.Version carries the module's version and never the
-// release tag — a pseudo-version in a git checkout on go1.25, `(devel)` in the
-// .git-less release image. This test is the price of the exception, and it is
-// the encoded form of the pin rather than a comment asking the next person to
-// remember.
-func TestBothBuildFilesStampTheSameSymbol(t *testing.T) {
-	targets := map[string]string{}
+// refusing -ldflags. That was the default for three of the four build
+// attributes, and it was wrong for all three. debug.ReadBuildInfo's vcs.*
+// settings are written only when the toolchain can see a git working tree, and
+// the release image is built from a copied context that has none — so
+// build.commit read `unknown`, build.tree_state read `unknown` and build.date
+// read the epoch on EVERY image, which was confirmed against a running stack on
+// 2026-09-09. A build stamp that is absent exactly where the binary is not the
+// one you built is no stamp at all, so all four now cross as -X and the VCS
+// settings only override them where they exist.
+//
+// service.version could never take the toolchain's answer either, for a
+// different reason: debug.BuildInfo.Main.Version carries the module's version
+// and never the release tag — a pseudo-version in a git checkout on go1.25,
+// `(devel)` in the .git-less release image.
+//
+// This test is the price of all four exceptions, and it is the encoded form of
+// the pin rather than a comment asking the next person to remember.
+func TestBothBuildFilesStampTheSameSymbols(t *testing.T) {
+	stamped := map[string][]string{}
 
 	for _, name := range buildFilesThatStamp {
 		body, err := os.ReadFile(filepath.Join(repoRoot, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		matches := ldflagTarget.FindAllStringSubmatch(string(body), -1)
-		if len(matches) == 0 {
+		var targets []string
+		for _, match := range ldflagTarget.FindAllStringSubmatch(string(body), -1) {
+			targets = append(targets, match[1])
+		}
+		if len(targets) == 0 {
 			t.Errorf("%s links the binary but stamps no -X symbol; every image it builds "+
-				"will report service.version=dev", name)
+				"will report service.version=dev and an unknown commit", name)
 			continue
 		}
-		if len(matches) > 1 {
-			t.Errorf("%s stamps %d -X symbols; this test assumes one and would silently "+
-				"check only the first", name, len(matches))
-			continue
-		}
-		targets[name] = matches[0][1]
+		slices.Sort(targets)
+		stamped[name] = slices.Compact(targets)
 	}
 
-	if len(targets) != len(buildFilesThatStamp) {
+	if len(stamped) != len(buildFilesThatStamp) {
 		t.FailNow()
 	}
 
-	makefile, dockerfile := targets["Makefile"], targets["Dockerfile"]
-	if makefile != dockerfile {
+	makefile, dockerfile := stamped["Makefile"], stamped["Dockerfile"]
+	if !slices.Equal(makefile, dockerfile) {
 		t.Fatalf("the two build files stamp different symbols:\n"+
 			"        Makefile:   %s\n"+
 			"        Dockerfile: %s\n"+
-			"        A local build and a released image would then report different versions.",
-			makefile, dockerfile)
+			"        A local build and a released image would then describe themselves "+
+			"differently, which is the one question a build stamp exists to answer.",
+			strings.Join(makefile, ", "), strings.Join(dockerfile, ", "))
 	}
 
-	assertSymbolExists(t, makefile)
+	want := make([]string, 0, len(stampedSymbols))
+	for _, symbol := range stampedSymbols {
+		want = append(want, telemetryPackage+"."+symbol)
+	}
+	slices.Sort(want)
+	if !slices.Equal(makefile, want) {
+		t.Errorf("the build files stamp the wrong set of symbols:\n"+
+			"        want: %s\n"+
+			"        got:  %s\n"+
+			"        Every attribute on the build Resource has to cross as -X. The three that\n"+
+			"        did not — commit, date, tree_state — came from the toolchain's VCS stamp,\n"+
+			"        which the release image's .git-less build context does not produce.",
+			strings.Join(want, ", "), strings.Join(makefile, ", "))
+	}
+
+	for _, target := range makefile {
+		assertSymbolExists(t, target)
+	}
 }
+
+// telemetryPackage is where all four stamped symbols are declared.
+var telemetryPackage = modulePath + "/src/platform/telemetry"
 
 // assertSymbolExists resolves the -X target back to a declaration.
 //

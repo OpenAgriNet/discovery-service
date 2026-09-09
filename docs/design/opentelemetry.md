@@ -446,35 +446,61 @@ it was restated at four sites — `main.go`, the `Makefile`, the `Dockerfile` an
 the Go source — and was **wrong at all four** until it was measured on
 2026-09-09. One home, cited from each.
 
-**The standing preference is to read the toolchain's own build stamp, not to
+**The standing preference was to read the toolchain's own build stamp, not to
 inject.** `debug.ReadBuildInfo` gives `vcs.revision`, `vcs.modified` and
 `vcs.time` for free, so `Makefile`, `Dockerfile` and CI need not agree on a flag
-string for a binary to identify itself. Three of the four take that route.
+string for a binary to identify itself. Three of the four took that route until
+2026-09-10, and **the free route is not free where it matters** — see the gap
+below. All four now cross as `-X`, and the toolchain's answer still wins wherever
+it exists.
 
-**`service.version` is the one exception, and it cannot take that route at all.**
-The stamp's `Main.Version` carries the **module's** version, never the release
-tag: in a git checkout on go1.25 it reads a pseudo-version derived from the last
-tag, and in the release image it reads `(devel)`. OP5 wants the tag, so that a
-deploy which broke something can be named. Hence exactly one `-X`, which is the
-smallest thing three build systems can be asked to agree on:
+**`service.version` could never take that route at all.** The stamp's
+`Main.Version` carries the **module's** version, never the release tag: in a git
+checkout on go1.25 it reads a pseudo-version derived from the last tag, and in
+the release image it reads `(devel)`. OP5 wants the tag, so that a deploy which
+broke something can be named.
+
+**The gap was in the build that ships.** The `Dockerfile` copies `go.mod`,
+`cmd/`, `src/` and `migrations/` and no `.git`, so the release image's build
+stage has no repository to stamp from — the toolchain writes no `vcs.*` settings
+there at all. Every image therefore reported `build.commit: unknown`,
+`build.tree_state: unknown` and `build.date: 1970-01-01T00:00:00Z`: the three
+attributes that say **which** build is running were absent from precisely the
+binaries you cannot identify by looking at your own checkout, which is the one
+situation a build stamp exists for. First measured by building from
+`git archive HEAD`, which reproduces the same no-`.git` condition, and then
+confirmed on a running stack on 2026-09-09.
+
+So all four cross as `-X`:
 
 ```
 -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
+-X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.commit=$(COMMIT)
+-X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.buildDate=$(BUILD_DATE)
+-X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.treeState=$(TREE_STATE)
 ```
 
-It targets the **package**, so `version` may move between files inside it. `go
-build` silently ignores an `-X` naming a symbol that does not exist, so a rename
-would leave a green build shipping `dev` — `tests/architecture/ldflags_test.go`
-asserts the `Makefile`'s and `Dockerfile`'s spellings match each other and that
-the symbol exists.
+**The linker stamp is the floor, not the answer.** `linkerStamp` in `traces.go`
+builds the Resource from these four, and `readBuild` then lets `vcs.revision`,
+`vcs.time` and `vcs.modified` overwrite the three they cover wherever the
+toolchain wrote them. The two agree on a clean checkout and disagree exactly
+where the observation is worth more than the assertion — a tree edited after the
+build system read `git status`. An empty `-X` value means *nothing was supplied*
+and falls back to `unknown` / `unknown` / the epoch rather than to a lie.
 
-**The gap is in the build that ships.** The `Dockerfile` copies `go.mod`, `cmd/`,
-`src/` and `migrations/` and no `.git`, so the release image's build stage has no
-repository to stamp from. There, `build.commit` and `build.tree_state` report
-`unknown` and `build.date` reports `1970-01-01T00:00:00Z` — the free route is
-free but it is not populated, and `service.version` is the only one of the four
-that answers OP5 in production. Measured by building from `git archive HEAD`,
-which reproduces the same no-`.git` condition.
+Each `-X` targets the **package**, so the variables may move between files inside
+it. `go build` silently ignores an `-X` naming a symbol that does not exist, so a
+rename would leave a green build shipping `dev` and an unknown commit —
+`tests/architecture/ldflags_test.go` asserts the `Makefile` and `Dockerfile`
+stamp the **same set** of symbols and that every symbol in it is declared as a
+string. It reads the two files as text, which is why the import path is written
+out four times in each rather than held in a variable.
+
+Because the `Dockerfile` cannot run git, the values arrive as build args:
+`make docker` passes all four, `docker-compose.yml` reads them from the
+environment (the `Makefile` exports them, so `make run` and `make telemetry`
+match `make docker`), and a bare `docker build .` gets the defaults and honestly
+says `dev` / `unknown`.
 
 `build.date` is the **commit's** timestamp, not the moment the compiler ran;
 onix's `onix.build.date` is the latter. The commit time is the reproducible half

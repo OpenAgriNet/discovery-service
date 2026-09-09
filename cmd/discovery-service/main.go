@@ -57,10 +57,18 @@ func run(ctx context.Context, out io.Writer) error {
 //
 // Read from the toolchain's own build stamp rather than injected with -ldflags,
 // so Makefile, Dockerfile and CI need not agree on a flag string for a binary to
-// identify itself. That preference is repo-wide and has one exception, which is
-// not this line: telemetry's version IS injected. Why, and what the release
-// image's stamp omits: docs/design/opentelemetry.md, "Build identity". Do not
-// restate it here — it was wrong at four sites until it was measured.
+// identify itself. That preference is repo-wide, and the telemetry Resource is
+// the exception: all four of its build attributes ARE injected, because the
+// release image's build context carries no .git and the toolchain therefore
+// writes no vcs.* settings into it. Why: docs/design/opentelemetry.md, "Build
+// identity". Do not restate it here — it was wrong at four sites until it was
+// measured.
+//
+// This line keeps the free route and so still prints `unknown` for the revision
+// inside a release image. That is a smaller surface than the Resource — an
+// operator's `--version` rather than every span a facilitator receives — and
+// wiring it to the linker stamp would mean exporting telemetry's readBuild for
+// one print.
 //
 // What this line prints differs between the two builds: in a git checkout on
 // go1.25 Main.Version reads a pseudo-version derived from the last tag, and in

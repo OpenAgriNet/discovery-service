@@ -25,6 +25,17 @@ services:
     profiles: ["app"]
     build:
       context: .
+      # The build stamp, from the shell rather than from git: the build context
+      # has no .git and the toolchain therefore writes no vcs.* settings, so a
+      # compose-built image reports dev/unknown/epoch unless something crosses
+      # them. Compose cannot shell out, so these read the environment — `make
+      # compose-up` exports them, and a bare `docker compose build` gets the
+      # Dockerfile's defaults and honestly says it does not know.
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        TREE_STATE: ${TREE_STATE:-}
     ports:
       - "8080:8080"
     # No depends_on for otel-collector: the OTLP client dials on first export,
@@ -51,7 +62,11 @@ services:
       # Read only when the exporter is otlp, so set unconditionally.
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
       APP_SUBSCRIBER_ID: discovery-service.local-network.oan
-      APP_DOMAIN: Agriculture
+      # Overridable, because the domain gate is a thing people test AGAINST: a
+      # request carrying domain "Energy" is supposed to be refused, and a hard
+      # `Agriculture` here fights that developer silently, from a file they have
+      # no reason to be reading.
+      APP_DOMAIN: ${APP_DOMAIN:-Agriculture}
     volumes:
       # The Beckn spec, which the service refuses to boot without. Mounting the
       # cache is what makes the stack work with no network; the boot logs one
