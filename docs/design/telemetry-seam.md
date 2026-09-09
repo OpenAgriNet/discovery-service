@@ -450,7 +450,8 @@ value allow-list has. Six becomes twenty becomes `t.Skip`.
 Worse, the list would be wrong on arrival. There are **7 distinct non-registry
 string log keys across 8 lines in 4 files** today — `path`, `code`, `reason`
 (`src/discover/service.go:319-321`), `address` (`src/app/server.go`'s `Run`),
-`spec_url` and `cache_path` (`src/platform/validation/spec_index.go:185,224`),
+`spec_url` and `cache_path` (`src/platform/validation/spec_index.go`'s
+`LoadSpecIndex` and `loadFromRegistry`),
 `catalog_id` (`src/publish/service.go:127,150`) — and three are telemetry in
 disguise. `code` and `reason` duplicate `error_code` and the fault message that
 `logNack` is meant to be the single recording site for; `catalog_id` is a
