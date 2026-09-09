@@ -3,8 +3,8 @@
 **Status: PROPOSAL. Binding on nothing in this repo.** It is addressed to
 whoever owns the OAN network metrics registry, and it exists because Task 24 is
 blocked on that registry and the block has no owner (open question 7). It
-proposes twelve codes, states what each is computed from, and asks six questions
-that only the registry owner can answer.
+proposes twelve codes, states what each is computed from, and asks seven
+questions that only the registry owner can answer.
 
 Nothing here may be implemented as a `Scope: Network` instrument until the
 registry answers. `fact.checkCodeMatchesScope` (`instrument.go:212-226`) refuses
@@ -278,7 +278,8 @@ whatever the registry says the provider count is, which is the whole of question
 ## 7. Questions for the registry owner
 
 Numbered so they can be answered individually. 1 and 2 block work; the rest
-prevent divergence.
+prevent divergence. Note that these numbers are local to this list — question 6
+refers to the plan's "open question 7", which is a different sequence.
 
 1. **Is the sum-only, non-monotonic constraint intended to exclude latency
    distributions?** If yes, percentiles are out of scope for this spec version
@@ -321,7 +322,44 @@ prevent divergence.
    whether any of this ships. Nothing today queries the store, shapes
    `resourceMetrics` and POSTs on a schedule. "ClickStack does it" is false —
    ClickHouse stores, HyperDX charts, neither exports a METRIC signal. This is
-   open question 7 and it has no owner.
+   the plan's open question 7 — a different sequence from this list — and it has
+   no owner.
+
+7. **Does the registry care which *producer* computes a code, or only that the
+   code and its value are right?** Every code above is derived from spans rather
+   than instrumented, and three different things can do that derivation: the
+   collector's `spanmetrics` connector (YAML, node-local, running today), a query
+   over stored spans (what §3's tiers assume), or a real `fact.Instrument` in this
+   process. We would rather the answer be "we do not care", and for the *value*
+   it genuinely does not — export here is unsampled by construction, so a
+   span-derived count equals an instrumented one.
+
+   It is asked because four things are not value-equivalent, and a registry that
+   is silent on producer will get all four wrong somewhere in the network:
+
+   - **Wire type.** The METRIC signal permits a non-monotonic sum only.
+     `spanmetrics` emits a monotonic counter plus a histogram, so a connector
+     stream can never *be* the submitted signal — only a source something else
+     reshapes. That interacts directly with question 1.
+   - **Sampling is one environment variable away.** Unsampled export is a
+     property of this deployment, not of the approach: we do not pass
+     `WithSampler`, precisely so `OTEL_TRACES_SAMPLER` keeps working. A
+     participant who sets it ships span-derived counts that undercount silently,
+     with nothing on the wire saying so. An in-process instrument would not.
+   - **Event-level facts are unreachable from the connector.** `spanmetrics` can
+     name a span attribute as a dimension and cannot see a span *event* at all.
+     That is why `result.empty` had to be promoted onto the span before
+     `discover_api_empty_result_percent` was computable — a registry that assumes
+     any span field is available will propose codes some producers cannot answer.
+   - **Cardinality governance moves out of the code.** A connector `dimensions`
+     entry multiplies series from a YAML file that `fact.MaxLabelSeries` cannot
+     see, so §6's budget stops being enforceable by the guards §8 describes.
+
+   If the answer is "any producer, we validate only the payload", say so
+   explicitly and we will treat the four above as our own problem. If the
+   registry intends to *require* a producer — or to require that submitted
+   metrics be sampling-independent — that is a constraint we need before Task 24
+   picks an implementation, not after.
 
 ---
 

@@ -5181,8 +5181,8 @@ defined there; invented codes will not match the ones a facilitator later
 publishes, and a stream of unrecognised codes is worse than none.
 
 `metric-code-registry-proposal.md` is the proposal for that registry — twelve
-codes derived from Task 23's spans, and six questions whose first two block this
-task. It does not unblock Task 24: it is what to send to whoever owns the
+codes derived from Task 23's spans, and seven questions whose first two block
+this task. It does not unblock Task 24: it is what to send to whoever owns the
 registry, and the block stands until they answer.
 
 ---

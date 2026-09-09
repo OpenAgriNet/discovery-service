@@ -72,6 +72,18 @@ ARCH ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 # renders an untagged commit as v0.0.1-rc1-3-gabc1234 rather than a branch name
 # that would then be pushed as an image tag. Needs fetch-depth: 0 in CI either
 # way, so a local describe in the same checkout stays meaningful.
+#
+# DO NOT DELETE THE `zz-decoy` TAG. It is the regression fixture for exactly the
+# bug described above, and it is on origin, not just local. It is an annotated
+# tag created deliberately AFTER v0.0.1-rc4 on the same commit, so `git describe`
+# prefers it — which is the whole point: it reproduces "describe picks the
+# tag created last" on demand, and its name matches no release trigger pattern
+# so it can never start a release run. `git describe --tags` returning
+# zz-decoy-N-g<sha> on a local build is therefore the fixture WORKING, not a
+# fault to clean up, and a local binary stamped service.version=zz-decoy-... is
+# expected. Deleting the tag would tidy away the only evidence this bug stays
+# fixed. Nothing in the tree references it by name, which is why it is called
+# out here rather than left to be rediscovered.
 VERSION ?= $(shell git describe --tags --always --dirty)
 
 # The one value this build injects at link time, and it is deliberately one.
