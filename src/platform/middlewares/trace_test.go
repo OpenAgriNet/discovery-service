@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -547,5 +548,84 @@ func TestNoReceiverIdAliasIsEmitted(t *testing.T) {
 		if strings.Contains(key, "receiver") && key != fact.Of(fact.BecknReceiverID).SpanKey {
 			t.Errorf("the span carries %q; beckn.receiverId is the only receiver attribute", key)
 		}
+	}
+}
+
+// TestTheEventsAreStampedWhereTheyHappened.
+//
+// The failure mode is dropping WithTimestamp, at which point the SDK stamps each
+// event at the moment AddEvent runs — which from Trace's deferred block is the
+// span's end, so all three land within microseconds of each other. The span's
+// duration stays correct, the trace still renders, and the phase breakdown that
+// is the entire reason these events exist becomes zeros.
+//
+// So "present", "inside the span" and "increasing" are all too weak to assert:
+// events added without a timestamp satisfy every one of them. This measures the
+// GAPS instead. The handler sleeps 2ms between phases, so honest stamps put the
+// events milliseconds apart and the mutation puts them nanoseconds apart; 1ms is
+// the threshold between the two, with slack for a slow machine in the direction
+// that does not produce a false failure.
+func TestTheEventsAreStampedWhereTheyHappened(t *testing.T) {
+	const phase = 2 * time.Millisecond
+
+	trace, recorder := tracing(t)
+
+	traced(t, httptest.NewRequest(http.MethodPost, "/discover", nil),
+		[]func(http.Handler) http.Handler{trace},
+		func(w http.ResponseWriter, r *http.Request) {
+			fact.ObserveStrings(r.Context(), fact.IntentKinds, []string{"textSearch"})
+			time.Sleep(phase)
+			fact.ObserveStrings(r.Context(), fact.RetrievalModesRun, []string{"lexical"})
+			time.Sleep(phase)
+			fact.ObserveBool(r.Context(), fact.ResultEmpty, false)
+			w.WriteHeader(http.StatusOK)
+		})
+
+	span := only(t, recorder.Spans())
+	if len(span.Events) != 3 {
+		t.Fatalf("%d events on the span, want 3: %v", len(span.Events), names(span.Events))
+	}
+
+	for index, event := range span.Events {
+		if event.Time.Before(span.Start) || event.Time.After(span.End) {
+			t.Errorf("event %d (%s) is at %v, outside the span's %v..%v",
+				index, event.Name, event.Time, span.Start, span.End)
+		}
+		if index == 0 {
+			continue
+		}
+
+		gap := event.Time.Sub(span.Events[index-1].Time)
+		if gap < phase/2 {
+			t.Errorf("event %d (%s) is only %v after event %d (%s); the handler slept %v "+
+				"between them, so the stamps are being taken where the events are added "+
+				"rather than where the facts were observed",
+				index, event.Name, gap, index-1, span.Events[index-1].Name, phase)
+		}
+	}
+}
+
+// names spells the events for a failure message, since an Event prints as its
+// whole attribute map otherwise.
+func names(events []telemetry.Event) []string {
+	spelled := make([]string, 0, len(events))
+	for _, event := range events {
+		spelled = append(spelled, event.Name)
+	}
+	return spelled
+}
+
+// TestARequestWithNoEventFactsCarriesNoEvents. A probe, or a request refused
+// above the controller, produces a span and nothing on it — not three empty
+// events at its end.
+func TestARequestWithNoEventFactsCarriesNoEvents(t *testing.T) {
+	trace, recorder := tracing(t)
+
+	traced(t, httptest.NewRequest(http.MethodPost, "/discover", nil),
+		[]func(http.Handler) http.Handler{trace},
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	if span := only(t, recorder.Spans()); len(span.Events) != 0 {
+		t.Errorf("%d events on a span with nothing to report: %v", len(span.Events), span.Events)
 	}
 }

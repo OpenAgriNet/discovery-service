@@ -384,6 +384,35 @@ func (e Event) String() string {
 		"ResponseInfo", "ErrorEvent"})
 }
 
+// EventName is the name the event goes out under, and it is a second spelling
+// rather than a lowercasing of String().
+//
+// String() names the Go constant and appears only in failure messages; this one
+// is on the wire, where a facilitator keys on it. Deriving one from the other
+// would tie a debugging string to a contract, so that renaming ErrorEvent to
+// something clearer in a panic message would rename the event a collector
+// filters on.
+//
+// NoEvent answers empty, and the projection reads that as "not an event". It is
+// the zero value, so a Definition that simply forgot to set Event would
+// otherwise land its fact on a fifth event carrying the whole span again.
+func (e Event) EventName() string {
+	switch e {
+	case RequestInfo:
+		return "request_info"
+	case RetrievalInfo:
+		return "retrieval_info"
+	case ResponseInfo:
+		return "response_info"
+	case ErrorEvent:
+		return "error"
+	case NoEvent:
+		return ""
+	default:
+		return ""
+	}
+}
+
 func (l Layer) String() string {
 	return name(int(l), []string{"LayerUnspecified", "Local", "CrossLayer"})
 }

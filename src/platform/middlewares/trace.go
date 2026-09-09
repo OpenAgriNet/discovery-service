@@ -129,7 +129,27 @@ func complete(span oteltrace.Span, record *fact.Record) {
 	// one-place property would be gone.
 	span.SetAttributes(telemetry.SpanAttributes(record)...)
 
+	addEvents(span, record)
+
 	span.End()
+}
+
+// addEvents puts the point-in-time facts on the span as timestamped events.
+//
+// WithTimestamp is the whole of this function, and it is the line somebody
+// deletes as redundant. Without it the SDK stamps each event at the moment
+// AddEvent is called, which from here is the span's end — so request_info,
+// retrieval_info and response_info all land on the same instant. The span's
+// duration stays correct, the trace still renders, and the phase breakdown that
+// is the entire reason these events exist silently becomes zeros. The record
+// stamped every fact where it happened (fact.Observation.Time) precisely so this
+// call has something truthful to pass.
+func addEvents(span oteltrace.Span, record *fact.Record) {
+	for _, event := range telemetry.SpanEvents(record) {
+		span.AddEvent(event.Name,
+			oteltrace.WithTimestamp(event.Time),
+			oteltrace.WithAttributes(event.Attributes...))
+	}
 }
 
 // setStatus marks the span an error, or leaves it unset.

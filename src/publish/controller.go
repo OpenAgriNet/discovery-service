@@ -64,6 +64,8 @@ func (c *Controller) Publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	observePublish(ctx, envelope.Context, action)
+
 	results := c.service.Publish(ctx, envelope.Context, action)
 
 	body := httpx.Envelope[beckn.CatalogOnPublishAction]{

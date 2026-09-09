@@ -70,6 +70,8 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	observeIntent(ctx, envelope.Context, action.Intent)
+
 	page, err := pageFrom(r.URL.Query())
 	if err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
@@ -81,6 +83,8 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 		return
 	}
+
+	observeResult(ctx, catalogs)
 
 	// Before the body: WriteJSON writes the status line, and a header set after
 	// that is a header nobody receives.

@@ -14,6 +14,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	apperrors "github.com/OpenAgriNet/discovery-service/src/platform/errors"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
 // HeaderErrorType carries the PRD error category (C1).
@@ -96,6 +97,8 @@ func WriteNack(ctx context.Context, w http.ResponseWriter, cfg config.Errors, me
 	status := fault.Status()
 
 	w.Header().Set(HeaderErrorType, fault.Type())
+	observeFault(ctx, fault)
+
 	if retryAfter := fault.RetryAfter; retryAfter > 0 {
 		// Whole seconds, rounded up: a 1.5s window reported as 1 invites the
 		// caller back before it has closed. Absent rather than "0" everywhere
@@ -116,6 +119,36 @@ func WriteNack(ctx context.Context, w http.ResponseWriter, cfg config.Errors, me
 	}}
 	if writeErr := WriteJSON(ctx, w, status, body); writeErr != nil {
 		logger.FromContext(ctx).Error("encode nack body", zap.Error(writeErr))
+	}
+}
+
+// observeFault puts the rejection on the record, as 23d's error event.
+//
+// Immediately below the header it must agree with, and calling fault.Type()
+// rather than deriving the category a second way: the acceptance criterion is
+// that the event's type and X-Beckn-Error-Type match byte for byte, and two
+// calls to one method cannot drift. A facilitator filtering a span set then
+// gets the same partition a caller branching on the header gets.
+//
+// Here rather than in a controller because every refusal on every path passes
+// through WriteNack, including the ones no controller sees — a body over the
+// size ceiling, a rate-limit refusal, a panic caught by Recover.
+//
+// The COERCED fault's fields, never the original error. A driver's text names a
+// host, a port or a query; the body carries the coerced message for that reason
+// and a span leaves this machine, so the reason applies twice over. The
+// original stays in logNack, which does not leave.
+//
+// Path is omitted when there is none: "$.message" is what a fault about the
+// action as a whole points at, so "" is not the root of anything and writing it
+// would put every fault that names no field at a location that reads like one.
+func observeFault(ctx context.Context, fault *apperrors.AppError) {
+	fact.ObserveString(ctx, fact.ErrorEventType, fault.Type())
+	fact.ObserveString(ctx, fact.ErrorCode, string(fault.Code))
+	fact.ObserveString(ctx, fact.ErrorMessage, fault.Message)
+
+	if fault.Path != "" {
+		fact.ObserveString(ctx, fact.ErrorPath, fault.Path)
 	}
 }
 

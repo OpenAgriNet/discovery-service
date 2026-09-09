@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 	"github.com/OpenAgriNet/discovery-service/src/platform/middlewares"
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 	"github.com/OpenAgriNet/discovery-service/src/platform/validation"
 	"github.com/OpenAgriNet/discovery-service/src/publish"
 	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
@@ -222,6 +224,98 @@ func TestTheAssembledChainNamesTheSpanByTheAction(t *testing.T) {
 	if spans[0].Name != "discover" {
 		t.Errorf("span name = %q, want the action; Envelope is below Trace in the assembled "+
 			"chain and its correlators have to reach the span", spans[0].Name)
+	}
+}
+
+// traced serves one request through the whole router with a recording exporter
+// and gives back the single span it produced.
+//
+// NewRouter rather than chain over a stub, which is the difference that makes
+// the two tests below worth having: the facts come from the real controllers
+// and the real service, over the real store, and the record they write into is
+// the one Trace allocated at the top of the chain.
+func tracedSpan(t *testing.T, path, body string) telemetry.Span {
+	t.Helper()
+
+	provider, recorder := telemetry.NewRecorder()
+	app := testApp(t, livePool{}, zap.NewNop())
+	app.Telemetry = provider
+
+	request(t, NewRouter(app), http.MethodPost, path, body)
+
+	spans := recorder.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("%d spans exported for one request, want 1", len(spans))
+	}
+	return spans[0]
+}
+
+func eventNames(span telemetry.Span) []string {
+	spelled := make([]string, 0, len(span.Events))
+	for _, event := range span.Events {
+		spelled = append(spelled, event.Name)
+	}
+	return spelled
+}
+
+// TestTheEventsOfOneRequestLandOnOneSpanInOrder — 23d end to end.
+//
+// Every other test of the events works on one layer: the projection is pinned
+// in telemetry/project_event_test.go, the timestamping in middlewares, and each
+// call site against its own record. None of them can show that the three
+// point-in-time facts of a discover — written by the controller, by the service
+// below it and by the controller again — reach the SAME span, in the order they
+// happened. A record allocated per handler rather than per request, or a
+// service given a context that had lost it, would leave every one of those
+// tests green and this one with one event, or none.
+//
+// Non-decreasing rather than strictly increasing, deliberately. Strictness at
+// this level would be an assertion about the clock's resolution between three
+// calls with no work between them; the acceptance criterion's real content is
+// that the stamps come from where the facts were observed, and
+// TestTheEventsAreStampedWhereTheyHappened pins that with sleeps and was
+// checked to fail without WithTimestamp. What is worth pinning here is order
+// and containment.
+func TestTheEventsOfOneRequestLandOnOneSpanInOrder(t *testing.T) {
+	span := tracedSpan(t, "/discover", validDiscover)
+
+	want := []string{
+		fact.RequestInfo.EventName(),
+		fact.RetrievalInfo.EventName(),
+		fact.ResponseInfo.EventName(),
+	}
+	if got := eventNames(span); !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+
+	for index, event := range span.Events {
+		if event.Time.Before(span.Start) || !event.Time.Before(span.End) {
+			t.Errorf("%s at %s is outside the span [%s, %s)",
+				event.Name, event.Time, span.Start, span.End)
+		}
+		if index > 0 && event.Time.Before(span.Events[index-1].Time) {
+			t.Errorf("%s is stamped before %s, which ran first",
+				event.Name, span.Events[index-1].Name)
+		}
+	}
+}
+
+// TestARefusedRequestCarriesTheErrorEventAndNothingElse.
+//
+// The error event is the one of the four no controller writes — it comes from
+// WriteNack, which this body reaches through Envelope, four links above any
+// handler. So this is the only place the assembled chain shows that a rejection
+// too early for a controller to see is still on the span.
+//
+// And nothing else: a request that was refused before it was parsed has no
+// intent to describe and no retrieval to report, so an empty request_info here
+// would read as a discover that arrived asking for nothing.
+func TestARefusedRequestCarriesTheErrorEventAndNothingElse(t *testing.T) {
+	span := tracedSpan(t, "/discover", `{"context":{`)
+
+	want := []string{fact.ErrorEvent.EventName()}
+	if got := eventNames(span); !slices.Equal(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
 	}
 }
 

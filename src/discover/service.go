@@ -69,7 +69,14 @@ func (s *Service) Discover(
 		return nil, nil, typedSearchFailure(ctx, err)
 	}
 
-	return render(result.Catalogs), append(degraded, result.Degraded...), nil
+	// Both halves of the degraded list, joined once: negotiate's are the modes
+	// this deployment cannot run at all, result.Degraded the ones that failed on
+	// this request. The header and the attribute have to be the same list, so
+	// they are built from the same variable.
+	degraded = append(degraded, result.Degraded...)
+	observeRetrieval(ctx, modes, degraded)
+
+	return render(result.Catalogs), degraded, nil
 }
 
 // typedSearchFailure says whose mistake a failed search was.

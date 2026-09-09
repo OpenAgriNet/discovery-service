@@ -3,12 +3,15 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
 
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 )
 
@@ -360,10 +363,26 @@ func queryVector(ctx context.Context, embedder embeddings.Embedder, text string)
 		return nil, nil
 	}
 
+	started := time.Now()
 	values, err := embedder.Embed(ctx, text)
 	if err != nil {
 		return nil, fmt.Errorf("embed the query text: %w", err)
 	}
+
+	// Only when a vector actually came back. The noop provider returns nil, and
+	// under EMBEDDING_PROVIDER=noop — which is every Phase 1 deployment (A5) —
+	// the honest report is no attribute at all: a zero would say embedding ran
+	// and took no measurable time, which is the answer an average over the
+	// attribute would silently believe.
+	//
+	// logger.Millis rather than a second division by a thousand, so this and
+	// duration_ms round the same way; a duration spelled two ways is two
+	// numbers a dashboard cannot add. This is the whole of the dependency, and
+	// fact is what keeps the OTel SDK out of src/storage (A23).
+	if len(values) > 0 {
+		fact.ObserveFloat64(ctx, fact.RetrievalEmbeddingMs, logger.Millis(time.Since(started)))
+	}
+
 	if err := embeddings.CheckDimensions(values, embedder.Dimensions()); err != nil {
 		return nil, fmt.Errorf("embed the query text: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"iter"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Observation is one recorded fact, already bounded and already typed. A
@@ -25,6 +26,17 @@ type Observation struct {
 	// projection turns it into the Definition's TruncationFlag; a value silently
 	// cut short reads as the value the caller sent.
 	Truncated bool
+
+	// Time is the moment of the write, and it is what the span events are built
+	// out of: an event is anchored at the earliest of the facts belonging to it,
+	// so request_info sits where the envelope parsed and retrieval_info where the
+	// store answered. Stamping at projection time instead — the shape that falls
+	// out of not thinking about it — collapses all of them onto the span's end,
+	// and does so silently: the total stays right and only the breakdown, which
+	// is the reason the events exist, becomes zeros.
+	//
+	// It moves on a re-observation, because the value does. See put.
+	Time time.Time
 }
 
 // Record is one request's observed facts.
@@ -204,11 +216,18 @@ func (r *Record) All() iter.Seq[Observation] {
 //
 // Replacing rather than appending is what WriteHeader needs: it can fire more
 // than once on a response the handler started writing and then faulted on, and
-// the status the span reports has to be the one that went out.
+// the status the span reports has to be the one that went out. The stamp is
+// replaced with it: a corrected value carrying the moment of the value it
+// corrected would date the fact to a time at which it was not yet true.
+//
+// The stamp is taken here rather than at each of the five Observe methods, so
+// there is one clock read per write and one place it can be got wrong.
 func (r *Record) put(observation Observation) {
 	if r == nil {
 		return
 	}
+	observation.Time = time.Now()
+
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
@@ -296,4 +297,60 @@ func assertPanics(t *testing.T, call func()) {
 		}
 	}()
 	call()
+}
+
+// TestAnObservationCarriesTheMomentItWasObserved.
+//
+// The events are a phase breakdown and the deltas between them are the whole
+// value: 4 ms parsing, 137 ms retrieving, 6 ms building. That only works if each
+// fact remembers WHEN it was recorded. Stamping at projection time instead —
+// which is the shape that falls out of doing nothing — collapses every event
+// onto the span's end, and the failure is silent: the total stays correct, the
+// dashboards keep rendering, and the breakdown quietly becomes zeros.
+//
+// Asserted as an interval rather than an equality, because the clock is the
+// real one. What it excludes is a zero Time and a Time taken at read.
+func TestAnObservationCarriesTheMomentItWasObserved(t *testing.T) {
+	_, record := fact.New(context.Background())
+
+	before := time.Now()
+	record.ObserveInt64(fact.ResultCatalogCount, 4)
+	after := time.Now()
+
+	observation, found := record.Lookup(fact.ResultCatalogCount)
+	if !found {
+		t.Fatal("the observation is missing")
+	}
+	if observation.Time.Before(before) || observation.Time.After(after) {
+		t.Errorf("Time = %v, want it inside [%v, %v] — the stamp is not being taken "+
+			"at the moment of the write", observation.Time, before, after)
+	}
+}
+
+// TestReObservingAKeyMovesItsStampForward.
+//
+// WriteHeader can fire twice on a response the handler started and then faulted
+// on, and put() replaces rather than appends so the status the span reports is
+// the one that went out. The stamp has to travel with the value: a second write
+// keeping the first write's time would date the fact to a moment at which it was
+// not yet true.
+//
+// The event's own time is a separate question and is answered the other way —
+// the projection anchors an event at the EARLIEST of its facts, so a late
+// correction does not drag response_info past the events after it.
+func TestReObservingAKeyMovesItsStampForward(t *testing.T) {
+	_, record := fact.New(context.Background())
+
+	record.ObserveInt64(fact.HTTPStatusCode, 200)
+	first, _ := record.Lookup(fact.HTTPStatusCode)
+
+	record.ObserveInt64(fact.HTTPStatusCode, 500)
+	second, _ := record.Lookup(fact.HTTPStatusCode)
+
+	if second.Int != 500 {
+		t.Errorf("Int = %d after the second write, want 500", second.Int)
+	}
+	if !second.Time.After(first.Time) {
+		t.Errorf("the stamp did not move: %v then %v", first.Time, second.Time)
+	}
 }
