@@ -1,0 +1,136 @@
+{
+  "info": {
+    "_postman_id": "65a7dfc9-9678-46b9-9fdf-7e252a899ee0",
+    "name": "OpenAgriNet APIs",
+    "description": "Minimal set: one publish, four discover calls (text, spatial, JSON filter, all combined). Pairs with docker-compose.yml in this same folder - no repo checkout or build needed, just docker compose up.\n\nRun Publish first, then any Discover request.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "2592938"
+  },
+  "item": [
+    {
+      "name": "Resource Publish",
+      "item": [
+        {
+          "name": "Publish",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const req = JSON.parse(pm.request.body.raw);",
+                  "",
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"callback action is catalog/on_publish\", () => pm.expect(res.context.action).to.eql(\"catalog/on_publish\"));",
+                  "pm.test(\"transactionId and messageId are echoed\", () => {",
+                  "    pm.expect(res.context.transactionId).to.eql(req.context.transactionId);",
+                  "    pm.expect(res.context.messageId).to.eql(req.context.messageId);",
+                  "});",
+                  "pm.test(\"not a NACK\", () =>",
+                  "    pm.expect(res.message.status, JSON.stringify(res.message.error)).to.not.eql(\"NACK\"));",
+                  "pm.test(\"the catalog was ACCEPTED with no errors\", () => {",
+                  "    const result = res.message.results[0];",
+                  "    pm.expect(result.catalogId).to.eql(\"cat-ksndmc-weather-advisory\");",
+                  "    pm.expect(result.status, JSON.stringify(result.errors)).to.eql(\"ACCEPTED\");",
+                  "});"
+                ],
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {}
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"context\": {\n        \"domain\": \"agriculture\",\n        \"action\": \"publish\",\n        \"version\": \"2.0.0\",\n        \"bppId\": \"weather.karnataka.example.org\",\n        \"bppUri\": \"https://weather.karnataka.example.org/beckn\",\n        \"transactionId\": \"3f9a1c62-4d5e-4a7b-9c8d-1e2f3a4b5c6d\",\n        \"messageId\": \"8b7c6d5e-4f3a-42b1-a0c9-d8e7f6a5b4c3\",\n        \"timestamp\": \"2026-08-27T06:30:00Z\"\n    },\n    \"message\": {\n        \"catalogs\": [\n            {\n                \"id\": \"cat-ksndmc-weather-advisory\",\n                \"bppId\": \"weather.karnataka.example.org\",\n                \"bppUri\": \"https://weather.karnataka.example.org/beckn\",\n                \"isActive\": true,\n                \"descriptor\": {\n                    \"code\": \"KSNDMC-WX-ADVISORY\",\n                    \"name\": \"Karnataka Weather Advisory Services\",\n                    \"shortDesc\": \"Weather-informed agricultural advisories for Karnataka\",\n                    \"longDesc\": \"Village- and point-level weather advisories covering irrigation, spraying and crop protection decisions across Karnataka.\"\n                },\n                \"provider\": {\n                    \"id\": \"prov-ksndmc\",\n                    \"descriptor\": {\n                        \"code\": \"KSNDMC\",\n                        \"name\": \"Karnataka State Natural Disaster Monitoring Centre\"\n                    },\n                    \"availableAt\": [\n                        {\n                            \"geo\": {\n                                \"type\": \"Polygon\",\n                                \"coordinates\": [\n                                    [\n                                        [\n                                            74.05,\n                                            11.55\n                                        ],\n                                        [\n                                            78.6,\n                                            11.55\n                                        ],\n                                        [\n                                            78.6,\n                                            18.45\n                                        ],\n                                        [\n                                            74.05,\n                                            18.45\n                                        ],\n                                        [\n                                            74.05,\n                                            11.55\n                                        ]\n                                    ]\n                                ]\n                            }\n                        }\n                    ]\n                },\n                \"validity\": {\n                    \"startDate\": \"2026-01-01T00:00:00Z\",\n                    \"endDate\": \"2027-12-31T23:59:59Z\"\n                },\n                \"resources\": [\n                    {\n                        \"id\": \"res-wx-village-belagavi\",\n                        \"descriptor\": {\n                            \"code\": \"WX-VILLAGE-BLG\",\n                            \"name\": \"Village weather advisory, Belagavi\",\n                            \"shortDesc\": \"Seven-day village-level irrigation and spraying advisory\",\n                            \"longDesc\": \"Rainfall, temperature, humidity and wind advisories at village granularity for the Belagavi district, refreshed every three hours.\"\n                        },\n                        \"resourceAttributes\": {\n                            \"@context\": \"https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld\",\n                            \"@type\": \"openagrinet:WeatherAdvisoryCapability\",\n                            \"subjectCategories\": [\n                                \"Crop\",\n                                \"Weather\"\n                            ],\n                            \"agricultureSubjects\": [\n                                {\n                                    \"subjectId\": \"https://taxonomy.openagrinet.global/crop/sugarcane\",\n                                    \"subjectType\": \"Crop\",\n                                    \"descriptor\": {\n                                        \"code\": \"SUGARCANE\",\n                                        \"name\": \"Sugarcane\"\n                                    }\n                                }\n                            ],\n                            \"languages\": [\n                                \"en\",\n                                \"hi\",\n                                \"kn\",\n                                \"mr\"\n                            ],\n                            \"coverageAreas\": [\n                                {\n                                    \"codeScheme\": \"ISO-3166-2\",\n                                    \"areaCode\": \"IN-KA\",\n                                    \"areaLevel\": \"State\",\n                                    \"areaName\": \"Karnataka\"\n                                },\n                                {\n                                    \"type\": \"Polygon\",\n                                    \"coordinates\": [\n                                        [\n                                            [\n                                                74.05,\n                                                15.45\n                                            ],\n                                            [\n                                                75.25,\n                                                15.45\n                                            ],\n                                            [\n                                                75.25,\n                                                16.55\n                                            ],\n                                            [\n                                                74.05,\n                                                16.55\n                                            ],\n                                            [\n                                                74.05,\n                                                15.45\n                                            ]\n                                        ]\n                                    ]\n                                }\n                            ],\n                            \"topics\": [\n                                \"Irrigation\",\n                                \"Spraying\",\n                                \"CropProtection\"\n                            ],\n                            \"weatherParameters\": [\n                                \"Rainfall\",\n                                \"Temperature\",\n                                \"Humidity\",\n                                \"WindSpeed\"\n                            ],\n                            \"forecastHorizon\": \"P7D\",\n                            \"updateFrequency\": \"PT3H\",\n                            \"geographicGranularity\": \"Village\"\n                        }\n                    },\n                    {\n                        \"id\": \"res-wx-point-dharwad\",\n                        \"descriptor\": {\n                            \"code\": \"WX-POINT-DWD\",\n                            \"name\": \"Point weather advisory, Dharwad\",\n                            \"shortDesc\": \"Three-day hyperlocal spraying advisory\",\n                            \"longDesc\": \"Hourly-refreshed rainfall, wind speed and humidity advisory for a single field location near Dharwad, intended for spray-window decisions.\"\n                        },\n                        \"resourceAttributes\": {\n                            \"@context\": \"https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld\",\n                            \"@type\": \"openagrinet:WeatherAdvisoryCapability\",\n                            \"subjectCategories\": [\n                                \"Crop\",\n                                \"Weather\"\n                            ],\n                            \"agricultureSubjects\": [\n                                {\n                                    \"subjectId\": \"https://taxonomy.openagrinet.global/crop/cotton\",\n                                    \"subjectType\": \"Crop\",\n                                    \"descriptor\": {\n                                        \"code\": \"COTTON\",\n                                        \"name\": \"Cotton\"\n                                    }\n                                }\n                            ],\n                            \"languages\": [\n                                \"en\",\n                                \"kn\"\n                            ],\n                            \"coverageAreas\": [\n                                {\n                                    \"type\": \"Point\",\n                                    \"coordinates\": [\n                                        75.0078,\n                                        15.4589\n                                    ]\n                                }\n                            ],\n                            \"topics\": [\n                                \"Spraying\",\n                                \"Irrigation\"\n                            ],\n                            \"weatherParameters\": [\n                                \"Rainfall\",\n                                \"WindSpeed\",\n                                \"Humidity\"\n                            ],\n                            \"forecastHorizon\": \"P3D\",\n                            \"updateFrequency\": \"PT1H\",\n                            \"geographicGranularity\": \"Point\"\n                        }\n                    },\n                    {\n                        \"id\": \"res-wx-alert-statewide\",\n                        \"descriptor\": {\n                            \"code\": \"WX-ALERT-KA\",\n                            \"name\": \"Statewide severe weather alerts\",\n                            \"shortDesc\": \"District-level cyclone and heavy rainfall alerts\",\n                            \"longDesc\": \"Severe weather alerting at district granularity for the whole of Karnataka. Carries no coordinate geometry, only a governed area code.\"\n                        },\n                        \"resourceAttributes\": {\n                            \"@context\": \"https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld\",\n                            \"@type\": \"openagrinet:WeatherAdvisoryCapability\",\n                            \"subjectCategories\": [\n                                \"Weather\"\n                            ],\n                            \"languages\": [\n                                \"en\",\n                                \"kn\"\n                            ],\n                            \"coverageAreas\": [\n                                {\n                                    \"codeScheme\": \"ISO-3166-2\",\n                                    \"areaCode\": \"IN-KA\",\n                                    \"areaLevel\": \"State\",\n                                    \"areaName\": \"Karnataka\"\n                                }\n                            ],\n                            \"topics\": [\n                                \"CropProtection\"\n                            ],\n                            \"weatherParameters\": [\n                                \"Alert\",\n                                \"Rainfall\",\n                                \"WindSpeed\"\n                            ],\n                            \"forecastHorizon\": \"P2D\",\n                            \"updateFrequency\": \"PT30M\",\n                            \"geographicGranularity\": \"District\"\n                        }\n                    }\n                ]\n            }\n        ],\n        \"publishDirectives\": [\n            {\n                \"catalogId\": \"cat-ksndmc-weather-advisory\",\n                \"catalogType\": \"REGULAR\"\n            }\n        ]\n    }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "publish"
+              ]
+            },
+            "description": "One catalog, one provider, three resources. Run this FIRST - every discover request below asserts against exactly this data."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Resource Discovery",
+      "item": [
+        {
+          "name": "Discover",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const req = JSON.parse(pm.request.body.raw);",
+                  "",
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"callback action is on_discover\", () => pm.expect(res.context.action).to.eql(\"on_discover\"));",
+                  "pm.test(\"transactionId and messageId are echoed\", () => {",
+                  "    pm.expect(res.context.transactionId).to.eql(req.context.transactionId);",
+                  "    pm.expect(res.context.messageId).to.eql(req.context.messageId);",
+                  "});",
+                  "pm.test(\"not a NACK\", () =>",
+                  "    pm.expect(res.message.status, JSON.stringify(res.message.error)).to.not.eql(\"NACK\"));",
+                  "",
+                  "const resourceIds = (res.message.catalogs || []).flatMap(c => c.resources || []).map(r => r.id).sort();",
+                  "pm.test(\"resources are exactly \" + JSON.stringify([\"res-wx-village-belagavi\"]), () =>",
+                  "    pm.expect(resourceIds).to.eql([\"res-wx-village-belagavi\"]));"
+                ],
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {}
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"context\": {\n        \"action\": \"discover\",\n        \"version\": \"2.0.0\",\n        \"transactionId\": \"a1000000-0000-4000-8000-000000000015\",\n        \"messageId\": \"b1000000-0000-4000-8000-000000000015\",\n        \"timestamp\": \"2026-08-27T06:30:00Z\",\n        \"schemaContext\": [\n            \"https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld#openagrinet:WeatherAdvisoryCapability\"\n        ]\n    },\n    \"message\": {\n        \"intent\": {\n            \"spatial\": [\n                {\n                    \"op\": \"S_DWITHIN\",\n                    \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n                    \"geometry\": {\n                        \"type\": \"Point\",\n                        \"coordinates\": [\n                            75.02,\n                            15.47\n                        ]\n                    },\n                    \"distanceMeters\": 0.1\n                }\n            ],\n            \"filters\": {\n                \"type\": \"jsonpath\",\n                \"expression\": \"$.catalogs[*].resources[*] ? (@.resourceAttributes.subjectCategories[*] == \\\"Weather\\\")\"\n            }\n        }\n    }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/discover",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "discover"
+              ]
+            },
+            "description": "All three constraints together: text, geo and JSONPath filter, ANDed."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    }
+  ]
+}

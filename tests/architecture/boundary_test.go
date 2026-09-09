@@ -1,0 +1,167 @@
+// Package architecture holds the import-graph guards that keep the TRD §5 swap
+// boundary real rather than aspirational.
+package architecture
+
+import (
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const (
+	modulePath = "github.com/OpenAgriNet/discovery-service"
+
+	// repoRoot is where this test walks from. A relative path rather than a
+	// go:generate'd constant, because the walk must work in a checkout that has
+	// never run a generator.
+	repoRoot = "../.."
+)
+
+// The ban is two bans, because the two have different reasons and therefore
+// different allow-lists. Collapsing them into one list was the original shape,
+// and it made the test harness's legitimate need for the driver look like a
+// reason to hand it the adapter as well.
+
+// driverOnly is the PostgreSQL vocabulary: the driver and the vector type.
+// Anything holding these is talking to PostgreSQL rather than to a store.
+var driverOnly = []string{
+	"github.com/jackc/pgx",
+	"github.com/pgvector/pgvector-go",
+}
+
+// adapterOnly is the generated package, and it is here for a subtler reason
+// than the driver: sqlc's output is a set of Go structs that look exactly like
+// domain types, and a service that starts passing them around has swapped its
+// domain model for its schema without anyone deciding to.
+var adapterOnly = []string{
+	modulePath + "/src/storage/postgres",
+}
+
+// The adapter package itself, obviously. And the composition root, because
+// something has to construct the concrete store — that is what a composition
+// root is for, and the alternative is a reflective registry that hides the same
+// edge behind more machinery.
+func mayImportTheAdapter(path string) bool {
+	return strings.HasPrefix(path, filepath.Join("src", "storage", "postgres")+string(filepath.Separator)) ||
+		path == filepath.Join("src", "app", "container.go")
+}
+
+// mayImportTheDriver adds the database test harness, and only the harness.
+//
+// tests/dbtest starts a real PostgreSQL, runs the migrations against it and
+// reads pg_indexes and pg_stat_user_indexes back. It cannot be written through
+// the store interface, because what it is testing is the schema underneath the
+// interface — an assertion about idx_rg_cells_full has nowhere else to live.
+//
+// It is NOT granted the adapter: a harness that constructs the real store is a
+// harness that has started testing the adapter through itself, and the
+// conformance suite in src/storage/postgres is where that belongs. So the two
+// lists stay separate rather than becoming one list with three entries.
+func mayImportTheDriver(path string) bool {
+	return mayImportTheAdapter(path) ||
+		strings.HasPrefix(path, filepath.Join("tests", "dbtest")+string(filepath.Separator))
+}
+
+// dbtestOnly is tests/dbtest itself: whether a package requires a real
+// PostgreSQL to run at all, which is a stronger claim than merely being
+// allowed to talk to one. Nothing here marks a Go test as "integration" —
+// no build tag, no file suffix — so this allow-list IS the boundary; a
+// package added to it is a package that now starts a testcontainer on every
+// `go test`.
+var dbtestOnly = []string{
+	modulePath + "/tests/dbtest",
+}
+
+// mayImportDbtest names every package that has already made that trade.
+// src/app earns its place through container_test.go, Build's own happy-path
+// test — the composition root is where "does everything really wire
+// together against a real database" has to be answered, the same way it
+// already owns the adapter and the driver above.
+func mayImportDbtest(path string) bool {
+	return mayImportTheAdapter(path) ||
+		strings.HasPrefix(path, filepath.Join("src", "app")+string(filepath.Separator)) ||
+		strings.HasPrefix(path, filepath.Join("tests", "acceptance")+string(filepath.Separator)) ||
+		strings.HasPrefix(path, filepath.Join("tests", "dbtest")+string(filepath.Separator))
+}
+
+// TestNothingButTheAdapterImportsPostgres walks every package in the module.
+//
+// Its twin, src/domain/purity_test.go, protects the contract; this protects
+// everything that consumes it, which is where the leak actually happens. A
+// domain that imports nothing is no use if src/discover reaches around it and
+// talks to pgx directly.
+//
+// It passes trivially today, because no adapter exists yet — which is the
+// point. A guard written after the thing it guards is written against code
+// somebody already has a reason to keep.
+func TestNothingButTheAdapterImportsPostgres(t *testing.T) {
+	fileSet := token.NewFileSet()
+
+	err := filepath.WalkDir(repoRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return skipNonSource(entry)
+		}
+		if !strings.HasSuffix(entry.Name(), ".go") {
+			return nil
+		}
+		checkFile(t, fileSet, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the module: %v", err)
+	}
+}
+
+// skipNonSource prunes the directories a source walk has no business entering.
+func skipNonSource(entry fs.DirEntry) error {
+	switch entry.Name() {
+	case ".git", "bin", "vendor", "node_modules":
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func checkFile(t *testing.T, fileSet *token.FileSet, path string) {
+	t.Helper()
+
+	file, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+	if err != nil {
+		t.Errorf("parse %s: %v", path, err)
+		return
+	}
+
+	relative, err := filepath.Rel(repoRoot, path)
+	if err != nil {
+		t.Errorf("locate %s: %v", path, err)
+		return
+	}
+	bans := []struct {
+		paths   []string
+		allowed bool
+		who     string
+	}{
+		{driverOnly, mayImportTheDriver(relative), "src/storage/postgres/**, src/app/container.go and tests/dbtest/**"},
+		{adapterOnly, mayImportTheAdapter(relative), "src/storage/postgres/** and src/app/container.go"},
+		{dbtestOnly, mayImportDbtest(relative), "src/storage/postgres/**, src/app/**, tests/acceptance/** and tests/dbtest/**"},
+	}
+
+	for _, imported := range file.Imports {
+		importPath := strings.Trim(imported.Path.Value, `"`)
+		for _, ban := range bans {
+			if ban.allowed {
+				continue
+			}
+			for _, banned := range ban.paths {
+				if strings.HasPrefix(importPath, banned) {
+					t.Errorf("%s imports %q — only %s may", relative, importPath, ban.who)
+				}
+			}
+		}
+	}
+}

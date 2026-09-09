@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SchemaRegistry",
+  "type": "object",
+  "required": ["SchemaRegistry"],
+  "properties": { "SchemaRegistry": { "$ref": "#/definitions/SchemaRegistry" } },
+
+  "definitions": {
+
+    "SchemaRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityCode", "name", "version", "schemaUrl", "status"],
+      "properties": {
+        "capabilityCode": { "$ref": "#/definitions/CapabilityCode" },
+        "name":           { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "version":        { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+$" },
+        "schemaUrl":      { "type": "string", "maxLength": 2000,
+                            "pattern": "^https://raw\\.githubusercontent\\.com/OpenAgriNet/network-specs/[A-Za-z0-9_-]+/schema/[A-Za-z0-9]+/v[0-9]+\\.[0-9]+/[A-Za-z0-9_-]+\\.yaml$" },
+        "status":         { "$ref": "#/definitions/Status" }
+      }
+    },
+
+    "CapabilityCode": { "type": "string",
+                        "pattern": "^openagrinet:[A-Z][A-Za-z0-9]*$",
+                        "not": { "pattern": "^openagrinet:Agriculture(Capability|Resource)$" } },
+    "Status": { "type": "string", "enum": ["active", "inactive"] }
+  },
+
+  "_osConfig": {
+    "uniqueIndexFields": ["capabilityCode"],
+    "indexFields":       ["status"],
+    "roles":             ["registryOperator"],
+    "systemFields":      ["osCreatedAt", "osUpdatedAt", "osCreatedBy", "osUpdatedBy"]
+  }
+}

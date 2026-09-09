@@ -1,0 +1,1377 @@
+package postgres_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
+	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
+	"github.com/OpenAgriNet/discovery-service/src/platform/config"
+	"github.com/OpenAgriNet/discovery-service/src/storage/postgres"
+	"github.com/OpenAgriNet/discovery-service/tests/dbtest"
+)
+
+// The read path against a real PostgreSQL. Everything here turns on behaviour
+// the SQL source test cannot see: the source test proves a clause is PRESENT,
+// these prove it means what it was written to mean.
+
+// columnDimensions is the embedding column's fixed width (config/common.yaml's
+// EMBEDDING_DIMENSIONS default) — named rather than repeated as a bare 768 at
+// every site in this file that has to agree with the schema, not with each
+// other.
+const columnDimensions = 768
+
+// searchConfig is the config every repository below is built with, with a small
+// candidate cap so the pagination-depth and cap-reporting cases can reach it
+// without a corpus of five hundred rows.
+//
+// The page sizes shrink WITH the cap and not independently of it: config's
+// validate rejects MaxCandidatesPerMode < MaxPageSize, because a candidate pool
+// smaller than one page cannot fill it, and a fixture that broke that ratio
+// would be asserting against a configuration the service refuses to start on.
+func searchConfig() config.Search {
+	return config.Search{
+		DefaultPageSize:      4,
+		MaxPageSize:          8,
+		MaxCandidatesPerMode: 8,
+		MaxRadiusMeters:      200000,
+		ReadDeadline:         10 * time.Second,
+	}
+}
+
+// deriveSearchable is the stand-in for Task 17's derivation: it gives every
+// resource the name, search text and schema pair the read path indexes on,
+// taken from the attributes the fixture published.
+//
+// A fixture that set `name` by hand and left `search_text` empty would publish
+// rows the lexical retriever cannot match and the fuzzy one can, which is a
+// corpus that silently tests one mode.
+func deriveSearchable(merged *domain.Catalog, _ []string) []domain.Fault {
+	for index := range merged.Resources {
+		resource := &merged.Resources[index]
+
+		var fields struct {
+			Name    string `json:"name"`
+			Context string `json:"@context"`
+			Type    string `json:"@type"`
+			Text    string `json:"text"`
+		}
+		if err := json.Unmarshal(resource.ResourceAttributes(), &fields); err != nil {
+			return []domain.Fault{{Code: "FIXTURE", Message: err.Error()}}
+		}
+		resource.Name = fields.Name
+		resource.SchemaContext = fields.Context
+		resource.SchemaType = fields.Type
+		resource.SearchText = strings.TrimSpace(fields.Name + " " + fields.Text)
+	}
+	return nil
+}
+
+// kharifLots is a corpus of interchangeable resources sharing one token, for
+// the cases that need more rows than the candidate cap admits.
+func kharifLots(count int) []domain.ResourcePatch {
+	lots := make([]domain.ResourcePatch, 0, count)
+	for index := range count {
+		lots = append(lots, searchable(
+			fmt.Sprintf("r-%02d", index), fmt.Sprintf("kharif lot %02d", index),
+			"", "https://beckn.org/Agri", "SeedLot"))
+	}
+	return lots
+}
+
+// deriveVectors stores a vector on the named resources, the way a write-path
+// embedder would. The width is the column's, 768, and not the repository's,
+// because those two disagreeing is a state this corpus has to be able to reach.
+func deriveVectors(ids ...string) domain.DeriveFunc {
+	return func(merged *domain.Catalog, touched []string) []domain.Fault {
+		if faults := deriveSearchable(merged, touched); faults != nil {
+			return faults
+		}
+		for index := range merged.Resources {
+			if !slices.Contains(ids, merged.Resources[index].ID) {
+				continue
+			}
+			vector := make([]float32, columnDimensions)
+			for position := range vector {
+				vector[position] = float32(position%7) / 7
+			}
+			merged.Resources[index].Embedding = vector
+		}
+		return nil
+	}
+}
+
+// readFixture is one publishable catalog, spelled as the fields these cases
+// actually vary.
+type readFixture struct {
+	catalog   string
+	visibleTo []string
+
+	// document is the catalog's own members, for the cases whose predicate
+	// reaches ABOVE the resource. Optional: most cases here search on resource
+	// text and would only be describing a catalog nothing reads. Since A18 it
+	// is copied onto every resource row's composite, so what is set here is
+	// what a catalog-level filter runs against.
+	document  json.RawMessage
+	resources []domain.ResourcePatch
+	offers    []domain.OfferPatch
+	derive    domain.DeriveFunc
+}
+
+// searchable builds a resource patch whose attributes carry everything
+// deriveSearchable reads.
+func searchable(id, name, text, context, resourceType string) domain.ResourcePatch {
+	document, err := json.Marshal(map[string]any{
+		"id": id,
+		"resourceAttributes": map[string]string{
+			"name": name, "text": text, "@context": context, "@type": resourceType,
+		},
+	})
+	if err != nil {
+		panic("fixture attributes will not marshal: " + err.Error())
+	}
+	return domain.ResourcePatch{ID: id, Document: document}
+}
+
+// publish writes the fixtures and returns a read repository over the same pool.
+//
+// Published through the WRITE repository rather than by INSERT, so the corpus
+// these cases read is the corpus a publish actually produces — the tsvector
+// built by the real statement, the geometries covered by the real cover.
+func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture) (
+	*postgres.SearchRepository, *pgxpool.Pool,
+) {
+	t.Helper()
+
+	pool := dbtest.NewPostgres(t)
+	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
+
+	for _, fixture := range fixtures {
+		visibleTo := fixture.visibleTo
+		if visibleTo == nil {
+			visibleTo = []string{"bap.example.com"}
+		}
+		derive := fixture.derive
+		if derive == nil {
+			derive = deriveSearchable
+		}
+
+		faults, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
+			ID:              fixture.catalog,
+			NetworkID:       visibleTo[0],
+			Document:        fixture.document,
+			Active:          true,
+			ProtocolVersion: beckn.Version,
+			VisibleTo:       visibleTo,
+			Resources:       fixture.resources,
+			Offers:          fixture.offers,
+		}, domain.UpdateModeFull, derive)
+		if err != nil {
+			t.Fatalf("publish %s: %v", fixture.catalog, err)
+		}
+		if len(faults) > 0 {
+			t.Fatalf("publish %s reported faults the fixture did not expect: %v", fixture.catalog, faults)
+		}
+	}
+
+	return postgres.NewSearchRepository(pool, searchConfig(), embedder), pool
+}
+
+// bothTextModes is what a caller who typed something asks for. Named because
+// almost every case below wants exactly this and a case that quietly ran one
+// mode would pass while the other was broken.
+var bothTextModes = []domain.Capability{domain.CapabilityLexical, domain.CapabilityFuzzy}
+
+// matchedIDs flattens a result to the resource ids on it, in page order.
+func matchedIDs(result domain.SearchResult) []string {
+	ids := make([]string, 0, len(result.Catalogs))
+	for _, catalog := range result.Catalogs {
+		for _, resource := range catalog.Resources {
+			ids = append(ids, resource.ID)
+		}
+	}
+	return ids
+}
+
+func search(t *testing.T, repository *postgres.SearchRepository, query domain.SearchQuery) domain.SearchResult {
+	t.Helper()
+
+	if query.Limit == 0 {
+		query.Limit = searchConfig().MaxPageSize
+	}
+	result, err := repository.Search(context.Background(), query, bothTextModes)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// the network gate
+// ---------------------------------------------------------------------------
+
+// Both directions in ONE test, because a fix aimed at either one is a
+// regression in the other: defaulting the empty case to the service's own
+// network makes the first assertion fail, and dropping the predicate entirely
+// makes the second.
+func TestAnOmittedNetworkIdSearchesEveryNetworkAndAGivenOneNarrows(t *testing.T) {
+	repository, _ := publish(t, nil,
+		readFixture{
+			catalog:   "cat-open",
+			visibleTo: []string{"mahavistar"},
+			resources: []domain.ResourcePatch{searchable("r-open", "wheat seed", "", "https://beckn.org/Agri", "SeedLot")},
+		},
+		readFixture{
+			catalog:   "cat-closed",
+			visibleTo: []string{"private.example.com"},
+			resources: []domain.ResourcePatch{searchable("r-closed", "wheat seed", "", "https://beckn.org/Agri", "SeedLot")},
+		},
+	)
+
+	everyNetwork := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat"}))
+	if !slices.Contains(everyNetwork, "r-closed") {
+		t.Errorf("an omitted networkId returned %v; it must search EVERY network, "+
+			"including one whose visibleTo names a network the caller never mentioned", everyNetwork)
+	}
+	if len(everyNetwork) != 2 {
+		t.Errorf("an omitted networkId matched %d resources, want both: %v", len(everyNetwork), everyNetwork)
+	}
+
+	scoped := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat", NetworkID: "mahavistar"}))
+	if !slices.Equal(scoped, []string{"r-open"}) {
+		t.Errorf("networkId=mahavistar returned %v, want only that network's row", scoped)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the schema pair
+// ---------------------------------------------------------------------------
+
+func TestSchemaFilteringComparesContextAndTypeAsAPair(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{
+		catalog: "cat-schema",
+		resources: []domain.ResourcePatch{
+			searchable("grocery", "wheat flour", "", "https://schema.org", "GroceryItem"),
+			searchable("ride", "wheat transport", "", "https://beckn.org/Mobility", "RideService"),
+			searchable("other", "wheat storage", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+
+	// One static query, run at one, two and three entries. The failure this
+	// shape replaced was a clause count that varied with the request, so a case
+	// exercising a single length would not have seen it.
+	for _, testCase := range []struct {
+		name    string
+		schemas []domain.SchemaFilter
+		want    []string
+	}{
+		{
+			name:    "one entry",
+			schemas: []domain.SchemaFilter{{Context: "https://schema.org", Type: "GroceryItem"}},
+			want:    []string{"grocery"},
+		},
+		{
+			name: "two entries",
+			schemas: []domain.SchemaFilter{
+				{Context: "https://schema.org", Type: "GroceryItem"},
+				{Context: "https://beckn.org/Mobility", Type: "RideService"},
+			},
+			want: []string{"grocery", "ride"},
+		},
+		{
+			name: "three entries",
+			schemas: []domain.SchemaFilter{
+				{Context: "https://schema.org", Type: "GroceryItem"},
+				{Context: "https://beckn.org/Mobility", Type: "RideService"},
+				{Context: "https://beckn.org/Agri", Type: "SeedLot"},
+			},
+			want: []string{"grocery", "other", "ride"},
+		},
+		{
+			// The cross-match: schema.org is a published context and
+			// RideService a published type, but never on the same row. Two
+			// independent IN lists return `ride`; a paired comparison returns
+			// nothing.
+			name:    "the cross-match is refused",
+			schemas: []domain.SchemaFilter{{Context: "https://schema.org", Type: "RideService"}},
+			want:    nil,
+		},
+		{
+			// An empty schemaContext must emit NO predicate rather than one
+			// matching nothing — the difference between "every result" and
+			// "every response is empty".
+			name:    "an empty list filters nothing",
+			schemas: nil,
+			want:    []string{"grocery", "other", "ride"},
+		},
+		{
+			// An entry with no fragment is "any type under this context".
+			name:    "a context with no type admits every type under it",
+			schemas: []domain.SchemaFilter{{Context: "https://beckn.org/Mobility"}},
+			want:    []string{"ride"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := matchedIDs(search(t, repository, domain.SearchQuery{
+				Text: "wheat", Schemas: testCase.schemas,
+			}))
+			slices.Sort(got)
+			if !slices.Equal(got, testCase.want) {
+				t.Errorf("got %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Total, and pagination over it
+// ---------------------------------------------------------------------------
+
+// The corpus is built so lexical and fuzzy match DIFFERENT resources: only a
+// counter carrying the OR of both clauses reports the size of the set the
+// fusion drew from. A counter carrying lexical's alone returns a number smaller
+// than page 1 already showed.
+func TestTotalIsTheSizeOfTheUnionOfEveryModesTextClause(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{
+		catalog: "cat-union",
+		resources: []domain.ResourcePatch{
+			// Lexical only: the token is in the search text, and the name is
+			// nothing like the query.
+			searchable("lex-1", "zzz alpha", "kharif", "https://beckn.org/Agri", "SeedLot"),
+			searchable("lex-2", "zzz beta", "kharif", "https://beckn.org/Agri", "SeedLot"),
+			// Fuzzy only: a near-miss NAME with none of the query's tokens in
+			// its text, so `%` matches and `@@` does not.
+			searchable("fuz-1", "kharrif", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+
+	result := search(t, repository, domain.SearchQuery{Text: "kharif"})
+
+	if got := len(matchedIDs(result)); got != 3 {
+		t.Fatalf("the page holds %d resources, want the 3 in the union: %v — "+
+			"the union of the lexical and fuzzy clauses, not either one alone",
+			got, matchedIDs(result))
+	}
+}
+
+func TestPageTwoDoesNotOverlapPageOne(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{catalog: "cat-paged", resources: kharifLots(6)})
+
+	first := matchedIDs(search(t, repository, domain.SearchQuery{Text: "kharif", Limit: 3}))
+	second := matchedIDs(search(t, repository, domain.SearchQuery{Text: "kharif", Limit: 3, Offset: 3}))
+
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("pages hold %d and %d, want 3 each: %v then %v", len(first), len(second), first, second)
+	}
+	for _, id := range second {
+		if slices.Contains(first, id) {
+			t.Errorf("%q is on both pages: %v then %v", id, first, second)
+		}
+	}
+}
+
+// A mode that ERRORS is degraded, and the page is what the other modes found.
+//
+// The vectors are 768 wide because the column is, and the repository embeds at
+// 384, so the semantic retriever's `<=>` is a width mismatch and fails at query
+// time — a real failure inside a mode rather than a mode this backend never
+// declared. The two are worth separating: an undeclared mode is refused by
+// negotiate before anything runs, while this one dies mid-fan-out, and only
+// this shape proves the fan-out survives it.
+//
+// The page must therefore be exactly the text modes' answer: the three embedded
+// rows are NOT in it, and a fusion that let a failed mode contribute an empty
+// list rather than no list would be indistinguishable here if the assertion
+// were on the count instead of on the ids.
+func TestAModeThatFailsIsDegradedAndThePageIsWhatTheOthersFound(t *testing.T) {
+	embedded := kharifLots(3)
+	repository, _ := publish(t, embeddings.NewHashing(384), readFixture{
+		catalog:   "cat-degraded-count",
+		resources: append(embedded, searchable("r-papaya", "singular papaya", "", "https://beckn.org/Agri", "SeedLot")),
+		derive:    deriveVectors("r-00", "r-01", "r-02"),
+	})
+
+	query := domain.SearchQuery{Text: "papaya", Limit: searchConfig().MaxPageSize}
+	result, err := repository.Search(context.Background(), query,
+		[]domain.Capability{domain.CapabilityLexical, domain.CapabilityFuzzy, domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("a mode that could not run failed the whole search: %v", err)
+	}
+	if !slices.Contains(result.Degraded, string(domain.CapabilitySemantic)) {
+		t.Fatalf("Degraded is %v, want it to name semantic", result.Degraded)
+	}
+	if got := matchedIDs(result); !slices.Equal(got, []string{"r-papaya"}) {
+		t.Fatalf("the page holds %v, want the one row the text modes matched", got)
+	}
+}
+
+// An embedder that is DOWN must degrade the mode, not fail the request.
+//
+// A provider that is unreachable fails inside the semantic retriever, which is
+// reported in Degraded — and the page the other modes produced is still a page.
+// Answering 502 here would throw away work the caller can use, to avoid
+// returning results the caller has already been told are partial.
+func TestAnUnreachableEmbedderDegradesTheModeRatherThanFailingTheSearch(t *testing.T) {
+	repository, _ := publish(t, unreachable{}, readFixture{
+		catalog:   "cat-unreachable",
+		resources: []domain.ResourcePatch{searchable("r-1", "kharif seed", "", "https://beckn.org/Agri", "SeedLot")},
+	})
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("an unreachable embedder failed the whole search: %v", err)
+	}
+	if !slices.Contains(result.Degraded, string(domain.CapabilitySemantic)) {
+		t.Errorf("Degraded is %v, want it to name semantic", result.Degraded)
+	}
+	if got := matchedIDs(result); !slices.Equal(got, []string{"r-1"}) {
+		t.Errorf("the page holds %v, want the one row the modes that ran found", got)
+	}
+}
+
+// unreachable is the provider whose service is down: every call fails, and none
+// of them is a reason to fail a publish or a search.
+type unreachable struct{}
+
+func (unreachable) Embed(context.Context, string) ([]float32, error) {
+	return nil, errors.New("the embedding service is unreachable")
+}
+
+func (unreachable) Dimensions() int { return columnDimensions }
+
+// ---------------------------------------------------------------------------
+// the retrieval depth
+// ---------------------------------------------------------------------------
+
+// Asserted against the empty catalogs array it would otherwise return, which
+// reads at the caller exactly like the end of the results — while Total is
+// still reporting a corpus of twelve.
+func TestAPagePastTheRetrievalDepthIsAFaultAndNotAnEmptyPage(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{catalog: "cat-depth", resources: kharifLots(12)})
+
+	depth := searchConfig().MaxCandidatesPerMode
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif", Limit: 4, Offset: depth}, bothTextModes)
+
+	if err == nil {
+		t.Fatalf("a page at offset %d returned %d catalogs and no error; the boundary "+
+			"must be named, because an empty page is indistinguishable from the end "+
+			"of the results", depth, len(result.Catalogs))
+	}
+	if !strings.Contains(err.Error(), fmt.Sprint(depth)) {
+		t.Errorf("the error does not name the boundary it refused at: %v", err)
+	}
+}
+
+// A mode that returns exactly its cap is a mode whose list is a truncation
+// rather than the answer, and that is the one state the count guards read. The
+// corpus is wider than the cap on the ordinary query, not on a pathological
+// one: `discover_tsquery` ORs its terms.
+func TestARetrieverNeverReturnsMoreThanItsCap(t *testing.T) {
+	depth := searchConfig().MaxCandidatesPerMode
+	resources := kharifLots(depth + 4)
+
+	pool := dbtest.NewPostgres(t)
+	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
+	if _, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
+		ID: "cat-cap", NetworkID: "bap.example.com", Active: true, ProtocolVersion: beckn.Version,
+		VisibleTo: []string{"bap.example.com"}, Resources: resources,
+	}, domain.UpdateModeFull, deriveSearchable); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	retriever := postgres.NewLexicalRetriever(pool, depth)
+	ids, err := retriever.Retrieve(context.Background(),
+		domain.SearchQuery{Text: "kharif"}, domain.Scope{Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(ids) != depth {
+		t.Errorf("the retriever returned %d ids against a corpus of %d and a cap of %d",
+			len(ids), depth+4, depth)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// degradation
+// ---------------------------------------------------------------------------
+
+// Three modes returning is a better answer than none — but only if the caller
+// is TOLD. Silence here is the failure this whole degrade-and-report design
+// exists to avoid.
+func TestAModeThisBackendCannotRunIsDegradedAndDoesNotFailTheSearch(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{
+		catalog:   "cat-degraded",
+		resources: []domain.ResourcePatch{searchable("r-1", "kharif seed", "", "https://beckn.org/Agri", "SeedLot")},
+	})
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("a missing mode failed the whole search: %v", err)
+	}
+	if !slices.Equal(result.Degraded, []string{string(domain.CapabilitySemantic)}) {
+		t.Errorf("Degraded is %v, want exactly [semantic]", result.Degraded)
+	}
+	if got := matchedIDs(result); !slices.Equal(got, []string{"r-1"}) {
+		t.Errorf("the surviving mode returned %v, want the one match", got)
+	}
+}
+
+// The semantic mode is declared only when a query-side embedder exists, because
+// EMBEDDING_PROVIDER=noop embeds nothing (A5): a repository that declared it
+// anyway would run a query that can only return zero rows and report nothing
+// wrong.
+func TestSemanticIsACapabilityOnlyWhenAnEmbedderIsConfigured(t *testing.T) {
+	pool := dbtest.NewPostgres(t)
+
+	without := postgres.NewSearchRepository(pool, searchConfig(), nil)
+	if without.Capabilities().Has(domain.CapabilitySemantic) {
+		t.Error("a repository with no embedder declared the semantic capability")
+	}
+
+	with := postgres.NewSearchRepository(pool, searchConfig(), embeddings.NewHashing(columnDimensions))
+	if !with.Capabilities().Has(domain.CapabilitySemantic) {
+		t.Error("a repository holding an embedder did not declare the semantic capability")
+	}
+}
+
+// The fuzzy retriever's own query failure, isolated with the same injector
+// Hydrate's four queries are. Every other retrieve-failure case in this file
+// exercises lexical (via a real bad query elsewhere) or semantic (via a
+// dimension mismatch below); fuzzy had no case of its own.
+func TestFuzzyRetrieverNamesItsOwnQueryFailure(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-fuzzy-fail", resources: []domain.ResourcePatch{
+		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+	}})
+
+	retriever := postgres.NewFuzzyRetriever(&postgres.DBTXFailsAt{DBTX: pool, N: 1}, 10)
+	_, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: "kharif"}, domain.Scope{})
+	if err == nil || !strings.Contains(err.Error(), "fuzzy retriever") {
+		t.Errorf("err = %v, want it naming the fuzzy retriever", err)
+	}
+}
+
+// wrongWidth answers every embed with a vector width that does not match what
+// it declares — the provider misconfiguration the dimension guard exists for,
+// distinct from TestAModeThatFailsIsDegradedAndThePageIsWhatTheOthersFound's
+// case, which is a real embedder at the WRONG column width rather than one
+// that lies about its own output.
+type wrongWidth struct{ declaredDimensions int }
+
+func (w wrongWidth) Embed(context.Context, string) ([]float32, error) {
+	return make([]float32, w.declaredDimensions+1), nil
+}
+
+func (w wrongWidth) Dimensions() int { return w.declaredDimensions }
+
+// The dimension guard runs in Go, before the statement, so a provider that
+// lies about its own output degrades the mode with a clear cause rather than
+// reaching pgvector and failing as a storage error three layers away from it.
+func TestAQueryEmbedderThatLiesAboutItsWidthDegradesTheMode(t *testing.T) {
+	repository, _ := publish(t, wrongWidth{declaredDimensions: columnDimensions}, readFixture{
+		catalog:   "cat-lying-embedder",
+		resources: []domain.ResourcePatch{searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot")},
+	})
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("a lying embedder failed the whole search: %v", err)
+	}
+	if !slices.Contains(result.Degraded, string(domain.CapabilitySemantic)) {
+		t.Errorf("Degraded is %v, want it to name semantic", result.Degraded)
+	}
+}
+
+// The happy path, missing until now: every other semantic case runs with no
+// embedder, an unreachable one, or one at the wrong width. This is the one
+// where embedding actually happens and the vector index returns the row it
+// was pointed at — Hashing embeds both the corpus and the query, so two texts
+// sharing every token land in the same bucket on both sides.
+func TestSemanticRetrieverFindsTheResourceItWasEmbeddedFor(t *testing.T) {
+	hashing := embeddings.NewHashing(columnDimensions)
+	embedByText := func(merged *domain.Catalog, touched []string) []domain.Fault {
+		if faults := deriveSearchable(merged, touched); faults != nil {
+			return faults
+		}
+		for index := range merged.Resources {
+			vector, err := hashing.Embed(context.Background(), merged.Resources[index].SearchText)
+			if err != nil {
+				return []domain.Fault{{Code: "FIXTURE", Message: err.Error()}}
+			}
+			merged.Resources[index].Embedding = vector
+		}
+		return nil
+	}
+
+	repository, _ := publish(t, hashing, readFixture{
+		catalog: "cat-semantic",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+			searchable("tractor", "diesel tractor", "", "https://beckn.org/Agri", "Equipment"),
+		},
+		derive: embedByText,
+	})
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif wheat", Limit: searchConfig().MaxPageSize},
+		[]domain.Capability{domain.CapabilitySemantic})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	// HNSW answers the nearest N, not everything within a distance threshold
+	// (the query's own comment), so both rows in this two-row corpus come back
+	// — ranked. wheat sharing every query token first is the assertion.
+	if got := matchedIDs(result); len(got) == 0 || got[0] != "wheat" {
+		t.Fatalf("semantic search ranked %v first, want wheat — it shares every query "+
+			"token, and the tractor shares none", got)
+	}
+}
+
+// An empty query text is nil and no error, not a call to a provider with
+// nothing to embed — SemanticRetriever.Retrieve is exercised here with an
+// intent discover.Service's own modesFor never actually sends it (it only
+// asks for semantic when Text is non-empty), because the storage layer's
+// contract does not depend on that guarantee holding upstream.
+func TestSemanticRetrieverWithNoTextEmbedsNothing(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-semantic-empty", resources: []domain.ResourcePatch{
+		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+	}})
+
+	retriever := postgres.NewSemanticRetriever(pool, embeddings.NewHashing(columnDimensions), 10)
+	if _, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: ""}, domain.Scope{}); err != nil {
+		t.Errorf("Retrieve with no text: %v, want no error", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// geometry
+// ---------------------------------------------------------------------------
+
+// pointAt builds the geometry a walker would have produced for one location.
+func pointAt(targetPath, sourcePath string, lat, lon float64, owners ...string) domain.Geometry {
+	return domain.Geometry{
+		TargetPath: targetPath,
+		SourcePath: sourcePath,
+		Owners:     owners,
+		Type:       "Point",
+		GeoJSON:    json.RawMessage(fmt.Sprintf(`{"type":"Point","coordinates":[%g,%g]}`, lon, lat)),
+	}
+}
+
+// deriveShapes places geometries the way the walk does: a shape on the list of
+// every resource it names, and a shape with no owners on the catalog.
+func deriveShapes(shapes ...domain.Geometry) domain.DeriveFunc {
+	return func(merged *domain.Catalog, touched []string) []domain.Fault {
+		if faults := deriveSearchable(merged, touched); faults != nil {
+			return faults
+		}
+		for _, shape := range shapes {
+			if len(shape.Owners) == 0 {
+				merged.Geometries = append(merged.Geometries, shape)
+				continue
+			}
+			for index := range merged.Resources {
+				if slices.Contains(shape.Owners, merged.Resources[index].ID) {
+					merged.Resources[index].Geometries =
+						append(merged.Resources[index].Geometries, shape)
+				}
+			}
+		}
+		return nil
+	}
+}
+
+// within builds the S_DWITHIN filter a mapper would have produced.
+func within(t *testing.T, lat, lon, metres float64) *domain.SpatialFilter {
+	t.Helper()
+
+	shape := pointAt("", "", lat, lon)
+	full, cover, err := geo.CoverQuery(shape, domain.OpDWithin, metres, geo.DefaultTestResolution)
+	if err != nil {
+		t.Fatalf("cover the query geometry: %v", err)
+	}
+	bounds, err := geo.BoundsFor(shape, domain.OpDWithin, metres)
+	if err != nil {
+		t.Fatalf("bound the query geometry: %v", err)
+	}
+	return &domain.SpatialFilter{
+		Op: domain.OpDWithin, CellsFull: full, CellsCover: cover, Bounds: bounds,
+		Center: &domain.GeoPoint{Lat: lat, Lon: lon}, RadiusM: metres,
+		Quantifier: domain.QuantifierAny,
+	}
+}
+
+// Bengaluru and Chennai: far enough apart that no radius under 200 km confuses
+// them, and both well inside one H3 cell's worth of rounding at resolution 8.
+const (
+	bengaluruLat, bengaluruLon = 12.9716, 77.5946
+	chennaiLat, chennaiLon     = 13.0827, 80.2707
+)
+
+// `targets` selects between two shapes on ONE resource, so the pin is that the
+// stored target_path is byte-identical to the filter's: `= ANY($1)` is plain
+// equality, and a dot-form row against a bracket-form filter is a 200 with an
+// empty list and nothing anywhere to explain it.
+func TestTargetsSelectsBetweenTwoGeometriesOnOneResource(t *testing.T) {
+	const (
+		warehouse = "$.catalogs[*].resources[*].warehouse.geo"
+		field     = "$.catalogs[*].resources[*].field.geo"
+	)
+
+	repository, _ := publish(t, nil, readFixture{
+		catalog:   "cat-targets",
+		resources: []domain.ResourcePatch{searchable("r-1", "kharif seed", "", "https://beckn.org/Agri", "SeedLot")},
+		derive: deriveShapes(
+			pointAt(warehouse, "$.catalogs[0].resources[0].warehouse.geo", bengaluruLat, bengaluruLon, "r-1"),
+			pointAt(field, "$.catalogs[0].resources[0].field.geo", chennaiLat, chennaiLon, "r-1"),
+		),
+	})
+
+	nearBengaluru := within(t, bengaluruLat, bengaluruLon, 10000)
+
+	t.Run("targeting the warehouse finds it", func(t *testing.T) {
+		got := matchedIDs(search(t, repository, domain.SearchQuery{
+			Text: "kharif", Spatial: nearBengaluru, TargetPaths: []string{warehouse},
+		}))
+		if !slices.Equal(got, []string{"r-1"}) {
+			t.Errorf("got %v, want the resource whose warehouse is here", got)
+		}
+	})
+
+	t.Run("targeting the field does not", func(t *testing.T) {
+		got := matchedIDs(search(t, repository, domain.SearchQuery{
+			Text: "kharif", Spatial: nearBengaluru, TargetPaths: []string{field},
+		}))
+		if len(got) != 0 {
+			t.Errorf("got %v; the field is 300 km away and only the warehouse is here", got)
+		}
+	})
+
+	t.Run("no targets searches every shape the resource carries", func(t *testing.T) {
+		got := matchedIDs(search(t, repository, domain.SearchQuery{
+			Text: "kharif", Spatial: nearBengaluru,
+		}))
+		if !slices.Equal(got, []string{"r-1"}) {
+			t.Errorf("got %v, want the resource found through its warehouse", got)
+		}
+	})
+}
+
+// A catalog-level shape — NULL resource_id — is the provider's own location and
+// belongs to every resource under it. A resource-level one belongs to its own
+// resource and to nothing else.
+func TestACatalogLevelGeometryMatchesEveryResourceAndAResourceLevelOneOnlyItsOwn(t *testing.T) {
+	const providerPath = "$.catalogs[*].provider.availableAt[*].geo"
+
+	repository, _ := publish(t, nil,
+		readFixture{
+			catalog: "cat-provider",
+			resources: []domain.ResourcePatch{
+				searchable("p-1", "kharif seed", "", "https://beckn.org/Agri", "SeedLot"),
+				searchable("p-2", "kharif grain", "", "https://beckn.org/Agri", "SeedLot"),
+			},
+			// No owners: the provider's location, stored once for the catalog.
+			derive: deriveShapes(pointAt(providerPath,
+				"$.catalogs[*].provider.availableAt[0].geo", bengaluruLat, bengaluruLon)),
+		},
+		readFixture{
+			catalog: "cat-resource",
+			resources: []domain.ResourcePatch{
+				searchable("q-1", "kharif pulse", "", "https://beckn.org/Agri", "SeedLot"),
+				searchable("q-2", "kharif millet", "", "https://beckn.org/Agri", "SeedLot"),
+			},
+			derive: deriveShapes(pointAt("$.catalogs[*].resources[*].geo",
+				"$.catalogs[0].resources[0].geo", bengaluruLat, bengaluruLon, "q-1")),
+		},
+	)
+
+	got := matchedIDs(search(t, repository, domain.SearchQuery{
+		Text: "kharif", Spatial: within(t, bengaluruLat, bengaluruLon, 10000),
+	}))
+	slices.Sort(got)
+
+	if !slices.Equal(got, []string{"p-1", "p-2", "q-1"}) {
+		t.Errorf("got %v, want both resources of the catalog whose PROVIDER is here "+
+			"plus the one resource that carries its own shape", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// offers
+// ---------------------------------------------------------------------------
+
+func offerPatch(id string, resourceIDs []string, validity *domain.TimePeriodPatch) domain.OfferPatch {
+	return domain.OfferPatch{
+		ID:          id,
+		Document:    json.RawMessage(fmt.Sprintf(`{"id":%q}`, id)),
+		ResourceIDs: resourceIDs,
+		Validity:    validity,
+	}
+}
+
+func offerIDs(catalog domain.Catalog) []string {
+	ids := make([]string, 0, len(catalog.Offers))
+	for _, offer := range catalog.Offers {
+		ids = append(ids, offer.ID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// A caller who searched for wheat gets the offers on the wheat plus any
+// catalog-wide offer, and not the other offers in that catalog. Offer validity
+// is checked here and nowhere else: a live catalog routinely carries last
+// month's offer.
+func TestHydrationReturnsOnlyTheOffersTouchingThePagePlusTheCatalogWideOnes(t *testing.T) {
+	lastMonth := mustInstant(t, "2020-01-01T00:00:00Z")
+	repository, _ := publish(t, nil, readFixture{
+		catalog: "cat-offers",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+			searchable("barley", "rabi barley", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+		offers: []domain.OfferPatch{
+			offerPatch("on-wheat", []string{"wheat"}, nil),
+			offerPatch("on-barley", []string{"barley"}, nil),
+			// An empty resource_ids is CATALOG-WIDE and therefore always
+			// applies. It is never "no resources yet".
+			offerPatch("catalog-wide", []string{}, nil),
+			offerPatch("expired", []string{"wheat"}, &domain.TimePeriodPatch{
+				EndDate: domain.Nullable[time.Time]{Set: true, Value: lastMonth},
+			}),
+		},
+	})
+
+	result := search(t, repository, domain.SearchQuery{Text: "kharif"})
+	if len(result.Catalogs) != 1 {
+		t.Fatalf("the page holds %d catalogs, want 1", len(result.Catalogs))
+	}
+	if got := matchedIDs(result); !slices.Equal(got, []string{"wheat"}) {
+		t.Fatalf("the page holds %v, want only the wheat", got)
+	}
+
+	if got := offerIDs(result.Catalogs[0]); !slices.Equal(got, []string{"catalog-wide", "on-wheat"}) {
+		t.Errorf("the page carries offers %v; want the wheat's own and the catalog-wide one — "+
+			"not the barley's, and not the expired one", got)
+	}
+}
+
+// ScopeFilter has no caller yet in this repository's own Search — it exists
+// for a retriever whose index carries no notion of validity or visibility
+// (the doc comment's example is a vector index), so it is exercised directly
+// against the hydrator rather than through Search.
+
+// An id the gate admits comes back, one it does not is dropped, and the
+// caller's own order survives — reversed here so a rebuild from the row order
+// instead would fail.
+func TestScopeFilterKeepsAdmittedIdsInTheCallersOrder(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog: "cat-scope",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+			searchable("barley", "rabi barley", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+
+	ids := []string{
+		domain.ResourceKey("cat-scope", "barley"),
+		domain.ResourceKey("cat-scope", "not-a-real-resource"),
+		domain.ResourceKey("cat-scope", "wheat"),
+	}
+	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), ids, domain.Scope{})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if want := []string{ids[0], ids[2]}; !slices.Equal(kept, want) {
+		t.Errorf("kept = %v, want %v — the caller's order, with the unknown id dropped", kept, want)
+	}
+}
+
+// A network the fixture was never made visible to admits nothing, the same
+// gate HydrateResources applies (A6's shared predicate).
+func TestScopeFilterAppliesTheNetworkGate(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog:   "cat-scope-net",
+		visibleTo: []string{"mahavistar"},
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+
+	id := domain.ResourceKey("cat-scope-net", "wheat")
+	hydrator := postgres.NewHydrator(pool)
+
+	kept, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkID: "mahavistar"})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if !slices.Equal(kept, []string{id}) {
+		t.Errorf("kept = %v, want %v — mahavistar is the network it was published to", kept, []string{id})
+	}
+
+	kept, err = hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkID: "bharatvistar"})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if len(kept) != 0 {
+		t.Errorf("kept = %v, want none — bharatvistar is not a network this resource is visible to", kept)
+	}
+}
+
+// No ids is no query, and no error — the same short-circuit Hydrate takes for
+// the same reason (a page nothing matched is not a fault).
+func TestScopeFilterOfNoIdsRunsNoQuery(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-scope-empty"})
+
+	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), nil, domain.Scope{})
+	if err != nil {
+		t.Fatalf("ScopeFilter: %v", err)
+	}
+	if kept != nil {
+		t.Errorf("kept = %v, want nil", kept)
+	}
+}
+
+// A page whose every id the gate refuses is nil catalogs and no error — not
+// the same as a query failure, and not reached by any existing Hydrate case,
+// which always has at least one admitted resource.
+func TestHydrateOfAGateRefusedPageReturnsNoCatalogs(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog:   "cat-hydrate-empty",
+		visibleTo: []string{"mahavistar"},
+		resources: []domain.ResourcePatch{searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot")},
+	})
+
+	id := domain.ResourceKey("cat-hydrate-empty", "wheat")
+	catalogs, err := postgres.NewHydrator(pool).Hydrate(
+		context.Background(), []string{id}, domain.Scope{NetworkID: "bharatvistar"})
+	if err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if catalogs != nil {
+		t.Errorf("catalogs = %+v, want nil — bharatvistar is not a network this resource is visible to", catalogs)
+	}
+}
+
+// Hydrate wraps each of its four queries in its own fmt.Errorf, naming what it
+// was doing — checked one at a time, since a shared "query failed" message
+// would pass whichever query actually broke. postgres.DBTXFailsAt (exported
+// from catalog_repository_internal_test.go for exactly this reason) is used
+// rather than a second wrapper written against the same gen.DBTX interface.
+func TestHydrateNamesWhicheverOfItsFourQueriesFailed(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{
+		catalog: "cat-hydrate-fail",
+		resources: []domain.ResourcePatch{
+			searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+		},
+	})
+	id := domain.ResourceKey("cat-hydrate-fail", "wheat")
+
+	cases := []struct {
+		call int
+		want string
+	}{
+		{1, "resources"},
+		{2, "catalogs"},
+		{3, "geometries"},
+		{4, "offers"},
+	}
+	for _, testCase := range cases {
+		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
+			hydrator := postgres.NewHydrator(&postgres.DBTXFailsAt{DBTX: pool, N: testCase.call})
+			_, err := hydrator.Hydrate(context.Background(), []string{id}, domain.Scope{})
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("err = %v, want it naming %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// ScopeFilter's own query is wrapped the same way.
+func TestScopeFilterNamesItsOwnQueryFailure(t *testing.T) {
+	_, pool := publish(t, nil, readFixture{catalog: "cat-scope-fail", resources: []domain.ResourcePatch{
+		searchable("wheat", "kharif wheat", "", "https://beckn.org/Agri", "SeedLot"),
+	}})
+	id := domain.ResourceKey("cat-scope-fail", "wheat")
+
+	hydrator := postgres.NewHydrator(&postgres.DBTXFailsAt{DBTX: pool, N: 1})
+	_, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{})
+	if err == nil || !strings.Contains(err.Error(), "scope gate") {
+		t.Errorf("err = %v, want it naming the scope gate", err)
+	}
+}
+
+func mustInstant(t *testing.T, literal string) time.Time {
+	t.Helper()
+
+	instant, err := time.Parse(time.RFC3339, literal)
+	if err != nil {
+		t.Fatalf("fixture carries an unparseable time %q: %v", literal, err)
+	}
+	return instant
+}
+
+// ---------------------------------------------------------------------------
+// the attribute filter
+// ---------------------------------------------------------------------------
+
+// filterModes is what an intent that named a filter and no text asks for.
+// `jsonpath` is unranked, so it produces no list of its own — it turns the
+// candidate retrieval into the whole query.
+var filterModes = []domain.Capability{domain.CapabilityJSONPath}
+
+// filterFor is the query one expression answers, alone.
+func filterFor(expression string) domain.SearchQuery {
+	return domain.SearchQuery{
+		Filters: []domain.AttributeFilter{{Expression: expression}},
+		Limit:   searchConfig().MaxPageSize,
+	}
+}
+
+// filtered runs a filter-only search and returns the ids it matched, sorted.
+//
+// Sorted because a filter-only intent supplied no relevance: `filterOnly` hands
+// the candidate order through untouched, and asserting against it would pin the
+// retriever's ORDER BY rather than the predicate these cases are about.
+func filtered(t *testing.T, repository *postgres.SearchRepository, expression string) []string {
+	t.Helper()
+
+	result, err := repository.Search(context.Background(), filterFor(expression), filterModes)
+	if err != nil {
+		t.Fatalf("search %s: %v", expression, err)
+	}
+	ids := matchedIDs(result)
+	slices.Sort(ids)
+	return ids
+}
+
+// filterCorpus is ONE catalog whose two resources differ at every level the
+// composite carries: their own attributes, and the offers that name them.
+//
+// One catalog rather than two, deliberately. Across two catalogs every
+// predicate below passes by reaching the right ROW, which is the case that
+// works whatever the composite holds. Siblings inside one catalog are the case
+// A18 was measured against — a filter_doc carrying the catalog's every resource
+// answers a resource predicate for the neighbour's value.
+func filterCorpus(t *testing.T) *postgres.SearchRepository {
+	t.Helper()
+
+	repository, _ := publish(t, nil, readFixture{
+		catalog:  "c1",
+		document: json.RawMessage(`{"id":"c1","isActive":true,"descriptor":{"code":"HUL-BLR"}}`),
+		resources: []domain.ResourcePatch{
+			graded("r-hul", "A"),
+			graded("r-other", "B"),
+		},
+		offers: []domain.OfferPatch{
+			{
+				ID:          "o-retail",
+				ResourceIDs: []string{"r-hul"},
+				Document:    json.RawMessage(`{"id":"o-retail","channel":"retail"}`),
+			},
+			{
+				ID:          "o-wholesale",
+				ResourceIDs: []string{"r-other"},
+				Document:    json.RawMessage(`{"id":"o-wholesale","channel":"wholesale"}`),
+			},
+		},
+	})
+	return repository
+}
+
+// graded is a searchable resource carrying one distinguishing attribute.
+func graded(id, grade string) domain.ResourcePatch {
+	document, err := json.Marshal(map[string]any{
+		"id": id,
+		"resourceAttributes": map[string]string{
+			"name": id, "text": "kharif lot",
+			"@context": "https://beckn.org/Agri", "@type": "SeedLot",
+			"grade": grade,
+		},
+	})
+	if err != nil {
+		panic("fixture attributes will not marshal: " + err.Error())
+	}
+	return domain.ResourcePatch{ID: id, Document: document}
+}
+
+// A cross-level predicate answers for the resource's OWN catalog and its OWN
+// offers, and never for a sibling's.
+//
+// This is the shape three separate `document` columns could not answer at all:
+// `@.isActive` is a catalog member and `@.offers[*].channel` an offer member,
+// and PostgreSQL evaluates a jsonpath against ONE jsonb value. Both resources
+// share the catalog, so the isActive half passes for both; the offer half
+// separates them only because each row's composite carries the offers naming
+// IT.
+func TestACrossLevelPredicateAnswersForThisResourceAndNotItsSibling(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository,
+		`$.catalogs[*] ? (@.isActive == true && exists(@.offers[*] ? (@.channel == "retail")))`)
+
+	if !slices.Equal(got, []string{"r-hul"}) {
+		t.Errorf("the cross-level filter returned %v, want [r-hul] — r-other shares the "+
+			"catalog and its offer is wholesale, so a composite carrying the catalog's "+
+			"every offer answers this predicate for both rows", got)
+	}
+}
+
+// A resource predicate answers on THIS resource, not on a neighbour's value.
+//
+// The single-element `resources` array is what makes `@.resources[*]` mean
+// "this resource" by construction. With every sibling in the array this returns
+// both rows, because `@?` asks only whether the expression yielded an item and
+// the neighbour's grade yields one.
+func TestAResourcePredicateDoesNotMatchOnASiblingsAttributes(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository,
+		`$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`)
+
+	if !slices.Equal(got, []string{"r-hul"}) {
+		t.Errorf("the resource filter returned %v, want [r-hul] alone — r-other is grade B "+
+			"and reaches this page only if its own row's composite carries r-hul", got)
+	}
+}
+
+// A catalog predicate needs no join and no second query.
+//
+// It was the case A17's prefix routing sent to a separate `catalogs.document`;
+// since A18 the catalog's members are copied onto every resource row, so it
+// rides the same scan as everything else and returns the catalog's resources
+// entire.
+func TestACatalogPredicateRunsOnTheSameScanAndReturnsItsResources(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository, `$.catalogs[*] ? (@.descriptor.code == "HUL-BLR")`)
+
+	if !slices.Equal(got, []string{"r-hul", "r-other"}) {
+		t.Errorf("the catalog filter returned %v, want both resources of the matching "+
+			"catalog — the predicate names nothing below the catalog, so nothing "+
+			"below it may be excluded", got)
+	}
+	if empty := filtered(t, repository, `$.catalogs[*] ? (@.descriptor.code == "NOBODY")`); len(empty) != 0 {
+		t.Errorf("a catalog code no catalog carries matched %v, want nothing", empty)
+	}
+}
+
+// An expression PostgreSQL's own parser refuses is an error, never a page.
+//
+// It reaches the cast as a PARAMETER, so the refusal is the cast's and the
+// caller's bytes never leave a bind slot. The gate in front of this moves three
+// SILENT failures ahead of it; it does not try to replace it — PostgreSQL stays
+// the last word on syntax.
+func TestAMalformedExpressionIsAnErrorFromTheCastAndNotAPage(t *testing.T) {
+	repository := filterCorpus(t)
+
+	// Passes the gate — rooted at $.catalogs, filter form, one root, an `==`
+	// for the indexability guard — and is still not jsonpath, because the
+	// comparison has nothing on its right.
+	_, err := repository.Search(context.Background(),
+		filterFor(`$.catalogs[*] ? (@.descriptor.code == )`), filterModes)
+	if err == nil {
+		t.Fatal("a malformed expression returned a page; want the cast's own refusal, " +
+			"because a filter that did not run and a filter that matched nothing " +
+			"are the same empty page at the caller")
+	}
+}
+
+// A quote in the expression is a value, not a way out of it.
+//
+// Asserting an empty page rather than an error is the point: the expression is
+// bound, so this is a filter that matches nothing rather than a statement that
+// ended early. There is no injection to report because there is nowhere for one
+// to happen.
+func TestAQuotedExpressionIsAValueAndNotAnEscape(t *testing.T) {
+	repository := filterCorpus(t)
+
+	got := filtered(t, repository,
+		`$.catalogs[*] ? (@.descriptor.code == "x'); DROP TABLE resources; --")`)
+	if len(got) != 0 {
+		t.Errorf("the filter matched %v, want nothing — no catalog carries that code", got)
+	}
+}
+
+// GIN extracts a key from the equality form and extracts nothing from the
+// range form.
+//
+// Not "one uses the index and the other does not" — measured, both plan a
+// bitmap scan over idx_resources_filter_doc, because a jsonb_path_ops search
+// that extracts no key degrades to reading the WHOLE index rather than to
+// refusing it. The difference is what the index hands up: the equality form
+// returns the matching rows, the range form returns every row and leaves the
+// recheck to discard them. That is the cost behind the parser's refusal of an
+// unnarrowed range filter, and pinning the plan's SHAPE instead would have
+// pinned a distinction PostgreSQL does not draw.
+func TestGinExtractsAKeyFromEqualityAndNothingFromARange(t *testing.T) {
+	const corpus = 20
+
+	resources := make([]domain.ResourcePatch, 0, corpus)
+	resources = append(resources, graded("r-00", "A"))
+	for index := 1; index < corpus; index++ {
+		resources = append(resources, graded(fmt.Sprintf("r-%02d", index), "B"))
+	}
+	_, pool := publish(t, nil, readFixture{
+		catalog:   "c1",
+		document:  json.RawMessage(`{"id":"c1","isActive":true}`),
+		resources: resources,
+	})
+
+	// The planner picks a sequential scan on a table this small whatever the
+	// index offers, so the choice is forced rather than persuaded: this asks
+	// what the index CAN do, not what the planner prefers at twenty rows.
+	if _, err := pool.Exec(context.Background(), "SET enable_seqscan = off"); err != nil {
+		t.Fatalf("disable the sequential scan: %v", err)
+	}
+
+	equality := indexRows(t, pool, `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`)
+	if equality != 1 {
+		t.Errorf("the equality form read %d rows out of the index, want the 1 that matches — "+
+			"an extractable clause that stopped being extracted is every attribute "+
+			"filter reading every gated row", equality)
+	}
+
+	// At LEAST the corpus, not exactly it: a bitmap index scan counts the hits
+	// it hands up before the bitmap deduplicates them, and a row whose
+	// composite carries several path-value pairs is hit once per pair. The
+	// claim being pinned is that the index narrowed nothing — every row came
+	// back, and none of them matched.
+	inequality := indexRows(t, pool, `$.catalogs[*].resources[*] ? (@.resourceAttributes.rating >= 4)`)
+	if inequality < corpus {
+		t.Errorf("the range form read %d hits out of the index for a corpus of %d — if a "+
+			"range has become extractable, the refusal of an unnarrowed range filter "+
+			"is guarding a cost that moved and should move with it", inequality, corpus)
+	}
+}
+
+// indexRows is how many rows the filter index actually handed up for one
+// expression.
+//
+// EXPLAIN ANALYZE rather than a cost estimate, because an estimate is the
+// planner's opinion and this case is about what the index did. The expression
+// is a bound parameter here for the same reason it is one in the query this
+// stands for — an EXPLAIN that interpolated would prove the plan of a statement
+// the service never runs.
+func indexRows(t *testing.T, pool *pgxpool.Pool, expression string) int {
+	t.Helper()
+
+	var plan []byte
+	err := pool.QueryRow(context.Background(),
+		`EXPLAIN (ANALYZE, FORMAT JSON) SELECT id FROM resources WHERE filter_doc @? $1::text::jsonpath`,
+		expression).Scan(&plan)
+	if err != nil {
+		t.Fatalf("explain %s: %v", expression, err)
+	}
+
+	var explained []struct {
+		Plan map[string]any `json:"Plan"`
+	}
+	if err := json.Unmarshal(plan, &explained); err != nil {
+		t.Fatalf("read the plan for %s: %v", expression, err)
+	}
+
+	rows, found := indexScanRows(explained[0].Plan)
+	if !found {
+		t.Fatalf("the plan for %s never reaches %s:\n%s",
+			expression, "idx_resources_filter_doc", plan)
+	}
+	return rows
+}
+
+// indexScanRows finds the filter index's scan node and returns its actual rows.
+func indexScanRows(node map[string]any) (int, bool) {
+	if name, isScan := node["Index Name"].(string); isScan && name == "idx_resources_filter_doc" {
+		rows, counted := node["Actual Rows"].(float64)
+		return int(rows), counted
+	}
+	children, nested := node["Plans"].([]any)
+	if !nested {
+		return 0, false
+	}
+	for _, child := range children {
+		nested, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		if rows, found := indexScanRows(nested); found {
+			return rows, found
+		}
+	}
+	return 0, false
+}
+
+// The cast's refusal is classified, so the request path can tell a bad
+// expression from a bad deployment.
+//
+// TestAMalformedExpressionIsAnErrorFromTheCastAndNotAPage above pins that it is
+// an error at all. This pins WHOSE error it is: the two are indistinguishable
+// to src/discover otherwise, and it answers a 500 for anything it cannot
+// classify — which turns a dropped dot into "this service is broken, try
+// again", for a request that can never succeed.
+//
+// Both routes, because they are different code: with no ranked mode the filter
+// is the query and `filterOnly` returns the error; with one, every retriever
+// carries the same predicate and `fold` sees it fail. `fold` records a failed
+// mode as DEGRADED, so the classification has to survive a path whose whole
+// job is to turn an error into a header.
+func TestTheCastsRefusalNamesTheCallerRatherThanTheDeployment(t *testing.T) {
+	repository := filterCorpus(t)
+
+	// Malformed the way the issue's own report was: no `.` between the two
+	// subscripts. It passes the gate — rooted at $.catalogs, filter form, one
+	// root, an `==` for the indexability guard — and PostgreSQL's parser runs
+	// out of input on it.
+	const malformed = `$.catalogs[*]resources[*] ? (@.resourceAttributes.grade == "A")`
+
+	t.Run("filter only", func(t *testing.T) {
+		_, err := repository.Search(context.Background(), filterFor(malformed), filterModes)
+		if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+			t.Errorf("err = %v, want it to wrap ErrInvalidFilterExpression", err)
+		}
+	})
+
+	t.Run("beside a ranked mode", func(t *testing.T) {
+		query := filterFor(malformed)
+		query.Text = "soap"
+
+		_, err := repository.Search(context.Background(), query,
+			[]domain.Capability{domain.CapabilityLexical, domain.CapabilityJSONPath})
+		if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+			t.Errorf("err = %v, want it to wrap ErrInvalidFilterExpression — a mode "+
+				"that failed on the caller's own expression is not a mode to "+
+				"report as degraded, because degraded means the answer stands", err)
+		}
+	})
+
+	// The SECOND code, and it is not the parser's. `like_regex` compiles its
+	// pattern while the jsonpath is built, so a pattern that does not compile
+	// arrives as 2201B rather than 42601 — from a syntactically perfect
+	// expression, which is why matching the parser's code alone would leave
+	// this one a 500. Correct SQL/JSON path, uncompilable regex, same fault:
+	// the caller's to fix.
+	t.Run("a like_regex pattern that does not compile", func(t *testing.T) {
+		const uncompilable = `$.catalogs[*].resources[*] ? (@.name like_regex "[")`
+
+		_, err := repository.Search(context.Background(), filterFor(uncompilable), filterModes)
+		if !errors.Is(err, domain.ErrInvalidFilterExpression) {
+			t.Errorf("err = %v, want it to wrap ErrInvalidFilterExpression", err)
+		}
+	})
+}

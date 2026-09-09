@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""Generate the Postman collection from the example request files.
+
+The collection is GENERATED rather than hand-maintained because the same
+requests are already asserted by verify.sh. Two hand-written copies of the same
+eight bodies drift, and the copy that drifts is always the one nobody runs in
+CI — so the bodies here are read from the .json files verbatim and the expected
+result sets are declared once, below, in EXPECT.
+
+Regenerate after changing any example:
+
+    python3 examples/build-postman.py
+"""
+
+import json
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, "OpenAgriNet-discovery-service.postman_collection.json")
+
+VILLAGE = "res-wx-village-belagavi"
+POINT = "res-wx-point-dharwad"
+ALERT = "res-wx-alert-statewide"
+
+# file -> (name, expected resource ids, expected offer ids or None, note)
+EXPECT = [
+    (
+        "02-discover-text-search.json",
+        "02 Text search - irrigation spraying advisory",
+        [POINT, VILLAGE],
+        None,
+        "The statewide alert says 'Severe weather alerting' and must NOT match. "
+        "It is the control: if the lexical index were being skipped, all three "
+        "would come back.",
+    ),
+    (
+        "09-discover-text-or.json",
+        "09 Text search - OR over terms, not AND",
+        [ALERT, POINT, VILLAGE],
+        None,
+        "'irrigation' appears only in the village and point resources; "
+        "'cyclone' only in the statewide alert. All three coming back is what "
+        "proves lexical retrieval ORs its terms - under AND none would match. "
+        "Case 02 cannot tell the two apart, so without this one the semantics "
+        "were only assumed.",
+    ),
+    (
+        "03-discover-schema-context.json",
+        "03 schemaContext - WeatherAdvisoryCapability",
+        [ALERT, POINT, VILLAGE],
+        None,
+        "schemaContext is a CONTEXT field, not an intent one - Intent is "
+        "additionalProperties:false, so sending it under message.intent is a "
+        "body that fails its own schema. All three resources carry the same "
+        "@context, so this case pins acceptance rather than discrimination.",
+    ),
+    (
+        "04-discover-spatial-dwithin.json",
+        "04 Spatial - S_DWITHIN 25km of Dharwad",
+        [POINT, VILLAGE],
+        None,
+        "The Dharwad Point is ~2km away and the Belagavi Polygon contains the "
+        "query coordinate. The statewide alert carries only an ISO-3166-2 area "
+        "CODE and no coordinates, so nothing was cell-indexed for it and it is "
+        "not spatially discoverable at all - by design.",
+    ),
+    (
+        "05-discover-spatial-intersects.json",
+        "05 Spatial - S_INTERSECTS inside Belagavi only",
+        [VILLAGE],
+        ["offer-wx-free-tier"],
+        "(74.50, 16.00) is deep inside the Belagavi polygon and ~120km from the "
+        "Dharwad point. This case and case 04 have to DISAGREE - that is what "
+        "separates a working predicate from one matching the whole catalog.",
+    ),
+    (
+        "06-discover-filter-granularity.json",
+        "06 Filter - geographicGranularity == Village",
+        [VILLAGE],
+        ["offer-wx-free-tier"],
+        "A jsonpath filter rooted at the resource level.",
+    ),
+    (
+        "07-discover-filter-cross-level.json",
+        "07 Filter - cross-level, offer predicate selects a resource",
+        [POINT],
+        ["offer-wx-subscription"],
+        "Rooted at the OFFER level and yet it narrows RESOURCES. This exercises "
+        "the single composite filter_doc column (A18): under the earlier "
+        "three-column design an offer-rooted predicate could not select a "
+        "resource at all. If this returns all three, the composite regressed.",
+    ),
+    (
+        "10-discover-text-and-geo.json",
+        "10 Combination - text AND geo",
+        [POINT],
+        None,
+        "Constraints INTERSECT. 'cotton' appears only in the point resource and "
+        "'cyclone' only in the alert, so text alone gives point+alert; the 25km "
+        "circle alone gives point+village. Only the point is in both. Each "
+        "dimension excludes something the other admits, which is what makes a "
+        "dropped predicate visible here.",
+    ),
+    (
+        "11-discover-geo-and-filter.json",
+        "11 Combination - geo AND attribute filter",
+        [VILLAGE],
+        ["offer-wx-free-tier"],
+        "Geo alone gives point+village, the FREE-TIER offer covers "
+        "village+alert. Village is the only overlap. Note there is no "
+        "textSearch at all: a NULL query_text must admit every row the other "
+        "predicates allow, not none, or a geo-only discover answers empty.",
+    ),
+    (
+        "14-discover-text-and-filter.json",
+        "14 Combination - text AND filter, no geometry",
+        [ALERT],
+        ["offer-wx-free-tier"],
+        "The third leg of the leave-one-out triangle around case 12. Drop the "
+        "filter and you get case 10 (point); drop the text and you get case 11 "
+        "(village); drop the GEOMETRY and you get this (alert).",
+    ),
+    (
+        "12-discover-text-geo-filter-empty.json",
+        "12 Combination - all three, pairwise-overlapping, expects EMPTY",
+        [],
+        None,
+        "text -> point+alert, geo -> point+village, filter -> village+alert. "
+        "Every PAIR overlaps in exactly one resource and all three share none, "
+        "so removing ANY dimension changes the answer to a different single "
+        "resource (10, 11, 14) and keeping all three gives EMPTY. That is what "
+        "proves all three are applied and ANDed. An earlier version of this "
+        "case came out empty whichever of two dimensions you dropped, so it "
+        "only ever proved one of them mattered.",
+    ),
+    (
+        "15-discover-text-geo-filter.json",
+        "15 Combination - all three, non-empty",
+        [VILLAGE],
+        ["offer-wx-free-tier"],
+        "The same three dimensions with a text term reaching all three "
+        "resources, so the answer is non-empty. Geometry and filter are each "
+        "load-bearing here and the text is not: with three resources and only "
+        "two geo-indexed, a non-empty three-way answer cannot make all three "
+        "matter at once. Case 12 is where that proof lives.",
+    ),
+    (
+        "16-discover-filter-only.json",
+        "16 Filter alone - no text, no geometry",
+        [VILLAGE],
+        None,
+        "The only case that reaches the candidates path with a filter on it. An "
+        "intent naming no ranked mode is answered by the lexical retriever with "
+        "a NULL query_text; 04 and 05 exercise that path with a geometry, and "
+        "nothing else exercises it with a filter. If the NULL-query fallthrough "
+        "stopped applying filter_doc, this returns all three and every other "
+        "case still passes.",
+    ),
+    (
+        "13-discover-fuzzy-typos.json",
+        "13 Retrieval modes UNION - misspelled query, trigram not tsvector",
+        [VILLAGE],
+        None,
+        "Every term is misspelled, so the tsvector admits nothing. The resource "
+        "comes back through the trigram index on `name`, which gates on "
+        "similarity >= 0.3 (pg_trgm's default threshold) and NOT on the "
+        "searchable text the lexical mode uses. Constraints intersect, but "
+        "retrieval modes union - this is the case that tells them apart.",
+    ),
+]
+
+ENVELOPE_TEST = """
+const res = pm.response.json();
+const req = JSON.parse(pm.request.body.raw);
+
+pm.test("HTTP 200", () => pm.response.to.have.status(200));
+
+pm.test("callback action is on_discover", () =>
+    pm.expect(res.context.action).to.eql("on_discover"));
+
+pm.test("version is 2.0.0", () =>
+    pm.expect(res.context.version).to.eql("2.0.0"));
+
+pm.test("transactionId and messageId are echoed", () => {
+    pm.expect(res.context.transactionId).to.eql(req.context.transactionId);
+    pm.expect(res.context.messageId).to.eql(req.context.messageId);
+});
+
+// A NACK arrives with its own shape and would otherwise slip past every
+// assertion above that only looks at `catalogs`.
+pm.test("not a NACK", () =>
+    pm.expect(res.message.status, JSON.stringify(res.message.error))
+      .to.not.eql("NACK"));
+
+const resourceIds = (res.message.catalogs || [])
+    .flatMap(c => c.resources || []).map(r => r.id).sort();
+
+// EXACT, not "contains": a filter that has quietly stopped filtering still
+// returns rows, and a subset assertion passes for it.
+pm.test("resources are exactly " + JSON.stringify(__WANT_RES__), () =>
+    pm.expect(resourceIds).to.eql(__WANT_RES__));
+__OFFER_TEST__
+// The service declares a missing retrieval mode rather than failing: the
+// semantic mode defaults to `noop`, so this header is EXPECTED locally.
+const degraded = pm.response.headers.get("X-Beckn-Degraded");
+if (degraded) { console.log("degraded modes: " + degraded); }
+"""
+
+OFFER_TEST = """
+const offerIds = (res.message.catalogs || [])
+    .flatMap(c => c.offers || []).map(o => o.id).sort();
+
+pm.test("offers are exactly " + JSON.stringify(__WANT_OFF__), () =>
+    pm.expect(offerIds).to.eql(__WANT_OFF__));
+"""
+
+PUBLISH_TEST = """
+const res = pm.response.json();
+const req = JSON.parse(pm.request.body.raw);
+
+pm.test("HTTP 200", () => pm.response.to.have.status(200));
+
+pm.test("callback action is catalog/on_publish", () =>
+    pm.expect(res.context.action).to.eql("catalog/on_publish"));
+
+pm.test("transactionId and messageId are echoed", () => {
+    pm.expect(res.context.transactionId).to.eql(req.context.transactionId);
+    pm.expect(res.context.messageId).to.eql(req.context.messageId);
+});
+
+pm.test("not a NACK", () =>
+    pm.expect(res.message.status, JSON.stringify(res.message.error))
+      .to.not.eql("NACK"));
+
+pm.test("the catalog was ACCEPTED with no errors", () => {
+    const result = res.message.results[0];
+    pm.expect(result.catalogId).to.eql("cat-ksndmc-weather-advisory");
+    pm.expect(result.status, JSON.stringify(result.errors)).to.eql("ACCEPTED");
+});
+
+pm.test("three resources and one provider were indexed", () => {
+    pm.expect(res.message.results[0].stats.itemCount).to.eql(3);
+    pm.expect(res.message.results[0].stats.providerCount).to.eql(1);
+});
+
+// Publish is idempotent under MERGE, so running this collection twice is safe
+// and the second run asserts that too.
+"""
+
+REFUSAL_TEST = """
+const res = pm.response.json();
+
+// __WHY__
+pm.test("HTTP 400", () => pm.response.to.have.status(400));
+
+pm.test("refused as __WANT_CODE__", () =>
+    pm.expect(res.message.error.code).to.eql("__WANT_CODE__"));
+
+// The PATH and not only the code. Each of these codes is minted in more than
+// one place, so the code alone does not say which check fired - and a fault
+// pointing at the wrong member is one the caller cannot act on.
+pm.test("the fault names __WANT_PATH__", () =>
+    pm.expect(res.message.error.details.path).to.eql("__WANT_PATH__"));
+"""
+
+# file -> (name, expected code, expected path, why, note)
+REFUSE = [
+    (
+        "08-discover-invalid-jsonpath.json",
+        "08 Refusal - jsonpath with no ?(...) filter",
+        "SCH_INVALID_JSONPATH",
+        "$.message.intent.filters.expression",
+        "Case 06's intent written WITHOUT the ?(...) filter. PostgreSQL runs "
+        "it happily: `@?` is given a comparison, a comparison always yields "
+        "an item, and `false` is an item - so it answers true for EVERY row "
+        "and the caller receives the whole corpus formatted as a filtered "
+        "page, with no error anywhere. A 400 here is the feature.",
+        "Expected to FAIL with 400. See the test script for why this shape is "
+        "dangerous enough to refuse.",
+    ),
+    (
+        "17-discover-no-criterion.json",
+        "17 Refusal - an intent naming no criterion",
+        "SCH_INVALID_FORMAT",
+        "$.message.intent",
+        "None of textSearch, spatial or filters, and nothing further down "
+        "objects: no criterion asks for no retrieval mode, no retriever runs, "
+        "and the empty fusion ships as `catalogs: []` under a 200 - a page "
+        "identical to the honest empty one, over a corpus that has all three "
+        "resources. schemaContext is deliberately not a fourth criterion: it "
+        "narrows a search, it cannot drive one.",
+        "Expected to FAIL with 400. An empty page would be a plausible answer "
+        "to a search that never ran.",
+    ),
+    (
+        "18-discover-unparsable-jsonpath.json",
+        "18 Refusal - jsonpath PostgreSQL cannot parse",
+        "SCH_INVALID_JSONPATH",
+        "$.message.intent.filters.expression",
+        "Case 06's filter with ONE character removed - the dot before "
+        "`resources[*]`. The form gate passes it, because the root is right "
+        "and the ?(...) is there and that is all that gate decides, and "
+        "PostgreSQL then refuses the cast from INSIDE the search, where every "
+        "other failure is the deployment's fault and a 500. The same code as "
+        "08: which side of the query noticed is not a distinction the caller "
+        "can act on.",
+        "Expected to FAIL with 400 rather than 500 - the dropped dot is the "
+        "caller's to fix, and a 5xx asks them to retry it unchanged.",
+    ),
+]
+
+HEALTH_TEST = """
+pm.test("HTTP 200", () => pm.response.to.have.status(200));
+"""
+
+
+def body_of(filename):
+    with open(os.path.join(HERE, filename)) as handle:
+        return json.dumps(json.load(handle), indent=2, ensure_ascii=False)
+
+
+def request(name, method, path, raw=None, script=None, note=""):
+    item = {
+        "name": name,
+        "request": {
+            "method": method,
+            "header": ([{"key": "Content-Type", "value": "application/json"}]
+                       if raw else []),
+            "url": {
+                "raw": "{{baseUrl}}" + path,
+                "host": ["{{baseUrl}}"],
+                "path": [segment for segment in path.strip("/").split("/") if segment],
+            },
+            "description": note,
+        },
+    }
+    if raw:
+        item["request"]["body"] = {"mode": "raw", "raw": raw}
+    if script:
+        item["event"] = [{
+            "listen": "test",
+            "script": {"type": "text/javascript", "exec": script.strip("\n").split("\n")},
+        }]
+    return item
+
+
+def main():
+    health = [
+        request("GET /healthz", "GET", "/healthz", script=HEALTH_TEST,
+                note="Answers that the process is up. There is no Compose "
+                     "healthcheck on the service because the runtime stage is "
+                     "distroless/static and has no shell to run one."),
+        request("GET /readyz", "GET", "/readyz", script=HEALTH_TEST,
+                note="Answers that PostgreSQL is reachable."),
+    ]
+
+    publish = [
+        request("01 Publish - Karnataka weather advisory catalog", "POST", "/publish",
+                raw=body_of("01-publish-weather-advisory.json"),
+                script=PUBLISH_TEST,
+                note="One catalog, one provider, three resources and two offers, "
+                     "built on the OpenAgriNet WeatherAdvisoryCapability schema. "
+                     "Run this FIRST - every discover request below asserts "
+                     "against exactly this data.")
+    ]
+
+    discover = []
+    for filename, name, want_res, want_off, note in EXPECT:
+        script = ENVELOPE_TEST.replace("__WANT_RES__", json.dumps(sorted(want_res)))
+        if want_off:
+            script = script.replace(
+                "__OFFER_TEST__",
+                OFFER_TEST.replace("__WANT_OFF__", json.dumps(sorted(want_off))))
+        else:
+            script = script.replace("__OFFER_TEST__", "")
+        discover.append(request(name, "POST", "/discover",
+                                raw=body_of(filename), script=script, note=note))
+
+    refusals = []
+    for filename, name, code, path, why, note in REFUSE:
+        script = (REFUSAL_TEST
+                  .replace("__WANT_CODE__", code)
+                  .replace("__WANT_PATH__", path)
+                  .replace("__WHY__", why))
+        refusals.append(request(name, "POST", "/discover",
+                                raw=body_of(filename), script=script, note=note))
+
+    collection = {
+        "info": {
+            "name": "OpenAgriNet discovery-service",
+            "description": (
+                "Beckn v2.0.0 publish and discover against a local stack.\n\n"
+                "  make run                      # brings up PostgreSQL + the service\n"
+                "  newman run examples/OpenAgriNet-discovery-service.postman_collection.json\n\n"
+                "Run the Publish folder first: every discover request asserts the "
+                "EXACT set of resource ids that the published catalog should "
+                "produce. Exact rather than 'contains', because a filter that has "
+                "quietly stopped filtering still returns rows and a subset "
+                "assertion passes for it.\n\n"
+                "GENERATED by examples/build-postman.py from the example .json "
+                "files - edit those and regenerate rather than editing here.\n\n"
+                "X-Beckn-Degraded: semantic on the text-search responses is "
+                "expected. The semantic embedding provider defaults to `noop`, so "
+                "the service declares the mode missing and answers with the modes "
+                "it does have, rather than failing the request."
+            ),
+            "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        },
+        "variable": [
+            {"key": "baseUrl", "value": "http://localhost:8080", "type": "string"},
+        ],
+        "item": [
+            {"name": "Health", "item": health},
+            {"name": "Publish", "item": publish},
+            {"name": "Discover", "item": discover},
+            {"name": "Refusals", "item": refusals},
+        ],
+    }
+
+    with open(OUT, "w") as handle:
+        json.dump(collection, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    print("wrote", OUT)
+
+
+if __name__ == "__main__":
+    main()
