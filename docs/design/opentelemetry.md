@@ -1024,6 +1024,12 @@ Everything below is derivable from the spans this document specifies, so
 **Task 24 needs no new instrumentation in this service** — and cannot precede
 Task 23.
 
+**These candidates have been worked into an actual proposal**, with a code per
+measurement, the units, the labels and their value sets, and the six questions
+only the registry owner can answer: `metric-code-registry-proposal.md`. It is
+addressed outward and binding on nothing. The table below stays as the source
+list; the proposal is what to send.
+
 | Candidate | Aggregates over |
 |---|---|
 | discover / publish call count | span count by `beckn.action` |
