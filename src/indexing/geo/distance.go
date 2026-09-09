@@ -7,23 +7,21 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/domain"
 )
 
-// earthRadiusM is the IUGG mean radius, and it is the same literal the SQL twin
-// carries. A different radius in the two copies is a disagreement of a few
-// hundred metres on a long search — small enough to look like rounding and
-// large enough to move a result across a boundary.
+// earthRadiusM is the IUGG mean radius, and the same literal the SQL twin
+// carries. A different radius in the two copies is a few hundred metres on a long
+// search — small enough to look like rounding, large enough to move a result
+// across a boundary.
 const earthRadiusM = 6371008.8
 
 // HaversineM is the great-circle distance in metres.
 //
-// A transliteration of geo_haversine_m, expression for expression and in the
-// same order, because SQL cannot import Go and that is the only reason a second
-// copy of this is tolerated. Task 16 pins the two against a fixed table of
-// coordinate pairs; a disagreement reaches the caller as a result 10.1 km from
-// a 10 km search.
+// A transliteration of geo_haversine_m, expression for expression, because SQL
+// cannot import Go — the only reason a second copy is tolerated. Task 16 pins the
+// two against a fixed table of coordinate pairs.
 //
-// The clamp is not defensive tidying. Floating-point overshoot puts the
-// argument at 1+1e-16 for antipodal points, which is NaN here and a hard error
-// mid-query in PostgreSQL.
+// The clamp is not defensive tidying: floating-point overshoot puts the argument
+// at 1+1e-16 for antipodal points, which is NaN here and a hard error mid-query in
+// PostgreSQL.
 func HaversineM(from, to domain.GeoPoint) float64 {
 	deltaLat := radians(to.Lat - from.Lat)
 	deltaLon := radians(to.Lon - from.Lon)
@@ -44,15 +42,13 @@ func radians(degrees float64) float64 {
 // NearestGeometryM is the fold behind the Point-to-Point S_DWITHIN refinement,
 // and the ONLY place an exact distance decides anything.
 //
-// ok == false means "no refinement applies" — nothing in the set is a Point —
-// and NOT "no match". A caller that reads false as a miss drops every resource
-// whose only geometry is a Polygon out of an S_DWITHIN, which is precisely the
-// inversion this design corrected: the cell algebra has already decided those,
-// and the caller must fall back to its answer.
+// ok == false means "no refinement applies" — nothing in the set is a Point — and
+// NOT "no match". A caller that reads false as a miss drops every resource whose
+// only geometry is a Polygon out of an S_DWITHIN; the cell algebra has already
+// decided those, and the caller must fall back to its answer.
 //
-// A Point whose coordinates cannot be read is not a Point for this purpose. The
-// alternative — treating it as the origin — would make an unreadable geometry
-// the nearest thing to every query on Earth.
+// A Point whose coordinates cannot be read is not a Point here: treating it as the
+// origin would make it the nearest thing to every query on Earth.
 func NearestGeometryM(center domain.GeoPoint, geometries []domain.Geometry) (float64, bool) {
 	nearest, found := math.Inf(1), false
 
@@ -73,10 +69,10 @@ func NearestGeometryM(center domain.GeoPoint, geometries []domain.Geometry) (flo
 
 // decodePoint reads a GeoJSON Point, and reports false for anything else.
 //
-// GeoJSON is [longitude, latitude] — index 0 is lon, the reverse of every
-// argument list in this package. This function and its SQL twin are the two
-// places that order is decided; swapping them puts Bengaluru in Somalia, and
-// both values stay in range so nothing rejects it.
+// GeoJSON is [longitude, latitude] — index 0 is lon, the reverse of every argument
+// list in this package. This function and its SQL twin are the two places that
+// order is decided; swapping them puts Bengaluru in Somalia with both values still
+// in range.
 func decodePoint(raw json.RawMessage) (domain.GeoPoint, bool) {
 	var shape struct {
 		Type        string    `json:"type"`

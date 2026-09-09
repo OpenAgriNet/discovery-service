@@ -1,21 +1,19 @@
 // Package geo turns geometry into H3 cells, bounding boxes and metres.
 //
 // Every geometry gets two covers at one resolution: cells_full, the cells lying
-// ENTIRELY inside it, and cells_cover, the cells it touches at all. The
-// invariant the whole design rests on is
+// ENTIRELY inside it, and cells_cover, the cells it touches at all. The invariant
+// everything here rests on is
 //
 //	cells_full ⊆ the true geometry ⊆ cells_cover
 //
-// from which the single rule follows: PROVE with full, REFUTE with cover. A
-// cover is a superset, so what it rules out is really ruled out; full is a
-// subset, so what it asserts is really true. Swapping the two in either
-// direction produces a predicate that is wrong rather than merely imprecise.
+// so: PROVE with full, REFUTE with cover. Swapping the two produces a predicate
+// that is wrong rather than merely imprecise.
 //
-// This package knows about cells, boxes and metres. It knows nothing about
-// JSONPath — the mapper builds document locations and never passes one here —
-// and nothing about SQL: MatchesOp is the memory backend's twin of the
-// `CASE spatial_op` block, and the two are written from the same table in the
-// plan's Geospatial Design rather than from each other.
+// The design, its measurements and its constants table are the plan's Geospatial
+// Design section. This package knows about cells, boxes and metres and nothing
+// about JSONPath or SQL: MatchesOp is the memory backend's twin of the
+// `CASE spatial_op` block, and the two are written from that table rather than
+// from each other.
 package geo
 
 import (
@@ -31,60 +29,53 @@ import (
 )
 
 const (
-	// MaxIndexCoverCells is the ceiling on one PUBLISH cover — about 6,000 km²
-	// at resolution 8. Past it BOTH cell columns are nil and the bounding box
-	// decides alone; a cover truncated to fit would make a shape discoverable
-	// only in whichever corner the fill happened to reach, which is a wrong
-	// answer wearing the shape of a right one.
+	// MaxIndexCoverCells is the ceiling on one PUBLISH cover — about 6,000 km² at
+	// resolution 8. Past it BOTH cell columns are nil and the bounding box decides
+	// alone; a cover truncated to fit would make a shape discoverable only in
+	// whichever corner the fill happened to reach.
 	MaxIndexCoverCells = 8192
 
 	// MaxQueryCoverCells is the ceiling on one DISCOVER cover, and on a dilated
-	// cover after dilation. Lower than the index budget because a query cover
-	// is built per request while an index cover is built once.
+	// cover after dilation. Lower than the index budget because a query cover is
+	// built per request while an index cover is built once.
 	MaxQueryCoverCells = 4096
 
-	// MaxCatalogWalkDepth bounds the publish walker. Publisher-shaped documents
-	// are not trusted to be shallow, and pathological nesting must cost a
-	// bounded walk rather than the stack.
+	// MaxCatalogWalkDepth bounds the publish walker: pathological nesting must
+	// cost a bounded walk rather than the stack.
 	MaxCatalogWalkDepth = 32
 
-	// MaxGeometriesPerCatalog is the publish budget for the general walk. Over
-	// it the extra finds are PARTIAL faults naming their paths — never a silent
-	// drop, because a geometry that vanished without a fault is a resource that
-	// is simply undiscoverable with nothing to explain why.
+	// MaxGeometriesPerCatalog is the publish budget for the general walk. Over it
+	// the extra finds are PARTIAL faults naming their paths — never a silent drop,
+	// which would leave a resource undiscoverable with nothing to explain why.
 	MaxGeometriesPerCatalog = 256
 
 	// queryCircleVertices is the vertex count of the polygon approximating an
-	// S_DWITHIN radius. Circumscribed rather than inscribed, at scale 1.0012 —
-	// 0.12% too wide, which over-includes; inscribed would under-include, and
-	// under-inclusion is the direction that loses real results.
+	// S_DWITHIN radius. Circumscribed rather than inscribed: over-inclusion keeps
+	// the superset guarantee, under-inclusion loses real results.
 	queryCircleVertices = 64
 )
 
 // MatchesOp reports whether a stored geometry could satisfy op against a query
-// geometry, judging on cells alone.
+// geometry, judging on cells alone — the memory backend's twin of the SQL
+// `CASE spatial_op` block.
 //
-// The memory backend's twin of the SQL `CASE spatial_op` block. All four slices
-// must be sorted ascending and deduplicated — a precondition, not a
-// convenience, because S_EQUALS compares element-wise exactly as PostgreSQL's
-// array `=` does, and an unsorted pair of identical sets compares unequal
-// there. CoverGeometry and CoverQuery are the two places that guarantee it.
+// All four slices must be sorted ascending and deduplicated: a precondition, not
+// a convenience, because S_EQUALS compares element-wise exactly as PostgreSQL's
+// array `=` does. CoverGeometry and CoverQuery are the two places that guarantee
+// it.
 //
 // It takes NO bounding box. The backend applies the box itself and must skip it
 // for S_DISJOINT, which inverts: two shapes whose boxes miss entirely ARE
 // disjoint, so ANDing the box in would answer that operator with the complement
-// of the truth and no error. Passing bounds in here would have buried that
-// asymmetry inside a function whose name promises only the operator.
+// of the truth and no error.
 //
-// MAYBE resolves as a match. Under ANY that makes the result set a superset of
-// the exact answer — never a subset — and under NONE it inverts to a subset,
-// which is the safe direction on both sides.
+// MAYBE resolves as a match — a superset of the exact answer under ANY, a subset
+// under NONE, which is the safe direction on both sides.
 func MatchesOp(op domain.SpatialOp, aFull, aCover, qFull, qCover []uint64) bool {
 	// Refused, not approximated: a cell decomposition cannot express a
 	// measure-zero boundary relation at any resolution. The mapper rejects both
-	// with a 400, so this is unreachable — false rather than true so that a
-	// leak surfaces as an empty result rather than as the entire corpus
-	// silently matching a predicate nobody wrote.
+	// with a 400, so false rather than true makes a leak surface as an empty
+	// result rather than as the whole corpus matching.
 	if op == domain.OpTouches || op == domain.OpCrosses {
 		return false
 	}
@@ -93,20 +84,17 @@ func MatchesOp(op domain.SpatialOp, aFull, aCover, qFull, qCover []uint64) bool 
 
 // refutes is the FALSE column of the operator table, and the whole of it.
 //
-// The TRUE column has no code here on purpose: provably TRUE and MAYBE both
-// resolve as a match, so only a refutation can change the answer. Writing the
-// TRUE column out would add branches that cannot alter what is returned, and a
-// branch that cannot matter is one a later reader will try to make matter.
+// The TRUE column has no code on purpose: provably TRUE and MAYBE both resolve as
+// a match, so only a refutation can change the answer.
 //
 // S_DWITHIN needs no arm of its own because CoverQuery has already dilated the
-// query's covers by k; by the time they arrive here the operator IS
-// S_INTERSECTS, which is what the table's `dilate(Q.full, k)` says.
+// query's covers by k — by the time they arrive here the operator IS
+// S_INTERSECTS.
 func refutes(op domain.SpatialOp, aFull, aCover, qFull, qCover []uint64) bool {
-	// An empty cover is a DECLINED cover — antimeridian, or over budget — never
-	// a legitimately empty one, because CoverGeometry guarantees a non-empty
-	// cover for every geometry it accepts and Postgres carries the same rule as
-	// a CHECK. Nothing is refutable from a cover that was never built, and the
-	// bounding box is left to decide.
+	// An empty cover is a DECLINED cover — antimeridian, or over budget — never a
+	// legitimately empty one: CoverGeometry guarantees a non-empty cover for every
+	// geometry it accepts and Postgres carries the same rule as a CHECK. Nothing
+	// is refutable from a cover that was never built.
 	if len(aCover) == 0 || len(qCover) == 0 {
 		return false
 	}
@@ -131,9 +119,8 @@ func refutes(op domain.SpatialOp, aFull, aCover, qFull, qCover []uint64) bool {
 	}
 }
 
-// overlaps reports whether two sorted cell sets share a cell — PostgreSQL's
-// `&&`. A merge scan rather than a set built from one side: both inputs are
-// already sorted, so there is nothing to gain by allocating.
+// overlaps reports whether two sorted cell sets share a cell — PostgreSQL's `&&`.
+// A merge scan, since both inputs are already sorted.
 func overlaps(left, right []uint64) bool {
 	atLeft, atRight := 0, 0
 	for atLeft < len(left) && atRight < len(right) {
@@ -150,10 +137,10 @@ func overlaps(left, right []uint64) bool {
 }
 
 // containedBy reports whether every cell of subset appears in superset —
-// PostgreSQL's `<@`, including its answer for an empty left side, which is
-// true. That is exactly why three refutations in the table are phrased over
-// `cover` and not over `full`: a Point's full is permanently empty, and `'{}'
-// <@ anything` would make those arms pass vacuously.
+// PostgreSQL's `<@`, including its answer for an empty left side, which is true.
+// That is why three refutations in the table are phrased over `cover` and not
+// `full`: a Point's full is permanently empty, and `'{}' <@ anything` would make
+// those arms pass vacuously.
 func containedBy(subset, superset []uint64) bool {
 	at := 0
 	for _, cell := range subset {
@@ -167,19 +154,16 @@ func containedBy(subset, superset []uint64) bool {
 	return true
 }
 
-// ErrGeometry is returned for a shape this package cannot represent: not
-// readable JSON, not one of RFC 7946's seven types, a coordinate outside WGS
-// 84, or an EMPTY coordinates array.
+// ErrGeometry is returned for a shape this package cannot represent: not readable
+// JSON, not one of RFC 7946's seven types, a coordinate outside WGS 84, or an
+// EMPTY coordinates array.
 //
 // The last is not pedantry. A structural GeoJSON check accepts
-// `{"type":"Point","coordinates":[]}` — the keys are right and the value is an
-// array — so nothing upstream refuses it, and a cover built from it would be
-// empty. An empty cover does not lose precision: three of the operator table's
-// refutations run through `A.cover <@ Q.cover`, the empty set is a subset of
-// everything, and the row would silently stop refuting anything at all.
-// Postgres carries the same rule as
-// `CHECK (cells_cover IS NULL OR cardinality(cells_cover) > 0)`; this is the
-// half that runs before a row exists.
+// `{"type":"Point","coordinates":[]}`, and the empty set is a subset of
+// everything, so a row covering no cell would silently stop refuting. Postgres
+// carries the twin rule as
+// `CHECK (cells_cover IS NULL OR cardinality(cells_cover) > 0)`; this is the half
+// that runs before a row exists.
 var ErrGeometry = errors.New("geometry cannot be indexed")
 
 // Cover is everything the index learns from one geometry.
@@ -198,26 +182,23 @@ type Cover struct {
 const maxCollectionDepth = 8
 
 // minSpacingFactor converts a resolution's AVERAGE edge length into its minimum
-// centre-to-centre spacing. Centres sit `√3 × edge` apart and H3 cell areas
-// vary by up to ~1.99× within a resolution, so the minimum edge is ≥ 0.71× the
-// average: √3 × 0.71 ≈ 1.23.
+// centre-to-centre spacing — √3 × 0.71 ≈ 1.23, derived in the plan.
 //
-// Deliberately not the average. Sizing a dilation from the average
-// under-dilates wherever cells run small, and under-inclusion is the one error
-// direction this design does not permit.
+// Deliberately not the average: sizing a dilation from the average under-dilates
+// wherever cells run small, and under-inclusion is the one error direction this
+// design does not permit.
 const minSpacingFactor = 1.23
 
-// densifyEdgeFraction is the share of a resolution's average edge one line
-// sample advances — 133 m at r8. The minimum inradius is ≥ 0.61× the average
-// edge, so a quarter-edge step cannot step over a cell.
+// densifyEdgeFraction is the share of a resolution's average edge one line sample
+// advances — 133 m at r8. The minimum inradius is ≥ 0.61× the average edge, so a
+// quarter-edge step cannot step over a cell.
 const densifyEdgeFraction = 0.25
 
 // CoverGeometry covers a STORED geometry at the given resolution.
 //
 // The resolution is a parameter rather than a package constant because
 // GEO_RESOLUTION_CELLS is config: the accuracy/storage trade is a property of a
-// deployment's data, and a constant here would put the decision in the wrong
-// repository.
+// deployment's data.
 func CoverGeometry(geometry domain.Geometry, resolution int) (Cover, error) {
 	parts, err := decodeShape(geometry.GeoJSON)
 	if err != nil {
@@ -235,9 +216,8 @@ func CoverGeometry(geometry domain.Geometry, resolution int) (Cover, error) {
 // one, plus the distance handling only S_DWITHIN carries.
 //
 // Returns nil covers when the shape declines (it wraps the antimeridian) or
-// exceeds the query budget. Nil disables the cell predicate only: the bounding
-// box still runs, so the answer stays a superset and the query degrades to a
-// scan of the scope-gated set rather than to a wrong answer.
+// exceeds the query budget. Nil disables the cell predicate only: the bounding box
+// still runs, so the answer stays a superset.
 func CoverQuery(
 	geometry domain.Geometry, op domain.SpatialOp, distanceMeters float64, resolution int,
 ) (full, cover []uint64, err error) {
@@ -246,8 +226,8 @@ func CoverQuery(
 		return nil, nil, err
 	}
 
-	// The circle case, and worth its own branch because it is most of the
-	// traffic: "suppliers within 5 km of me".
+	// Worth its own branch because it is most of the traffic: "suppliers within
+	// 5 km of me".
 	if op == domain.OpDWithin && parts.isLonePoint() {
 		return circleCells(parts.points[0], distanceMeters, resolution)
 	}
@@ -271,11 +251,8 @@ func CoverQuery(
 }
 
 // BoundsFor is the bounding box alone, for callers that need the box without
-// paying for a fill.
-//
-// Declines — nil, nil — on a shape spanning the antimeridian or reaching a
-// pole, for the same reason CoverQuery does: the box of such a shape is the
-// whole world the wrong way round, and a box that wide is worse than none.
+// paying for a fill. Declines — nil, nil — on a shape spanning the antimeridian
+// or reaching a pole, for the reason boundsOf gives.
 func BoundsFor(geometry domain.Geometry, op domain.SpatialOp, distanceMeters float64) (*domain.BBox, error) {
 	parts, err := decodeShape(geometry.GeoJSON)
 	if err != nil {
@@ -293,24 +270,22 @@ func BoundsFor(geometry domain.Geometry, op domain.SpatialOp, distanceMeters flo
 // millimetre on a 1000 km search.
 //
 // It is not slop. The caller derives the true edge with spherical trigonometry
-// and this derives it by division; the two are different roundings of the same
-// number and land an ULP apart. An edge exactly ON the boundary therefore falls
-// outside it half the time, and the box stage drops a row the cells admitted.
-// Rounding outward keeps every disagreement in the over-inclusive direction.
+// and this derives it by division; the two land an ULP apart, so an edge exactly
+// ON the boundary would fall outside it half the time and the box stage would
+// drop a row the cells admitted. Rounding outward keeps every disagreement
+// over-inclusive.
 const boxRounding = 1 + 1e-9
 
 // expandedBy grows a box by a radius in metres, and is why BoundsFor needs the
 // operator at all.
 //
 // Under S_DWITHIN the constraint is the DILATED region, not the shape sent: a
-// Point's own box has zero area, so an unexpanded one meets only geometries
-// whose box contains the exact centre. The box stage would then refute every
-// row the cell stage admitted, turning a radius search into a point lookup —
-// the same wrong answer as an under-sized cover, arriving from the other side.
+// Point's own box has zero area, so an unexpanded one turns a radius search into
+// a point lookup.
 //
 // Longitude is scaled at the latitude FURTHEST from the equator, where a degree
-// is shortest and the same metres therefore span the most degrees. Using the
-// centre latitude would under-expand the box's far edge.
+// is shortest and the same metres therefore span the most degrees; the centre
+// latitude would under-expand the box's far edge.
 func expandedBy(bounds *domain.BBox, distanceMeters float64) *domain.BBox {
 	if bounds == nil {
 		return nil
@@ -335,11 +310,9 @@ func expandedBy(bounds *domain.BBox, distanceMeters float64) *domain.BBox {
 
 // circleCells approximates an S_DWITHIN radius around a Point.
 //
-// An INSCRIBED n-gon sags to R·cos(π/n) between its vertices and would miss a
-// sliver just inside the boundary; scaling every vertex by 1/cos(π/n) makes the
-// polygon CONTAIN the circle. At n=64 that is 1.0012 — 0.12% too wide, which
-// over-includes, and over-inclusion is the direction that keeps the superset
-// guarantee.
+// Scaling every vertex by 1/cos(π/n) makes the polygon CONTAIN the circle — 0.12%
+// too wide at n=64. An inscribed n-gon would sag between its vertices and miss a
+// sliver just inside the boundary.
 func circleCells(center domain.GeoPoint, radiusM float64, resolution int) (full, cover []uint64, err error) {
 	scale := 1 / math.Cos(math.Pi/queryCircleVertices)
 	loop := make([]domain.GeoPoint, 0, queryCircleVertices)
@@ -371,9 +344,8 @@ func destinationPoint(from domain.GeoPoint, bearingDeg, distanceM float64) domai
 }
 
 // ringsFor sizes a dilation in gridDisk rings, reporting false when the
-// resolution's geometry cannot be read — in which case the caller declines
-// rather than dilating by zero, since dilating by zero is under-inclusion
-// wearing the shape of an answer.
+// resolution's geometry cannot be read — the caller then declines rather than
+// dilating by zero, which is under-inclusion wearing the shape of an answer.
 func ringsFor(distanceMeters float64, resolution int) (int, bool) {
 	edge, err := h3.HexagonEdgeLengthAvgM(resolution)
 	if err != nil || edge <= 0 {
@@ -406,7 +378,7 @@ func dilate(cells []uint64, rings int) []uint64 {
 
 		// A pre-deduplication bail, so a pathological seed set costs a bounded
 		// allocation. It can decline a set that would have deduplicated under
-		// budget; that answer is the bounding box, which is still a superset.
+		// budget; that answer is the bounding box, still a superset.
 		if len(grown) > MaxQueryCoverCells*8 {
 			return nil
 		}
@@ -419,9 +391,8 @@ func dilate(cells []uint64, rings int) []uint64 {
 	return grown
 }
 
-// appendNonZero drops the zero entries gridDisk leaves where a disk is
-// truncated by a pentagon. A zero is not a cell, and one reaching a cover would
-// be a cell id no geometry can ever match.
+// appendNonZero drops the zero entries gridDisk leaves where a disk is truncated
+// by a pentagon: a zero reaching a cover is a cell id no geometry can ever match.
 func appendNonZero(into []uint64, cells []h3.Cell) []uint64 {
 	for _, cell := range cells {
 		if cell != 0 {
@@ -461,11 +432,9 @@ func fillBoth(parts shape, resolution, budget int) (full, cover []uint64, err er
 // fill produces one cover in one containment mode, or nil when over budget.
 //
 // Points and lines contribute to the OVERLAPPING cover only — neither has
-// interior area, so no cell lies entirely inside one and their `full` is
-// permanently empty. Polygon boundaries are walked into the overlapping cover
-// too: a boundary lies on the shape, so its cells genuinely touch it, and
-// including them is what guarantees a non-empty cover for a polygon smaller
-// than the fill can see.
+// interior area, so their `full` is permanently empty. Polygon boundaries are
+// walked into the overlapping cover too, which is what guarantees a non-empty
+// cover for a polygon smaller than the fill can see.
 func fill(parts shape, resolution int, mode h3.ContainmentMode, budget int) ([]uint64, error) {
 	cells := make([]uint64, 0, 64)
 
@@ -500,8 +469,7 @@ func fill(parts shape, resolution int, mode h3.ContainmentMode, budget int) ([]u
 //
 // Lines are DENSIFIED rather than sampled at their vertices: RFC 7946 §3.1.1
 // makes a segment a straight line in the CRS, and a straight line crosses cells
-// its endpoints never touch. A query aimed at the middle of a canal has to find
-// the canal.
+// its endpoints never touch.
 func walkCells(parts shape, resolution, budget int) ([]uint64, bool) {
 	step, sized := densifyStepM(resolution)
 	if !sized {
@@ -515,9 +483,8 @@ func walkCells(parts shape, resolution, budget int) ([]uint64, bool) {
 	for _, path := range parts.paths() {
 		cells = appendPath(cells, path, step, resolution)
 		// Samples sit a quarter-edge apart, so more than four per budgeted cell
-		// means the cover is over budget for any line that does not double back
-		// — and for one that does, declining costs a bounding-box answer, which
-		// is still a superset.
+		// means over budget for any line that does not double back — and for one
+		// that does, declining costs a bounding-box answer, still a superset.
 		if len(cells) > 4*budget {
 			return nil, false
 		}
@@ -543,9 +510,8 @@ func appendPath(into []uint64, path []domain.GeoPoint, stepM float64, resolution
 		from, to := path[index-1], path[index]
 		samples := int(math.Ceil(manhattanLengthM(from, to)/stepM)) + 1
 		// A segment of zero length — a publisher's duplicated vertex, which RFC
-		// 7946 permits — needs one sample, and the ratio below would be 0/0.
-		// NaN reaches H3, every cell of the path is dropped, and a line that
-		// covers one cell perfectly well is faulted as covering none.
+		// 7946 permits — needs one sample, and the ratio below would be 0/0: NaN
+		// reaches H3 and every cell of the path is dropped.
 		if samples < 2 {
 			into = appendCell(into, from, resolution)
 			continue
@@ -561,9 +527,9 @@ func appendPath(into []uint64, path []domain.GeoPoint, stepM float64, resolution
 	return into
 }
 
-// appendCell adds the cell a coordinate falls in, dropping it if H3 refuses.
-// A refusal here cannot make the cover unsound: it is caught by fillBoth's
-// non-empty check, or by the bounding box.
+// appendCell adds the cell a coordinate falls in, dropping it if H3 refuses. A
+// refusal cannot make the cover unsound: fillBoth's non-empty check or the
+// bounding box catches it.
 func appendCell(into []uint64, at domain.GeoPoint, resolution int) []uint64 {
 	cell, err := h3.LatLngToCell(h3.LatLng{Lat: at.Lat, Lng: at.Lon}, resolution)
 	if err != nil || cell == 0 {
@@ -572,10 +538,10 @@ func appendCell(into []uint64, at domain.GeoPoint, resolution int) []uint64 {
 	return append(into, uint64(cell))
 }
 
-// manhattanLengthM bounds a segment's length from its lat and lon spans, taken
-// at the WIDEST parallel it touches — deliberately not haversine, which is the
-// shorter great-circle distance and would under-count the samples a segment
-// straight in the CRS actually needs.
+// manhattanLengthM bounds a segment's length from its lat and lon spans, at the
+// WIDEST parallel it touches. Deliberately not haversine: the great-circle
+// distance is shorter and would under-count the samples a segment straight in the
+// CRS needs.
 func manhattanLengthM(from, to domain.GeoPoint) float64 {
 	const metresPerDegree = earthRadiusM * math.Pi / 180
 
@@ -584,9 +550,9 @@ func manhattanLengthM(from, to domain.GeoPoint) float64 {
 		math.Abs(to.Lon-from.Lon)*metresPerDegree*math.Cos(radians(widest))
 }
 
-// compact sorts and deduplicates in place. Sorted is MatchesOp's precondition
-// and PostgreSQL's for array `=`; deduplicated because a repeated cell inflates
-// every budget check against it.
+// compact sorts and deduplicates in place. Sorted is MatchesOp's precondition and
+// PostgreSQL's for array `=`; deduplicated because a repeat inflates every budget
+// check.
 func compact(cells []uint64) []uint64 {
 	slices.Sort(cells)
 	return slices.Compact(cells)
@@ -596,8 +562,8 @@ func compact(cells []uint64) []uint64 {
 // spans the antimeridian or reaches a pole.
 //
 // The span test is how a wrap is detected at all: coordinates arrive normalised
-// into [-180, 180], so a shape straddling ±180° appears as one spanning almost
-// the whole globe. Declining is honest; a box that wide is the world.
+// into [-180, 180], so a shape straddling ±180° appears as one spanning almost the
+// whole globe, and a box that wide is the world.
 func boundsOf(parts shape) *domain.BBox {
 	vertices := parts.vertices()
 	if len(vertices) == 0 {
@@ -620,8 +586,7 @@ func boundsOf(parts shape) *domain.BBox {
 }
 
 // shape is a decoded geometry reduced to the three primitives a fill can use.
-// Every RFC 7946 type collapses into it, which is why there is one fill rather
-// than one per type.
+// Every RFC 7946 type collapses into it, which is why there is one fill.
 type shape struct {
 	points   []domain.GeoPoint
 	lines    [][]domain.GeoPoint
@@ -688,10 +653,8 @@ func h3Loop(ring []domain.GeoPoint) h3.GeoLoop {
 // ErrGeometry when it is not.
 //
 // The publish walker calls it so there is exactly ONE geometry parser in the
-// service. A walker with its own notion of "readable" would accept shapes
-// CoverGeometry later rejects, and the catalog would publish a geometry that
-// covers no cell and therefore matches no query — a row that exists, reports
-// success, and can never be found.
+// service: a second notion of "readable" would publish a geometry that covers no
+// cell, reports success, and can never be found.
 func Validate(raw json.RawMessage) error {
 	_, err := decodeShape(raw)
 	return err
@@ -838,9 +801,9 @@ func decodePath(raw json.RawMessage, minPoints int) ([]domain.GeoPoint, error) {
 }
 
 // decodePosition reads one GeoJSON position. Index 0 is LONGITUDE — the reverse
-// of every argument list in this package, and the one mistake nothing
-// downstream can catch, because a swap of Bengaluru's 77.59/12.97 leaves both
-// values in range and puts the shopfront off the coast of Somalia.
+// of every argument list in this package, and the one mistake nothing downstream
+// can catch: swapping Bengaluru's 77.59/12.97 leaves both values in range and puts
+// the shopfront off the coast of Somalia.
 func decodePosition(raw json.RawMessage) (domain.GeoPoint, error) {
 	var position []float64
 	if err := json.Unmarshal(raw, &position); err != nil {
