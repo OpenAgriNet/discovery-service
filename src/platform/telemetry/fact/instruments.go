@@ -224,9 +224,9 @@ func checkInstrumentLabels(in Instrument, report reporter) {
 				"review that bit exists for", def.Name)
 		}
 		if def.Cardinality != Bounded {
-			report("names %s as a label, but that Definition is Cardinality is "+
-				"Unbounded — one value per request means one time series per "+
-				"request", def.Name)
+			report("names %s as a label, but that Definition's Cardinality is %v — "+
+				"one value per request means one time series per request",
+				def.Name, def.Cardinality)
 		}
 	}
 
