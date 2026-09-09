@@ -244,8 +244,13 @@ type OTel struct {
 // Replication configures publish's write fan-out seam (A7).
 type Replication struct {
 	// The stores a committed catalog is announced to. Empty — the Phase 1 value —
-	// selects the no-op replicator; a named target with no implementation behind it
-	// fails the boot rather than silently dropping every announcement.
+	// is the only state this build acts on: Task 20 constructs `NoopReplicator`
+	// unconditionally (src/app/container.go) and nothing else reads this field.
+	// A named target neither replicates anywhere nor fails the boot yet — it is
+	// accepted and silently ignored, which is a gap, not a feature: the second
+	// store that reads it still needs to land, and until it does this knob is
+	// forward-declared rather than enforced. Do not rely on a named target
+	// doing anything, or on setting one being refused.
 	Targets []string `env:"REPLICATION_TARGETS"`
 }
 
