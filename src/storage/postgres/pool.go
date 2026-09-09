@@ -19,30 +19,20 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/config"
 )
 
-// applicationName is what this service calls itself to Postgres, and it is the
-// reason Task 25 emits no pool-utilisation gauge: grouped by this, the server
-// already reports connections per service, and client_addr already separates
-// the pods. Unset — which is what this was until 2026-09-09 — it is the empty
-// string, so every connection from every deployment pools into one anonymous
-// group and the layer the design delegated to could not actually answer.
+// applicationName is what this service calls itself to Postgres. It is why
+// Task 25 emits no pool-utilisation gauge: grouped by this, pg_stat_activity
+// already reports connections per service (opentelemetry.md OP3).
 //
-// A literal rather than config.App.Subscriber: the subscriber id is an FQDN and
-// Postgres truncates this at 63 bytes, so a long one would be silently cut. It
-// matches telemetry's service.name deliberately and is duplicated rather than
-// shared, because the import guard puts that constant in a package this one may
-// not import — see telemetry/traces.go's serviceName.
-//
-// Kept beside NewPool rather than in a constants file so the one line that sets
-// it and the one test that pins it read the same declaration.
+// It matches telemetry's service.name and is duplicated rather than shared,
+// because the import guard puts that constant in a package this one may not
+// import — see telemetry/traces.go's serviceName.
 const applicationName = "discovery-service"
 
 // NewPool opens the service's connection pool.
 //
-// The DSN arrives from config, which reads it from DATABASE_URL and from
-// nowhere else — it is a secret, so it appears in neither YAML file. This
-// function never logs it and never returns it inside an error: pgx's parse
-// errors quote the string they failed on, so the wrapping below states what
-// failed without restating what it was given.
+// The DSN is a secret: it arrives from DATABASE_URL and from neither YAML file,
+// and it must never reach a log field or an error string. pgx quotes what it was
+// given when a parse fails, hence errWithoutDSN below.
 func NewPool(ctx context.Context, database config.Database) (*pgxpool.Pool, error) {
 	settings, err := pgxpool.ParseConfig(database.URL)
 	if err != nil {
@@ -52,30 +42,20 @@ func NewPool(ctx context.Context, database config.Database) (*pgxpool.Pool, erro
 	settings.MaxConns = database.MaxConns
 	settings.MinConns = database.MinConns
 
-	// plan_cache_mode is a CORRECTNESS setting on this service, not a tuning
-	// knob, and it is set as a RuntimeParam so it travels in the startup packet
-	// rather than as an extra round trip per acquire.
-	//
-	// Every nullable predicate in the read path has the shape
-	// `$1 IS NULL OR <indexable predicate>`. With the value in hand the planner
-	// folds the first arm away and is left with something sargable; without it
-	// — which is what a GENERIC plan is — it must keep both arms, and an OR
-	// whose first arm does not mention the column cannot be answered by an
-	// index on that column. pgx speaks the extended protocol, so PostgreSQL
-	// builds a custom plan for the first five executions and may switch to a
-	// generic one after: the fast plan is what a cold connection gets and the
-	// slow one is what a warm connection settles into, which is the opposite of
-	// how a performance problem is usually shaped and invisible to any EXPLAIN
-	// run once.
+	// A CORRECTNESS setting, not a tuning knob: every nullable predicate in the
+	// read path has the shape `$1 IS NULL OR <indexable predicate>`, which a
+	// generic plan cannot answer from an index. The reasoning, and why the slow
+	// plan is the one a WARM connection settles into, is
+	// discover-and-publish.md:1273. A RuntimeParam, so it travels in the startup
+	// packet rather than as a round trip per acquire.
 	settings.ConnConfig.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
 
-	// application_name is what makes pg_stat_activity legible; see the constant.
+	// See the constant: this is what makes pg_stat_activity legible per service.
 	settings.ConnConfig.RuntimeParams["application_name"] = applicationName
 
 	// pgvector's `vector` is an extension type, so its OID is assigned per
-	// database and cannot be compiled in. Registering on every connection is
-	// what lets a resource's embedding be sent as a value rather than as a
-	// string this package would have to format itself.
+	// database and cannot be compiled in. Registering per connection is what
+	// lets an embedding be sent as a value rather than as formatted text.
 	settings.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		return pgxvector.RegisterTypes(ctx, conn)
 	}
@@ -87,12 +67,9 @@ func NewPool(ctx context.Context, database config.Database) (*pgxpool.Pool, erro
 	return pool, nil
 }
 
-// errWithoutDSN keeps a connection string out of an error string.
-//
-// pgx quotes what it was given when a DSN will not parse, and an error travels
-// to a log field, which is the one place a password must never reach. A
-// redaction rather than a dropped cause: the parse error names WHICH part of
-// the string it choked on, and that is the whole diagnostic value.
+// errWithoutDSN keeps a connection string out of an error string. A redaction
+// rather than a dropped cause: the parse error names which part of the string it
+// choked on, and that is the whole diagnostic value.
 func errWithoutDSN(err error, dsn string) error {
 	if dsn == "" {
 		return err

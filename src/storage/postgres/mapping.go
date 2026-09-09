@@ -12,25 +12,17 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/storage/postgres/gen"
 )
 
-// This file is the ONE place a row becomes a domain object and a domain object
-// becomes parameters, and it is shared with the read side.
-//
-// It exists as a file rather than as conversions written where they are needed
-// because there are four types with a NULL-versus-zero decision each — a
-// TIMESTAMPTZ, a TIME, a JSONB and a VECTOR — and a second copy of any of them
-// is a second chance to read "no validity" as "valid from the zero year".
+// This file is the one place a row becomes a domain object and a domain object
+// becomes parameters, shared by the read and write sides. Four types carry a
+// NULL-versus-zero decision — TIMESTAMPTZ, TIME, JSONB and VECTOR — and a second
+// copy of any of them is a second chance to get it wrong.
 
 // ---------------------------------------------------------------------------
 // scalars
 // ---------------------------------------------------------------------------
 
-// timestamp maps a domain instant onto a nullable column.
-//
-// The ZERO time is NULL, not the year 1. `domain.Catalog.ValidFrom` is a plain
-// time.Time and its zero value means "unbounded on that axis" — the same thing
-// the column's NULL means — so this is where the two vocabularies meet. Storing
-// 0001-01-01 instead would satisfy every write test and would make every
-// validity predicate compare against a date rather than short-circuit on NULL.
+// timestamp maps a domain instant onto a nullable column. The ZERO time is
+// NULL, not the year 1: both spell "unbounded on that axis".
 func timestamp(at time.Time) pgtype.Timestamptz {
 	if at.IsZero() {
 		return pgtype.Timestamptz{}
@@ -52,11 +44,8 @@ const (
 	secondsPerMin   = 60
 )
 
-// clock maps the daily-window bound onto TIME.
-//
-// A pointer in the domain because nil is "no window" and 00:00:00 is a real
-// bound — the distinction a plain TimeOfDay could not carry, and the reason
-// this function exists rather than a cast.
+// clock maps the daily-window bound onto TIME. A pointer, because nil is "no
+// window" and 00:00:00 is a real bound.
 func clock(at *domain.TimeOfDay) pgtype.Time {
 	if at == nil {
 		return pgtype.Time{}
@@ -65,8 +54,8 @@ func clock(at *domain.TimeOfDay) pgtype.Time {
 	return pgtype.Time{Microseconds: seconds * microsPerSecond, Valid: true}
 }
 
-// timeOfDay is clock's inverse. Sub-second precision is discarded because
-// TimeOfDay has no field for it and the column is only ever written from one.
+// timeOfDay is clock's inverse. Sub-second precision is discarded: TimeOfDay
+// has no field for it.
 func timeOfDay(column pgtype.Time) *domain.TimeOfDay {
 	if !column.Valid {
 		return nil
@@ -79,12 +68,8 @@ func timeOfDay(column pgtype.Time) *domain.TimeOfDay {
 	}
 }
 
-// document maps a verbatim JSON column, and its whole job is the nil case.
-//
-// `provider`, `descriptor`, `attributes`, `offer` and `geojson` are all JSONB
-// NOT NULL. A nil json.RawMessage — a catalog that carried no provider — would
-// go down as SQL NULL and be rejected by the column, so it becomes the empty
-// object the DEFAULT would have supplied.
+// document maps a verbatim JSON column. Every JSONB column here is NOT NULL, so
+// a nil RawMessage becomes the empty object rather than SQL NULL.
 func document(raw json.RawMessage) []byte {
 	if len(raw) == 0 {
 		return []byte(`{}`)
@@ -92,8 +77,8 @@ func document(raw json.RawMessage) []byte {
 	return raw
 }
 
-// list maps a TEXT[] parameter. A nil slice is a legal empty array here, but
-// pgx sends nil as NULL, and every array column in this schema is NOT NULL.
+// list maps a TEXT[] parameter. pgx sends a nil slice as NULL, and every array
+// column in this schema is NOT NULL.
 func list(values []string) []string {
 	if values == nil {
 		return []string{}
@@ -101,11 +86,8 @@ func list(values []string) []string {
 	return values
 }
 
-// embedding maps a vector, and NULL is the ordinary case in Phase 1 (A5).
-//
-// Nil rather than a zero vector: `embedding IS NULL` is the Phase 2 backfill
-// queue, and a row holding 768 zeros is a row that queue would skip while
-// answering every semantic search with the same meaningless distance.
+// embedding maps a vector, and NULL is the ordinary case in Phase 1 (A5). Nil
+// rather than a zero vector: `embedding IS NULL` is the backfill queue.
 func embedding(values []float32) *pgvector.Vector {
 	if len(values) == 0 {
 		return nil
@@ -121,12 +103,10 @@ func floats(column *pgvector.Vector) []float32 {
 	return column.Slice()
 }
 
-// owner maps a geometry's resource id, where NULL means CATALOG-LEVEL.
-//
-// The empty string is not a substitute: `uq_resource_geometries` keys on
-// COALESCE(resource_id, ”), so a ” resource id and a catalog-level row would
-// upsert over each other. The schema's CHECK refuses ” for exactly that
-// reason, and this is the Go side of the same rule.
+// owner maps a geometry's resource id, where NULL means CATALOG-LEVEL. The
+// empty string is not a substitute: uq_resource_geometries coalesces a NULL
+// resource_id to the empty string, so the two would upsert over each other, and
+// the schema's CHECK refuses an empty resource_id for that reason.
 func owner(resourceID string) pgtype.Text {
 	if resourceID == "" {
 		return pgtype.Text{}
@@ -134,11 +114,8 @@ func owner(resourceID string) pgtype.Text {
 	return pgtype.Text{String: resourceID, Valid: true}
 }
 
-// cells narrows H3 indexes to the BIGINT[] the column holds.
-//
-// Lossless: an H3 index reserves its high bit, so every cell id is below 2^63
-// and the conversion cannot change a value. Written as its own function so the
-// claim is stated once rather than assumed at three call sites.
+// cells narrows H3 indexes to the BIGINT[] the column holds. Lossless: an H3
+// index reserves its high bit, so every cell id is below 2^63.
 func cells(indexes []uint64) []int64 {
 	if indexes == nil {
 		return nil
@@ -157,12 +134,9 @@ func cells(indexes []uint64) []int64 {
 // storedCatalog rebuilds the catalog the patch will merge against.
 //
 // NetworkID is deliberately not set: the column does not exist, because nothing
-// reads it back. MergeCatalog takes it from the patch.
-// storedCatalog takes the plain-SELECT row rather than the lock-and-load one,
-// even though the lock-and-load path is the busier caller. The two row types
-// are field-for-field identical, so one converts to the other; picking the READ
-// type as the parameter means the read path — the one that must never route
-// through a statement that creates rows — spells no conversion at all.
+// reads it back. MergeCatalog takes it from the patch. The parameter is the
+// plain-SELECT row and not the field-for-field identical lock-and-load one so
+// that the read path — see GetCatalog — spells no conversion at all.
 func storedCatalog(row gen.GetCatalogRowRow) domain.Catalog {
 	return domain.Catalog{
 		ID:              row.ID,
@@ -209,19 +183,16 @@ func storedOffer(row gen.ListStoredOffersRow) domain.Offer {
 	}
 }
 
-// geometriesFrom regroups geometry ROWS back into geometry VALUES.
-//
-// One shape owned by three resources is three rows and one domain.Geometry with
-// three Owners, so the read is a fold over (target_path, source_path) rather
-// than a row-per-value map. Catalog-level rows — resource_id NULL — fold into
-// their own value with no owners, which is what the caller separates them by.
+// geometriesFrom regroups geometry ROWS back into geometry VALUES: one shape
+// owned by three resources is three rows and one domain.Geometry with three
+// Owners. Catalog-level rows — resource_id NULL — fold into their own value with
+// no owners, which is how the caller tells the two apart.
 func geometriesFrom(rows []gen.ListStoredGeometriesRow) (catalogLevel []domain.Geometry, byResource map[string][]domain.Geometry) {
 	byResource = make(map[string][]domain.Geometry)
 
-	// Keyed on source_path alone, not on the pair: source_path is unique per
-	// (catalog, resource) by uq_resource_geometries, and a shape shared by
-	// several resources carries the SAME source_path on each of its rows —
-	// which is precisely the grouping this fold needs.
+	// Keyed on source_path alone: it is unique per (catalog, resource) by
+	// uq_resource_geometries, and a shape shared by several resources carries
+	// the same source_path on each row — the grouping this fold needs.
 	order := make([]string, 0, len(rows))
 	grouped := make(map[string]*domain.Geometry, len(rows))
 
@@ -255,11 +226,8 @@ func geometriesFrom(rows []gen.ListStoredGeometriesRow) (catalogLevel []domain.G
 	return catalogLevel, byResource
 }
 
-// geometryType reads the GeoJSON `type` back out.
-//
-// There is no geom_type column — it would be this same string copied out and
-// kept in step by hand — so the type is read from the document on the way back
-// exactly as it was read from it on the way in.
+// geometryType reads the GeoJSON `type` back out of the document. There is no
+// geom_type column to read it from.
 func geometryType(raw []byte) string {
 	var shape struct {
 		Type string `json:"type"`
@@ -324,14 +292,11 @@ func offerParams(catalogID string, offer domain.Offer) gen.UpsertOfferParams {
 // geometryParams turns one already-covered shape into the ONE row that stores
 // it for one owner.
 //
-// `ownerID` is the id of the resource the shape was found ON, and "" is the
-// catalog itself: a NULL resource_id, stored once for the whole catalog rather
-// than once per resource. It is deliberately NOT read back off
-// `Geometry.Owners`. The walk has already SPENT Owners deciding placement,
-// putting an offer's shape on the list of every resource that offer covers, so
-// an adapter that fanned out over Owners a second time would turn a shape
+// ownerID is the resource the shape was found ON, and "" is the catalog itself.
+// It must NOT be read back off Geometry.Owners: the walk has already spent
+// Owners deciding placement, so fanning out over them again would turn a shape
 // already sitting on N lists into N x N rows and collide with
-// uq_resource_geometries on the very first publish.
+// uq_resource_geometries on the first publish.
 func geometryParams(
 	catalogID, ownerID string, shape domain.Geometry, cover geo.Cover,
 ) gen.InsertGeometryParams {

@@ -98,3 +98,59 @@ The split then decides
 
 It lives in the package both backends import because a copy in each is a copy
 that drifts, and the drift shows up as an empty page with nothing to explain it.
+
+## 7. The plan's `NewCatalogRepository` signature is one parameter short
+
+`src/storage/postgres/catalog_repository.go`
+
+`discover-and-publish.md:4366` says `postgres.NewCatalogRepository(pool) →
+domain.CatalogRepository`. The constructor is
+`NewCatalogRepository(pool *pgxpool.Pool, resolutionCells int)`: the H3 cover is
+computed on the write path, so the repository needs the resolution, and reading
+it from config inside the adapter would put a config dependency behind the port.
+
+A deviation from the plan, recorded here because the comment that recorded it was
+the only record. The plan is binding, so it is the plan that needs the edit.
+
+## 8. `pruneOrphanedOffers` never fires today, and the statement order is a bet on tomorrow
+
+`src/storage/postgres/catalog_repository.go`
+
+The plan's "the delete runs before the prune" (`discover-and-publish.md:4434`) is
+**unobservable through the ports** as the code stands: the domain-side
+`PruneOfferReferences` has already fixed every offer the transaction can see, so
+the SQL prune finds nothing to do regardless of when it runs. The order is kept
+because it is the order that stays correct if the domain-side prune is ever
+removed — not because a test can tell the two apart.
+
+## 9. A geometry with no bounding box is undiscoverable, not degraded
+
+`src/storage/postgres/catalog_repository.go`
+
+The box columns are NOT NULL, so `errUnboundedGeometry` refuses the write rather
+than storing a row without one. What makes that a refusal rather than a
+degradation: for a shape whose cover truncated, the box is not a pre-filter, it
+is the **entire** spatial predicate (`discover-and-publish.md:2523`). A row
+carrying no box therefore matches no spatial query at all, and nothing in the
+response would say so.
+
+## 10. `callersFilter` must not key on `PgError.Routine`
+
+`src/storage/postgres/search_repository.go`
+
+The two SQLSTATEs it matches — 42601 and 2201B — are raised from
+`jsonpath_yyerror` and `makeItemLikeRegex`, and keying on those names would
+narrow the match to exactly the jsonpath parser. It is deliberately not done:
+they are internal PostgreSQL symbols with no compatibility promise, and a rename
+between minor versions would turn a 400 back into a 500 silently. The SQLSTATE is
+the documented contract.
+
+## 11. `application_name` is a literal and must not become `config.App.Subscriber`
+
+`src/storage/postgres/pool.go`
+
+PostgreSQL truncates `application_name` at 63 bytes. The subscriber id is an
+FQDN, so binding the two would silently cut long ones — and a truncated value is
+worse than a fixed one here, because `pg_stat_activity` grouped by this column is
+the whole reason Task 25 ships no pool-utilisation gauge
+(`opentelemetry.md:1246`).

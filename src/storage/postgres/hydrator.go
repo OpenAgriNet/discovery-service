@@ -13,16 +13,8 @@ import (
 // Hydrator turns a decided page of ids into the catalogs a response renders
 // from.
 //
-// Every query it runs is keyed by the page — twenty resources and their
-// catalogs, never the whole match — which is what lets the scope gate be
-// re-applied here at no cost. There is no unbounded query left in this type:
-// A19 removed the count, which was the one exception.
-//
-// It holds no embedder. It used to, so that the count's text clause could name
-// the vector the semantic retriever searched with, and when the count went the
-// field stayed — written by the constructor, read by nothing. A dependency
-// nothing reads still says in the constructor signature that this type needs
-// one, which is the part that misleads.
+// Every query it runs is keyed by the page, never by the whole match, which is
+// what lets the scope gate be re-applied here at no cost.
 type Hydrator struct {
 	queries *gen.Queries
 }
@@ -34,12 +26,9 @@ func NewHydrator(store gen.DBTX) *Hydrator {
 	return &Hydrator{queries: gen.New(store)}
 }
 
-// ScopeFilter narrows a set of ids to the ones the scope admits.
-//
-// It exists for a retriever whose index has no notion of validity or
-// visibility — a vector index is one — and it applies the gate and nothing
-// else. The caller has already applied text, geometry and schema; this answers
-// only "may this caller see it now".
+// ScopeFilter narrows a set of ids to the ones the scope admits — the gate and
+// nothing else, for a retriever whose index has no notion of validity or
+// visibility.
 func (h *Hydrator) ScopeFilter(
 	ctx context.Context, ids []string, scope domain.Scope,
 ) ([]string, error) {
@@ -57,9 +46,8 @@ func (h *Hydrator) ScopeFilter(
 		return nil, fmt.Errorf("apply the scope gate to a candidate set: %w", err)
 	}
 
-	// Rebuilt in the CALLER's order rather than in the row order, because the
-	// ids arrived ranked and a filter that reordered them would silently
-	// discard the fusion's work.
+	// Rebuilt in the CALLER's order, not the row order: the ids arrived ranked,
+	// and reordering them would silently discard the fusion's work.
 	admitted := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		admitted[domain.ResourceKey(row.CatalogID, row.ID)] = true
@@ -77,9 +65,9 @@ func (h *Hydrator) ScopeFilter(
 // Hydrate loads the page: resources, one provider per catalog, the geometries
 // and the offers that touch them.
 //
-// Four queries and not one join. A join would multiply the resource row by its
-// geometries and its offers and send the provider document once per product,
-// and the provider document is the largest thing on the page.
+// Four queries and not one join: a join multiplies the resource row by its
+// geometries and its offers, sending the provider document — the largest thing
+// on the page — once per product.
 func (h *Hydrator) Hydrate(
 	ctx context.Context, ids []string, scope domain.Scope,
 ) ([]domain.Catalog, error) {
@@ -101,9 +89,9 @@ func (h *Hydrator) Hydrate(
 		return nil, nil
 	}
 
-	// Narrowed to what the gate ADMITTED, not to what was asked for. A resource
-	// the retriever named and the gate then rejected must not pull its
-	// catalog's provider, geometries or offers onto the page behind it.
+	// Narrowed to what the gate ADMITTED, not what was asked for: a rejected
+	// resource must not pull its catalog's provider, geometries or offers onto
+	// the page behind it.
 	admitted := make([]string, 0, len(resources))
 	for _, row := range resources {
 		admitted = append(admitted, domain.ResourceKey(row.CatalogID, row.ID))
@@ -135,12 +123,10 @@ func (h *Hydrator) Hydrate(
 	return assemble(ids, resources, catalogs, geometries, offers), nil
 }
 
-// assemble folds four flat row sets back into catalogs, in the PAGE's order.
-//
-// The order is the fusion's, and it is the only ranking the caller ever sees. A
-// map iteration or a sort by id here would silently discard it and return the
-// right twenty resources in the wrong order, which no assertion about set
-// membership catches.
+// assemble folds four flat row sets back into catalogs, in the PAGE's order —
+// the fusion's, and the only ranking the caller ever sees. A map iteration or a
+// sort by id here returns the right resources in the wrong order, which no
+// assertion about set membership catches.
 func assemble(
 	page []string,
 	resources []gen.HydrateResourcesRow,
@@ -162,8 +148,8 @@ func assemble(
 		resource, found := byResource[key]
 		if !found {
 			// Named by a retriever and refused by the gate on the way back in.
-			// Skipped silently and on purpose: the gate is the authority, and a
-			// resource it rejected is one this caller may not be told exists.
+			// Skipped silently on purpose: a resource the gate rejected is one
+			// this caller may not be told exists.
 			continue
 		}
 		resource.Geometries = ownedGeometries[key]
@@ -186,13 +172,8 @@ func assemble(
 }
 
 // attachCatalogs folds the catalog rows onto the catalogs the page produced.
-//
-// Keyed on `position` rather than appended, because a catalog row no resource
-// on this page belongs to is one the caller must not see: the page decides
-// which catalogs exist in the response, and this only fills them in.
-//
-// Named for the catalog rather than the provider since A17 — the row now
-// carries the whole stored document, of which the provider is one member.
+// Keyed on `position` rather than appended: the page decides which catalogs
+// appear in the response, and this only fills them in.
 func attachCatalogs(
 	assembled []domain.Catalog, position map[string]int, catalogs []gen.HydrateCatalogsRow,
 ) {
@@ -258,17 +239,12 @@ func hydratedOffer(row gen.HydrateOffersRow) domain.Offer {
 }
 
 // hydratedGeometries splits the geometry rows the way the domain holds them:
-// catalog-level shapes per catalog, resource-level shapes per resource key.
+// catalog-level shapes per catalog, resource-level shapes per resource key. A
+// catalog-level row — NULL resource_id — is stored once and attached by
+// catalog, not copied onto each resource.
 //
-// A catalog-level row — NULL resource_id — belongs to EVERY resource in its
-// catalog and is stored once for the whole catalog, so it is returned keyed by
-// catalog and attached there rather than copied onto each resource.
-//
-// Owners is deliberately not reconstructed. The walk SPENDS it deciding
-// placement, and a shape read back onto the resource whose row it is on is the
-// same shape the walk put there (A15); rebuilding a list of owners from a page
-// that holds only some of them would produce a value that is wrong in a way
-// nothing downstream could detect.
+// Owners is deliberately not reconstructed (A15): the page holds only some of
+// them, so a rebuilt list would be wrong in a way nothing downstream detects.
 func hydratedGeometries(
 	rows []gen.HydrateGeometriesRow,
 ) (catalogLevel map[string][]domain.Geometry, owned map[string][]domain.Geometry) {
