@@ -24,7 +24,9 @@ deferred — see the notes under the checklist for all three.
 
 Tasks 1-22 have landed, with three holes that are decisions rather than
 omissions: **6** is parked, **7** shipped at half scope (`Envelope` only), and
-**10** (L2 validation) is deferred.
+**10** (L2 validation) is **not this service's** — it moved to the adapter on
+2026-09-09, and its flag and config key were removed rather than left
+defaulted off. It was described here as "deferred" until then.
 
 **Task 23 is now six sub-tasks (A23), and it is no longer the last in the plan.**
 23a-23e run in order and are unblocked; **23f is blocked** on the `domain` string,
@@ -170,7 +172,7 @@ makes them direct.
 | 7 | Signature & Envelope Middleware | **`Envelope` only** — the `Signature` half is parked with Task 6, which no longer builds the `Keyring` it needs. Do not create `signature.go` and do not stub it: a mounted middleware that does nothing is indistinguishable from a working one at exactly the call sites where it matters. Scenario 7 is now the boot refusal, not the two flag-sides. `Envelope` also carries the **request body ceiling** (C14): it is the only thing that reads a body and it runs before `RateLimit`, so a bound anywhere later is a bound after the allocation |
 | 8 | Request Logger & Rate Limit Middleware | Also homes `RequestID` (its own file; it mints rather than trusting an inbound `X-Request-Id`, and it is first in the chain because nothing below it logs until it installs the request-scoped logger) and **departs from A4**: the bucket is keyed on the remote address, not the subscriber id, which on an unverified request is a claim anyone can make about anyone. Subscriber-id keying moved to Deferred, tied to the task that verifies the signature. Also builds `Trace` as a **no-op pass-through** that appends `trace` to `X-Beckn-Chain`, alongside `Recover` appending `recover` — the pair exists so Task 20's order test can read the two back in the order they ran. See Task 8's own section; an earlier draft of this row said `X-Beckn-Trace-Seen: 1`, a single presence marker that cannot carry order. **A11 landed in review of this task**: `RequestLogger` moved above `Recover`, so a panicking request is still timed and logged, and `Recover` now aborts rather than writing a second body over a committed response |
 | 9 | L1 Schema Validation | |
-| 10 | L2 Extended Schema Validation | |
+| 10 | ~~L2 Extended Schema Validation~~ | **Moved to the adapter, 2026-09-09 — do not implement here.** The flag, the `common.yaml` key and the boot check are removed. The plan's Task 10 section is kept as the adapter's specification, because C4 and T3 are still requirements and that is where their reasoning lives |
 | 11 | Domain Model & The DB-Agnostic Boundary | `purity_test.go` lives here — the import-boundary gate every later task is checked against. Also **scaffolds** `storage/memory/repository.go` (both port interfaces, no behavior) and `storage/conformance/` (fixture types, no fixtures) — Tasks 12, 15, 16 modify these as they add behavior; this task creates them |
 | 12 | H3 Geospatial Indexing | Modifies `storage/memory/repository.go` — adds the spatial-matching behavior (`MatchesOp`, bounding-box stage) the memory backend needs |
 | 13 | Text Derivation & Embeddings | Ships with `EMBEDDING_PROVIDER=noop` — don't turn semantic search on. Four open questions from this task sit in **Open questions** (Q1–Q4); Q1, the versioning mechanism, is the one that changes a contract elsewhere. Builds no selector and no `embedding_source_hash` — the hash is the publish path's (plan line ~1484) |

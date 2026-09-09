@@ -67,7 +67,7 @@ Every task inherits these.
 | SQL | Always parameterised. String-concatenated SQL prohibited. JSONPath expressions never interpolated |
 | Test doubles | The memory backend is the **only** double for the repository interface. No per-file mocks, no hand-rolled stubs. Every behaviour pinned against Postgres is pinned against memory by the same `conformance/` fixtures, which is the one thing keeping the two from drifting; a mock written by the test that asserts on it proves only that both were written by the same person |
 | Naming | A config key, constant or column names **what it bounds and in what unit** — not merely that it is a bound. `MaxCandidatesPerMode`, not `CandidatesPerMode`; `MaxRadiusMeters`, with the unit in the name. Two names that differ only by which side of the system they serve must say which side: `MaxQueryCoverCells` and `MaxIndexCoverCells`, `target_path` and `source_path`. A reader who has to open the table to tell a pair apart will eventually pick the wrong one |
-| Flags | `VALIDATION_ENABLE_L1_SCHEMA=true`, `VALIDATION_ENABLE_L2_CONTEXT=true`, `AUTH_ENABLE_SIGNATURE_VERIFICATION=false` (deferred; seam ships) |
+| Flags | `VALIDATION_ENABLE_L1_SCHEMA=true`, `AUTH_ENABLE_SIGNATURE_VERIFICATION=false` (deferred; seam ships). `VALIDATION_ENABLE_L2_CONTEXT` was listed here as `=true` and is **gone as of 2026-09-09** — L2 is the adapter's, so this service no longer declares the flag |
 | Limits | `SERVER_MAX_REQUEST_BODY_BYTES=10485760` (10 MiB). Enforced in `Envelope` with `http.MaxBytesReader`, because that is the only place in the service that reads a request body and it runs **before** `RateLimit` — the limiter never sees these bytes, so a ceiling set anywhere later is a ceiling set after the allocation it exists to prevent. Over it is `POL_NP_CAPACITY_EXCEEDED` at **413** (C14) |
 | Commits | Conventional commits, one per task step marked *Commit* |
 | TODOs | None on `main`. Anything deferred goes in **Deferred** or **Out of Scope** in this document, where a reader deciding scope will find it — not into a source comment only the next person to open that file will ever read. Scope drift belongs in the plan, visible, not buried at the call site |
@@ -162,7 +162,7 @@ implementation is a guess; one with a conformance test is a contract.
 |---|---|---|---|
 | **T1** | §1 Configurability | Four config layers, lowest first: `envDefault` tags → `config/common.yaml` → `config/instance.yaml` → process environment. Environment stays on top because secrets arrive from a secret store and must beat a file. viper stays rejected — layering two YAML documents under `env.Parse` is a function, not a dependency | 1, 2 |
 | **T2** | §6, §7 Observability | OpenTelemetry traces, W3C Trace Context in and out, OTLP exporter (default `none` so a collector-less deploy still boots). **Metrics are not emitted from this process — see A23**: RED figures per route are computed downstream from the spans, by Task 24, because a stateless replica's in-memory counter is a partial nobody can reassemble. Dashboards are out of scope | 20, 23, 24 |
-| **T3** | §1 Schemas without redeploy | L2 schemas load through a `SchemaSource` (directory or HTTP registry) with a refresh loop, swapped behind `atomic.Pointer`. This service *consumes* schemas; owning the schema CRUD API is the registry's job. A configured registry URL is trusted; a URL from a request body is not — that distinction does not soften | 10, 20 |
+| **T3** | §1 Schemas without redeploy | L2 schemas load through a `SchemaSource` (directory or HTTP registry) with a refresh loop, swapped behind `atomic.Pointer`. This service *consumes* schemas; owning the schema CRUD API is the registry's job. A configured registry URL is trusted; a URL from a request body is not — that distinction does not soften. **Satisfied in the adapter as of 2026-09-09, not here** — L2 moved out, so this row is a requirement on the deployment rather than on this repository. The trusted-vs-untrusted URL rule moves with it and is the half most easily lost in the handover | ~~10~~, 20 |
 | **T4** | §8 Supply chain | `govulncheck` + Trivy image scan failing on HIGH/CRITICAL in CI | 1 |
 | **T5** | §2, §9 | ADR-0012 names which interfaces are promises and which are internal. ADR-0013 records the protocol-version-coexistence shape (version-keyed `SpecIndex`, accepted-versions set, response echoes request version) without building it | 1 |
 | **T6** | all | An explicit statement of what this service does not own — below | — |
@@ -204,7 +204,7 @@ Two sit on the boundary and are called out rather than dismissed:
 | Signature verification | Phase 2; the key registry is another team's. **Parked further than originally planned:** the Ed25519 primitives are no longer built ahead of use either, because a primitive with no caller is a primitive whose first real caller finds out what it got wrong | The **slot** in the middleware order and the flag, nothing behind them. `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` therefore **refuses to boot** — a flag named for a security control, silently doing nothing, is the one failure mode worse than not having the flag: an operator reads it back as enabled and is wrong. Task 6 and the `Signature` half of Task 7 are parked with it |
 | Rate limiting per subscriber id (A4) | It is keyed on `context.senderId`, and until a signature is verified that field is a claim, not an identity — a DID resolvable to a verification key looks *more* trustworthy than the `bapId` it replaced (A24) while being exactly as unchecked until something resolves it. A limiter that trusts it is one any caller sheds by rotating the field — and one that any caller can turn on a named third party by claiming *their* id, spending someone else's budget for them | A token bucket keyed on the **remote address**, with the same knobs, the same `429` / `Retry-After` / `AUT_RATE_LIMITED` answer and the same eviction. The key moves to the subscriber id in the task that verifies the signature, and not before |
 | Publish-time embedding (A5) | 15–40 ms of inference on the write path for one mode of four | `noop` provider; nullable `embedding` column doubles as the backfill queue |
-| **L2 extended schema validation (Task 10)** | Skipped by decision on 2026-08-26, not by a technical blocker. The whole task — `SchemaSource`, the refresh loop, `L2`, and the `schemas/<TypeName>/attributes.yaml` set — is unbuilt. **C4 therefore has no enforcer:** nothing requires `@context` and `@type` to be present scalar strings, so Task 22 filters on a field whose shape was never checked, and two publishers disagreeing about it surfaces as a discover query that matches one of them. The SSRF boundary is unaffected: nothing fetches a URL from a payload because nothing fetches at all | Nothing. **`VALIDATION_ENABLE_L2_CONTEXT` and `config/common.yaml`'s `enableL2Context` still default to `true`, and now name a control that does not exist.** Task 20 must either default them off or refuse to boot when they are true, on the same reasoning that made `AUTH_ENABLE_SIGNATURE_VERIFICATION=true` a boot refusal: a flag an operator reads back as enabled, silently doing nothing, is worse than no flag |
+| ~~**L2 extended schema validation (Task 10)**~~ | **Not deferred — moved out of this service on 2026-09-09.** L2 `@context`/`@type` validation is the **adapter's**, and it is handled there. It was originally skipped by decision on 2026-08-26 rather than blocked, and while it sat here as a deferral the flag named a layer this service never ran. **C4's enforcer is therefore the adapter, not Task 20** — the concern in the row this replaces (nothing checks that `@context` and `@type` are present scalar strings, so Task 22 filters on an unvalidated shape) is real and is answered upstream of this service, not abandoned. Task 10's `SchemaSource`, the refresh loop, the `L2` validator and the `schemas/<TypeName>/attributes.yaml` set remain unbuilt **here** and are not planned; the SSRF boundary is unaffected either way, because nothing fetches a URL from a payload | The flag is **removed**, not defaulted off. `VALIDATION_ENABLE_L2_CONTEXT` and `config/common.yaml`'s `enableL2Context` are both gone. This row previously required Task 20 to default them off or refuse the boot on the `AUTH_ENABLE_SIGNATURE_VERIFICATION` reasoning; that had in fact already shipped — default `false` plus a boot refusal — and removal supersedes it. A stale `enableL2Context` in a mounted `instance.yaml` now fails the boot as an **unknown key**, which needs no rule of its own and is pinned by `TestTheRemovedL2FlagIsAnUnknownKeyInYAML`. `VALIDATION_ENABLE_L2_CONTEXT` in the environment is ignored, deliberately: unlike the deferred-flag case, the control genuinely exists — it is set in the wrong place, not naming something that does not run |
 | Master catalogs (A1) | Product decision: REGULAR only today | Rejected at intake with `SCH_TYPE_NOT_SUPPORTED` |
 | Cadastral-precision geometry | Cell algebra is accurate to one cell (~1.1 km at r8), which is right for discovery and wrong for deciding which side of a boundary a plot sits on. Closing it means PostGIS, and PostGIS is a dependency worth taking only against a requirement that exists | Seven of nine CQL2 operators over all seven RFC 7946 types, with the accuracy stated in [Geospatial Design](#geospatial-design) |
 | ~~`SearchResult.Total` reaches nobody~~ | **Closed by A19 — removed, not deferred.** It was computed on every request and discarded by `discover.Service.Discover`. Measured over 100k resources: retrieval under `LIMIT 200` costs 1.5 ms, the matching uncapped counter 150.6 ms — 100x the query it accompanies. Deleted outright rather than left here, because a deferral reads as "we will use this later" and nothing in Phase 1 can | Nothing. If a header ever carries it, it comes back **capped** — `SELECT count(*) FROM (SELECT 1 FROM ... LIMIT 10001) t`, exact below the cap and "10000+" above — which is what makes it affordable |
@@ -3765,13 +3765,27 @@ rejected non-uuid `messageId` comes back echoed in the NACK rather than blanked
 
 ---
 
-### Task 10 — L2 Extended Schema Validation
+### Task 10 — L2 Extended Schema Validation — MOVED TO THE ADAPTER
 
-**Files:** `src/platform/validation/schema_source.go`, `schema_cache.go`,
+> **Not a task in this service, as of 2026-09-09.** L2 extended
+> `@context`/`@type` validation is handled at the **adapter** level, and the
+> `VALIDATION_ENABLE_L2_CONTEXT` flag, `config/common.yaml`'s `enableL2Context`
+> key and the `validateValidation` boot check have all been removed from this
+> repository. Do not implement the files below here.
+>
+> The section is **kept, not deleted**, because C4 and T3 are still
+> requirements — they are now somebody else's to satisfy, and this is the only
+> place their reasoning is written down. Read it as the specification of what
+> the adapter has to do, particularly C4's insistence that `@context` and
+> `@type` are scalar strings rather than arrays: Task 22 filters on that shape,
+> so if the adapter widens it, this service's discover results are what go
+> wrong. The Deferred table's L2 row carries the same statement.
+
+**Files (in the adapter, not here):** `schema_source.go`, `schema_cache.go`,
 `extended_validator.go`, `schemas/<TypeName>/attributes.yaml`
 
-**Produces:** `validation.SchemaSource` (directory + HTTP registry),
-`validation.L2`
+**Produces:** a `SchemaSource` (directory + HTTP registry) and an `L2`
+validator. Nothing under `src/platform/validation/` in this repository.
 
 - **C4: `@context` and `@type` are scalar strings, and both are REQUIRED.** An
   array for either is a `400` from here — not a first-element pick, not a
