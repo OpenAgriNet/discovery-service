@@ -94,7 +94,7 @@ first person who has not read it:
 ```
 src/platform/telemetry/
   fact/                    imports context, iter, time. NOTHING ELSE.
-    fact.go                Key, Signal, Kind, Cardinality, Visibility, Event, Alias, Definition
+    fact.go                Key, Signal, Kind, Cardinality, Layer, Event, Alias, Definition
     registry.go            var registry [numKeys]Definition   ← THE ONE TABLE
     instrument.go          var instruments [numInstruments]Instrument   (Task 25)
     record.go              Record, New, From, Observe{String,Int64,Float64,Bool,Strings}
@@ -186,11 +186,20 @@ const (KindUnspecified Kind = iota; KindString; KindInt64; KindFloat64; KindBool
 type Cardinality uint8
 const (CardinalityUnspecified Cardinality = iota; Bounded; Unbounded)
 
-// Visibility governs 23f's facilitator deny-list. The zero value is
-// Unspecified, and the projection treats Unspecified as LocalOnly at runtime —
-// see §5. A forgotten field must not mean "exported".
-type Visibility uint8
-const (VisibilityUnspecified Visibility = iota; Public; LocalOnly)
+// Visibility WAS HERE and was deleted on 2026-09-09. It governed 23f's
+// facilitator deny-list, 23f is blocked on O1/O2/O4, and the column reached no
+// runtime consumer in the meantime — see the build-vs-reuse audit, Finding 2.
+// The design it encoded is kept below so 23f can restore it rather than
+// re-derive it:
+//
+//   type Visibility uint8
+//   const (VisibilityUnspecified Visibility = iota; Public; LocalOnly)
+//
+// The zero was Unspecified and the projection was to treat Unspecified as
+// LocalOnly at runtime, because a forgotten field must not mean "exported".
+// Note when restoring it: all 54 rows carried Public and none ever carried
+// LocalOnly, so the column had never distinguished anything. 23f is the commit
+// that knows what the deny-list needs; today nobody does.
 
 // Event places a fact on a span event rather than on the span. The rule from
 // opentelemetry.md: true for the whole request → attribute; produced at a point
@@ -231,7 +240,6 @@ type Definition struct {
     Layer   Layer
 
     Cardinality Cardinality
-    Visibility  Visibility
 
     // Values is the closed value set for a Bounded key, nil when the set is
     // open. This is what turns Bounded from a claim into a pin, and what the
@@ -281,7 +289,7 @@ label projection something to enforce and the instrument test something to
 multiply (§5).
 
 **Every enum's zero is `Unspecified` and the completeness test is fatal on it.**
-`Cardinality: 0` or `Visibility: 0` is an author who did not decide, and a
+`Cardinality: 0` or `Layer: 0` is an author who did not decide, and a
 default is a decision made by whoever wrote the type rather than by whoever added
 the row.
 
@@ -365,8 +373,8 @@ enforced only by whoever is reviewing that day.
         CardinalityUnspecified. Every Definition states Bounded or Unbounded
         before it can reach a metric label — the instrument check in 5d has
         nothing to check against otherwise.
-    registry_test.go:52: registry[9] (SenderID): Visibility is
-        VisibilityUnspecified. 23f's deny-list is a filter over this field.
+    registry_test.go:52: registry[9] (SenderID): Layer is LayerUnspecified.
+        CrossLayer says the spelling is not ours to change; Local says it is.
     registry_test.go:60: registry[30] (RetrievalModesDegraded): Signals includes
         Label but Cardinality is Unbounded — a metric dimension with an open
         value set is a cardinality incident with a table row authorising it.
@@ -535,24 +543,28 @@ Leave them independent and "one place" is false on day one.
 
 ### 5f. The deny-list runs over bytes, not keys
 
-`Visibility` is closed-world over **keys**, and the privacy risk is in **values**.
-`opentelemetry.md` already says this about `beckn.schemaContext` — a caller-supplied
-URI whose query and fragment can carry text — and the same limitation applies to
-`status.message`, to span and event names, and to `zap.Error(err)`, of which there
-are 9 sites carrying no string literal at all.
+A per-row column is closed-world over **keys**, and the privacy risk is in
+**values**. `opentelemetry.md` already says this about `beckn.schemaContext` — a
+caller-supplied URI whose query and fragment can carry text — and the same
+limitation applies to `status.message`, to span and event names, and to
+`zap.Error(err)`, of which there are 9 sites carrying no string literal at all.
+This is the reason a `Visibility` column could never have been the whole
+mechanism, and part of the reason deleting it on 2026-09-09 cost nothing.
 
 So Task 26's conformance test asserts over the **serialised bytes of the
 facilitator projection**, regexing the deny-list across string *values*, not key
-names. It needs an in-memory exporter and nothing from 23f, which means it can
-move into **23d** and stop being parked behind a blocked task. It runs against the
-facilitator projection only — asserting it on the ClickStack one would forbid the
-local analysis the split exists to permit. And it carries its own vacuity guard:
-a conformance test that passes over zero inputs is a failure mode this repo has
-already met once.
+names. It runs against the facilitator projection only — asserting it on the
+ClickStack one would forbid the local analysis the split exists to permit. And it
+carries its own vacuity guard: a conformance test that passes over zero inputs is
+a failure mode this repo has already met once.
 
-Belt and braces on the enum: the facilitator projection treats
-`VisibilityUnspecified` as `LocalOnly` **at runtime**, not only in the test. A
-skipped or deleted test must not become an export.
+**Task 26 follows 23f.** This paragraph said the opposite until 2026-09-09 —
+"it needs an in-memory exporter and nothing from 23f, which means it can move
+into 23d". That is true about the exporter *type* and misses that the thing under
+test is `telemetry/redact.go`, which is 23f's deliverable: a conformance test
+cannot precede the projection it asserts on. `opentelemetry.md` OP11 and its
+Task 26 row are the corrected statement; this one had been left contradicting
+them.
 
 ### 5g. Two fixtures, two jobs
 

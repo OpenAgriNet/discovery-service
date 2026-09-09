@@ -86,23 +86,6 @@ const (
 	Unbounded
 )
 
-// Visibility governs 23f's facilitator deny-list. The zero value is
-// Unspecified, and the projection treats Unspecified as LocalOnly at runtime as
-// well as in the test: a forgotten field must not mean "exported", and a
-// skipped or deleted test must not become an export.
-type Visibility uint8
-
-const (
-	// VisibilityUnspecified is the zero, and the facilitator projection treats it
-	// as LocalOnly at runtime as well as failing the test on it.
-	VisibilityUnspecified Visibility = iota
-	// Public may leave the process.
-	Public
-	// LocalOnly is dropped from the facilitator projection and kept in the
-	// ClickStack one, which is the whole reason there are two projections.
-	LocalOnly
-)
-
 // Event places a fact on a span event rather than on the span. The rule from
 // opentelemetry.md: true for the whole request → attribute; produced at a point
 // during processing → event.
@@ -167,7 +150,6 @@ type Definition struct {
 	Layer   Layer
 
 	Cardinality Cardinality
-	Visibility  Visibility
 
 	// Values is the closed value set for a Bounded key. It is what turns Bounded
 	// from a claim written by the same person, in the same commit, as the code
@@ -400,10 +382,6 @@ func (k Kind) String() string {
 
 func (c Cardinality) String() string {
 	return name(int(c), []string{"CardinalityUnspecified", "Bounded", "Unbounded"})
-}
-
-func (v Visibility) String() string {
-	return name(int(v), []string{"VisibilityUnspecified", "Public", "LocalOnly"})
 }
 
 func (e Event) String() string {

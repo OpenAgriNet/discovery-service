@@ -143,7 +143,6 @@ var registry = [numKeys]Definition{
 		Layer:       CrossLayer,
 		Cardinality: Bounded,
 		Values:      []string{"API", "METRIC", "AUDIT"},
-		Visibility:  Public,
 		Required:    true,
 		Note: "The signal is called LOG/AUDIT and its eid is AUDIT. onix gets this " +
 			"right (otelsetup.go:122,143,159) and it is the kind of detail a second " +
@@ -156,7 +155,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Required:    true,
 		Note: "This deployment's registered subscriber id, an FQDN from APP_SUBSCRIBER_ID " +
 			"— which nothing sets today. NOT service.name: producer says which " +
@@ -171,7 +169,6 @@ var registry = [numKeys]Definition{
 		Layer:       CrossLayer,
 		Cardinality: Bounded,
 		Values:      []string{"Agriculture"},
-		Visibility:  Public,
 		Required:    true,
 		Note:        "The sector. Not the network, not the entity type.",
 	},
@@ -183,7 +180,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      []string{"discovery-service"},
-		Visibility:  Public,
 		Note: "ClickStack's grouping column, and a constant. Not Required: it is " +
 			"ours and a deployment that has not set it should still boot.",
 	},
@@ -194,7 +190,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note:        "APP_NETWORK_ID — mahavistar, bharatvistar (C8). Our key, not the spec's.",
 	},
 
@@ -212,7 +207,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		AbsentFlag:  "sender.unidentified",
 		PresentFlag: "sender.unverified",
 		Note: "context.senderId when present, and unverified whenever present. " +
@@ -228,7 +222,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		AbsentFlag:  "recipient.unidentified",
 		Note: "APP_SUBSCRIBER_ID, the same value as producer. Ours, never the " +
 			"caller's receiverId — a caller can address anyone and this has to say " +
@@ -244,7 +237,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note:        "Generated per span by a SpanProcessor's OnStart (23a).",
 	},
 	ObservedTimeUnixNano: {
@@ -254,7 +246,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Unix nanos as a string: the spec's prose says ISO, its field name and " +
 			"examples say nanos, and the name wins. Set in the middleware just before " +
 			"span.End() — OnEnd receives a ReadOnlySpan and cannot set attributes.",
@@ -267,7 +258,6 @@ var registry = [numKeys]Definition{
 		Layer:       CrossLayer,
 		Cardinality: Bounded,
 		Values:      []string{"POST"},
-		Visibility:  Public,
 		Note: "Bounded by the router, not by the protocol: router.go:94-95 mounts " +
 			"POST /publish and POST /discover, and the two GET probes emit no span. " +
 			"A new verb widens this row before it widens the mux.",
@@ -279,7 +269,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 	},
 	HTTPRoute: {
 		Name:        "HTTPRoute",
@@ -289,7 +278,6 @@ var registry = [numKeys]Definition{
 		Layer:       CrossLayer,
 		Cardinality: Bounded,
 		Values:      []string{"/discover", "/publish"},
-		Visibility:  Public,
 		Note: "The route TEMPLATE from r.Pattern with the method prefix stripped — " +
 			"the pattern reads \"POST /discover\" and http.method already carries the " +
 			"verb. The spec's prose says URL; we differ deliberately, and a reader who " +
@@ -304,7 +292,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindInt64,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "CrossLayer for the ALIAS, not the SpanKey. http.status.code is " +
 			"Required by the spec's mandatory span profile, so the facilitator reads " +
 			"it and its spelling is not ours to change; http.status_code is ours and " +
@@ -325,7 +312,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      []string{"http", "https"},
-		Visibility:  Public,
 	},
 	HTTPFlavor: {
 		Name:        "HTTPFlavor",
@@ -335,7 +321,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      []string{"1.0", "1.1", "2.0"},
-		Visibility:  Public,
 	},
 
 	// ---- Ours: correlators and classification --------------------------------
@@ -346,7 +331,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Log only. It is this process's handle on a request and nothing " +
 			"outside reads it; span_uuid is the span's identity and traceId the " +
 			"trace's, so a third id on the span would be a third thing to join on.",
@@ -360,7 +344,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      []string{"discover", "publish"},
-		Visibility:  Public,
 		Note: "Normalised, not verbatim: catalog/publish is accepted on the wire " +
 			"(beckn/actions.go:26-27) and both spellings resolve to one handler, so " +
 			"both record publish. Emitting context.action as sent would split every " +
@@ -375,7 +358,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "beckn.Version is const 2.0.0 today, but this is context.version as " +
 			"the caller sent it and Context has no required list (C6), so an envelope " +
 			"can omit it. Unbounded rather than Bounded on one value: the row would " +
@@ -388,7 +370,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "The network the CALLER named, beside network.id which is the one this " +
 			"deployment serves. Two keys because the two disagreeing is the interesting case.",
 	},
@@ -401,7 +382,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "I1. onix's network collector rewrites trace_id from an attribute " +
 			"named literally transaction_id (otel-collector-network/config.yaml:23-25), " +
 			"and onix injects traceparent nowhere (SpanKindClient appears in no file " +
@@ -418,7 +398,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       CrossLayer,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "I1, and a searchable tag rather than a join: onix's collector " +
 			"deliberately does NOT map it onto span_id, because several nodes emit " +
 			"spans for one Beckn message and identical span ids would corrupt the trace.",
@@ -430,7 +409,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "context.receiverId when present — the caller's CLAIM about who it " +
 			"addressed. Emitted beside recipient.id rather than into it: the two " +
 			"disagreeing is a caller addressing a participant that is not us, which " +
@@ -443,7 +421,6 @@ var registry = [numKeys]Definition{
 		Kind:           KindStrings,
 		Layer:          Local,
 		Cardinality:    Unbounded,
-		Visibility:     Public,
 		MaxEntries:     maxSchemaEntries,
 		MaxRunes:       maxSchemaRunes,
 		TruncationFlag: "beckn.schemaTruncated",
@@ -463,7 +440,6 @@ var registry = [numKeys]Definition{
 		Kind:           KindStrings,
 		Layer:          Local,
 		Cardinality:    Unbounded,
-		Visibility:     Public,
 		MaxEntries:     maxSchemaEntries,
 		MaxRunes:       maxSchemaRunes,
 		TruncationFlag: "beckn.schemaTruncated",
@@ -483,7 +459,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      errorTypes,
-		Visibility:  Public,
 		Note: "The C1 category, on the SPAN. Also on the error event as ErrorEventType, " +
 			"so a facilitator can filter a span set without unpacking events.",
 	},
@@ -494,7 +469,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindFloat64,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Log only, and deliberately not a span attribute: response time is the " +
 			"span's own end - start, stored as a native Duration column and charted " +
 			"from there. A duration attribute would be a second copy free to disagree " +
@@ -516,7 +490,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      errorTypes,
-		Visibility:  Public,
 		Note: "beckn.Error.Type on the error EVENT. A second key rather than an " +
 			"Alias of ErrorType because an alias is one value under two keys in one " +
 			"place, and these sit in two places — the span and its event — which the " +
@@ -531,7 +504,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "beckn.Error.Code, e.g. NET_CATALOG_SOURCE_UNAVAILABLE. Unbounded " +
 			"because DOM_ codes are relayed from downstream systems and are the one " +
 			"case the spec names as legitimately non-canonical.",
@@ -544,11 +516,11 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
-		Note: "beckn.Error.Message. Public because these are our own strings, but " +
-			"note that Visibility is closed-world over KEYS and the risk here is in " +
-			"the VALUE: Task 26's conformance test regexes the deny-list across the " +
-			"serialised bytes of the facilitator projection, which is what covers this.",
+		Note: "beckn.Error.Message. These are our own strings, so the key is safe " +
+			"to export and the risk is in the VALUE rather than in the key — which " +
+			"is why no per-row column can cover it. Task 26's conformance test " +
+			"regexes the deny-list across the serialised bytes of the facilitator " +
+			"projection, and that is what covers this.",
 	},
 	ErrorPath: {
 		Name:        "ErrorPath",
@@ -558,7 +530,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note:        "beckn.ErrorDetails.Path, e.g. $.message.publishDirectives[1].",
 	},
 
@@ -576,7 +547,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      intentKinds,
-		Visibility:  Public,
 	},
 	IntentFilterType: {
 		Name:        "IntentFilterType",
@@ -586,7 +556,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Filters.Type — the grammar NAMED, never the expression. Unbounded " +
 			"although filter_parser.go:20 answers only \"jsonpath\": this fires at " +
 			"intake, so an unrecognised grammar reaches it before it is refused, and " +
@@ -600,7 +569,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindStrings,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Each SpatialConstraint.op verbatim. Unbounded for the same reason as " +
 			"intent.filter_type — domain.SpatialOp declares nine and a caller can send " +
 			"a tenth, which intent_mapper.go:366 refuses after this has fired.",
@@ -614,7 +582,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      boolValues,
-		Visibility:  Public,
 		Note:        "Whether networkId was supplied.",
 	},
 
@@ -628,7 +595,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      retrievalModes,
-		Visibility:  Public,
 	},
 	RetrievalModesDegraded: {
 		Name:        "RetrievalModesDegraded",
@@ -639,7 +605,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      retrievalModes,
-		Visibility:  Public,
 		Note:        "The X-Beckn-Degraded list (C11).",
 	},
 	RetrievalEmbeddingMs: {
@@ -650,7 +615,6 @@ var registry = [numKeys]Definition{
 		Kind:         KindFloat64,
 		Layer:        Local,
 		Cardinality:  Unbounded,
-		Visibility:   Public,
 		ZeroIsAbsent: true,
 		Note: "Present only when an embedding was computed — absent under " +
 			"EMBEDDING_PROVIDER=noop, which is every Phase 1 deployment (A5). It does " +
@@ -669,7 +633,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindInt64,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "No ZeroIsAbsent here, deliberately: zero is the answer, not the " +
 			"absence of one. See ResultEmpty.",
 	},
@@ -681,7 +644,6 @@ var registry = [numKeys]Definition{
 		Kind:           KindStrings,
 		Layer:          Local,
 		Cardinality:    Unbounded,
-		Visibility:     Public,
 		MaxEntries:     maxProviderIDs,
 		TruncationFlag: "result.providersTruncated",
 		Note: "The DISTINCT provider-node ids of what was returned — whose data " +
@@ -702,7 +664,6 @@ var registry = [numKeys]Definition{
 		Layer:         Local,
 		Cardinality:   Bounded,
 		Values:        boolValues,
-		Visibility:    Public,
 		Note: "The most valuable signal this service gives the network: somebody " +
 			"asked and nobody serves it. Its cost is real — it says unmet demand " +
 			"happened, not what for, and that half is recovered in ClickStack where " +
@@ -729,7 +690,6 @@ var registry = [numKeys]Definition{
 		Kind:           KindStrings,
 		Layer:          Local,
 		Cardinality:    Unbounded,
-		Visibility:     Public,
 		MaxEntries:     maxProviderIDs,
 		TruncationFlag: "publish.providersTruncated",
 		Note: "Who added the source. The same name stem as result.provider_ids on " +
@@ -745,7 +705,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindInt64,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 	},
 	PublishResourceCount: {
 		Name:        "PublishResourceCount",
@@ -755,7 +714,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindInt64,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 	},
 	PublishOfferCount: {
 		Name:        "PublishOfferCount",
@@ -765,7 +723,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindInt64,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Payload volume. Judgement call recorded in opentelemetry.md: the " +
 			"counts reveal catalog size and publish.visible_to reveals distribution, " +
 			"which is arguably commercial information. In, because the spec asks for " +
@@ -781,7 +738,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      updateModes,
-		Visibility:  Public,
 		Note: "A FULL republish deletes what it does not mention, which is why this " +
 			"is worth a span attribute rather than only a log line. An omitted " +
 			"updateMode arrives as \"\" and resolves to MERGE, so no third value " +
@@ -796,7 +752,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      catalogTypes,
-		Visibility:  Public,
 		Note: "As sent — MASTER appears even though Phase 1 refuses it. An absent " +
 			"directive is REGULAR and is never inferred from content (C9).",
 	},
@@ -808,7 +763,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindStrings,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note:        "Which networks it was published to. Omitted resolves to the request's own (C8).",
 	},
 	PublishValidityPresent: {
@@ -820,7 +774,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      boolValues,
-		Visibility:  Public,
 		Note:        "Whether a validity window was set — the freshness signal.",
 	},
 
@@ -848,7 +801,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "The -ldflags -X target, defaulting to `dev`. Never empty: an empty version is " +
 			"indistinguishable from an unset Resource field, so an unstamped build has to say " +
 			"which of the two it is. Unbounded because it is a git describe of every tag ever cut.",
@@ -860,7 +812,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "vcs.revision from debug.BuildInfo, or `unknown`. A build from an exported tree " +
 			"carries no VCS stamp at all, and so does every `go test` binary, so the absence is " +
 			"a value rather than an error — the same choice main.go's vcsRevision already made.",
@@ -873,7 +824,6 @@ var registry = [numKeys]Definition{
 		Layer:       Local,
 		Cardinality: Bounded,
 		Values:      treeStates,
-		Visibility:  Public,
 		Note: "clean, dirty, or unknown when the binary carries no vcs.modified setting. " +
 			"Bounded on three values including the absence, because `dirty` on a production " +
 			"Resource is a finding and it must not be confusable with a missing stamp.",
@@ -885,7 +835,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "vcs.time from debug.BuildInfo — the COMMIT's timestamp, RFC3339, not the moment " +
 			"the compiler ran. onix's onix.build.date is the latter. The commit time is the " +
 			"reproducible half and the one that answers which change is deployed; a build " +
@@ -898,7 +847,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "Log only, and structurally so. traceId is a field on the OTLP Span message, " +
 			"not an attribute — TestNoDefinitionNamesAnOTLPStructuralField refuses a SpanKey " +
 			"spelling it, and a row that put it on the span would emit a second, unrelated " +
@@ -915,7 +863,6 @@ var registry = [numKeys]Definition{
 		Kind:        KindString,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Visibility:  Public,
 		Note: "The other half of TraceID's join, and the half that makes it usable: one trace " +
 			"holds every hop of a transaction, so trace_id alone narrows the logs to the " +
 			"exchange and span_id narrows them to this service's part of it.",

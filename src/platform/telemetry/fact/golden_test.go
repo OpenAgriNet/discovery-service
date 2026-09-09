@@ -30,11 +30,11 @@ const goldenPath = "testdata/registry.golden.txt"
 // only test here that asserts nothing about correctness.
 //
 // Every other test in this package checks that a row is self-consistent. None of
-// them can check that a row is what somebody INTENDED — that beckn.action is
-// Public rather than LocalOnly, that result.catalog_count is Unbounded. Those
+// them can check that a row is what somebody INTENDED — that sender.id is
+// CrossLayer rather than Local, that result.catalog_count is Unbounded. Those
 // are judgements, and the only mechanism that catches a wrong one is a human
 // reading the change. This file is what puts the change in front of them: a
-// one-character edit to a Visibility deep inside a 47-row table is invisible in
+// one-character edit to a Layer deep inside a 54-row table is invisible in
 // a diff of registry.go and unmissable in a diff of this.
 func TestTheGoldenFileMatchesTheRegistry(t *testing.T) {
 	rendered := render()

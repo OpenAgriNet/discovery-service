@@ -138,6 +138,31 @@ type, one struct field, 54 declarations, one golden regeneration. Re-adding it
 when 23f unblocks is the same work in reverse, and 23f would be the commit that
 knows what the deny-list actually needs — which today nobody does.
 
+**Applied on 2026-09-09.** The column is gone from `fact.go`, from all 54 rows,
+from the completeness test and from the golden file. `discover-and-publish.md`'s
+Deferred table carries the entry that puts it back with 23f, and
+`telemetry-seam.md` §3 keeps the type declaration and its rationale verbatim so
+23f restores the design rather than re-deriving it.
+
+One fact found while applying it, which the audit above had not measured and
+which makes the case stronger than it argued: **all 54 rows carried `Public`.
+Not one row anywhere in the registry ever carried `LocalOnly`.** So the column
+was not merely unconsumed — it had never distinguished one row from another. A
+deny-list filter over a field with one value in practice would have denied
+nothing, and the test at `registry_test.go:56` that asserted no row was left
+`Unspecified` was checking that 54 authors had each typed the same constant.
+
+Two things did **not** change, and both are the point of the finding rather than
+casualties of it. `fact.go`'s claim that "the projection treats Unspecified as
+LocalOnly at runtime" described behaviour that never existed, so deleting the
+column deleted a false sentence rather than a guarantee. And Task 26's
+conformance test — which asserts over the serialised **bytes** of the
+facilitator projection, regexing string *values* — was always the actual
+enforcer, because the privacy risk lives in values and no per-row column over
+keys can reach it. See Finding 1's neighbour in `telemetry-seam.md` §5f, which
+was corrected in the same pass: it had been left claiming Task 26 could move
+into 23d, contradicting `opentelemetry.md` OP11.
+
 ## Finding 3 — the library-by-library verdict
 
 | Candidate | Latest | Would it replace ours? | Verdict |
@@ -164,22 +189,34 @@ against a risk that was never underwritten.
 
 ## What I would do, in order
 
-1. **Correct the five misquotes** (Finding 1). Cheap, clearly right, and it
-   replaces a wrong reason with a sharper one. Amends ADR-0011's reasoning, not
-   its decision.
-2. **Delete the `Visibility` column** (Finding 2) and record in the plan's
-   Deferred section that 23f reintroduces it. Removes dead weight from all 54
-   rows and from every future one.
-3. **Spike `otelpgx`** against Task 25 before implementing Task 25 by hand. One
-   question decides it: does it let us supply our own tracer, or does it obtain
-   one with its own scope? If the former, it likely subsumes Task 25 and adds DB
-   spans for free. If the latter, Finding 1 rules it out and Task 25 proceeds as
-   planned — one instrument, two counters.
-4. **Resolve the unused `otelhttp` dependency** — either drop it from `go.mod` or
-   note why it is retained.
+1. ~~**Correct the five misquotes** (Finding 1).~~ **Done 2026-09-09.** Cheap,
+   clearly right, and it replaced a wrong reason with a sharper one. Amended
+   ADR-0011's reasoning, not its decision. The count was five and the locations
+   were six — see Finding 1's table.
+2. ~~**Delete the `Visibility` column** (Finding 2) and record in the plan's
+   Deferred section that 23f reintroduces it.~~ **Done 2026-09-09.** Removed
+   dead weight from all 54 rows and from every future one; the Deferred entry
+   is in place and `telemetry-seam.md` §3 keeps the design for 23f.
+3. ~~**Spike `otelpgx`** against Task 25 before implementing Task 25 by hand.~~
+   **Overtaken by events — this step can no longer be taken as written.** Task 25
+   shipped by hand in `4c52ce0`, before this audit was written, so the "before
+   implementing" framing was already false on the day it was recommended. The
+   underlying question survives and is now a different, smaller one: does
+   `otelpgx` supply spans for DB queries we do not currently have, and can it
+   accept our tracer rather than obtaining one with its own scope? If it obtains
+   its own, Finding 1's `scope.version` collision applies to it too. Worth a
+   spike on its own merits; **not** a gate on anything, and not a reason to
+   revisit Task 25's two counters, which are a *levels* signal `otelpgx` does
+   not produce.
+4. ~~**Resolve the unused `otelhttp` dependency**.~~ **Done 2026-09-09 — by
+   disproving the premise.** It is not unused and not ours to delete: `go mod why`
+   traces it to `tests/dbtest` → `testcontainers-go/modules/postgres` →
+   `moby/moby/client`, which imports it directly. `// indirect` is the correct
+   marking and `go mod tidy` leaves `go.mod` byte-identical. See Finding 3.
 
-Steps 1, 2 and 4 are doc-and-mechanical. Step 3 is the only one that could
-change an architectural decision, and it is a spike, not a commitment.
+Steps 1, 2 and 4 were doc-and-mechanical and are complete. Step 3 was the only
+one that could have changed an architectural decision; it is now a standalone
+spike rather than a commitment or a gate.
 
 ## What I did not do
 

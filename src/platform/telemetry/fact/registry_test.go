@@ -53,10 +53,6 @@ func TestEveryDefinitionIsComplete(t *testing.T) {
 				"label — the instrument check in Task 25 has nothing to check against "+
 				"otherwise", key, def.Name)
 		}
-		if def.Visibility == fact.VisibilityUnspecified {
-			t.Errorf("registry[%d] (%s): Visibility is VisibilityUnspecified. 23f's "+
-				"deny-list is a filter over this field", key, def.Name)
-		}
 		if def.Layer == fact.LayerUnspecified {
 			t.Errorf("registry[%d] (%s): Layer is LayerUnspecified. CrossLayer says "+
 				"the spelling is not ours to change; Local says it is", key, def.Name)
@@ -86,7 +82,6 @@ func TestValidateRefusesTheRowsTheRegistryHappensNotToHaveToday(t *testing.T) {
 		Signals:     fact.Span,
 		Kind:        fact.KindString,
 		Cardinality: fact.Bounded,
-		Visibility:  fact.Public,
 		Layer:       fact.Local,
 		Values:      []string{"a"},
 	}
