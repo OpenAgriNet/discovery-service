@@ -195,9 +195,15 @@ is what makes the local stack work with no registry reachable and no network at
 all. The boot logs one warning about the fetch it skipped; that warning is
 accurate and is not a failure.
 
-To exercise the fetch path instead, drop that volume line and point
-`VALIDATION_SPEC_URL` at the upstream file. Note that it tracks `main`, so the
-fetch path pins nothing — the mount is what makes a run reproducible.
+To exercise the fetch path instead, drop that volume line and set
+
+```
+VALIDATION_SPEC_URL=https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml
+```
+
+That is a **tag**, not a branch, and the mounted file is byte-identical to it —
+so the fetch path and the offline path validate against the same document.
+Pointing it at `main` instead would pin nothing.
 
 ### Rate limiting is effectively off locally
 

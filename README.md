@@ -60,8 +60,9 @@ Compose profile, which `make run` selects.
 That stack applies its own migrations (they are compiled into the binary) and
 reads the Beckn specification from `tests/testdata/beckn-v2.0.0.yaml`, mounted
 at the cache path. The boot logs one warning about the registry fetch it did
-not do, which is why it works with no network; set `VALIDATION_SPEC_URL` to
-exercise the fetch path instead.
+not do, which is why it works with no network. That file is byte-identical to
+the `core-v2.0.0-lts` tag of `beckn/protocol-specifications-v2`; set
+`VALIDATION_SPEC_URL` to its raw URL to exercise the fetch path instead.
 
 With the stack up, there is a worked catalog and the requests that find it:
 

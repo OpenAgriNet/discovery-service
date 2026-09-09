@@ -120,11 +120,13 @@ IMAGE_REPOS = ghcr.io/$(OWNER)/$(IMAGE_NAME)
 # would go untested from the day semantic search was deferred.
 TEST_ENV := EMBEDDING_PROVIDER=hashing
 
-# The telemetry overlay is a second compose file rather than a profile, because
-# it changes the service container's environment and a profile can only add
-# containers. Spelled once here so the four telemetry targets cannot drift into
-# disagreeing about which files make up the stack.
-TELEMETRY_FILES := -f docker-compose.yml -f docker-compose.telemetry.yml
+# The telemetry stack is the app stack plus one profile and one variable. It
+# was a second compose file until 2026-09-09, because it has to change the
+# service container's environment and a profile can only add containers;
+# OTEL_EXPORTER is the whole of that change, so interpolating it in the one
+# compose file replaces the overlay. Spelled once here so the three telemetry
+# targets cannot drift into disagreeing about what the stack is.
+TELEMETRY := OTEL_EXPORTER=otlp docker compose --profile app --profile telemetry
 
 # Coverage instruments these packages regardless of which test binary is
 # running. Without it Go instruments only the package under test, and
@@ -550,9 +552,9 @@ logs:
 ##            discover call count and latency, which are DERIVED from the spans
 ##            by the spanmetrics connector and are instrumented nowhere in Go.
 telemetry:
-	docker compose $(TELEMETRY_FILES) --profile app up -d --build
+	$(TELEMETRY) up -d --build
 
-## telemetry-metrics: the derived streams, which is the point of the overlay.
+## telemetry-metrics: the derived streams, which is the point of the profile.
 ##                    Waits, because a bare scrape right after `make telemetry`
 ##                    reports zeros that are not the answer — see below.
 telemetry-metrics:
@@ -588,11 +590,11 @@ telemetry-metrics:
 ## telemetry-logs: the collector's view of the spans, since the local stack has
 ##                 no trace backend to send them to
 telemetry-logs:
-	docker compose $(TELEMETRY_FILES) logs -f otel-collector
+	$(TELEMETRY) logs -f otel-collector
 
 ## telemetry-down: stop the telemetry stack and discard its volumes
 telemetry-down:
-	docker compose $(TELEMETRY_FILES) --profile app down -v
+	$(TELEMETRY) down -v
 
 ## verify: publish the sample catalog and assert text, spatial and filter
 ##         retrieval against a stack already running via `make run`

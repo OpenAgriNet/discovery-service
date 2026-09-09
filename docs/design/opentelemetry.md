@@ -1154,9 +1154,12 @@ So the change is a `connectors:` block, the connector added as a second exporter
 on the existing `traces/app` pipeline, and one `metrics/spanmetrics` pipeline
 reading from it. No new instrument, no `fact.Instrument` row, no import.
 
-**Built. `otel/collector.yaml`, brought up by `docker-compose.telemetry.yml`.**
-It is an overlay rather than a compose profile because it has to change the
-service's own environment, which a profile cannot do. The streams are
+**Built. `otel/collector.yaml`, brought up by the `telemetry` profile in
+`docker-compose.yml`.** It was a `docker-compose.telemetry.yml` overlay until
+2026-09-09, because it has to change the service's own environment and a
+profile can only add containers; the environment change is one variable, so
+`OTEL_EXPORTER: ${OTEL_EXPORTER:-none}` carries it and the two files are one.
+The streams are
 `discovery_calls_total` and `discovery_duration_milliseconds`; `make telemetry`
 starts it and `make telemetry-metrics` scrapes it. Read that file rather than
 this section for the label set — it records three things only a live stack

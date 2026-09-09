@@ -20,8 +20,8 @@ That is the whole of it:
 
 Four routes, no wildcard mount, no aliases. Both APIs are implemented against
 the published Beckn v2.0.0 specification —
-[`beckn/protocol-specifications-v2`](https://github.com/beckn/protocol-specifications-v2/blob/main/api/v2.0.0/beckn.yaml),
-pinned in this repo as
+[`beckn/protocol-specifications-v2`](https://github.com/beckn/protocol-specifications-v2/blob/core-v2.0.0-lts/api/v2.0.0/beckn.yaml)
+at the `core-v2.0.0-lts` tag, pinned in this repo as
 [`tests/testdata/beckn-v2.0.0.yaml`](../tests/testdata/beckn-v2.0.0.yaml). That
 document *is* the validator: the service loads it and validates every request
 against it, rather than restating the protocol in Go.
@@ -467,7 +467,7 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 | `EMBEDDING_MODEL` / `_ENDPOINT` / `_DIMENSIONS` | `nomic-embed-text` / `http://localhost:11434` / `768` | the Ollama seam |
 | `RATE_LIMIT_RPS` / `_BURST` | `20` / `40` | per-client limit; `burst >= rps` is enforced |
 | `VALIDATION_ENABLE_L1_SCHEMA` | `true` | Beckn schema validation of the payload |
-| `VALIDATION_SPEC_URL` | — | where to fetch the spec if it is not cached |
+| `VALIDATION_SPEC_URL` | — | where to fetch the spec if it is not cached; use the `core-v2.0.0-lts` raw URL, not `main` |
 | `VALIDATION_SPEC_CACHE_PATH` | `.cache/beckn/beckn.yaml` | where the spec is read from |
 | `AUTH_ENABLE_SIGNATURE_VERIFICATION` | `false` | `true` refuses the boot — see below |
 | `EXT_ALLOW_NETWORK_FETCH` | `false` | may a URL from a *request body* be fetched |
