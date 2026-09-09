@@ -100,6 +100,24 @@ func With(ctx context.Context, fields ...zap.Field) context.Context {
 // RequestID names this service's own per-request identifier.
 func RequestID(id string) zap.Field { return zap.String("request_id", id) }
 
+// TraceID names the trace this request's span belongs to, so an operator
+// holding a span reaches the logs.
+//
+// It is the SPAN's id, not a second one minted here — Trace reads it off the
+// span context it just created. The direction matters: request_id has no span
+// attribute precisely because this pair exists, and shipping an internal handle
+// to the facilitator to solve a problem the log line already solves would be
+// the same join paid for twice (fact.RequestID's Note).
+//
+// Set on the request-scoped logger rather than appended to one line, so every
+// line the request writes carries it — including httpx.WriteNack's, which is
+// the one an operator following a failed span most wants.
+func TraceID(id string) zap.Field { return zap.String("trace_id", id) }
+
+// SpanID names this service's own span within that trace. trace_id narrows the
+// logs to the exchange; this narrows them to our part of it.
+func SpanID(id string) zap.Field { return zap.String("span_id", id) }
+
 // TransactionID names the Beckn transaction the request belongs to, which spans
 // every hop of the exchange.
 func TransactionID(id string) zap.Field { return zap.String("transaction_id", id) }

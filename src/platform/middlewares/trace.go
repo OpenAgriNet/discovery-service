@@ -1,6 +1,7 @@
 package middlewares
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry"
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
@@ -63,6 +65,8 @@ func Trace(tracer oteltrace.Tracer, recipient string) func(http.Handler) http.Ha
 			// is the population somebody is most often looking at.
 			ctx, span := tracer.Start(ctx, r.URL.Path, oteltrace.WithSpanKind(oteltrace.SpanKindServer))
 
+			ctx = correlateLog(ctx, span)
+
 			observeRequest(record, r, recipient)
 
 			// Deferred, and this is not tidiness. Recover's abort path re-panics
@@ -75,6 +79,37 @@ func Trace(tracer oteltrace.Tracer, recipient string) func(http.Handler) http.Ha
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// correlateLog puts trace_id and span_id on the request-scoped logger, so every
+// line written below this point can be reached from the span (23e).
+//
+// On the LOGGER and not on the record, which is the one design decision here.
+// A record fact would reach the completion line and nothing else, and the line
+// an operator following a failed span actually wants is httpx.WriteNack's —
+// written from a controller, through logger.FromContext, before RequestLogger's
+// deferred block runs. request_id already travels this way for the same reason;
+// this is the same seam, one link down.
+//
+// IsSampled and not IsValid, and the difference is the acceptance criterion.
+// Under OTEL_EXPORTER=none the sampler is NeverSample, but the SDK still mints
+// ids for the non-recording span it hands back — so a validity check answers
+// yes and every log line in a deployment that exports nothing acquires a pair
+// of ids that reach no backend. An id present and unfindable reads as a dropped
+// span, which is the one diagnosis this telemetry exists to make. Sampled is
+// the question worth asking: will a span with this id be somewhere to look.
+//
+// Absent, not empty, when the answer is no. An empty trace_id is a value, and a
+// query filtering on the field's presence would match every line.
+func correlateLog(ctx context.Context, span oteltrace.Span) context.Context {
+	spanContext := span.SpanContext()
+	if !spanContext.IsSampled() {
+		return ctx
+	}
+
+	return logger.With(ctx,
+		logger.TraceID(spanContext.TraceID().String()),
+		logger.SpanID(spanContext.SpanID().String()))
 }
 
 // observeRequest puts what is knowable before the handler runs onto the record.

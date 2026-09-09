@@ -85,6 +85,11 @@ const (
 	ResourceBuildTreeState
 	ResourceBuildDate
 
+	// 23e's two log correlators, appended for the same reason the four above
+	// are: the golden file's line order is this block's order.
+	TraceID
+	SpanID
+
 	numKeys
 )
 
@@ -872,5 +877,34 @@ var registry = [numKeys]Definition{
 			"the compiler ran. onix's onix.build.date is the latter. The commit time is the " +
 			"reproducible half and the one that answers which change is deployed; a build " +
 			"clock answers only which machine built it.",
+	},
+	TraceID: {
+		Name:        "TraceID",
+		LogKey:      "trace_id",
+		Signals:     Log,
+		Kind:        KindString,
+		Layer:       Local,
+		Cardinality: Unbounded,
+		Visibility:  Public,
+		Note: "Log only, and structurally so. traceId is a field on the OTLP Span message, " +
+			"not an attribute — TestNoDefinitionNamesAnOTLPStructuralField refuses a SpanKey " +
+			"spelling it, and a row that put it on the span would emit a second, unrelated " +
+			"attribute that happens to share the name. The join it serves runs the other way: " +
+			"an operator holding a span already has this value and needs the logs. Like " +
+			"RequestID, nothing observes it onto a record; Trace puts it on the request-scoped " +
+			"logger so it reaches every line rather than the completion line alone. The row " +
+			"exists so the spelling is checked against logger.TraceID.",
+	},
+	SpanID: {
+		Name:        "SpanID",
+		LogKey:      "span_id",
+		Signals:     Log,
+		Kind:        KindString,
+		Layer:       Local,
+		Cardinality: Unbounded,
+		Visibility:  Public,
+		Note: "The other half of TraceID's join, and the half that makes it usable: one trace " +
+			"holds every hop of a transaction, so trace_id alone narrows the logs to the " +
+			"exchange and span_id narrows them to this service's part of it.",
 	},
 }

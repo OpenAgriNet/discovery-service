@@ -1,6 +1,7 @@
 package middlewares
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -627,5 +628,119 @@ func TestARequestWithNoEventFactsCarriesNoEvents(t *testing.T) {
 
 	if span := only(t, recorder.Spans()); len(span.Events) != 0 {
 		t.Errorf("%d events on a span with nothing to report: %v", len(span.Events), span.Events)
+	}
+}
+
+// 23e — trace/log correlation.
+//
+// The join runs from the span to the logs, which is why nothing here is a span
+// attribute: an operator who has a span already has its ids, and a span
+// carrying our request_id would ship an internal handle to the facilitator to
+// solve a problem the log line solves for free (fact.RequestID's own Note says
+// so). What is missing is the other direction, and two fields on every line is
+// the whole of it.
+
+// tracedAndLogged serves one request under the given tracer link and
+// RequestLogger, with an observed logger installed above the way RequestID
+// installs one, and reports everything the request wrote.
+//
+// The handler logs a line of its own, because "on the completion line" and "on
+// every log line" are different claims and only the second is what the design
+// promises (opentelemetry.md:959). A correlator attached in RequestLogger's
+// deferred block would satisfy the first and fail the second, and no assertion
+// about the completion line alone could tell them apart.
+func tracedAndLogged(t *testing.T, trace func(http.Handler) http.Handler) *observer.ObservedLogs {
+	t.Helper()
+
+	core, logged := observer.New(zapcore.DebugLevel)
+	handler := trace(RequestLogger(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			logger.FromContext(r.Context()).Info(insideTheHandler)
+			w.WriteHeader(http.StatusOK)
+		})))
+
+	request := httptest.NewRequest(http.MethodPost, "/discover", nil)
+	handler.ServeHTTP(httptest.NewRecorder(),
+		request.WithContext(logger.NewContext(request.Context(), zap.New(core))))
+
+	return logged
+}
+
+const insideTheHandler = "inside the handler"
+
+// TestEveryLogLineCarriesTheTraceAndSpanIds.
+//
+// Equality against the EXPORTED span rather than against a shape, deliberately.
+// A trace id that merely looks like one is what a well-formed id derived from
+// the wrong context looks like, and it joins to nothing — which an operator
+// discovers by searching, finding nothing, and concluding the request never
+// happened. The two values have to be the ones the span went out with, so the
+// test reads them off the exporter.
+func TestEveryLogLineCarriesTheTraceAndSpanIds(t *testing.T) {
+	trace, recorder := tracing(t)
+
+	logged := tracedAndLogged(t, trace)
+	span := only(t, recorder.Spans())
+
+	for _, message := range []string{insideTheHandler, requestCompleted} {
+		found := logged.FilterMessage(message).All()
+		if len(found) != 1 {
+			t.Fatalf("%d lines carrying %q, want exactly one", len(found), message)
+		}
+
+		fields := found[0].ContextMap()
+		if got := fields["trace_id"]; got != span.TraceID {
+			t.Errorf("%q logged trace_id=%v, want the exported span's %q",
+				message, got, span.TraceID)
+		}
+		if got := fields["span_id"]; got != span.SpanID {
+			t.Errorf("%q logged span_id=%v, want the exported span's %q",
+				message, got, span.SpanID)
+		}
+	}
+}
+
+// TestTheCorrelatorsAreAbsentRatherThanEmptyUnderExporterNone — the acceptance
+// criterion at opentelemetry.md:1141.
+//
+// Under `none` the tracer is real and the SDK still mints ids for the
+// non-recording span it returns, so the naive gate — is there a span context —
+// answers yes and every log line acquires a pair of ids that reach no backend.
+// That is worse than nothing: an id present and unfindable reads as a dropped
+// span, which is the one diagnosis this telemetry exists to make.
+//
+// Absent, and not empty, for the reason the whole registry keeps repeating: an
+// empty trace_id is a value, and a query filtering on the field's presence
+// matches every line in a deployment that traces nothing.
+//
+// Through telemetry.Init rather than a hand-built NeverSample provider, so what
+// is exercised is the branch config.ExporterNone actually takes.
+func TestTheCorrelatorsAreAbsentRatherThanEmptyUnderExporterNone(t *testing.T) {
+	cfg := config.Config{
+		App:  config.App{Network: "mahavistar", Subscriber: recipient, Domain: "Agriculture"},
+		OTel: config.OTel{Exporter: config.ExporterNone},
+	}
+	provider, err := telemetry.Init(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Init under %s: %v", config.ExporterNone, err)
+	}
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+
+	logged := tracedAndLogged(t, Trace(provider.Tracer(), recipient))
+
+	if logged.Len() == 0 {
+		t.Fatal("nothing was logged, so this test would pass vacuously")
+	}
+	for _, entry := range logged.All() {
+		for _, key := range []string{"trace_id", "span_id"} {
+			if got, present := entry.ContextMap()[key]; present {
+				t.Errorf("%q carries %s=%q under exporter none; there is no span to reach",
+					entry.Message, key, got)
+			}
+		}
 	}
 }

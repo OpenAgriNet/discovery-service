@@ -155,6 +155,14 @@ func TestRequestLoggerAllocatesWhenItIsMountedAlone(t *testing.T) {
 // then the category — and it has to survive the projection unchanged. Reordering
 // every log line in the service is a diff nobody reviews and every dashboard
 // notices.
+//
+// 23e put two fields in front of all of them, and that position is not a
+// coincidence to be tidied away. trace_id and span_id ride the request-scoped
+// LOGGER rather than the record, the way request_id already does, so zap emits
+// them ahead of the fields passed at the call — which puts the line in the order
+// identity, then what the request was, then what it cost. Moving them onto the
+// record would drop them to the end AND lose them from every line that is not
+// this one, which is the change this comment exists to argue against.
 func TestTheCompletionLineKeepsItsFieldOrder(t *testing.T) {
 	const correlating = `{"context":{"action":"catalog/publish","transactionId":"a3f0",` +
 		`"messageId":"2f6b"},"message":{"catalogs":[]}}`
@@ -165,7 +173,10 @@ func TestTheCompletionLineKeepsItsFieldOrder(t *testing.T) {
 		trace, RequestLogger, Envelope(config.Errors{}, roomy),
 	}, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	want := []string{"transaction_id", "message_id", "action", "status", "duration_ms"}
+	want := []string{
+		"trace_id", "span_id",
+		"transaction_id", "message_id", "action", "status", "duration_ms",
+	}
 
 	var got []string
 	for _, field := range completionLine(t, logged).Context {

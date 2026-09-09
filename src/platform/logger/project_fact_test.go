@@ -10,8 +10,15 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
-// The eight field constructors that spell a key the registry also spells, each
+// The ten field constructors that spell a key the registry also spells, each
 // beside the fact.Key whose Definition claims to describe it.
+//
+// Three of them — request_id and 23e's trace_id / span_id — name a row nothing
+// observes onto a record: they reach the line through the request-scoped
+// logger, which is what makes them appear on EVERY line rather than only on the
+// completion one. The rows exist so those three spellings are checked here like
+// the rest, since a Log key with no constructor is a key nothing proves the
+// registry agrees with.
 //
 // This table is the whole point of the projection living in this package
 // (telemetry-seam.md:130-136): the log field names are spelled here and the
@@ -23,6 +30,8 @@ var agreements = []struct {
 	field zapcore.Field
 }{
 	{fact.RequestID, RequestID("r")},
+	{fact.TraceID, TraceID("e4062ac74ed7b560fdc9315dfbedb82e")},
+	{fact.SpanID, SpanID("9263e6b8529a63ba")},
 	{fact.BecknTransactionID, TransactionID("t")},
 	{fact.BecknMessageID, MessageID("m")},
 	{fact.BecknAction, Action("discover")},
