@@ -197,16 +197,13 @@ func LabelSeries(in Instrument) int {
 // has never rejected anything is a rule nobody knows works. The test runs it
 // over rows the table happens not to have.
 func ValidateInstrument(in Instrument) []string {
-	var problems []string
-	report := func(format string, args ...any) {
-		problems = append(problems, fmt.Sprintf(format, args...))
-	}
+	report, collect := newProblems()
 
 	checkCodeMatchesScope(in, report)
 	checkInstrumentLabels(in, report)
 	checkMeasurementIsNumeric(in, report)
 
-	return problems
+	return collect()
 }
 
 // checkCodeMatchesScope: metric.code is the facilitator's routing key and comes

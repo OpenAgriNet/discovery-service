@@ -93,19 +93,21 @@ first person who has not read it:
 
 ```
 src/platform/telemetry/
-  fact/                    imports context, iter, time. NOTHING ELSE.
-    fact.go                Key, Signal, Kind, Cardinality, Layer, Event, Alias, Definition
+  doc.go                   the package doc, the file map, and why fact/ is split
+  fact/                    context, fmt, iter, slices, strings, sync, time. NO SDK.
+    definition.go          Key, Signal, Kind, Cardinality, Layer, Event, Alias,
+                           Definition, and Validate — the rules a row must satisfy
     registry.go            var registry [numKeys]Definition   ← THE ONE TABLE
-    instrument.go          var instruments [numInstruments]Instrument   (Task 25)
     record.go              Record, New, From, Observe{String,Int64,Float64,Bool,Strings}
-  telemetry.go             Init, Provider, Identity, ScopeName, ScopeVersion
-  spanuuid.go              the span_uuid SpanProcessor      (23a)
-  project_span.go          span attributes and events       (23c/23d)
-  project_resource.go      the Resource                     (23a)
-  project_label.go         metric label sets                (Task 25)
+    instrument.go          var instruments [numInstruments]Instrument   (Task 25)
+  provider.go              Init, Provider, ScopeName, ScopeVersion, the two OTLP
+                           exporters, and the W3C trace context propagator
+  identity.go              Identity, the Resource, and the build stamp on it    (23a)
+  span.go                  span attributes, events, span_uuid    (23a/23c/23d)
+  metrics.go               pool-stats instruments and label sets    (Task 25)
   redact.go                the facilitator deny-list        (23f)
 src/platform/logger/
-  project_log.go           logger.Fields(*fact.Record) []zap.Field
+  fields.go                logger.Fields(*fact.Record) []zap.Field
 ```
 
 **`fact` imports only the standard library, and that is the property everything

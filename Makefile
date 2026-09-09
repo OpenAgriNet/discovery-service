@@ -88,20 +88,15 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 
 # The one value this build injects at link time, and it is deliberately one.
 #
-# cmd/discovery-service/main.go's writeBuildInfo records the standing preference:
-# read the toolchain's own build stamp rather than inject with -ldflags, so
-# Makefile, Dockerfile and CI do not have to agree on a flag string. Three of the
-# four build attributes on the telemetry Resource take that route — commit, tree
-# state and commit date all come from debug.ReadBuildInfo and need no flag. They
-# also come out `unknown` in the release image, whose build stage copies no .git;
-# the route is free but it is not populated there. See build.go.
+# The standing preference is to read the toolchain's own build stamp instead, so
+# that Makefile, Dockerfile and CI need not agree on a flag string; service.version
+# is the single attribute that cannot take that route, because Main.Version
+# carries the MODULE's version and never VERSION above. Why, and what the release
+# image's stamp does not carry: docs/design/opentelemetry.md, "Build identity".
 #
-# service.version cannot take it at all. Main.Version carries the MODULE's
-# version, never VERSION above: a git checkout on go1.25 yields a pseudo-version
-# and the .git-less image yields `(devel)`, and OP5 wants the tag so a deploy
-# that broke something can be named. So the exception is exactly one -X wide,
-# which is the smallest thing three build systems can be asked to agree on. An
-# image built without it reports `dev` rather than an empty string.
+# The Dockerfile must spell this exact string. tests/architecture/ldflags_test.go
+# asserts the two match and that the symbol exists, because `go build` ignores an
+# -X naming a symbol that does not, leaving a green build shipping `dev`.
 LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
 
 RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)

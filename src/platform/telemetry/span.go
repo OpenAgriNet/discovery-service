@@ -1,9 +1,14 @@
 package telemetry
 
 import (
+	"context"
+	"slices"
 	"strconv"
+	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
@@ -22,10 +27,10 @@ import (
 // before the envelope has been parsed and there would be nothing to say.
 //
 // A nil record is not an error and does not project nothing: the probes chain
-// (router.go:158-163) allocates no record deliberately, and a span with no
-// sender.unidentified on it reads as a request whose sender was checked. Nil is
-// "we observed nothing", which is exactly what the absent flags describe, so the
-// absent pass below runs over it unchanged.
+// allocates no record deliberately, and a span with no sender.unidentified on it
+// reads as a request whose sender was checked. Nil is "we observed nothing",
+// which is exactly what the absent flags describe, so the absent pass below runs
+// over it unchanged.
 func SpanAttributes(record *fact.Record) []attribute.KeyValue {
 	projection := newSpanProjection()
 	for observation := range record.All() {
@@ -104,7 +109,7 @@ func (p *spanProjection) observe(observation fact.Observation) {
 	// Clamped at the record, reported here. A short value that does not say it
 	// was cut reads as a complete one, and somebody comparing the predicate on
 	// the span against the predicate they sent concludes the service received
-	// something else.
+	// something else. SpanEvents reports truncation for this same reason.
 	if observation.Truncated {
 		p.flag(def.TruncationFlag)
 	}
@@ -171,20 +176,13 @@ func spanValue(kind fact.Kind, observation fact.Observation) attribute.Value {
 
 // aliasValue renders the value under the alias's key.
 //
-// AsString exists for exactly one row, and the reason is the SPEC's rather than
-// onix's. The network telemetry spec declares Attribute("http.status.code", Int)
-// in its structure and emits {"stringValue": "200"} in all three of its
-// examples; we follow the examples, because a facilitator was built against them
-// (divergence 3). The semantic conventions' int stays on http.status_code for
-// ClickStack, so both go out and a collector rule keyed on either finds it.
+// AsString exists for exactly one row: the network telemetry spec declares
+// http.status.code as an Int and emits it as a string in all three of its
+// examples, and we follow the examples. Why, and why onix is not the authority
+// on changing it: opentelemetry.md:487-490 and divergence 3 at :782.
 //
-// onix emits NEITHER spelling — it sends http.response.status_code as an int
-// (docs/design/telemetry-examples/inventory.md, the cross-repo divergence
-// table). So the authority for changing this line is the spec and the
-// facilitator, not that repo, which is the opposite of what this comment said
-// until 2026-09-09. strconv rather than fmt because
-// the input is already known to be an int64 and a %v would render a non-int64
-// Kind as something that looks deliberate.
+// strconv rather than fmt because the input is already known to be an int64 and
+// a %v would render a non-int64 Kind as something that looks deliberate.
 func aliasValue(value attribute.Value, alias fact.Alias) attribute.Value {
 	if !alias.AsString {
 		return value
@@ -194,3 +192,124 @@ func aliasValue(value attribute.Value, alias fact.Alias) attribute.Value {
 	}
 	return attribute.StringValue(value.String())
 }
+
+// SpanEvent is one projected event: what happened, when, and the shape of it.
+//
+// It is data rather than a call against a span, for the same reason
+// SpanAttributes returns a slice — the caller decides when, and the answer is
+// once, from Trace's deferred block. It is also what lets this be tested without
+// an exporter.
+type SpanEvent struct {
+	Name       string
+	Time       time.Time
+	Attributes []attribute.KeyValue
+}
+
+// SpanEvents projects the record's point-in-time facts onto span events.
+//
+// The rule the registry encodes (opentelemetry.md:641): true for the whole
+// request → span attribute; produced at a point during processing → event. This
+// is the second half of the partition onTheSpan implements, and the two
+// functions never emit the same key.
+//
+// An event whose facts were never observed is not emitted. A discover that never
+// reached the store has no retrieval_info, and an empty event stamped at the
+// span's end would read as a phase that ran and produced nothing — a different
+// and much more alarming claim than a phase that did not run.
+//
+// A nil record projects nothing, and unlike the span half there is no
+// absent-flag pass to run over it: an event that did not happen is reported by
+// its absence, which is what a reader of a trace already expects.
+func SpanEvents(record *fact.Record) []SpanEvent {
+	building := make(map[fact.Event]*SpanEvent)
+
+	for observation := range record.All() {
+		def := fact.Of(observation.Key)
+		if def.Signals&fact.Span == 0 || def.Event == fact.NoEvent {
+			continue
+		}
+
+		event := building[def.Event]
+		if event == nil {
+			event = &SpanEvent{Name: def.Event.EventName(), Time: observation.Time}
+			building[def.Event] = event
+		}
+
+		// The earliest of its facts, not the latest. A phase happens over an
+		// interval however instantaneous it looks — response_info is three
+		// separate writes — and anchoring at the last of them slides every event
+		// toward the span's end by however long its own work took, which is
+		// exactly the interval the deltas between events are meant to measure.
+		//
+		// Earliest of what it CURRENTLY holds, which for a corrected fact is the
+		// correction: the event reports the values that went out, so the moment
+		// those became true is the moment it happened.
+		if observation.Time.Before(event.Time) {
+			event.Time = observation.Time
+		}
+
+		event.Attributes = append(event.Attributes, attribute.KeyValue{
+			Key:   attribute.Key(def.SpanKey),
+			Value: spanValue(def.Kind, observation),
+		})
+
+		if observation.Truncated && def.TruncationFlag != "" {
+			event.Attributes = append(event.Attributes,
+				attribute.Bool(def.TruncationFlag, true))
+		}
+	}
+
+	return ordered(building)
+}
+
+// ordered flattens the events into the order they happened in.
+//
+// Sorted rather than emitted in record order, and the case that needs it is not
+// hypothetical: the error event is written from logNack, which on a
+// partially-written response runs after the result facts were observed. Record
+// order there would put the failure before the success it interrupted.
+//
+// Map iteration order is randomised in Go, so this sort is also what makes the
+// output deterministic at all.
+func ordered(building map[fact.Event]*SpanEvent) []SpanEvent {
+	events := make([]SpanEvent, 0, len(building))
+	for _, event := range building {
+		events = append(events, *event)
+	}
+	slices.SortFunc(events, func(a, b SpanEvent) int { return a.Time.Compare(b.Time) })
+	return events
+}
+
+// spanUUID stamps the spec's Required `span_uuid` on every span the service
+// starts.
+//
+// A SpanProcessor rather than a line in the Trace middleware, for two reasons.
+// It cannot be forgotten: any span from any tracer this provider hands out gets
+// one, including whatever a later task instruments. And it belongs to the
+// provider, so the middleware stays a projection of a fact.Record and acquires
+// no identity-minting of its own.
+//
+// It is not a fact.Key observation like everything else on the span, and that is
+// deliberate: a Record is per request and this is per span, so recording it as a
+// fact would put one value on a request that may hold more than one span. The
+// key spelling still comes from the registry — the seam is about where the name
+// lives, not about which mechanism writes it.
+type spanUUID struct{}
+
+// OnStart is where the attribute has to be set. OnEnd receives a ReadOnlySpan,
+// which cannot take one — the same constraint that puts observedTimeUnixNano in
+// the middleware just before End rather than here.
+func (spanUUID) OnStart(_ context.Context, span sdktrace.ReadWriteSpan) {
+	span.SetAttributes(attribute.String(keyOf(fact.SpanUUID), uuid.NewString()))
+}
+
+// OnEnd does nothing. This processor is not in the export path; the batcher is.
+func (spanUUID) OnEnd(sdktrace.ReadOnlySpan) {}
+
+// Shutdown has nothing to release. It holds no buffer, no connection and no
+// goroutine — every span it touches is finished with by the time OnStart
+// returns.
+func (spanUUID) Shutdown(context.Context) error { return nil }
+
+// ForceFlush has nothing to flush, for the same reason.
+func (spanUUID) ForceFlush(context.Context) error { return nil }

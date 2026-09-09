@@ -17,6 +17,11 @@ import (
 // seam promises is one place to change an attribute — that place is the registry
 // TABLE, not one projection file per signal.
 //
+// It is also the arrangement tests/architecture/boundary_test.go enforces: this
+// package may import fact and may not import src/platform/telemetry, so moving
+// this file there and calling it from here is the one relocation that breaks the
+// build. See the exemption list's comment for why request_logger.go is not on it.
+//
 // Only keys whose Definition carries the Log signal are projected. From 23c the
 // record also carries the span's attributes — beckn.version, beckn.networkId and
 // a dozen more — and writing everything found would silently turn one completion
@@ -44,7 +49,7 @@ func Fields(record *fact.Record) []zap.Field {
 		// Definition.Kind, not Observation.Kind, chooses the constructor. The two
 		// cannot disagree — Record.requireKind refuses a mismatched write — so the
 		// choice is about which of the two is authoritative, and the registry is.
-		// project_fact_test.go asserts every Kind the Log column uses is handled
+		// fields_test.go asserts every Kind the Log column uses is handled
 		// here, because a Kind this switch does not know drops the field, and a
 		// dropped log field is indistinguishable from a request that never had one.
 		switch def.Kind {

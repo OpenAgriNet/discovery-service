@@ -1,23 +1,9 @@
-// Package telemetry owns the OpenTelemetry SDK, and it is the only package in
-// the service that links it.
-//
-// Everything below it records facts against src/platform/telemetry/fact, which
-// imports nothing but the standard library, and this package projects those
-// facts onto spans (A23). The split is enforced by tests/architecture rather
-// than by convention: a controller that links an exporter is a controller whose
-// build breaks on an SDK release, and whose test binary starts a batch
-// processor nobody asked for.
-//
-// The package holds the Resource, the exporter and the W3C propagator, and it
-// still starts no span itself: Provider hands out a tracer and SpanAttributes
-// hands back the projected attributes, and the Trace middleware is the one
-// caller that puts the two together. That is what keeps the SDK behind a seam
-// rather than merely behind an import.
 package telemetry
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -54,38 +41,6 @@ const (
 	ScopeVersion = "1.0"
 )
 
-// metricExportTimeout bounds one metric export, and therefore also bounds how
-// long a shutdown waits on a collector that is not there.
-const metricExportTimeout = 5 * time.Second
-
-// Identity is who this deployment says it is, read off config once at boot.
-//
-// A struct rather than three parameters because the Resource is the one place
-// all three appear and they are all strings: projectResource(id, build) cannot
-// be called with domain and network the wrong way round, and
-// projectResource(a, b, c) can.
-type Identity struct {
-	// Producer is the registered subscriber id, an FQDN. Never service.name.
-	Producer string
-
-	// Domain is the sector. Already checked against the registry's declared
-	// values by validateOTel, which is why nothing re-checks it here.
-	Domain string
-
-	// NetworkID is the network this deployment serves — our key, not the spec's.
-	NetworkID string
-}
-
-// NewIdentity reads the three off config. Exported so the composition root can
-// build one without this package importing anything of app's.
-func NewIdentity(cfg config.Config) Identity {
-	return Identity{
-		Producer:  cfg.App.Subscriber,
-		Domain:    cfg.App.Domain,
-		NetworkID: cfg.App.Network,
-	}
-}
-
 // Provider is the tracer provider and its shutdown, held by the composition
 // root.
 //
@@ -93,6 +48,14 @@ func NewIdentity(cfg config.Config) Identity {
 // pool unexported: handing out *sdktrace.TracerProvider puts RegisterSpanProcessor
 // one dot away from every caller, and a span processor registered from a
 // request path is a leak the type system would not mention.
+//
+// Every method below is nil-tolerant, for one population rather than three:
+// router_test.go builds an App by hand, the acceptance suite calls controllers
+// with no Provider at all, and app.Close runs on paths where Init never ran.
+// Each hands back a noop rather than nil, so the alternative — a nil check at
+// every call site, or a nil panic during boot — never arises. A noop tracer's
+// spans are not recording and a noop meter provider's instruments observe
+// nothing, so callers run unchanged and pay nothing.
 type Provider struct {
 	provider *sdktrace.TracerProvider
 	tracer   trace.Tracer
@@ -179,22 +142,13 @@ func newMeterProvider(ctx context.Context, cfg config.Config, res *resource.Reso
 		return nil, err
 	}
 	return sdkmetric.NewMeterProvider(append(options, sdkmetric.WithReader(
-		// The timeout is bounded well under the SDK's 30s default because it is
-		// also what a shutdown into a dead collector waits for. Left at the
-		// default, a pod whose collector is down takes half a minute to exit
-		// and gets SIGKILLed by a terminationGracePeriodSeconds nobody
-		// connected to a telemetry setting.
 		sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithTimeout(metricExportTimeout)),
 	))...), nil
 }
 
 // MeterProvider hands out the metrics provider for the composition root to
-// register instruments against.
-//
-// Nil-tolerant for the same population as Tracer: router_test.go builds an App
-// by hand and the acceptance suite calls controllers with no Provider at all. A
-// noop provider rather than nil, so RegisterPoolStats needs no nil check of its
-// own and a metrics registration is never the thing that panics a healthy boot.
+// register instruments against. Nil-tolerant, per the type's comment, so
+// RegisterPoolStats needs no nil check of its own.
 func (p *Provider) MeterProvider() metric.MeterProvider {
 	if p == nil || p.meters == nil {
 		return metricnoop.NewMeterProvider()
@@ -248,13 +202,8 @@ func withExport(ctx context.Context, cfg config.Config, options []sdktrace.Trace
 // which is the finding that ruled out otelhttp (A23) and would equally rule out
 // any caller doing provider.Tracer("") for itself.
 //
-// Nil-tolerant, like Shutdown and for the same population: chain() reads this
-// while assembling the router, and a router can be assembled without a Provider
-// — router_test.go builds an App by hand, and any future caller wanting routes
-// without telemetry is in the same position. The noop tracer's spans are not
-// recording, so Trace runs unchanged and observes onto a span that costs nothing,
-// rather than the alternative of a nil check at every call site or a nil panic
-// during boot.
+// Nil-tolerant, per the type's comment: chain() reads this while assembling the
+// router, and a router can be assembled without a Provider.
 func (p *Provider) Tracer() trace.Tracer {
 	if p == nil || p.tracer == nil {
 		return noop.NewTracerProvider().Tracer(ScopeName)
@@ -264,26 +213,20 @@ func (p *Provider) Tracer() trace.Tracer {
 
 // Shutdown flushes what the batcher is holding and closes the connection.
 //
-// Nil-tolerant and idempotent, because app.Close runs on paths where Init never
-// ran and on paths where this already has. The SDK's own Shutdown is idempotent
-// after the first call; the nil check is ours.
-// Both providers are shut down on one call, and the meter provider's own
-// Shutdown is guarded by a sync.Once because — unlike the tracer's — it is not
-// idempotent: a second call returns "reader is shutdown". app.Close runs on the
-// happy path and on paths where main already deferred it, so idempotency is a
-// requirement rather than a nicety, and TestShutdownIsSafeTwiceAndOnNothing is
-// what found this.
+// Both providers go down on one call, and idempotency is a requirement rather
+// than a nicety because main defers this and app.Close calls it. The tracer
+// provider's own Shutdown is already idempotent; the meter provider's is not — a
+// second call returns "reader is shutdown" — so that one is guarded by a
+// sync.Once. TestShutdownIsSafeTwiceAndOnNothing is what found it.
 //
 // The meter provider's error is deliberately NOT returned, and this is the one
 // asymmetry between the two signals here. A PeriodicReader flushes on shutdown,
-// so with no collector listening it fails — which is precisely the condition
-// newExporter's comment says must never be a service failure: the service
-// answers farmers' queries whether or not anyone is watching it. The tracer's
-// batcher already drops the same failure internally, so returning it for
-// metrics only would make the two signals disagree about one event, and would
-// make every clean shutdown on a cluster with a down collector log an error
-// that names nothing the operator can act on from this side.
-// TestOtlpBootsWithoutACollectorListening pins it.
+// so with no collector listening it fails — the condition newExporter below says
+// must never be a service failure. The tracer's batcher already drops the same
+// failure internally, so returning it for metrics only would make the two
+// signals disagree about one event, and would make every clean shutdown on a
+// cluster with a down collector log an error that names nothing the operator can
+// act on from this side. TestOtlpBootsWithoutACollectorListening pins it.
 func (p *Provider) Shutdown(ctx context.Context) error {
 	if p == nil {
 		return nil
@@ -305,13 +248,48 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// newMetricExporter is newExporter's metrics twin, and the endpoint is parsed by
-// the same two rules for the same reason: a bare host:port must not reach
-// WithEndpointURL, which reads "localhost:4317" as scheme "localhost" with an
-// empty host and yields an exporter pointed at nothing.
+// --- Where the signals go -------------------------------------------------
+
+// metricExportTimeout bounds one metric export, and therefore also bounds how
+// long a shutdown waits on a collector that is not there.
 //
-// It does not dial, for the reason the trace exporter does not: the service
-// answers queries whether or not anyone is watching it.
+// Well under the SDK's 30s default because of that second role: left at the
+// default, a pod whose collector is down takes half a minute to exit and gets
+// SIGKILLed by a terminationGracePeriodSeconds nobody connected to a telemetry
+// setting.
+const metricExportTimeout = 5 * time.Second
+
+// newExporter builds the OTLP/gRPC span exporter (decision 2: gRPC is the OTel
+// default for OTEL_EXPORTER_OTLP_ENDPOINT, which config reads under that exact
+// name, and it is what ClickStack's collector accepts).
+//
+// The endpoint is passed explicitly rather than left to the SDK's own env
+// lookup: config layers YAML underneath the environment, so an endpoint set in
+// instance.yaml is a value the SDK would never see.
+//
+// Neither exporter here dials. A pod that refused to start because the collector
+// was not up yet would make telemetry a hard dependency of serving traffic, and
+// the service answers queries whether or not anyone is watching it. That one
+// choice is also why Shutdown discards the meter provider's error.
+func newExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
+	var options []otlptracegrpc.Option
+	if hasScheme(endpoint) {
+		// A full URL carries its own transport security: http:// is insecure,
+		// https:// is not.
+		options = append(options, otlptracegrpc.WithEndpointURL(endpoint))
+	} else {
+		options = append(options, otlptracegrpc.WithEndpoint(endpoint), otlptracegrpc.WithInsecure())
+	}
+
+	exporter, err := otlptracegrpc.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("build the otlp exporter for %q: %w", endpoint, err)
+	}
+	return exporter, nil
+}
+
+// newMetricExporter is newExporter's metrics twin: same two endpoint spellings,
+// same reasons, and it does not dial either.
 func newMetricExporter(ctx context.Context, endpoint string) (sdkmetric.Exporter, error) {
 	var options []otlpmetricgrpc.Option
 	if hasScheme(endpoint) {
@@ -327,40 +305,56 @@ func newMetricExporter(ctx context.Context, endpoint string) (sdkmetric.Exporter
 	return exporter, nil
 }
 
-// newExporter builds the OTLP/gRPC exporter (decision 2: gRPC is the OTel
-// default for OTEL_EXPORTER_OTLP_ENDPOINT, which config reads under that exact
-// name, and it is what ClickStack's collector accepts).
+// hasScheme distinguishes the two spellings an operator will write, and it is
+// the reason both exporters above branch at all.
 //
-// The endpoint is passed explicitly rather than left to the SDK's own env
-// lookup: config layers YAML underneath the environment, so an endpoint set in
-// instance.yaml is a value the SDK would never see.
-//
-// It does not dial. A pod that refused to start because the collector was not
-// up yet would make telemetry a hard dependency of serving traffic, and the
-// service answers queries whether or not anyone is watching it.
-func newExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
-	var options []otlptracegrpc.Option
-	if hasScheme(endpoint) {
-		// Carries its own transport security: http:// is insecure, https:// is
-		// not.
-		options = append(options, otlptracegrpc.WithEndpointURL(endpoint))
-	} else {
-		// A bare host:port. url.Parse reads "localhost:4317" as scheme
-		// "localhost" with an empty host, so this form must not reach
-		// WithEndpointURL — it would yield an exporter pointed at nothing that
-		// fails by never delivering rather than by refusing.
-		options = append(options, otlptracegrpc.WithEndpoint(endpoint), otlptracegrpc.WithInsecure())
-	}
-
-	exporter, err := otlptracegrpc.New(ctx, options...)
-	if err != nil {
-		return nil, fmt.Errorf("build the otlp exporter for %q: %w", endpoint, err)
-	}
-	return exporter, nil
-}
-
-// hasScheme distinguishes the two spellings an operator will write. Not
-// url.Parse: every host:port parses successfully as a URL, which is the trap.
+// Not url.Parse: every host:port parses successfully as a URL, which is the
+// trap. It reads "localhost:4317" as scheme "localhost" with an empty host, so a
+// bare host:port reaching WithEndpointURL yields an exporter pointed at nothing
+// — one that fails by never delivering rather than by refusing.
 func hasScheme(endpoint string) bool {
 	return strings.Contains(endpoint, "://")
+}
+
+// --- How a trace crosses a network hop ------------------------------------
+
+// propagator is the one W3C Trace Context propagator this service has.
+//
+// A package value rather than otel.SetTextMapPropagator, for the same reason
+// Init registers no global tracer provider: a global is set by whoever imports
+// the package and is visible to every test in the binary, so a test that needs a
+// different one either cannot have it or takes it from everybody else. A value
+// passed explicitly has neither problem, and there is exactly one caller shape —
+// Extract at the inbound edge, Inject at each outbound one.
+//
+// TraceContext alone, no Baggage. Baggage travels key-value pairs of the
+// caller's choosing across every hop, which on a network of participants who do
+// not share a trust boundary is an unbounded field an unauthenticated caller
+// fills. The correlators this service needs — transaction and message id —
+// already travel in the Beckn envelope, which is signed.
+var propagator propagation.TextMapPropagator = propagation.TraceContext{}
+
+// Extract joins the caller's trace, returning a context whose span context is
+// the inbound traceparent's.
+//
+// Joined and not replaced: the returned context carries the caller's trace id
+// and their span as the parent, so the span Trace starts next lands INSIDE the
+// caller's trace rather than starting a second one. A network hop that starts
+// its own trace is why "the seeker sent it and nobody served it" is currently
+// unanswerable — the two halves are in different traces and nothing joins them.
+//
+// A request with no traceparent, or with a malformed one, comes back unchanged
+// and the span becomes a root. That is the right failure: refusing the request
+// would make this service's availability depend on its callers' instrumentation.
+func Extract(ctx context.Context, header http.Header) context.Context {
+	return propagator.Extract(ctx, propagation.HeaderCarrier(header))
+}
+
+// Inject writes the current span's context onto an outbound request's headers,
+// so the far side can join this trace the way Extract joined the caller's.
+//
+// It is a no-op when no span is in flight, which is what makes it safe to call
+// unconditionally at every outbound edge rather than guarding each one.
+func Inject(ctx context.Context, header http.Header) {
+	propagator.Inject(ctx, propagation.HeaderCarrier(header))
 }

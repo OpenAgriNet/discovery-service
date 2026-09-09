@@ -13,16 +13,18 @@
 //	build saying which one it could not reach.
 //
 // This package emits nothing. It is a table and its guards; the projections that
-// read it live beside the signal each one writes — project_span.go in
-// src/platform/telemetry, project_fact.go in src/platform/logger — so that
-// logger stays OpenTelemetry-free and a controller naming a key links no
-// exporter.
+// read it live beside the signal each one writes — span.go in
+// src/platform/telemetry, fields.go in src/platform/logger — so that logger
+// stays OpenTelemetry-free and a controller naming a key links no exporter.
+//
+// The files: definition.go is what a fact is and the rules a row must satisfy,
+// registry.go the table of them, record.go what one request observed, and
+// instrument.go the metric instruments with the rules an instrument must satisfy.
 package fact
 
 import (
 	"fmt"
 	"iter"
-	"slices"
 	"strings"
 )
 
@@ -223,47 +225,126 @@ func All() iter.Seq2[Key, Definition] {
 	}
 }
 
-// Validate returns every way a Definition contradicts itself, as prose a
-// failure message can print directly. It is exported because the guard that
-// runs it over the live table also has to run it over rows the table happens
-// not to have today — no row carries the Label bit, because Task 25's one
-// instrument turned out to need no dimension, and a rule that has never
-// rejected anything is a rule nobody knows works.
-//
-// It deliberately does not check the enums for their Unspecified zeros. Those
-// are the completeness test's, which reports them per row with the reason each
-// one matters; folding them in here would give one failure two voices.
-// The four checkers below split it by the thing each one is about rather than
-// by length: a key that nothing writes, a label whose bound is a claim, a bound
-// with no flag, a value that is not what its Kind says. Each takes the reporter
-// so the caller keeps one list in one order.
-func Validate(def Definition) []string {
-	var problems []string
-	report := func(format string, args ...any) {
-		problems = append(problems, fmt.Sprintf(format, args...))
+// String renders a Signal set for a failure message and for the golden file.
+func (s Signal) String() string {
+	if s == 0 {
+		return "none"
 	}
+	var parts []string
+	for _, named := range []struct {
+		bit  Signal
+		name string
+	}{{Span, "Span"}, {Log, "Log"}, {Label, "Label"}, {Resource, "Resource"}} {
+		if s&named.bit != 0 {
+			parts = append(parts, named.name)
+		}
+	}
+	return strings.Join(parts, "|")
+}
+
+func (k Kind) String() string {
+	return name(int(k), []string{"KindUnspecified", "KindString", "KindInt64",
+		"KindFloat64", "KindBool", "KindStrings"})
+}
+
+func (c Cardinality) String() string {
+	return name(int(c), []string{"CardinalityUnspecified", "Bounded", "Unbounded"})
+}
+
+func (e Event) String() string {
+	return name(int(e), []string{"NoEvent", "RequestInfo", "RetrievalInfo",
+		"ResponseInfo", "ErrorEvent"})
+}
+
+// EventName is the name the event goes out under, and it is a second spelling
+// rather than a lowercasing of String().
+//
+// String() names the Go constant and appears only in failure messages; this one
+// is on the wire, where a facilitator keys on it. Deriving one from the other
+// would tie a debugging string to a contract, so that renaming ErrorEvent to
+// something clearer in a panic message would rename the event a collector
+// filters on.
+//
+// NoEvent answers empty, and the projection reads that as "not an event". It is
+// the zero value, so a Definition that simply forgot to set Event would
+// otherwise land its fact on a fifth event carrying the whole span again.
+func (e Event) EventName() string {
+	switch e {
+	case RequestInfo:
+		return "request_info"
+	case RetrievalInfo:
+		return "retrieval_info"
+	case ResponseInfo:
+		return "response_info"
+	case ErrorEvent:
+		return "error"
+	case NoEvent:
+		return ""
+	default:
+		return ""
+	}
+}
+
+func (l Layer) String() string {
+	return name(int(l), []string{"LayerUnspecified", "Local", "CrossLayer"})
+}
+
+// name is the shared tail of the String methods above. An out-of-range value
+// prints its number rather than a blank, because a blank in a failure message
+// is how an unhandled enum member gets read as the zero one.
+func name(value int, names []string) string {
+	if value < 0 || value >= len(names) {
+		return fmt.Sprintf("%%!(unknown:%d)", value)
+	}
+	return names[value]
+}
+
+// --- The rules a row must satisfy -----------------------------------------
+
+// Validate returns every way a Definition contradicts itself, as prose a failure
+// message can print directly.
+//
+// Exported because the guard that runs it over the live table must also run it
+// over rows the table does not have today: no row carries the Label bit, and a
+// rule that has never rejected anything is a rule nobody knows works.
+//
+// It does not check the enums for their Unspecified zeros — those are the
+// completeness test's, which reports them per row with the reason each matters.
+// Folding them in here would give one failure two voices.
+func Validate(def Definition) []string {
+	report, collect := newProblems()
 
 	checkKeysMatchSignals(def, report)
 	checkLabelIsBounded(def, report)
 	checkBoundsAreFlagged(def, report)
 	checkPlacement(def, report)
 
-	return problems
+	return collect()
 }
 
-// reporter is the shared signature. Named rather than repeated four times,
+// reporter is the shared signature. Named rather than repeated at every checker,
 // because a func(string, ...any) in a parameter list reads as plumbing and this
-// one is the whole output of the checkers.
+// one is the whole output.
 type reporter func(format string, args ...any)
+
+// newProblems returns a reporter and the accumulated list, so the caller keeps
+// one list in one order. ValidateInstrument in instrument.go uses it too.
+func newProblems() (reporter, func() []string) {
+	var problems []string
+	return func(format string, args ...any) {
+			problems = append(problems, fmt.Sprintf(format, args...))
+		}, func() []string {
+			return problems
+		}
+}
 
 // checkKeysMatchSignals: every signal a row claims has a key to write under, and
 // every key it carries has a signal that writes it. A key with no signal is dead
 // and a signal with no key ships an attribute with no name.
 func checkKeysMatchSignals(def Definition, report reporter) {
-	// SpanKey is the OTLP attribute spelling, and the Resource is an attribute
-	// set too — eid and producer are attribute.KeyValues like any other, just
-	// stamped once at boot rather than per request. So the field carries both,
-	// and only a row that reaches neither may leave it empty.
+	// SpanKey carries the Resource spelling too — eid and producer are
+	// attribute.KeyValues like any other, stamped once at boot rather than per
+	// request. So only a row reaching neither may leave it empty.
 	if def.Signals&(Span|Resource) != 0 && def.SpanKey == "" {
 		report("Signals includes %v and SpanKey is empty", def.Signals&(Span|Resource))
 	}
@@ -278,7 +359,7 @@ func checkKeysMatchSignals(def Definition, report reporter) {
 	}
 }
 
-// checkLabelIsBounded is the cardinality gate, and it is the one rule here whose
+// checkLabelIsBounded is the cardinality gate, and the one rule here whose
 // violation costs money rather than clarity: a metric dimension over an open
 // value set is a time series per distinct value.
 func checkLabelIsBounded(def Definition, report reporter) {
@@ -356,102 +437,4 @@ func checkPlacement(def Definition, report reporter) {
 				"targets a span this row never reaches")
 		}
 	}
-}
-
-// String renders a Signal set for a failure message and for the golden file.
-func (s Signal) String() string {
-	if s == 0 {
-		return "none"
-	}
-	var parts []string
-	for _, named := range []struct {
-		bit  Signal
-		name string
-	}{{Span, "Span"}, {Log, "Log"}, {Label, "Label"}, {Resource, "Resource"}} {
-		if s&named.bit != 0 {
-			parts = append(parts, named.name)
-		}
-	}
-	return strings.Join(parts, "|")
-}
-
-func (k Kind) String() string {
-	return name(int(k), []string{"KindUnspecified", "KindString", "KindInt64",
-		"KindFloat64", "KindBool", "KindStrings"})
-}
-
-func (c Cardinality) String() string {
-	return name(int(c), []string{"CardinalityUnspecified", "Bounded", "Unbounded"})
-}
-
-func (e Event) String() string {
-	return name(int(e), []string{"NoEvent", "RequestInfo", "RetrievalInfo",
-		"ResponseInfo", "ErrorEvent"})
-}
-
-// EventName is the name the event goes out under, and it is a second spelling
-// rather than a lowercasing of String().
-//
-// String() names the Go constant and appears only in failure messages; this one
-// is on the wire, where a facilitator keys on it. Deriving one from the other
-// would tie a debugging string to a contract, so that renaming ErrorEvent to
-// something clearer in a panic message would rename the event a collector
-// filters on.
-//
-// NoEvent answers empty, and the projection reads that as "not an event". It is
-// the zero value, so a Definition that simply forgot to set Event would
-// otherwise land its fact on a fifth event carrying the whole span again.
-func (e Event) EventName() string {
-	switch e {
-	case RequestInfo:
-		return "request_info"
-	case RetrievalInfo:
-		return "retrieval_info"
-	case ResponseInfo:
-		return "response_info"
-	case ErrorEvent:
-		return "error"
-	case NoEvent:
-		return ""
-	default:
-		return ""
-	}
-}
-
-func (l Layer) String() string {
-	return name(int(l), []string{"LayerUnspecified", "Local", "CrossLayer"})
-}
-
-// name is the shared tail of the String methods above. An out-of-range value
-// prints its number rather than a blank, because a blank in a failure message
-// is how an unhandled enum member gets read as the zero one.
-func name(value int, names []string) string {
-	if value < 0 || value >= len(names) {
-		return fmt.Sprintf("%%!(unknown:%d)", value)
-	}
-	return names[value]
-}
-
-// clampRunes cuts a string to at most limit runes, reporting whether it cut.
-// Runes rather than bytes: a byte cut can split a UTF-8 sequence and produce a
-// replacement character in an attribute value nobody can search for.
-func clampRunes(value string, limit int) (string, bool) {
-	if limit <= 0 || len(value) <= limit {
-		// len is a byte count and so a cheap lower bound on the rune count; a
-		// string shorter in bytes than the limit cannot exceed it in runes.
-		return value, false
-	}
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value, false
-	}
-	return string(runes[:limit]), true
-}
-
-// clampEntries cuts a list to at most limit entries, reporting whether it cut.
-func clampEntries(values []string, limit int) ([]string, bool) {
-	if limit <= 0 || len(values) <= limit {
-		return values, false
-	}
-	return slices.Clip(values[:limit]), true
 }

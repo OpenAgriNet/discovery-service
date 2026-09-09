@@ -67,7 +67,9 @@ ARG VERSION=dev
 # stack to say why.
 #
 # The -X target is the one flag string this file and the Makefile must agree on
-# (OP5, and src/platform/telemetry/build.go says why it cannot be avoided). Go
+# (OP5; docs/design/opentelemetry.md, "Build identity", says why it cannot be
+# avoided, and that this stage's missing .git is what leaves the other three
+# build attributes `unknown`). Go
 # silently ignores an -X naming a symbol that does not exist, so renaming that
 # package would leave a green build shipping `dev` — which is why
 # tests/architecture asserts the two spellings match rather than trusting them

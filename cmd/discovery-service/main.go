@@ -59,22 +59,16 @@ func run(ctx context.Context, out io.Writer) error {
 // string for a binary to identify itself.
 //
 // That preference is repo-wide and has exactly one exception, which is not this
-// line: src/platform/telemetry/build.go's version IS injected, with a single -X.
-// Both the Makefile's LDFLAGS block and build.go cite this comment as where the
-// preference is recorded, so it names the exception rather than reading as an
-// absolute the two of them each contradict.
+// line: src/platform/telemetry/identity.go's version IS injected, with a single
+// -X. Why, and what the release image's stamp does not carry:
+// docs/design/opentelemetry.md, "Build identity". Do not restate the reasoning
+// here — it was wrong at four sites until it was measured on 2026-09-09.
 //
-// The stamp also has a gap, and the gap is in the build that ships. The
-// Dockerfile copies go.mod, cmd/, src/ and migrations/ and no .git, so the
-// release image's build stage has no repository to stamp from: Main.Version
-// reads `(devel)` and vcs.revision `unknown` there. That is what the one -X
-// covers for the version — and what nothing covers for the other three build
-// attributes on the telemetry Resource. In a git checkout on go1.25 Main.Version
-// instead reads a pseudo-version derived from the last tag, so this line prints
-// something different in the two places. Measured on 2026-09-09 by building from
-// `git archive HEAD`, which is the same no-.git condition; do not restate it as
-// `(devel)` everywhere, which is what it used to say and is true of only one of
-// the two.
+// What this line in particular prints differs between the two builds, and that
+// is worth knowing at the call site: in a git checkout on go1.25 Main.Version
+// reads a pseudo-version derived from the last tag, and in the .git-less release
+// image it reads `(devel)`. It used to say `(devel)` everywhere, which is true
+// of only one of the two.
 func writeBuildInfo(w io.Writer) error {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {

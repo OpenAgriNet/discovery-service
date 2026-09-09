@@ -437,6 +437,54 @@ external party can be harmed by.
 | `service.name` | ClickStack's grouping column. **Not the same value as `producer`, and this row said it was.** OTel semconv `service.name` names *what software this is* — `discovery-service`, a constant carried in the struct tag. `producer` names *which participant this is* — an FQDN that differs per deployment. Collapsing them means either every deployment reports a different `service.name` and ClickStack cannot group the service, or `producer` reports a service name and the network cannot identify the participant. Two questions, two fields |
 | `network.id` | `APP_NETWORK_ID` — `mahavistar`, `bharatvistar` (C8). Our key, not the spec's |
 
+### Build identity
+
+Four more Resource attributes name the build: `service.version`, `build.commit`,
+`build.tree_state` and `build.date`. This is where their reasoning lives, because
+it was restated at four sites — `main.go`, the `Makefile`, the `Dockerfile` and
+the Go source — and was **wrong at all four** until it was measured on
+2026-09-09. One home, cited from each.
+
+**The standing preference is to read the toolchain's own build stamp, not to
+inject.** `debug.ReadBuildInfo` gives `vcs.revision`, `vcs.modified` and
+`vcs.time` for free, so `Makefile`, `Dockerfile` and CI need not agree on a flag
+string for a binary to identify itself. Three of the four take that route.
+
+**`service.version` is the one exception, and it cannot take that route at all.**
+The stamp's `Main.Version` carries the **module's** version, never the release
+tag: in a git checkout on go1.25 it reads a pseudo-version derived from the last
+tag, and in the release image it reads `(devel)`. OP5 wants the tag, so that a
+deploy which broke something can be named. Hence exactly one `-X`, which is the
+smallest thing three build systems can be asked to agree on:
+
+```
+-X github.com/OpenAgriNet/discovery-service/src/platform/telemetry.version=$(VERSION)
+```
+
+It targets the **package**, so `version` may move between files inside it. `go
+build` silently ignores an `-X` naming a symbol that does not exist, so a rename
+would leave a green build shipping `dev` — `tests/architecture/ldflags_test.go`
+asserts the `Makefile`'s and `Dockerfile`'s spellings match each other and that
+the symbol exists.
+
+**The gap is in the build that ships.** The `Dockerfile` copies `go.mod`, `cmd/`,
+`src/` and `migrations/` and no `.git`, so the release image's build stage has no
+repository to stamp from. There, `build.commit` and `build.tree_state` report
+`unknown` and `build.date` reports `1970-01-01T00:00:00Z` — the free route is
+free but it is not populated, and `service.version` is the only one of the four
+that answers OP5 in production. Measured by building from `git archive HEAD`,
+which reproduces the same no-`.git` condition.
+
+`build.date` is the **commit's** timestamp, not the moment the compiler ran;
+onix's `onix.build.date` is the latter. The commit time is the reproducible half
+and the one that answers which change is deployed.
+
+Absences are reported as values rather than as errors, and `service.version`
+defaults to `dev` rather than `""`: an empty Resource attribute is
+indistinguishable from an unset one, so a facilitator seeing nothing could not
+tell whether the participant declined to answer or the attribute was dropped in
+transit.
+
 ## Scope — per exported batch
 
 The `scope` object itself is spec-Optional; `name` and `version` are Required
@@ -924,7 +972,7 @@ than off a writer `Trace` cannot see.
 | # | Where | Does |
 |---|---|---|
 | 1 | `src/platform/config/config.go` | `OTel` group gains `Producer`, `Domain`. Required only when the exporter is on |
-| 2 | `src/platform/telemetry/telemetry.go` | `Init(cfg)` — Resource, tracer provider, OTLP exporter, shutdown |
+| 2 | `src/platform/telemetry/provider.go` | `Init(cfg)` — Resource, tracer provider, OTLP exporter, shutdown |
 | 3 | A `SpanProcessor` | Stamps `span_uuid` at `OnStart`. `observedTimeUnixNano` is set by the middleware before `End()` — `OnEnd` is read-only |
 | 4 | `src/platform/middlewares/trace.go` | Allocates the observation record if nothing above it has, starts the span, sets the request-side `http.*`, joins an inbound `traceparent`, and — after `next` returns — projects the status off the record before `End()` |
 | 5 | `correlate()` in `envelope.go` | Names the span, sets `sender.id` / `sender.unverified` / `recipient.id` / `beckn.*` |
@@ -1244,7 +1292,7 @@ which an earlier version of that row claimed.
 
 A23 split Task 23 into six. One review gate between each. **`telemetry-seam.md`
 adds a seventh in front of them, 23a0**, because the attribute registry every
-later sub-task reads sat in no task at all — 23a's Produces is `telemetry.go`,
+later sub-task reads sat in no task at all — 23a's Produces is `provider.go`,
 and an implementer starting there would find the plan does not describe the work.
 
 | | Sub-task | Files | Tests pin |
@@ -1261,7 +1309,7 @@ Two tasks follow 23, and neither is blocked by what blocks 23f:
 
 | | Task | Files | Tests pin |
 |---|---|---|---|
-| **25** | **Node-operator metrics** — OP3 and OP4 only. **One instrument, and no more** (cut from three on 2026-09-09; OP1 went to kubelet, pool utilisation went to `pg_stat_activity` + an `application_name` line in `pool.go`). See *Node-operator metrics — Task 25* above for the layer test that removed them. OP2 also left this row: it is `spanmetrics` in the collector, not a counter here, so "conditionally" is now decided and the condition is *no*. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `project_label.go`; `storage/postgres/` | Acquire-wait is observed under a pool deliberately sized to 1, so a second concurrent caller must wait and `EmptyAcquireCount`/`EmptyAcquireWaitTime` must both move. **Two observable counters off `pgxpool.Stat()`, not a histogram** — pgxpool exposes only cumulative totals, so a distribution would mean wrapping every `Acquire` on the hot path; the consumer divides one rate by the other. **No in-use gauge** and **no liveness gauge** — the first is `pg_stat_activity`'s once `pool.go` sets `application_name`, the second is kubelet's. Registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters, and no request counters either.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up. The test that pins this is a count: **one** instrument registered, so a second arrives with a reviewer attached — and the reviewer's question is the layer table, *which layer below us is blind to this number?* |
+| **25** | **Node-operator metrics** — OP3 and OP4 only. **One instrument, and no more** (cut from three on 2026-09-09; OP1 went to kubelet, pool utilisation went to `pg_stat_activity` + an `application_name` line in `pool.go`). See *Node-operator metrics — Task 25* above for the layer test that removed them. OP2 also left this row: it is `spanmetrics` in the collector, not a counter here, so "conditionally" is now decided and the condition is *no*. **OP6 and OP10 are struck**, and `ratelimit.go` and `envelope.go` leave the file list with them | new `platform/telemetry/fact/instrument.go` and `telemetry/metrics.go`; `storage/postgres/` | Acquire-wait is observed under a pool deliberately sized to 1, so a second concurrent caller must wait and `EmptyAcquireCount`/`EmptyAcquireWaitTime` must both move. **Two observable counters off `pgxpool.Stat()`, not a histogram** — pgxpool exposes only cumulative totals, so a distribution would mean wrapping every `Acquire` on the hot path; the consumer divides one rate by the other. **No in-use gauge** and **no liveness gauge** — the first is `pg_stat_activity`'s once `pool.go` sets `application_name`, the second is kubelet's. Registered under our own scope, not the global meter, and every label it names is a `fact.Key` carrying the `Label` bit with a `Bounded` value set whose product is under the per-instrument ceiling. **No rejection counters, and no request counters either.** The earlier row said a 429 "is not counted today because it short-circuits above the handler"; `Trace` is index 1 in `router.go:134-141`, above both middlewares, so each refusal already produces a span, a status and an `error` event. A counter restating them is the `duration_ms` mistake one signal up. The test that pins this is a count: **one** instrument registered, so a second arrives with a reviewer attached — and the reviewer's question is the layer table, *which layer below us is blind to this number?* |
 | **26** | **Deny-list conformance** — OP11. Follows **23f**, which builds the `redact.go` under test. This row said "after 23d, not after 23f" until 2026-09-09 and directly contradicted `implementation-prompts.md`; that row was the correct one | `telemetry/redact_test.go` | A span carrying `textSearch`, `filters.expression`, coordinates and a user agent leaves the facilitator exporter with none of them, asserted over the **exported payload** rather than over the code that builds it — and over its string *values*, not its keys, since the risk is a caller-supplied URI or a wrapped driver error and neither is a key any per-row column can reach. Facilitator projection only: asserting it on the ClickStack stream would forbid the local analysis the split exists to permit. Fixture-driven, so adding a denied field is a fixture line, and it carries a vacuity guard — a conformance test that passes over zero inputs is a failure this repo has already met once |
 
 Notes that bite:
@@ -1323,7 +1371,7 @@ each sub-task.
 
 | | Decision | Recommendation |
 |---|---|---|
-| 1 | **`scope.version`** — the spec repo has **no version tags** and `1.0` is the only value any example uses. Stamped on every span; a facilitator may key on it | **Ship `1.0`** and record that it is example-derived, not released. A constant in `telemetry.go` |
+| 1 | **`scope.version`** — the spec repo has **no version tags** and `1.0` is the only value any example uses. Stamped on every span; a facilitator may key on it | **Ship `1.0`** and record that it is example-derived, not released. A constant in `provider.go` |
 | 2 | **OTLP transport — gRPC or HTTP?** `otlptracegrpc` and `otlptracehttp` are different modules, so this is a dependency, not a config flag | **gRPC** — the OTel default for `OTEL_EXPORTER_OTLP_ENDPOINT`, which config already reads, and ClickStack's collector accepts it |
 | 3 | **`App.Close()` is `func()`** — no ctx, no error — but `TracerProvider.Shutdown` needs both | Bound the flush **inside** `Close` and report failure to stderr as `Log.Sync` already does, rather than widening the signature across every caller |
 | 4 | ~~**ADR-0011 contradicts A23**~~ — **DONE.** It read "traces **and metrics**" and "`otelhttp` instrumentation", both rejected by A23 | Amended in place, with an Amendments section recording what changed and why. Two committed documents disagreeing is a defect rather than a choice, so it was not left for 23a to carry |
@@ -1358,7 +1406,7 @@ sees the variable in their manifest and believes it is doing something. The bare
 form additionally discards the parent's decision, producing exactly the holed
 cross-layer traces this decision exists to prevent.
 
-So: **`telemetry.go` passes no `WithSampler` option, and a comment at that
+So: **`provider.go` passes no `WithSampler` option, and a comment at that
 non-line says why.** A pin that holds only because someone remembered it is not a
 pin, and this one is invisible by construction — there is no code to review.
 Encode it behaviourally: 23c starts a child from an inbound `traceparent` whose

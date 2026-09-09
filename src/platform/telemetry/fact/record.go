@@ -265,3 +265,30 @@ func requireKind(k Key, kind Kind) Definition {
 	}
 	return def
 }
+
+// clampRunes cuts a string to at most limit runes, reporting whether it cut.
+// Runes rather than bytes: a byte cut can split a UTF-8 sequence and produce a
+// replacement character in an attribute value nobody can search for.
+//
+// Clamping happens here, where the value enters the record, rather than at the
+// projections — there are four exits and one entrance.
+func clampRunes(value string, limit int) (string, bool) {
+	if limit <= 0 || len(value) <= limit {
+		// len is a byte count and so a cheap lower bound on the rune count; a
+		// string shorter in bytes than the limit cannot exceed it in runes.
+		return value, false
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value, false
+	}
+	return string(runes[:limit]), true
+}
+
+// clampEntries cuts a list to at most limit entries, reporting whether it cut.
+func clampEntries(values []string, limit int) ([]string, bool) {
+	if limit <= 0 || len(values) <= limit {
+		return values, false
+	}
+	return slices.Clip(values[:limit]), true
+}
