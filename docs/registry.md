@@ -127,10 +127,6 @@ decides the rest. One level, no wrapper object:
 | required | `participantId`, `name`, `type`, `status`, `baseUrl` | `role`, `keys` | — |
 | refused | | | `role`, `keys` |
 
-> The source text declared the `type` enum as `network_adapter` / `upstream_api`
-> but wrote `"upstream"` in its second worked example. The declared enum wins:
-> the example is normalised to `upstream_api` here and in the schema.
-
 A **`network_adapter`** is a node — it speaks Beckn. It can sit at any of the
 three layers, and `role` is what says which: the provider adapter, the consumer
 adapter and the network node are all `network_adapter` rows, differing only
