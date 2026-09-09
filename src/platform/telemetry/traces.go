@@ -17,24 +17,16 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
-// SpanAttributes projects a request's observed facts onto the span's attributes.
+// SpanAttributes projects a request's observed facts onto the span's attributes
+// — the span half of the seam (telemetry-seam.md:130-136).
 //
-// This is the span half of the seam (telemetry-seam.md:130-136), and it lives
-// here rather than in package fact for the reason that package's whole design
-// rests on: fact's dependency set is a closed list of standard-library packages,
-// pinned by tests/architecture/boundary_test.go, and that is what lets a
-// controller observe a fact without linking the OpenTelemetry SDK. An
-// attribute.KeyValue in there would link it into every importer at once.
+// It RETURNS a slice rather than setting them, so the caller decides when, and
+// the answer is once at the end: attributes set at span start would be set
+// before the envelope has been parsed.
 //
-// It returns a slice rather than setting them, so the caller decides WHEN — and
-// the answer is once, at the end. Attributes set at span start would be set
-// before the envelope has been parsed and there would be nothing to say.
-//
-// A nil record is not an error and does not project nothing: the probes chain
-// allocates no record deliberately, and a span with no sender.unidentified on it
-// reads as a request whose sender was checked. Nil is "we observed nothing",
-// which is exactly what the absent flags describe, so the absent pass below runs
-// over it unchanged.
+// A nil record still projects the absent flags. Nil means "we observed nothing",
+// which is what those flags describe — a span with no sender.unidentified on it
+// would read as a request whose sender was checked.
 func SpanAttributes(record *fact.Record) []attribute.KeyValue {
 	projection := newSpanProjection()
 	for observation := range record.All() {
@@ -58,22 +50,17 @@ type spanProjection struct {
 func newSpanProjection() *spanProjection {
 	return &spanProjection{
 		// Twenty is what the worked example carries
-		// (telemetry-examples.md:83-110): six http.*, seven beckn.*, the two
-		// identities and their flags, the status under both spellings, and the
-		// observed time.
+		// (telemetry-examples.md:83-110).
 		attributes: make([]attribute.KeyValue, 0, 20),
 		observed:   make(map[fact.Key]bool),
 		flagged:    make(map[string]bool),
 	}
 }
 
-// flag emits a derived boolean once.
-//
-// Flags are named by the row, and two rows may name the same one:
-// beckn.schemaContext and beckn.schemaType share beckn.schemaTruncated
-// deliberately, because they are cut by one bound and staying the same length is
-// the point of them. Emitting it per row would set the attribute twice and the
-// exporter would keep one of the two with nothing saying which.
+// flag emits a derived boolean ONCE. Two rows may name the same flag —
+// beckn.schemaContext and beckn.schemaType share beckn.schemaTruncated, because
+// they are cut by one bound — and emitting it per row would set the attribute
+// twice with nothing saying which copy the exporter kept.
 func (p *spanProjection) flag(name string) {
 	if name == "" || p.flagged[name] {
 		return
@@ -90,19 +77,18 @@ func (p *spanProjection) observe(observation fact.Observation) {
 	}
 	p.observed[observation.Key] = true
 
-	// Definition.Kind chooses the constructor, not Observation.Kind. The two
-	// cannot disagree — Record.requireKind refuses a mismatched write — so this
-	// is about which is authoritative, and the registry is.
+	// Definition.Kind chooses the constructor, not Observation.Kind: the
+	// registry is what is authoritative.
 	value := spanValue(def.Kind, observation)
 	p.attributes = append(p.attributes, attribute.KeyValue{
 		Key:   attribute.Key(def.SpanKey),
 		Value: value,
 	})
 
-	// The aliases: one value under a second key, which is what makes them unable
-	// to drift. Two of them exist and no more should — the cross-layer join
-	// spellings onix's collectors key on (I1), and http.status.code as a string
-	// beside http.status_code as an int (divergence 3).
+	// Aliases are ONE value under a second key, which is what makes them unable
+	// to drift. Two exist and no more should: the cross-layer join spelling
+	// onix's collectors key on (I1), and http.status.code as a string beside
+	// http.status_code as an int (divergence 3).
 	for _, alias := range def.SpanAliases {
 		p.attributes = append(p.attributes, attribute.KeyValue{
 			Key:   attribute.Key(alias.Key),
@@ -110,19 +96,16 @@ func (p *spanProjection) observe(observation fact.Observation) {
 		})
 	}
 
-	// Clamped at the record, reported here. A short value that does not say it
-	// was cut reads as a complete one, and somebody comparing the predicate on
-	// the span against the predicate they sent concludes the service received
-	// something else. SpanEvents reports truncation for this same reason.
+	// Clamped at the record, reported here: a short value that does not say it
+	// was cut reads as a complete one, and whoever compares the predicate on the
+	// span against the one they sent concludes we received something else.
 	if observation.Truncated {
 		p.flag(def.TruncationFlag)
 	}
 
-	// sender.unverified, and note it is not the opposite of sender.unidentified:
-	// this one says we were told who the caller is and did not check. Task 6 is
-	// parked, so today it is on every identified sender — and when signature
-	// verification lands it becomes conditional here rather than at every call
-	// site.
+	// sender.unverified — not the opposite of sender.unidentified. This one says
+	// we were told who the caller is and did not check, so with Task 6 parked it
+	// is on every identified sender.
 	p.flag(def.PresentFlag)
 }
 
@@ -139,28 +122,18 @@ func (p *spanProjection) absent() {
 }
 
 // onTheSpan is the filter both passes share, and its two bits exclude different
-// things. The Span bit drops the Log-only facts — duration_ms above all, which
-// the span already answers with its own start and end, and a second answer is
-// free to disagree with the first. NoEvent drops the facts that belong on span
-// EVENTS: they are on the same record, and emitting them here as well would put
-// every one of them on the span too.
-//
-// PromoteToSpan is the per-row exception to that second bit, not a softening of
-// it — the row still ships on its event, and only the rows that declare the
-// bool are copied here. See the field's own comment for what buys the
-// duplication; fact.Validate refuses the bool on a row where it would mean
-// nothing.
+// things: the Span bit drops the Log-only facts (duration_ms above all, which
+// the span already answers from its own start and end), and NoEvent drops the
+// facts that belong on span EVENTS. PromoteToSpan is the per-row exception to
+// the second bit — the row still ships on its event as well.
 func onTheSpan(def fact.Definition) bool {
 	return def.Signals&fact.Span != 0 && (def.Event == fact.NoEvent || def.PromoteToSpan)
 }
 
-// spanValue converts one observation to an attribute value.
-//
-// A Kind this switch does not know would emit an attribute with no value rather
-// than dropping the row, which is why the default is the string form: an
-// unreadable value is recoverable, a silently absent one is not. The registry's
-// completeness test refuses KindUnspecified, so the default is unreachable
-// through the front door.
+// spanValue converts one observation to an attribute value. The default is the
+// string form rather than a dropped row: an unreadable value is recoverable, a
+// silently absent one is not. The registry refuses KindUnspecified, so it is
+// unreachable through the front door.
 func spanValue(kind fact.Kind, observation fact.Observation) attribute.Value {
 	switch kind {
 	case fact.KindString:
@@ -180,13 +153,9 @@ func spanValue(kind fact.Kind, observation fact.Observation) attribute.Value {
 
 // aliasValue renders the value under the alias's key.
 //
-// AsString exists for exactly one row: the network telemetry spec declares
-// http.status.code as an Int and emits it as a string in all three of its
-// examples, and we follow the examples. Why, and why onix is not the authority
-// on changing it: opentelemetry.md:487-490 and divergence 3 at :782.
-//
-// strconv rather than fmt because the input is already known to be an int64 and
-// a %v would render a non-int64 Kind as something that looks deliberate.
+// AsString exists for exactly one row: the spec declares http.status.code an Int
+// and emits it as a string in all three of its examples, and we follow the
+// examples (opentelemetry.md:487-490, divergence 3 at :782).
 func aliasValue(value attribute.Value, alias fact.Alias) attribute.Value {
 	if !alias.AsString {
 		return value
@@ -198,32 +167,22 @@ func aliasValue(value attribute.Value, alias fact.Alias) attribute.Value {
 }
 
 // SpanEvent is one projected event: what happened, when, and the shape of it.
-//
-// It is data rather than a call against a span, for the same reason
-// SpanAttributes returns a slice — the caller decides when, and the answer is
-// once, from Trace's deferred block. It is also what lets this be tested without
-// an exporter.
+// Data rather than a call against a span, for the reason SpanAttributes returns
+// a slice — and it is what lets this be tested without an exporter.
 type SpanEvent struct {
 	Name       string
 	Time       time.Time
 	Attributes []attribute.KeyValue
 }
 
-// SpanEvents projects the record's point-in-time facts onto span events.
+// SpanEvents projects the record's point-in-time facts onto span events, by the
+// rule the registry encodes (opentelemetry.md:641): true for the whole request →
+// span attribute; produced at a point during processing → event.
 //
-// The rule the registry encodes (opentelemetry.md:641): true for the whole
-// request → span attribute; produced at a point during processing → event. This
-// is the second half of the partition onTheSpan implements, and the two
-// functions never emit the same key.
-//
-// An event whose facts were never observed is not emitted. A discover that never
-// reached the store has no retrieval_info, and an empty event stamped at the
-// span's end would read as a phase that ran and produced nothing — a different
-// and much more alarming claim than a phase that did not run.
-//
-// A nil record projects nothing, and unlike the span half there is no
-// absent-flag pass to run over it: an event that did not happen is reported by
-// its absence, which is what a reader of a trace already expects.
+// An event whose facts were never observed is NOT emitted. An empty event
+// stamped at the span's end would read as a phase that ran and produced nothing
+// — a much more alarming claim than a phase that did not run. There is no
+// absent-flag pass here for that reason.
 func SpanEvents(record *fact.Record) []SpanEvent {
 	building := make(map[fact.Event]*SpanEvent)
 
@@ -239,15 +198,11 @@ func SpanEvents(record *fact.Record) []SpanEvent {
 			building[def.Event] = event
 		}
 
-		// The earliest of its facts, not the latest. A phase happens over an
+		// The EARLIEST of its facts, not the latest. A phase happens over an
 		// interval however instantaneous it looks — response_info is three
-		// separate writes — and anchoring at the last of them slides every event
-		// toward the span's end by however long its own work took, which is
-		// exactly the interval the deltas between events are meant to measure.
-		//
-		// Earliest of what it CURRENTLY holds, which for a corrected fact is the
-		// correction: the event reports the values that went out, so the moment
-		// those became true is the moment it happened.
+		// writes — and anchoring at the last of them slides every event toward
+		// the span's end by however long its own work took, which is exactly
+		// the interval the deltas between events measure.
 		if observation.Time.Before(event.Time) {
 			event.Time = observation.Time
 		}
@@ -268,13 +223,10 @@ func SpanEvents(record *fact.Record) []SpanEvent {
 
 // ordered flattens the events into the order they happened in.
 //
-// Sorted rather than emitted in record order, and the case that needs it is not
-// hypothetical: the error event is written from logNack, which on a
-// partially-written response runs after the result facts were observed. Record
-// order there would put the failure before the success it interrupted.
-//
-// Map iteration order is randomised in Go, so this sort is also what makes the
-// output deterministic at all.
+// Sorted rather than emitted in record order, and the case is not hypothetical:
+// the error event is written from logNack, which on a partially-written response
+// runs after the result facts were observed. It is also what makes the output
+// deterministic at all, since map iteration order is randomised.
 func ordered(building map[fact.Event]*SpanEvent) []SpanEvent {
 	events := make([]SpanEvent, 0, len(building))
 	for _, event := range building {
@@ -287,22 +239,19 @@ func ordered(building map[fact.Event]*SpanEvent) []SpanEvent {
 // spanUUID stamps the spec's Required `span_uuid` on every span the service
 // starts.
 //
-// A SpanProcessor rather than a line in the Trace middleware, for two reasons.
-// It cannot be forgotten: any span from any tracer this provider hands out gets
-// one, including whatever a later task instruments. And it belongs to the
-// provider, so the middleware stays a projection of a fact.Record and acquires
-// no identity-minting of its own.
+// A SpanProcessor rather than a line in the Trace middleware, so it cannot be
+// forgotten by a later task's spans, and so the middleware stays a projection of
+// a fact.Record with no identity-minting of its own.
 //
-// It is not a fact.Key observation like everything else on the span, and that is
-// deliberate: a Record is per request and this is per span, so recording it as a
-// fact would put one value on a request that may hold more than one span. The
-// key spelling still comes from the registry — the seam is about where the name
-// lives, not about which mechanism writes it.
+// NOT a fact.Key observation like everything else on the span: a Record is per
+// request and this is per span, so recording it as a fact would put one value on
+// a request that may hold several. The key spelling still comes from the
+// registry.
 type spanUUID struct{}
 
-// OnStart is where the attribute has to be set. OnEnd receives a ReadOnlySpan,
+// OnStart is where the attribute has to be set: OnEnd receives a ReadOnlySpan,
 // which cannot take one — the same constraint that puts observedTimeUnixNano in
-// the middleware just before End rather than here.
+// the middleware just before End.
 func (spanUUID) OnStart(_ context.Context, span sdktrace.ReadWriteSpan) {
 	span.SetAttributes(attribute.String(keyOf(fact.SpanUUID), uuid.NewString()))
 }
@@ -310,9 +259,7 @@ func (spanUUID) OnStart(_ context.Context, span sdktrace.ReadWriteSpan) {
 // OnEnd does nothing. This processor is not in the export path; the batcher is.
 func (spanUUID) OnEnd(sdktrace.ReadOnlySpan) {}
 
-// Shutdown has nothing to release. It holds no buffer, no connection and no
-// goroutine — every span it touches is finished with by the time OnStart
-// returns.
+// Shutdown has nothing to release: no buffer, no connection, no goroutine.
 func (spanUUID) Shutdown(context.Context) error { return nil }
 
 // ForceFlush has nothing to flush, for the same reason.
@@ -326,16 +273,15 @@ func (spanUUID) ForceFlush(context.Context) error { return nil }
 
 // Identity is who this deployment says it is, read off config once at boot.
 //
-// A struct rather than three parameters because the Resource is the one place
-// all three appear and they are all strings: projectResource(id, build) cannot
-// be called with domain and network the wrong way round, and
+// A struct rather than three string parameters: projectResource(id, build)
+// cannot be called with domain and network the wrong way round, and
 // projectResource(a, b, c) can.
 type Identity struct {
 	// Producer is the registered subscriber id, an FQDN. Never service.name.
 	Producer string
 
-	// Domain is the sector. Already checked against the registry's declared
-	// values by validateOTel, which is why nothing re-checks it here.
+	// Domain is the sector, already checked against the registry's declared
+	// values by config.validateOTel.
 	Domain string
 
 	// NetworkID is the network this deployment serves — our key, not the spec's.
@@ -354,27 +300,23 @@ func NewIdentity(cfg config.Config) Identity {
 
 // The two Resource values that are constants rather than configuration.
 const (
-	// eidAPI is the entity id for the TRACE signal. The LOG/AUDIT signal's is
-	// AUDIT and the metric stream's is METRIC — the eid is the one Resource
-	// attribute the three projections vary, which is why it is a registry row
-	// with three declared values and not a literal in three places.
+	// eidAPI is the entity id for the TRACE signal; the log/audit signal's is
+	// AUDIT and the metric stream's METRIC. The one Resource attribute the three
+	// projections vary, which is why it is a registry row.
 	eidAPI = "API"
 
-	// serviceName is what software this is, and it does not vary by deployment.
-	// That is the whole difference from Identity.Producer, which does and says
-	// which participant this is.
+	// serviceName is what SOFTWARE this is and does not vary by deployment,
+	// which is the whole difference from Identity.Producer.
 	serviceName = "discovery-service"
 )
 
-// version is injected at link time; docs/design/opentelemetry.md, "Build
-// identity", says why it is the one attribute that cannot read the toolchain's
-// build stamp. Do not restate that reasoning here — it was wrong at four sites
-// until it was measured.
+// version is injected at link time; opentelemetry.md, "Build identity", says why
+// it is the one attribute that cannot read the toolchain's build stamp. Do not
+// restate that reasoning here — it was wrong at four sites until it was measured.
 //
 // `dev` rather than "" so an unset value differs from a dropped one. Pinned by
 // tests/architecture/ldflags_test.go, because `go build -X` on a symbol that
-// does not exist succeeds silently. The flag names the PACKAGE, so this symbol
-// moving between files in it is not a break — which is what let it move here.
+// does not exist succeeds silently.
 var version = "dev"
 
 // Build is what -ldflags and the toolchain's VCS stamp know between them about
@@ -388,22 +330,20 @@ type Build struct {
 
 // The values the three VCS-derived attributes take when the binary carries no
 // stamp — every `go test` binary, and every build from an exported tree
-// including the release image. Named because `unknown` appearing as a bare
-// literal twice invites someone to make one of them "".
+// including the release image.
 const (
 	unknownRevision  = "unknown"
 	unknownTreeState = "unknown"
 
-	// zeroTime is what build.date says with no stamp. Not `unknown`: this one is
-	// a timestamp everywhere else, and a consumer parsing it would have to
-	// special-case a word. The zero instant is unambiguous and parses.
+	// Not `unknown`: build.date is a timestamp everywhere else, and a consumer
+	// parsing it would have to special-case a word.
 	zeroTime = "1970-01-01T00:00:00Z"
 )
 
 // readBuild assembles the four build attributes, reporting an absence as a value
-// rather than as an error — the same choice main.go's vcsRevision made. A binary
-// with no VCS stamp is a normal thing to be, and a Resource that refused to
-// build over it is a service that cannot boot in a test.
+// rather than an error: a binary with no VCS stamp is a normal thing to be, and
+// a Resource that refused to build over it is a service that cannot boot in a
+// test.
 func readBuild() Build {
 	build := Build{
 		Version:   version,
@@ -420,9 +360,9 @@ func readBuild() Build {
 		case "vcs.revision":
 			build.Commit = setting.Value
 		case "vcs.time":
-			// The COMMIT's timestamp, not the moment the compiler ran. onix's
-			// onix.build.date is the latter; this is the reproducible half and
-			// the one that answers which change is deployed.
+			// The COMMIT's timestamp, not the moment the compiler ran — the
+			// reproducible half, and the one that answers which change is
+			// deployed. onix's onix.build.date is the other.
 			build.Date = setting.Value
 		case "vcs.modified":
 			build.TreeState = treeState(setting.Value)
@@ -436,9 +376,8 @@ func readBuild() Build {
 }
 
 // treeState maps debug.BuildSetting's "true"/"false" onto the registry's
-// clean/dirty/unknown. Translated here rather than at the call site because
-// `dirty` on a production Resource is a finding, and it must not be confusable
-// with a missing stamp.
+// clean/dirty/unknown. Three values and not two, because `dirty` on a production
+// Resource is a finding and must not be confusable with a missing stamp.
 func treeState(modified string) string {
 	switch modified {
 	case "true":
@@ -451,9 +390,9 @@ func treeState(modified string) string {
 }
 
 // projectResource is the Resource half of the seam: every attribute name comes
-// off the registry and none is a literal here. Worth the indirection because a
-// Resource is built once at boot, so a wrong key is wrong on every signal the
-// process ever emits and no test of any single signal catches it.
+// off the registry and none is a literal here. A Resource is built once at boot,
+// so a wrong key is wrong on every signal the process ever emits and no test of
+// a single signal catches it.
 func projectResource(ctx context.Context, id Identity, build Build) (*resource.Resource, error) {
 	attributes := []attribute.KeyValue{
 		attribute.String(keyOf(fact.ResourceEID), eidAPI),
@@ -465,34 +404,33 @@ func projectResource(ctx context.Context, id Identity, build Build) (*resource.R
 		attribute.String(keyOf(fact.ResourceServiceVersion), build.Version),
 		attribute.String(keyOf(fact.ResourceBuildCommit), build.Commit),
 		attribute.String(keyOf(fact.ResourceBuildTreeState), build.TreeState),
-		// zeroTime when the binary carries no VCS stamp, which is the case in the
-		// release image. See "Build identity" in opentelemetry.md.
+		// zeroTime when the binary carries no VCS stamp, which is the case in
+		// the release image.
 		attribute.String(keyOf(fact.ResourceBuildDate), build.Date),
 	}
 
-	// WithFromEnv first, ours second: resource.New merges in order and the last
+	// WithFromEnv FIRST, ours second: resource.New merges in order and the last
 	// writer wins. The env detector carries pod identity via
-	// OTEL_RESOURCE_ATTRIBUTES (opentelemetry.md:479), and the order matters the
-	// other way too — an operator can put a `producer` in that variable, and
-	// letting it win would quietly undo the boot refusal validateOTel just
-	// performed.
+	// OTEL_RESOURCE_ATTRIBUTES (opentelemetry.md:479), and letting it win would
+	// let an operator put a `producer` there and quietly undo the boot refusal
+	// validateOTel just performed.
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(),
 		resource.WithAttributes(attributes...),
 	)
 	if err != nil {
 		// resource.New returns a usable Resource alongside a partial-detection
-		// error, but not here: the env detector is the only one running and its
-		// error means OTEL_RESOURCE_ATTRIBUTES is malformed. Booting on a
-		// half-parsed operator intent is how a pod ends up unattributed.
+		// error, and it is refused anyway: the env detector is the only one
+		// running, so its error means OTEL_RESOURCE_ATTRIBUTES is malformed, and
+		// booting on half-parsed operator intent is how a pod ends up
+		// unattributed.
 		return nil, fmt.Errorf("assemble the resource: %w", err)
 	}
 	return res, nil
 }
 
-// keyOf is the registry lookup for an attribute name, named short because it
-// appears nine times above. fact.Of panics on a key with no row, which is the
-// right failure: it happens at boot.
+// keyOf is the registry lookup for an attribute name. fact.Of panics on a key
+// with no row, which is the right failure: it happens at boot.
 func keyOf(key fact.Key) string {
 	return fact.Of(key).SpanKey
 }

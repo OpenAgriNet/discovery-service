@@ -9,16 +9,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// This file is test support in a non-test file, the way src/indexing/geo does
-// it, and the reason is the import boundary rather than convenience.
-//
-// A23 keeps go.opentelemetry.io out of everything but this package plus the
-// handful of files boundary_test.go names. Tests are the largest population that
-// would otherwise need it: middlewares, app, and every controller 23d touches
-// all need to see what a span came out as. Exporting the answer as plain structs
-// here means one place imports the SDK instead of a dozen, and it means a test
-// asserts on "the span's name" rather than on a tracetest.SpanStub whose shape
-// is the SDK's to change.
+// Test support in a non-test file, the way src/indexing/geo does it, because of
+// the import boundary rather than convenience: A23 keeps go.opentelemetry.io out
+// of everything but this package and the files boundary_test.go names, and tests
+// across middlewares, app and every 23d controller need to see what a span came
+// out as. Exporting plain structs here means one place imports the SDK instead
+// of a dozen.
 
 // Recorder collects the spans a Provider exported, for tests to read back.
 type Recorder struct {
@@ -28,16 +24,14 @@ type Recorder struct {
 // NewRecorder builds a Provider that exports into memory, and the Recorder that
 // reads it.
 //
-// It is deliberately not Init with an extra option. Init's subject is
-// configuration — which exporter, which endpoint, which Resource — and a test
-// asserting on span shape has no opinion about any of that. What it does share
-// is the two things a span's shape depends on: the spanUUID processor, so a test
-// sees the same stamped attribute production does, and the scoped tracer, so
-// scope.name and scope.version are asserted rather than assumed.
+// Deliberately not Init with an extra option: Init's subject is configuration,
+// which a span-shape test has no opinion about. What it does share is the two
+// things a span's shape depends on — the spanUUID processor and the scoped
+// tracer, so scope.name and scope.version are asserted rather than assumed.
 //
-// WithSyncer, not WithBatcher: a batching exporter would make every assertion
-// depend on a flush the test has to remember, and a forgotten flush reads as a
-// span that was never started.
+// WithSyncer, not WithBatcher: batching would make every assertion depend on a
+// flush the test has to remember, and a forgotten one reads as a span that was
+// never started.
 func NewRecorder() (*Provider, *Recorder) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(
@@ -52,9 +46,9 @@ func NewRecorder() (*Provider, *Recorder) {
 		}
 }
 
-// Scope is the instrumentation scope a span was created under. Its whole reason
-// for being assertable is A23: otelhttp would have stamped its own here, and no
-// other property of the span would have looked wrong.
+// Scope is the instrumentation scope a span was created under. Assertable
+// because of A23: otelhttp would have stamped its own here, and no other
+// property of the span would have looked wrong.
 type Scope struct {
 	Name    string
 	Version string
@@ -75,12 +69,11 @@ type Span struct {
 	End   time.Time
 
 	// Attributes by key. A map because every assertion is "what is X", and the
-	// order attributes come out in is the exporter's business, not a test's.
+	// order they come out in is the exporter's business, not a test's.
 	Attributes map[string]any
 
-	// Events in the order they were added, which for 23d is the assertion: the
-	// event times have to be strictly increasing and none of them may equal the
-	// span's end.
+	// Events in the order they were added, which for 23d is the assertion:
+	// strictly increasing times, none equal to the span's end.
 	Events []Event
 }
 
@@ -126,10 +119,8 @@ func (r *Recorder) Spans() []Span {
 func (r *Recorder) Reset() { r.exporter.Reset() }
 
 // flatten turns the SDK's attribute list into the map every assertion wants.
-//
 // AsInterface rather than a switch on Type, so an attribute Kind nobody has used
-// yet arrives readable instead of arriving as the zero value of whichever branch
-// a switch fell through to.
+// yet arrives readable rather than as some branch's zero value.
 func flatten(attributes []attribute.KeyValue) map[string]any {
 	if len(attributes) == 0 {
 		return map[string]any{}
