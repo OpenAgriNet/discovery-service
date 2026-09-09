@@ -302,10 +302,17 @@ func NewIdentity(cfg config.Config) Identity {
 
 // The two Resource values that are constants rather than configuration.
 const (
-	// eidAPI is the entity id for the TRACE signal; the log/audit signal's is
-	// AUDIT and the metric stream's METRIC. The one Resource attribute the three
-	// projections vary, which is why it is a registry row.
-	eidAPI = "API"
+	// eidAPI and eidMetric are the entity ids for the two signals this service
+	// emits. The third, AUDIT, has no constant because nothing here emits the
+	// LOG signal — it is optional in the spec (otel-specification.md:27) and
+	// discovery transitions no entity, so there is no item.prevstate to report.
+	// A constant for a signal nobody sends is a claim the code does not keep.
+	//
+	// This is the one Resource attribute the projections vary, which is why it
+	// is a registry row (fact.ResourceEID, Values API/METRIC/AUDIT) rather than
+	// a literal.
+	eidAPI    = "API"
+	eidMetric = "METRIC"
 
 	// serviceName is what SOFTWARE this is and does not vary by deployment,
 	// which is the whole difference from Identity.Producer.
@@ -356,6 +363,31 @@ func projectResource(ctx context.Context, id Identity, build buildinfo.Stamp) (*
 		return nil, fmt.Errorf("assemble the resource: %w", err)
 	}
 	return res, nil
+}
+
+// withEID returns res with its `eid` replaced, and is how the metrics half gets
+// a Resource that says METRIC where the trace half says API.
+//
+// A DERIVATION rather than a second projectResource call, deliberately. Every
+// other Resource attribute — producer, domain, service.name, network.id and the
+// four build values — is Required on both signals and must be identical, or a
+// facilitator correlating a metric with the trace it came from cannot tell they
+// describe the same participant and the same build. Deriving makes that true for
+// attributes added later without anyone remembering to add them twice; two
+// independent calls would make it true only for as long as the two argument
+// lists happened to match.
+//
+// resource.Merge's SECOND argument wins on a key collision, which is the whole
+// mechanism. Schemaless because res is schemaless: Merge treats two differing
+// non-empty schema URLs as a conflict, and an empty one merges with anything.
+func withEID(res *resource.Resource, eid string) (*resource.Resource, error) {
+	merged, err := resource.Merge(res, resource.NewSchemaless(
+		attribute.String(keyOf(fact.ResourceEID), eid),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("set eid=%s on the resource: %w", eid, err)
+	}
+	return merged, nil
 }
 
 // keyOf is the registry lookup for an attribute name. fact.Of panics on a key

@@ -70,6 +70,62 @@ func TestTheResourceCarriesTheFiveSpecAttributes(t *testing.T) {
 	}
 }
 
+// TestTheMetricResourceSaysMETRICAndAgreesOnEverythingElse pins the one Resource
+// attribute that is allowed to differ between the two signals, and every one that
+// is not.
+//
+// The spec (otel-specification.md:271 and :446) makes `eid` Required on both and
+// gives them DIFFERENT values — API for a trace, METRIC for a metric — which is
+// why fact.ResourceEID is a registry row carrying three Values rather than a
+// literal in the projection. Until 2026-09-10 both providers were handed the one
+// API Resource and every metric this service exported claimed to be an API event.
+// A live scrape said so: `pgxpool_empty_acquire_total{...,eid="API",...}`.
+//
+// The other half of the assertion is the half that was RIGHT before and is easy
+// to break while fixing this: producer, domain, service.name, network.id and the
+// four build attributes are Required on both signals and must agree, or a
+// facilitator correlating a metric with the trace it came from cannot tell they
+// came from the same participant. That guarantee used to hold by construction —
+// one Resource object, shared. Deriving a second one trades that for a test, so
+// this is the test.
+func TestTheMetricResourceSaysMETRICAndAgreesOnEverythingElse(t *testing.T) {
+	traces, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
+	if err != nil {
+		t.Fatalf("projectResource: %v", err)
+	}
+
+	metrics, err := withEID(traces, eidMetric)
+	if err != nil {
+		t.Fatalf("withEID: %v", err)
+	}
+
+	eid := fact.Of(fact.ResourceEID).SpanKey
+	fromTraces := attributesOf(t, traces.Attributes())
+	fromMetrics := attributesOf(t, metrics.Attributes())
+
+	if got := fromTraces[eid]; got != eidAPI {
+		t.Errorf("the trace Resource carries %s = %q, want %q", eid, got, eidAPI)
+	}
+	if got := fromMetrics[eid]; got != eidMetric {
+		t.Errorf("the metric Resource carries %s = %q, want %q — a metric labelled "+
+			"API is an unregistered stream a facilitator will route as a trace", eid, got, eidMetric)
+	}
+
+	if len(fromMetrics) != len(fromTraces) {
+		t.Errorf("the metric Resource carries %d attributes and the trace Resource %d; "+
+			"the override adds and removes nothing", len(fromMetrics), len(fromTraces))
+	}
+	for key, wantValue := range fromTraces {
+		if key == eid {
+			continue
+		}
+		if got := fromMetrics[key]; got != wantValue {
+			t.Errorf("%s is %q on the metric Resource and %q on the trace Resource; "+
+				"eid is the ONLY attribute the two signals may disagree on", key, got, wantValue)
+		}
+	}
+}
+
 // TestServiceNameIsNotProducer pins the correction opentelemetry.md §Resource
 // records.
 //

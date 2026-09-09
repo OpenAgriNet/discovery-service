@@ -1808,6 +1808,18 @@ interpret.
   is the single exception and is therefore a registry row with a per-signal
   projection rule, not a literal in `Init`.
 
+  **This paragraph was right and the code was wrong until 2026-09-10.** `Init`
+  built one Resource and handed the same object to both providers, so every
+  metric this service exported carried `eid=API` — measured on a live scrape as
+  `pgxpool_empty_acquire_total{...,eid="API",...}`. `traces.go`'s `withEID`
+  derives the metric Resource from the trace one by overriding that single
+  attribute, and `newMeterProvider` performs the derivation itself rather than
+  accepting a finished Resource, so no caller can pass the API one back in.
+  Note what does NOT change: the `spanmetrics`-derived streams still read
+  `eid=API`, correctly — they are computed from the trace stream and inherit its
+  Resource, and §How the derivation happens is explicit that they are not the
+  METRIC signal.
+
 ---
 
 ## Node-operator metrics — Task 25

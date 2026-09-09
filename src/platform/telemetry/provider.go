@@ -135,17 +135,31 @@ func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
 	}, nil
 }
 
-// newMeterProvider builds the metrics half, over the same Resource.
+// newMeterProvider builds the metrics half, over the trace Resource with its
+// `eid` overridden to METRIC.
 //
-// The same Resource OBJECT, not an equal one: `producer` and `domain` are
-// spec-Required on all three signals, and constructing it once makes "the same
-// Resource everywhere" true by construction rather than by remembering.
+// It takes the API Resource and derives, rather than being handed a finished
+// one, so that Init has no way to wire the wrong Resource in: there is no
+// argument here that could carry eid=API. That matters because the mistake it
+// replaces was exactly that — one Resource, both providers, and every metric
+// this service exported labelled itself an API event until 2026-09-10.
+//
+// `producer` and `domain` are spec-Required on both signals and must agree.
+// That used to hold because the two shared one object; it now holds because
+// withEID copies everything it does not override, and
+// TestTheMetricResourceSaysMETRICAndAgreesOnEverythingElse fails if that stops
+// being true.
 //
 // Under any exporter but otlp it gets no reader, which collects nothing and
 // invokes no callback — the metrics equivalent of NeverSample, spelled as an
 // absent reader because there is no metrics sampler.
 func newMeterProvider(ctx context.Context, cfg config.Config, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
-	options := []sdkmetric.Option{sdkmetric.WithResource(res)}
+	metricRes, err := withEID(res, eidMetric)
+	if err != nil {
+		return nil, err
+	}
+
+	options := []sdkmetric.Option{sdkmetric.WithResource(metricRes)}
 
 	if cfg.OTel.Exporter != config.ExporterOTLP {
 		return sdkmetric.NewMeterProvider(options...), nil
