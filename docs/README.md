@@ -38,9 +38,8 @@ Beside it in `design/`:
 | | |
 |---|---|
 | `implementation-prompts.md` | The per-task driver prompt and the task checklist |
-| `opentelemetry.md` | The span shape as an interop contract, and its companion `telemetry-seam.md` — where the attribute registry lives in code |
+| `opentelemetry.md` | The span shape as an interop contract, plus §The seam — where the attribute registry lives in code — and §Proposed codes, the outward proposal to whoever owns the OAN metrics registry. The last two were separate documents (`telemetry-seam.md`, `metric-code-registry-proposal.md`) until 2026-09-09 |
 | `telemetry-examples.md`, `telemetry-examples/` | One transaction's OTLP payload across this service and beckn-onix. Binding on nothing; kept because it is the only record here of what the other repo actually emits |
-| `metric-code-registry-proposal.md` | Addressed **outward**, to whoever owns the OAN metrics registry. Twelve proposed codes and seven questions. Binding on nothing; Task 24 is blocked until they answer |
 | `registry/schemas/` | The three draft-07 files, **which are the registry's contract**. When they and `registry.md` disagree, the JSON wins |
 
 ## Elsewhere in the repo

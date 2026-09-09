@@ -62,8 +62,8 @@ func TestEveryInstrumentIsComplete(t *testing.T) {
 	}
 }
 
-// TestEveryInstrumentLabelIsALabel is telemetry-seam.md 5d: the check that the
-// two tables agree.
+// TestEveryInstrumentLabelIsALabel is opentelemetry.md §Two tables, not one:
+// the check that the two tables agree.
 //
 // It passes vacuously today, and deliberately so — the acquire-wait pair names
 // no labels, because pgxpool.Stat() is per-pool and there is one pool, so every

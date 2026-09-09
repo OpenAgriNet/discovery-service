@@ -196,7 +196,7 @@
         "result.*": "No retrieval ran."
       },
       "$watchFor": [
-        "The `error` event keys are UNPREFIXED — type / code / msg / path (opentelemetry.md:740-744). The SPAN-level attribute is error_type. Both spellings are deliberate and 23d pins them.",
+        "The `error` event keys are UNPREFIXED — type / code / msg / path (opentelemetry.md, the `error` table under 'Both paths'). The SPAN-level attribute is error_type. Both spellings are deliberate and 23d pins them.",
         "error_type on the span AND type on the event, so a facilitator can filter a span set without unpacking events. Same value, one source: the fault logNack already holds, so span and log cannot disagree.",
         "`type` is derived, not chosen: errors.TypeOf splits on the code prefix — CTX→CONTEXT, AUT→CORE, SCH/BIZ/DOM→DOMAIN, POL→POLICY, anything else→SYSTEM (beckn_error.go's TypeOf).",
         "The event's `type` must match the X-Beckn-Error-Type response header byte for byte. 23d asserts it."
@@ -243,7 +243,7 @@
 
     {
       "name": "discover / refused — rate limited",
-      "why": "OP3's refusal half. Proves a 429 still produces a full span: Trace is index 1 in router.go:134-141, ABOVE both RateLimit and Envelope.",
+      "why": "OP3's refusal half. Proves a 429 still produces a full span: Trace is index 1 in router.go's chain, ABOVE both RateLimit and Envelope.",
       "span": {
         "name": "discover",
         "kind": "SPAN_KIND_SERVER",

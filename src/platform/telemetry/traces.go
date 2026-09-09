@@ -18,7 +18,8 @@ import (
 )
 
 // SpanAttributes projects a request's observed facts onto the span's attributes
-// — the span half of the seam (telemetry-seam.md:130-136).
+// — the span half of the seam (opentelemetry.md §Two packages, and why the
+// split is load-bearing).
 //
 // It RETURNS a slice rather than setting them, so the caller decides when, and
 // the answer is once at the end: attributes set at span start would be set
@@ -50,7 +51,7 @@ type spanProjection struct {
 func newSpanProjection() *spanProjection {
 	return &spanProjection{
 		// Twenty is what the worked example carries
-		// (telemetry-examples.md:83-110).
+		// (telemetry-examples.md §3. Span).
 		attributes: make([]attribute.KeyValue, 0, 20),
 		observed:   make(map[fact.Key]bool),
 		flagged:    make(map[string]bool),
@@ -155,7 +156,7 @@ func spanValue(kind fact.Kind, observation fact.Observation) attribute.Value {
 //
 // AsString exists for exactly one row: the spec declares http.status.code an Int
 // and emits it as a string in all three of its examples, and we follow the
-// examples (opentelemetry.md:487-490, divergence 3 at :782).
+// examples (opentelemetry.md §Divergences from the spec, row 3).
 func aliasValue(value attribute.Value, alias fact.Alias) attribute.Value {
 	if !alias.AsString {
 		return value
@@ -176,7 +177,8 @@ type SpanEvent struct {
 }
 
 // SpanEvents projects the record's point-in-time facts onto span events, by the
-// rule the registry encodes (opentelemetry.md:641): true for the whole request →
+// rule the registry encodes (opentelemetry.md §How the span learns the status):
+// true for the whole request →
 // span attribute; produced at a point during processing → event.
 //
 // An event whose facts were never observed is NOT emitted. An empty event
@@ -411,7 +413,7 @@ func projectResource(ctx context.Context, id Identity, build Build) (*resource.R
 
 	// WithFromEnv FIRST, ours second: resource.New merges in order and the last
 	// writer wins. The env detector carries pod identity via
-	// OTEL_RESOURCE_ATTRIBUTES (opentelemetry.md:479), and letting it win would
+	// OTEL_RESOURCE_ATTRIBUTES (opentelemetry.md §Build identity), and letting it win would
 	// let an operator put a `producer` there and quietly undo the boot refusal
 	// validateOTel just performed.
 	res, err := resource.New(ctx,

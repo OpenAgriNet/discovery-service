@@ -10,7 +10,7 @@
 # carries a start, an end, a status and `beckn.action`; the `span_metrics`
 # connector reads the trace stream and emits a counter and a histogram from
 # exactly those. That is why OP2 was struck from Task 25 rather than built —
-# see opentelemetry.md:1048-1060.
+# see opentelemetry.md §How the derivation happens — `spanmetrics`, not a counter.
 
 receivers:
   otlp:
@@ -43,10 +43,12 @@ connectors:
     # and status.code.
     #
     # `error_type` is therefore NOT redundant with status.code, and this is the
-    # one thing about this config worth knowing. opentelemetry.md:1053-1055 says
-    # success-versus-failure needs only `beckn.action` and "the span's own
-    # status" — that is wrong for THIS service, and measurably so. setStatus
-    # (middlewares/trace.go:202-207) moves the span status only at 5xx, on the
+    # one thing about this config worth knowing. An earlier draft of
+    # opentelemetry.md §How the derivation happens said success-versus-failure
+    # needs only `beckn.action` and "the span's own status" — that is wrong for
+    # THIS service, and measurably so; that section now carries the correction.
+    # setStatus
+    # (in middlewares/trace.go) moves the span status only at 5xx, on the
     # documented reasoning that a 400 is the caller's mistake and counting it as
     # a server error reports how often this service broke when it did not. So
     # every 4xx refusal — the whole of C1's CONTEXT, DOMAIN, POLICY and most of

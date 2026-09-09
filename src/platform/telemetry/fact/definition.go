@@ -3,7 +3,7 @@
 // it. Adding an attribute or renaming one is one edit, in one file, that lands
 // on the span, the log line, the metric label and the Resource — or fails the
 // build saying which one it could not reach. The design is
-// docs/design/telemetry-seam.md.
+// docs/design/opentelemetry.md §The seam.
 //
 // The package emits nothing and imports only the standard library, pinned by
 // tests/architecture/boundary_test.go: that property is what lets src/discover

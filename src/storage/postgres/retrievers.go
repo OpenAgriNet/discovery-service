@@ -319,7 +319,7 @@ func queryVector(ctx context.Context, embedder embeddings.Embedder, text string)
 	}
 
 	// Only when a vector came back: retrieval.embedding_ms is absent rather
-	// than 0 when no embedding ran (opentelemetry.md:716). logger.Millis, so
+	// than 0 when no embedding ran (opentelemetry.md §`discover`). logger.Millis, so
 	// this and duration_ms round the same way. fact is what keeps the OTel SDK
 	// out of src/storage (A23).
 	if len(values) > 0 {

@@ -37,7 +37,8 @@ func attributesOf(t *testing.T, keyValues []attribute.KeyValue) map[string]strin
 // criterion.
 //
 // The five are asserted through the registry rather than against literal
-// strings, which is the whole claim telemetry-seam.md makes: renaming `producer`
+// strings, which is the whole claim the seam makes (opentelemetry.md §The
+// seam): renaming `producer`
 // is one edit in registry.go and this test follows it. A literal "producer" here
 // would let the Resource and the registry drift, and the drift would be
 // invisible because both halves would still pass their own tests.
@@ -68,7 +69,8 @@ func TestTheResourceCarriesTheFiveSpecAttributes(t *testing.T) {
 	}
 }
 
-// TestServiceNameIsNotProducer pins the correction opentelemetry.md:437 records.
+// TestServiceNameIsNotProducer pins the correction opentelemetry.md §Resource
+// records.
 //
 // The two rows said the same thing once, and collapsing them means either every
 // deployment reports a different service.name and ClickStack cannot group the
@@ -174,7 +176,7 @@ func TestTheTreeStateStaysInsideItsDeclaredValues(t *testing.T) {
 }
 
 // TestTheOperatorsResourceAttributesMergeWithoutOverridingIdentity pins the
-// decision at opentelemetry.md:479.
+// decision in opentelemetry.md §Build identity.
 //
 // parent_id is not emitted; pod identity goes on the Resource through
 // OTEL_RESOURCE_ATTRIBUTES from the chart's downward API, needing no code here.
@@ -212,7 +214,7 @@ func TestTheOperatorsResourceAttributesMergeWithoutOverridingIdentity(t *testing
 // TestTheSpanUUIDProcessorStampsEverySpan covers the one thing 23a registers
 // that will ever touch a span.
 //
-// telemetry-seam.md:770 puts the processor here rather than in 23c because
+// `Init` puts the processor here rather than in 23c because
 // registering it starts no spans. It is nonetheless the only 23a code that runs
 // per request, and the attribute it sets is a Required one, so a test drives a
 // real provider rather than calling OnStart directly — OnStart against a

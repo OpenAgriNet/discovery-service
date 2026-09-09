@@ -28,7 +28,7 @@ type PoolStatsSource interface {
 // pair, as two observable counters read off the source on each collection.
 //
 // Observable rather than synchronous, and two counters rather than a histogram,
-// are both decided at opentelemetry.md:1253-1267.
+// are both decided in opentelemetry.md §What earns an instrument here.
 //
 // ONE callback for both, so the two numbers come from the same pgxpool.Stat()
 // moment. Registered separately they could straddle a release, and a wait total
@@ -84,7 +84,8 @@ func RegisterPoolStats(provider metric.MeterProvider, stats PoolStatsSource) err
 // its data points carry.
 //
 // A label name comes from the Definition's MetricKey and nowhere else, so a
-// rename is one edit in the table (telemetry-seam.md:237). Every instrument
+// rename is one edit in the table (opentelemetry.md §Two tables, not one).
+// Every instrument
 // names zero labels today, so this returns nil on the only path that calls it —
 // which is a decision the table records rather than a call site that forgot.
 //

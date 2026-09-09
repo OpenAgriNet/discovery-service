@@ -474,8 +474,6 @@ call between the spec's prose and beckn-onix's implementation (`recipient.id`).
 
 - [`design/opentelemetry.md`](design/opentelemetry.md) — the binding design: every
   attribute, the reasoning, the divergence table, the open questions
-- [`design/telemetry-seam.md`](design/telemetry-seam.md) — the attribute registry
-  and its rules, in detail
 - [`design/telemetry-examples.md`](design/telemetry-examples.md) — a worked OTLP
   payload for one transaction across this service and beckn-onix, and where the
   two repos' attribute names diverge

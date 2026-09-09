@@ -266,7 +266,7 @@ func correlators(envelope beckn.Context) []correlator {
 		// receiverId is who the CALLER addressed. It is not recipient.id, which
 		// Trace observes from APP_SUBSCRIBER_ID — the two agree whenever a
 		// request is correctly addressed, so one field holding both would be
-		// undetectably wrong (opentelemetry.md:524).
+		// undetectably wrong (opentelemetry.md §Span attributes).
 		{envelope.SenderID, fact.SenderID, nil},
 		{envelope.Version, fact.BecknVersion, nil},
 		{envelope.NetworkID, fact.BecknNetworkID, nil},

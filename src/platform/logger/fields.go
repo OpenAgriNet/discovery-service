@@ -9,7 +9,7 @@ import (
 // Fields projects a request's observed facts onto the zap fields the log line
 // carries.
 //
-// This is the log half of the seam (telemetry-seam.md), and it lives HERE rather
+// This is the log half of the seam (opentelemetry.md §The seam), and it lives HERE rather
 // than beside the span projection because the log field names are already
 // spelled in this package's constructors and nowhere else. A projection
 // elsewhere would be a second file claiming the same spellings. What the seam

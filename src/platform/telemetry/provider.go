@@ -18,7 +18,7 @@
 //
 // fact/ is a separate package because it links no SDK, so a controller can name
 // an attribute key without pulling an exporter into its build graph (A23,
-// telemetry-seam.md:395); tests/architecture/boundary_test.go enforces that
+// opentelemetry.md §The import boundary); tests/architecture/boundary_test.go enforces that
 // rather than convention. There is no logs.go for the same reason: the log
 // projection is src/platform/logger/fields.go and moving it here would need an
 // exemption for package logger — see that file's doc comment before trying.
@@ -56,13 +56,13 @@ import (
 const (
 	// ScopeName is the spec's own example value, underscored. Deliberately NOT
 	// service.name's spelling: that names the software, this names the
-	// instrumentation a facilitator may key on (opentelemetry.md:495).
+	// instrumentation a facilitator may key on (opentelemetry.md §Scope).
 	ScopeName = "discovery_service"
 
 	// ScopeVersion is the network-telemetry-spec version. `1.0` is
 	// example-derived rather than released — the spec repo carries no version
 	// tags — so do not bump it to match a release that does not exist
-	// (decision 1, opentelemetry.md:848).
+	// (decision 1, opentelemetry.md §The spec is prose only).
 	ScopeVersion = "1.0"
 )
 
@@ -111,7 +111,7 @@ func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 
-		// telemetry-seam.md:770.
+		// Registering it starts no spans, so 23a's "boots only" acceptance holds.
 		sdktrace.WithSpanProcessor(spanUUID{}),
 	}
 
@@ -174,7 +174,7 @@ func (p *Provider) MeterProvider() metric.MeterProvider {
 // omission: the SDK's default is ParentBased(AlwaysSample), which keeps
 // everything and still defers to a caller who already decided, where an
 // explicit AlwaysSample would discard that decision and leave holes that read
-// as dropped hops (opentelemetry.md:1385-1419). A line that is not here cannot
+// as dropped hops (opentelemetry.md §Decisions needed before 23a). A line that is not here cannot
 // be reviewed, so TestTheSamplerRespectsAnInboundDecision fails the moment
 // anyone adds it back.
 func withExport(ctx context.Context, cfg config.Config, options []sdktrace.TracerProviderOption) ([]sdktrace.TracerProviderOption, error) {
@@ -247,7 +247,7 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 const metricExportTimeout = 5 * time.Second
 
 // newExporter builds the OTLP/gRPC span exporter (decision 2,
-// opentelemetry.md:1375).
+// opentelemetry.md §Build order).
 //
 // The endpoint is passed explicitly rather than left to the SDK's env lookup:
 // config layers YAML underneath the environment, so an endpoint set in

@@ -66,8 +66,9 @@ func TestTheEmbeddingDurationIsObservedWhenAVectorIsComputed(t *testing.T) {
 	}
 }
 
-// TestTheEmbeddingDurationIsAbsentUnderANilVector — the acceptance criterion at
-// opentelemetry.md:1140, in the configuration Phase 1 actually ships as.
+// TestTheEmbeddingDurationIsAbsentUnderANilVector — the acceptance criterion in
+// opentelemetry.md §How the derivation happens, in the configuration Phase 1
+// actually ships as.
 //
 // Absent and not zero. Zero would be a claim that an embedding was computed in
 // no measurable time, which is a different and false statement, and it is the

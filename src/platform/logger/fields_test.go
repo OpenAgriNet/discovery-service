@@ -21,7 +21,8 @@ import (
 // registry agrees with.
 //
 // This table is the whole point of the projection living in this package
-// (telemetry-seam.md:130-136): the log field names are spelled here and the
+// (opentelemetry.md §Two packages, and why the split is load-bearing): the log
+// field names are spelled here and the
 // registry's LogKey column claims to be the same spelling, so the check that
 // they agree is a same-package test rather than a cross-package convention
 // nobody runs.
@@ -200,7 +201,7 @@ func TestFieldsSkipsAKeyWithNoLogSignal(t *testing.T) {
 
 // TestFieldsOnANilRecordIsEmpty is the probes chain.
 //
-// router.go:158-163 mounts RequestID + Recover only and allocates no record, so
+// router.go's probes mounts RequestID + Recover only and allocates no record, so
 // a panicking /healthz reaches this projection with nothing to project. It must
 // answer an empty line, not panic a second time inside the recovery that was
 // answering the first.

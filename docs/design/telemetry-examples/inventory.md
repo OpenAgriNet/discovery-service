@@ -6,7 +6,7 @@ three. Every row is either cited to source (onix — running code) or to
 `opentelemetry.md` (ours — specified, Task 23 unstarted).
 
 **This file is a projection, not a decision.** `opentelemetry.md` decides what we
-emit, `telemetry-seam.md` where the code lives, and the plan owns task shape. If
+emit — its §The seam says where the code lives — and the plan owns task shape. If
 this file and one of those disagree, they win and this file is stale. It exists
 because "what are we generating?" is a question you should be able to answer
 without reading 1,200 lines.
@@ -128,7 +128,7 @@ ceiling.
 
 **No rejection counters.** A 429 and a body-ceiling refusal each already produce
 a span, a status and an `error` event — `Trace` is index 1 in
-`router.go:134-141`, above both `RateLimit` and `Envelope`. A counter restating
+`router.go`'s `chain`, above both `RateLimit` and `Envelope`. A counter restating
 them is the `duration_ms` mistake one signal up. **OP6 and OP10 are struck** as
 derivable from publish spans.
 
@@ -286,7 +286,8 @@ recipient silently returns nothing.
 
 The cause is that there is no registry: the audit call site is the one that did
 not import the constant, and nothing failed. **This is the argument for
-`telemetry-seam.md` as an observed fact rather than a prediction** — under that
+the seam (`opentelemetry.md` §The seam) as an observed fact rather than a
+prediction** — under that
 design it is one `Definition` with `SpanKey`, `LogKey` and `MetricKey`, and a
 missing projection is a build failure instead of an empty query result. Already
 recorded: seam open item 4, onix `OBSERVABILITY.md:352-363`.

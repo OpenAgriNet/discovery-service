@@ -66,7 +66,7 @@ func tracing(t *testing.T) (func(http.Handler) http.Handler, *telemetry.Recorder
 }
 
 // TestTheSpanIsNamedByTheActionAndNotTheRoute is the shape the worked example
-// pins (telemetry-examples.md:83-110): "name": "discover".
+// pins (telemetry-examples.md §3. Span): "name": "discover".
 //
 // The route would have been the easier answer and it is the wrong one across
 // repos. A facilitator reading spans from this service and from beckn-onix has
@@ -646,7 +646,7 @@ func TestARequestWithNoEventFactsCarriesNoEvents(t *testing.T) {
 //
 // The handler logs a line of its own, because "on the completion line" and "on
 // every log line" are different claims and only the second is what the design
-// promises (opentelemetry.md:959). A correlator attached in RequestLogger's
+// promises (opentelemetry.md §Worked example). A correlator attached in RequestLogger's
 // deferred block would satisfy the first and fail the second, and no assertion
 // about the completion line alone could tell them apart.
 func tracedAndLogged(t *testing.T, trace func(http.Handler) http.Handler) *observer.ObservedLogs {
@@ -701,7 +701,7 @@ func TestEveryLogLineCarriesTheTraceAndSpanIds(t *testing.T) {
 }
 
 // TestTheCorrelatorsAreAbsentRatherThanEmptyUnderExporterNone — the acceptance
-// criterion at opentelemetry.md:1141.
+// criterion in opentelemetry.md §How the derivation happens.
 //
 // Under `none` the tracer is real and the SDK still mints ids for the
 // non-recording span it returns, so the naive gate — is there a span context —

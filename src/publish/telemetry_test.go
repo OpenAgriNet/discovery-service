@@ -45,7 +45,8 @@ func look(t *testing.T, record *fact.Record, key fact.Key) fact.Observation {
 }
 
 // TestAMasterPublishReportsMasterEvenThoughItIsRefused — the acceptance
-// criterion at opentelemetry.md:1140, and the entire reason request_info fires
+// criterion in opentelemetry.md §How the derivation happens, and the entire
+// reason request_info fires
 // at intake rather than after the A1 gate.
 //
 // After the refusal, publish.catalog_types would read REGULAR on every span

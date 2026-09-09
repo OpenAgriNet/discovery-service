@@ -9,7 +9,8 @@ import (
 // recordFor adopts the request's fact record, or allocates one when this is the
 // first link in the chain that needs it.
 //
-// Both branches are load-bearing, from both sides (telemetry-seam.md:663):
+// Both branches are load-bearing, from both sides (opentelemetry.md §The
+// record, and the paths that have none):
 // adopting is what stops Trace shadowing a record allocated above it, and
 // allocating is what gives RequestLogger a record when it is mounted with no
 // Trace above it. Neither link asks about configuration.

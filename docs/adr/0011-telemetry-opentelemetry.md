@@ -148,8 +148,8 @@ field, not one rejected.
 
 Worth recording as an amendment rather than a typo fix: the claim had been
 copied into five other documents, and a reason repeated in six places instead of
-cited from one is a reason that drifts. `opentelemetry.md:442-443` is the
-accurate sentence; cite it rather than restating it.
+cited from one is a reason that drifts. `opentelemetry.md` §Scope — per exported
+batch carries the accurate sentence; cite it rather than restating it.
 
 The wire shape those spans must have is `docs/design/opentelemetry.md`, which is
 binding on the shape of a span. This ADR remains the decision to use

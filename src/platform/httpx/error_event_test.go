@@ -40,7 +40,7 @@ func observed(t *testing.T, record *fact.Record, key fact.Key) string {
 }
 
 // TestTheErrorEventTypeIsTheHeaderByteForByte — the acceptance criterion at
-// opentelemetry.md:1140.
+// opentelemetry.md §How the derivation happens.
 //
 // An equality against the header rather than against a literal, deliberately.
 // A literal would pass while both moved together, and the whole value of this
@@ -108,7 +108,7 @@ func TestAFaultThatNamesNoFieldCarriesNoPath(t *testing.T) {
 // TestARejectionOnAChainWithNoRecordStillAnswers.
 //
 // The probes chain mounts RequestID and Recover only and allocates no record
-// (router.go:158-163), so a panic in /healthz reaches WriteNack with nothing in
+// (router.go's probes), so a panic in /healthz reaches WriteNack with nothing in
 // context. It must answer 500 rather than panic a second time inside the
 // recovery that was answering the first. The acceptance and dbtest suites call
 // controllers with no middleware at all and depend on the same property.

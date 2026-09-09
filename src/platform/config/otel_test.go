@@ -126,7 +126,8 @@ func TestOtlpBootsWithAnIdentity(t *testing.T) {
 // spellings has to live in exactly one place — the registry row that also
 // spells the attribute key. Hard-coding "Agriculture" in this validator would
 // make answering open question 2 a two-file edit with no failure if the second
-// is missed, which is the specific thing telemetry-seam.md exists to prevent.
+// is missed, which is the specific thing the seam (opentelemetry.md §The seam)
+// exists to prevent.
 func TestTheDomainIsCheckedAgainstTheRegistry(t *testing.T) {
 	environment := baseEnv()
 	environment["OTEL_EXPORTER"] = "otlp"

@@ -39,7 +39,7 @@ func projected(t *testing.T, write func(*fact.Record)) map[string]attribute.Valu
 // The mechanism is the point rather than this one assertion. A projection with
 // `attribute.String("beckn.action", ...)` in it would pass every test in this
 // file and would silently stop following a rename in registry.go — which is the
-// exact failure telemetry-seam.md exists to make impossible.
+// exact failure the seam (opentelemetry.md §The seam) exists to make impossible.
 func TestTheProjectionSpellsEveryKeyFromTheRegistry(t *testing.T) {
 	spelled := make(map[string]bool)
 	for _, def := range fact.All() {
@@ -359,7 +359,7 @@ func TestTheSpanUUIDIsNotProjected(t *testing.T) {
 
 // TestANilRecordStillCarriesTheAbsentFlags is the probes chain.
 //
-// /healthz runs with no record at all (router.go:158-163) and 23e's Trace still
+// /healthz runs with no record at all (router.go's probes) and 23e's Trace still
 // starts a span for it. A projection that returned nil there would emit a span
 // with no sender.unidentified on it, which reads as a request whose sender was
 // checked — the exact confusion the flag exists to prevent. Nil is "we observed

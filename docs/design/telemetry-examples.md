@@ -7,7 +7,7 @@ cited. Where the two repos spell the same idea differently the row is marked **�
 and collected in §6 — those divergences, not the payloads, are the point of this
 document.
 
-**Not binding.** `opentelemetry.md` decides what we emit and `telemetry-seam.md`
+**Not binding.** `opentelemetry.md` decides what we emit, and its §The seam says
 where the code lives. discovery-service emits none of this yet: Task 23 is
 unstarted, so our side is the *specified* output, not observed. onix's side is
 observed — it is running code.
@@ -17,7 +17,7 @@ observed — it is running code.
 A farmer asks for a mandi price. OAN is **synchronous** — every hop is a
 request/response on one connection, `on_discover` is a response action returned
 inline in the 200 body, and async callback dispatch is out of scope
-(`beckn/actions.go:23-24`, C3).
+(`beckn/actions.go`'s `Action*` constants, C3).
 
 So this *should* be one trace. It is not, and the reason is concrete:
 
@@ -76,7 +76,8 @@ Both build one Resource per signal, varying only `eid`. Values: **`API`**,
 
 ## 3. Span — discovery-service, the one we own
 
-Trimmed from `opentelemetry.md:806-860`; see that section for the full payload
+Trimmed from `opentelemetry.md` §Worked example — `discover`, `semantic`
+degraded; see that section for the full payload
 and its four-absences discussion. Reproduced here only to sit beside onix's:
 
 ```jsonc
@@ -204,7 +205,8 @@ empty is legal for a node metric and fatal for a facilitator one.
 
 ## 6. Divergences this example exposes
 
-The recipient row is already recorded — `telemetry-seam.md` open item 4 and
+The recipient row is already recorded — `opentelemetry.md` §Four more, each with
+a named owner outside this repo, item 4, and
 onix's `OBSERVABILITY.md:352-363`. The rest are new here.
 
 | | discovery-service | onix | Who should move |
@@ -220,7 +222,8 @@ onix's `OBSERVABILITY.md:352-363`. The rest are new here.
 | trace continuity | will inject and extract | extracts inbound, **injects nowhere** | **onix.** §1 — the root cause of the collector's `trace_id` rewrite |
 
 The first row is the most useful thing in this document, because it is the
-argument for `telemetry-seam.md` stated as an observed fact rather than a
+argument for the seam (`opentelemetry.md` §The seam) stated as an observed fact
+rather than a
 prediction. onix names the recipient in three places and got two of them the
 same. There is no registry: `AttrRecipientID` is a `pkg/telemetry` constant
 (`pluginMetrics.go:49`) used by the span and metric paths, while the audit path

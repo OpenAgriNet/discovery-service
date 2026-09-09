@@ -12,7 +12,8 @@
     "",
     "What this file catches: a rename inside one repository. What it does NOT catch:",
     "both repositories holding stale copies of it, in which case our test passes",
-    "green and spans silently stop stitching. telemetry-seam.md 5g ranks the three",
+    "green and spans silently stop stitching. opentelemetry.md 'Two fixtures, two",
+    "jobs' ranks the three",
     "mitigations, and additive-only aliasing is the only one that removes the failure",
     "mode rather than detecting it. Any claim that this file prevents cross-repo",
     "drift is wrong.",
@@ -29,7 +30,8 @@
     "$comment": [
       "Pinned to a tag rather than a bare commit. v1.8.2 is the newest valid semver",
       "on beckn-onix — its v2.0 tags are not valid semver and are unresolvable.",
-      "telemetry-seam.md open item 3 proposes moving this file's home to",
+      "opentelemetry.md 'Four more, each with a named owner outside this repo',",
+      "item 3, proposes moving this file's home to",
       "network-telemetry-spec/schemas/, which both repositories already treat as",
       "normative. Propose it; it does not block anything here."
     ],
@@ -132,7 +134,7 @@
       "key": "metric.code",
       "where": "metric",
       "fact": "",
-      "owner": "the OAN network — telemetry-seam.md open item 2",
+      "owner": "the OAN network — opentelemetry.md 'Four more, each with a named owner outside this repo', item 2",
       "note": "Instrument.Code is empty on every Scope: Node row and a completeness failure on any Scope: Network one, so Task 24 fails loudly rather than inventing codes."
     }
   ]

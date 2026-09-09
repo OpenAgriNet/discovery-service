@@ -93,8 +93,8 @@ var factIsNotTheSDK = []string{
 // constructs the provider — the same pairing mayImportTheAdapter already makes,
 // for the same reason.
 //
-// src/platform/logger is deliberately NOT here, although telemetry-seam.md 5b's
-// sketch lists it. It projects a fact.Record into zap fields and so reads a
+// src/platform/logger is deliberately NOT here, although the seam's original
+// sketch of this allow-list listed it. It projects a fact.Record into zap fields and so reads a
 // Definition, but fact is not banned, so the exemption it would receive is one
 // it does not need — and granting it would permit exactly the SDK import that
 // keeps request_logger.go free of a telemetry dependency. An allow-list entry
@@ -253,10 +253,11 @@ func matchesAny(importPath string, prefixes []string) bool {
 // factMayImport is the registry's entire dependency set, and it is a closed
 // list rather than "the standard library" on purpose.
 //
-// telemetry-seam.md's file sketch says "context, iter, time. NOTHING ELSE", and
-// section 2 states the property that sketch was serving: fact imports only the
-// standard library, so that src/discover naming a key pulls no SDK into a
-// controller's dependency graph. Section 2 is the property; the sketch's three
+// The seam's file sketch said "context, iter, time. NOTHING ELSE", and
+// opentelemetry.md §Two packages, and why the split is load-bearing states the
+// property that sketch was serving: fact imports only the standard library, so
+// that src/discover naming a key pulls no SDK into a controller's dependency
+// graph. The property is what binds; the sketch's three
 // packages were an estimate of what implementing it would take, made before it
 // was implemented. Where they disagree the property wins, and the four
 // additions each have a reason:

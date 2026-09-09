@@ -50,14 +50,15 @@ const (
 )
 
 // MaxLabelSeries is the per-instrument ceiling on the product of its labels'
-// value sets (telemetry-seam.md 5d). Per instrument rather than per Definition
+// value sets (opentelemetry.md §Two tables, not one). Per instrument rather
+// than per Definition
 // because the accident is multiplicative: four labels can each be honestly
 // Bounded and still multiply to 800 streams.
 const MaxLabelSeries = 200
 
 // Instrument is one metric stream. A sibling table to registry rather than a
 // column on it, because an attribute belongs to several instruments and the two
-// have different lifetimes (telemetry-seam.md 4).
+// have different lifetimes (opentelemetry.md §Two tables, not one).
 type Instrument struct {
 	Name        string // spec Required — metrics[].name
 	Unit        string // spec Required — "1", "ns", "ms", "s", "%", "B"
@@ -211,7 +212,8 @@ func checkCodeMatchesScope(in Instrument, report reporter) {
 	}
 }
 
-// checkInstrumentLabels is telemetry-seam.md 5d, the half that runs per row.
+// checkInstrumentLabels is the two-tables-agree check (opentelemetry.md §Two
+// tables, not one), the half that runs per row.
 // The cross-table direction — a Label bit no instrument consumes — needs the
 // whole table and lives in the test.
 func checkInstrumentLabels(in Instrument, report reporter) {

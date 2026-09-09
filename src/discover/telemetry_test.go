@@ -131,7 +131,8 @@ func TestAnIntentWithNoCriterionReportsNoKindsRatherThanNothing(t *testing.T) {
 
 // TestTheSchemaPredicateIsAbsentRatherThanEmptyWhenTheSeekerSentNone.
 //
-// The acceptance criterion at opentelemetry.md:1140. Absent means no predicate
+// The acceptance criterion in opentelemetry.md §How the derivation happens.
+// Absent means no predicate
 // at all — every capability matches, which is the seeking-anything bucket and
 // likely the largest one — and empty means a seeker who sent an empty array.
 // Collapsing them loses the larger of the two.
@@ -241,7 +242,8 @@ func TestAnEmptyAnswerSaysSo(t *testing.T) {
 // TestTheModesRunAreObservedWhereTheStoreAnswered.
 //
 // In the service, not the controller, and that is an extra file beyond the
-// three opentelemetry.md:1140 lists — deliberately. Which modes ran is decided
+// three opentelemetry.md §How the derivation happens lists — deliberately.
+// Which modes ran is decided
 // by negotiate and known nowhere else; the controller sees only the degraded
 // list, so observing there would report half the fact under a name claiming the
 // whole of it.
@@ -279,7 +281,8 @@ func TestNothingIsObservedAboutRetrievalWhenTheStoreWasNeverReached(t *testing.T
 }
 
 // TestTheEmbeddingDurationIsAbsentWhenNoVectorWasComputed — the criterion at
-// opentelemetry.md:1140, in the configuration Phase 1 actually ships as.
+// opentelemetry.md §How the derivation happens, in the configuration Phase 1
+// actually ships as.
 //
 // The stub repository computes no embedding at all, which is the same shape
 // EMBEDDING_PROVIDER=noop produces: queryVector returns a nil vector, so there

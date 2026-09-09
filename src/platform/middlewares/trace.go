@@ -21,7 +21,7 @@ import (
 // The tracer is PASSED and not obtained here, which is A23: a scope is fixed
 // when the tracer is obtained, so a span started by otelhttp would carry that
 // package's scope and report its version in scope.version, where the network
-// telemetry spec wants the spec's own (ADR-0011, opentelemetry.md:442-443).
+// telemetry spec wants the spec's own (ADR-0011, opentelemetry.md §Build identity).
 //
 // recipient is this service's own subscriber id from APP_SUBSCRIBER_ID, never
 // the caller's receiverId, which Envelope observes separately — see correlators.
@@ -114,7 +114,7 @@ func complete(span oteltrace.Span, record *fact.Record) {
 	// nanos, which is what a facilitator aligns our spans with onix's on.
 	record.ObserveString(fact.ObservedTimeUnixNano, strconv.FormatInt(time.Now().UnixNano(), 10))
 
-	// By the ACTION, not the route (telemetry-examples.md:83-110): onix names
+	// By the ACTION, not the route (telemetry-examples.md §3. Span): onix names
 	// spans by action and some of its hops have no route, so two conventions
 	// would make every cross-layer query a union. If Envelope never parsed a
 	// body, the route set at Start stands.
@@ -138,7 +138,7 @@ func complete(span oteltrace.Span, record *fact.Record) {
 // WithTimestamp is the whole of this function and the line somebody deletes as
 // redundant. Without it the SDK stamps every event at the moment AddEvent is
 // called — the span's end — and the phase breakdown these events exist for
-// collapses to zeros while everything still renders (opentelemetry.md:692-695).
+// collapses to zeros while everything still renders (opentelemetry.md §Events).
 // fact.Observation.Time is stamped where each fact happened for this call.
 func addEvents(span oteltrace.Span, record *fact.Record) {
 	for _, event := range telemetry.SpanEvents(record) {
@@ -150,7 +150,8 @@ func addEvents(span oteltrace.Span, record *fact.Record) {
 
 // setStatus marks the span an error, or leaves it unset.
 //
-// 5xx ONLY (opentelemetry.md:1129): a SERVER span is an error when the server
+// 5xx ONLY (opentelemetry.md §How the derivation happens): a SERVER span is an
+// error when the server
 // failed, and counting 4xx would make the error-rate panel measure how many
 // malformed requests arrived. The description stays empty — WriteNack already put
 // the category on the record, and 23d puts the message on the error event.

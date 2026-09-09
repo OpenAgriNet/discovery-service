@@ -12,7 +12,7 @@ import (
 
 // TestObserveOnAContextWithNoRecordIsSilent.
 //
-// The probes chain (router.go:158) is RequestID + Recover: no allocator. A
+// The probes chain (router.go's probes) is RequestID + Recover: no allocator. A
 // panicking probe must answer 500, not panic a second time inside the recovery
 // that was answering the first. The acceptance and dbtest suites call
 // controllers with no middleware at all and are covered by the same property.
@@ -91,7 +91,7 @@ func TestObservingTwiceKeepsTheLastValue(t *testing.T) {
 
 // TestObservingTheWrongKindPanics.
 //
-// telemetry-seam.md: ObserveString against an Int64 key fails loudly rather
+// The seam's rule: ObserveString against an Int64 key fails loudly rather
 // than dropping the fact. Loudly means panic, and the reason it is safe to
 // panic on a request path is that the mistake is not data-dependent:
 // ObserveString(ResultCatalogCount, …) is wrong for every request, so it fails
