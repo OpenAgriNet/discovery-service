@@ -13,7 +13,7 @@ knowing:
 | Signal | Status today | Where it goes |
 |---|---|---|
 | **TRACE** | Complete. One span per protocol request, `eid: API` | OTLP/gRPC to a collector |
-| **METRIC** | Two node-operator instruments, plus two streams *derived* from the traces. The network METRIC signal — the one carrying `metric.code` — is **not emitted** | OTLP/gRPC, then a Prometheus scrape endpoint |
+| **METRIC** | Complete for five codes. Two node-operator instruments and two streams *derived* from the traces are node-local; five registered `metric.code`s are the network signal | Node-local to a Prometheus scrape endpoint; the five codes OTLP to a facilitator |
 | **LOG** | Structured zap JSON on stdout, carrying `trace_id` and `span_id` | stdout. **Not** OTLP — the collector has no logs pipeline |
 
 Nothing is exported unless `OTEL_EXPORTER=otlp`. The default is `none`, which
@@ -245,8 +245,10 @@ consequence for dashboards** — see the next section.
 
 ## Metrics
 
-Two different things arrive at `localhost:8889/metrics`, from two different
-places.
+Three different things, and the difference between them is the whole of this
+section. Two arrive at `localhost:8889/metrics` and are node-local — for the
+person running this node. The third goes to a facilitator and is the network's
+METRIC signal. They share no pipeline in `otel/collector.yaml`.
 
 ### Derived from the spans — instrumented nowhere in Go
 
@@ -297,8 +299,9 @@ a deploy then sees a counter reset.
 ### Emitted by the binary — two node-operator instruments
 
 ```
-pgxpool_empty_acquire_total{domain="Agriculture",eid="API",
-  network_id="local-network",producer="discovery-service.local-network.oan"} 0
+pgxpool_empty_acquire_total{domain="Agriculture",eid="METRIC",
+  job="discovery-service",network_id="local-network",
+  producer="discovery-service.local-network.oan"} 0
 pgxpool_empty_acquire_wait_time_nanoseconds_total{...} 0
 ```
 
@@ -322,14 +325,48 @@ preference: pgxpool exposes only cumulative totals, so a real distribution would
 mean wrapping every `Acquire` on the hot path. Divide one rate by the other for
 mean wait per acquire.
 
-### What is not a metric
+### The network's METRIC signal — five codes, also instrumented nowhere in Go
 
-`discovery_calls_total` is deliberately **not** named `discover_api_total_count`.
-That shape is a `metric.code` and belongs to the network's METRIC signal, which
-this is not and cannot be — the spec permits only non-monotonic sums, and this
-connector emits a monotonic counter and a histogram. Naming a node-local operator
-stream as though it were a registered network metric is how an unregistered code
+`discovery_calls_total` above is deliberately **not** named
+`discover_api_total_count`. That shape is a `metric.code` and belongs here
+instead — the spec permits only non-monotonic sums, and the connector above
+emits a monotonic counter and a histogram. Naming a node-local operator stream
+as though it were a registered network metric is how an unregistered code
 reaches a facilitator.
+
+These are the registered codes, windowed once a minute and sent to a
+facilitator rather than scraped. Captured from the local stack after one
+publish and four discovers, one of which was refused and one of which matched
+nothing:
+
+```
+Resource: eid=METRIC, producer=discovery-service.local-network.oan,
+          domain=Agriculture, network.id=local-network
+Scope:    discovery_service 1.0
+
+discover_api_total_count           Unit 1  Delta  IsMonotonic:false   4
+publish_api_total_count            Unit 1  Delta  IsMonotonic:false   1
+discover_api_failure_percent       Unit %  Delta  IsMonotonic:false   25
+publish_api_failure_percent        Unit %  Delta  IsMonotonic:false   0
+discover_api_empty_result_percent  Unit %  Delta  IsMonotonic:false   25
+```
+
+Every datapoint carries `metric.code`, a fresh `metric_uuid`,
+`observedTimeUnixNano`, `metric.category=Discovery`, and `minute` for both
+`metric.granularity` and `metric.frequency`.
+
+`discover_api_empty_result_percent` is the one worth knowing about: it is
+**unmet demand**, and no other participant on the network can compute it —
+only this service knows a query matched nothing.
+
+`publish_api_failure_percent` reading `0` rather than being absent is also
+deliberate, and cost the design its one non-obvious choice. See the `sum`
+connector in `otel/collector.yaml`: a metric that disappears when everything is
+healthy is indistinguishable from a metric that disappears when the exporter
+dies.
+
+None of the five is instrumented in Go. All are derived from the same spans, by
+collector configuration.
 
 ## Logs
 
@@ -423,7 +460,7 @@ both would forbid the local analysis the split exists to permit.
 | `src/platform/middlewares/trace.go` | Starts the span, joins an inbound `traceparent`, renames to the action, sets the status |
 | `src/platform/logger/fields.go` | The log projection |
 | `src/discover/controller.go`, `src/publish/controller.go` | The three events each path emits |
-| `otel/collector.yaml` | The connector, the dimensions, the scrape endpoint |
+| `otel/collector.yaml` | Two connectors and three pipelines: `span_metrics` and its dimensions to the `:8889` scrape endpoint, and `sum` + `metrics/spec` producing the five registered `metric.code`s |
 
 ## Configuration
 
@@ -465,7 +502,7 @@ keeps everything else.
 | | What | Blocked on |
 |---|---|---|
 | 23f | The separate facilitator stream and its redaction, plus `scope_uuid` and `count`, plus rewriting the OTLP enums the spec spells differently | Three open questions with the spec owners |
-| 24 | The network METRIC signal — twelve candidate codes are written up as a proposal to send outward | OAN has no network-level metrics registry, and `metric.code` must come from one. Codes invented locally will not match what a facilitator later publishes |
+| 24 | **Five codes shipped 2026-09-10** — see *The network's METRIC signal* above. Seven more remain as a proposal to send outward | Nothing, for the five: OAN owns the registry and runs the collector, so those five are its first entries. The other seven still need answers a facilitator has to give |
 | 26 | A byte-level conformance test asserting the deny-list over the exported payload rather than over the code that builds it | Follows 23f, which builds the thing under test |
 
 Ten places where this service knowingly differs from the network telemetry

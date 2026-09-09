@@ -1453,17 +1453,84 @@ machinery on the hot path.
 
 ---
 
-## Metrics — Task 24, and blocked
+## Metrics — Task 24, five codes shipped
 
-**No metric list exists yet, and one cannot be invented here.** `metric.code`
-comes from a **network-level metrics registry** that OAN does not have; codes
-made up locally will not match the ones a facilitator later publishes, and a
-stream of unrecognised codes is worse than none. That block is the whole of
-open question 7.
+**Until 2026-09-10 this section began "No metric list exists yet, and one cannot
+be invented here", on the reasoning that `metric.code` comes from a
+network-level metrics registry OAN does not have, and that codes made up
+locally would not match the ones a facilitator later publishes.** The premise
+was right and the conclusion no longer follows: OAN owns that registry and runs
+the collector, so the codes below are not guesses at someone else's naming —
+they are the registry's first entries. §Proposed codes — the outward proposal
+remains outward and remains unratified; **it is not what shipped**, and its
+twelve codes are still not to be implemented as though they were.
 
-The only names anywhere today are the spec's own **examples** — illustrations,
+METRIC is one of the spec's two **mandatory** data points — only LOG/Audit is
+optional (`otel-specification.md:27`) — and this service emitted none of it
+until these five landed.
+
+The only other names anywhere are the spec's own **examples** — illustrations,
 not a mandate: `search_api_total_count` (unit `1`), `avg_api_response_time`,
-`search_api_failure_percent` (unit `%`).
+`search_api_failure_percent` (unit `%`). We do not use `search_*`: v1's
+`search` is v2's `discover`.
+
+### The five codes — the registry
+
+Naming is `<action>_api_<what_is_measured>`.
+
+| `metric.code` | Unit | Derived from | Reads |
+|---|---|---|---|
+| `discover_api_total_count` | `1` | span count on `/discover` | discover requests served in the window |
+| `publish_api_total_count` | `1` | span count on `/publish` | publish requests served in the window |
+| `discover_api_failure_percent` | `%` | `error_type` present ÷ total | share refused or failed |
+| `publish_api_failure_percent` | `%` | `error_type` present ÷ total | share refused or failed |
+| `discover_api_empty_result_percent` | `%` | `result.empty == true` ÷ total | **unmet demand — the one metric no other participant can produce** |
+
+Every datapoint is a **delta non-monotonic sum** (the only aggregation the
+METRIC signal permits, `otel-specification.md:437`) on a Resource saying
+`eid=METRIC`, scope `discovery_service`/`1.0`, and carries `metric.code`,
+`metric_uuid`, `observedTimeUnixNano` (a **string** of unix nanos, as onix
+emits and as our spans carry), `metric.category`, `metric.granularity` and
+`metric.frequency`. Granularity and frequency are both `minute`.
+
+**No Go.** All five are derived from the spans this document already specifies,
+by collector configuration alone — no new instrument, no `fact.Instrument` row,
+no import in the service. `otel/collector.yaml`'s `sum` connector and the
+`metrics/spec` pipeline are the whole implementation, and every non-obvious
+choice in them is commented there rather than here: why `sum` and not `count`,
+why the window is imposed on the spans, why `groupbyattrs` is not optional, and
+why the processor order is load-bearing.
+
+Three constraints in that file are worth repeating because getting them wrong
+is silent:
+
+- **Failure comes from `error_type`, never from span status.** `setStatus`
+  moves the status only at 5xx, so every 4xx refusal reads
+  `STATUS_CODE_UNSET`; a failure percent derived from status reports 0% on a
+  service refusing every request it receives.
+- **`result.empty` is three-state.** Absent on publish and on a discover that
+  errored, so the numerator tests `== true` and never `!= false`.
+- **Adding a code means editing the allow-list *and* this table.** A code that
+  exists only in the collector is unregistered on the network however correct
+  it looks on a scrape.
+
+#### One divergence from onix, deliberate and unresolved
+
+onix sets `metric.category` in Go, in
+`core/module/handler/http_metric.go:105-108`: `"NetworkHealth"` unless the
+action ends in `/search` or `/discovery`, in which case `"Discovery"`. Our
+route is `/discover`, which matches neither suffix, so **onix's own rule would
+file our discover metrics under `NetworkHealth`.** We set `Discovery`, because
+that is what these measure and because the suffix list is a v1 artefact —
+`search` is the name v2 renamed. Whoever reconciles the registry has to pick
+one; until then the two repos disagree on the category of the same request.
+
+Two further points of comparison, since the shapes look alike and are not:
+onix's only `metric.code` emitter is an **`Int64Counter`** — monotonic
+cumulative, which is not what the METRIC signal permits — and it produces the
+`_total_count` codes only, no percents. And onix declares `AttrMetricUUID` in
+`pkg/telemetry/pluginMetrics.go:41` but never sets it on a datapoint; ours
+carries a real UUID per point.
 
 ### Candidates to propose to the registry
 
@@ -1585,9 +1652,14 @@ the boundary, not the bug.
 ### Proposed codes — the outward proposal
 
 **Addressed to whoever owns the OAN metrics registry, and binding on nothing
-here.** Task 24 stays blocked until the seven questions below are answered; the
-twelve codes are a proposal, not a specification, and nothing may implement them
-as though ratified.
+here.** The twelve codes are a proposal, not a specification, and nothing may
+implement them as though ratified.
+
+**This is not what shipped on 2026-09-10.** The five codes under §The five
+codes — the registry are live in `otel/collector.yaml`; Tier A of this proposal
+overlaps them and the other seven codes remain unbuilt. The seven questions
+below still block *those*, and each is a genuine open question about codes we
+do not emit — not a blocker on the five we do.
 
 Twelve codes in three tiers. The tiers are about **what still has to be
 answered**, not about importance. Common to all: `sum` aggregation,
@@ -1824,10 +1896,19 @@ interpret.
 
 ## Node-operator metrics — Task 25
 
-Task 24 above is the facilitator's METRIC signal, blocked on a `metric.code`
-registry OAN does not have. This is the other thing entirely: the numbers the
+Task 24 above is the facilitator's METRIC signal — five codes of it now live,
+the rest still unregistered. This is the other thing entirely: the numbers the
 person *running this node* needs. Separating them is why the service has metrics
 at all; conflating them is why it had none.
+
+The separation is now physical as well as conceptual, and that is the thing to
+preserve. `otel/collector.yaml` runs two metrics pipelines that share no
+source: `metrics` carries the node-local streams — `span_metrics`' monotonic
+counter and histogram, and this section's pgxpool instruments — to `:8889`,
+and `metrics/spec` carries the five registered codes as delta non-monotonic
+sums to a facilitator. A node-local stream reaching the second is an
+unregistered stream in front of a consumer that cannot interpret it, which is
+why the second pipeline carries an allow-list and not a deny-list.
 
 ### What earns an instrument here
 
@@ -2046,7 +2127,7 @@ running is a lie about safety, and a sampler choice is not that. Document
 | 4 | **Blocks S5 end to end.** Do the adapter and experience layer forward `traceparent`? If so, ClickStack shows one timeline across all three — the main thing a monitoring stack buys. We cannot do it alone |
 | 5 | Should the adapter and experience layer emit any of Part 2 too, for consistent naming? `error` and the `beckn.*` attributes are the obvious shared ones |
 | 6 | **Is a publish an AUDIT event?** It mutates a catalog and a `FULL` republish deletes resources. Modelling it as both API and AUDIT duplicates; picking one is a network call |
-| 7 | **Who owns Task 24?** The thing that queries ClickHouse, shapes `resourceMetrics` and ships on a schedule does not exist. "ClickStack does it" is false — ClickHouse stores, HyperDX charts, neither exports a METRIC signal. `metric.code` also needs a registry that does not exist |
+| 7 | **Who owns Task 24? — ANSWERED 2026-09-10: we do, and it is the collector.** The row used to say the thing that queries ClickHouse, shapes `resourceMetrics` and ships on a schedule does not exist, and that `metric.code` needs a registry that does not exist. Both premises stood; the conclusion that it therefore could not be built did not. OAN runs the collector and owns the registry, so the answer to "who" is "us" and the five codes are the registry's first entries. **"ClickStack does it" remains false** — ClickHouse stores, HyperDX charts, neither exports a METRIC signal — and note what actually built it: no ClickHouse query and no scheduler, because a collector connector windows the spans in flight. The remaining seven proposed codes are still unregistered |
 | 8 | **Per-mode retrieval timing** — worth emitting? Today a slow `lexical` and a slow `spatial` look the same in aggregate. `retrieval.embedding_ms` now covers the one phase that leaves the process; this question is what remains, and the merge step holds the per-mode results so it is cheap. Still more than the spec asks |
 | 9 | **Which trace id format, and which event timestamp field, does the facilitator validate?** The spec's examples use dashed UUIDs and an ISO `time`; OTLP requires hex ids and `timeUnixNano`, which is what any OTel SDK emits (divergences 5 and 6). If the facilitator was built against the examples it will reject conformant spans — from every participant, not just us. **This needs answering before 23f, and it is the spec's bug to fix, not ours.** Carried into the plan's Open Items as **O4**, because a blocker recorded only in this document is one the plan's own blocker table does not know about |
 | 10 | **Will the spec publish real schemas?** `schemas/` and `examples/` are empty placeholders. Until they are filled there is no conformance target, and every participant is interpreting prose independently — which is how five participants end up with five `domain` strings |

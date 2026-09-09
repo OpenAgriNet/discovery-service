@@ -11,6 +11,26 @@
 # connector reads the trace stream and emits a counter and a histogram from
 # exactly those. That is why OP2 was struck from Task 25 rather than built —
 # see opentelemetry.md §How the derivation happens — `spanmetrics`, not a counter.
+#
+# THERE ARE TWO SETS OF METRICS IN THIS FILE AND THEY ARE NOT THE SAME THING.
+# Read this before changing either:
+#
+#   `span_metrics` -> :8889          node-local operator streams. A monotonic
+#                                    counter and a histogram, no `metric.code`,
+#                                    Resource says eid=API. NOT the spec's
+#                                    METRIC signal and must never be sent as it.
+#
+#   `sum` -> metrics/spec            the network-telemetry-spec METRIC signal.
+#                                    Five registered `metric.code`s, delta
+#                                    non-monotonic sums, Resource says
+#                                    eid=METRIC. This is what a facilitator
+#                                    reads.
+#
+# The second exists because METRIC is one of the spec's two MANDATORY data
+# points (otel-specification.md:27 — only LOG/Audit is optional) and this
+# service emitted none of it. It is derived from the same spans by config
+# alone: no new Go instrument, no fact.Instrument row, no import in the
+# service. Proven on a live stack before being written here.
 
 receivers:
   otlp:
@@ -153,10 +173,221 @@ connectors:
     # is scrape it. Verify against the histogram's _count, which is right
     # immediately; `make telemetry-metrics` polls on that for this reason.
 
+  # The spec's METRIC signal. Five codes, all five derived from the same spans
+  # `span_metrics` above reads, and none of them instrumented in Go.
+  #
+  # WHY `sum` AND NOT `count`, which is the obvious connector for counting
+  # requests. `count` emits a stream only when something matched it. A window
+  # with publishes but no publish FAILURES therefore produced no numerator,
+  # metricsgeneration produced no ratio, and `publish_api_failure_percent` went
+  # MISSING from the export rather than reading 0% — which a consumer cannot
+  # tell apart from this service being down. That is the worst failure mode
+  # available to a health metric: silent exactly when things are healthy.
+  #
+  # `sum` over a 0/1 flag does emit. The stream exists whenever any span on the
+  # route exists and its value is 0 when none of them failed, so an absent code
+  # once again means what it should — nothing was served. transform/flags puts
+  # the flags on, below.
+  #
+  # The two totals are on this connector too, summing a constant 1.0, even
+  # though `count` would have got them right on its own. metricsgeneration
+  # joins metrics WITHIN one batch, and two connectors are two emissions: a
+  # numerator from `sum` and a denominator from `count` would never meet.
+  #
+  # Naming is `<action>_api_<what_is_measured>`. The three numerators here are
+  # scaffolding for the ratios and are filtered out before export — only the
+  # five registered codes leave. See filter/registered.
+  sum:
+    spans:
+      discover_api_total_count:
+        source_attribute: one_flag
+        conditions:
+          - 'span.attributes["http.route"] == "/discover"'
+      publish_api_total_count:
+        source_attribute: one_flag
+        conditions:
+          - 'span.attributes["http.route"] == "/publish"'
+      discover_api_failure_count:
+        source_attribute: failure_flag
+        conditions:
+          - 'span.attributes["http.route"] == "/discover"'
+      publish_api_failure_count:
+        source_attribute: failure_flag
+        conditions:
+          - 'span.attributes["http.route"] == "/publish"'
+      discover_api_empty_result_count:
+        source_attribute: empty_flag
+        conditions:
+          - 'span.attributes["http.route"] == "/discover"'
+
 processors:
   batch:
     timeout: 5s
     send_batch_size: 512
+
+  # ---------------------------------------------------------------------------
+  # Everything below here serves metrics/spec only. Nothing in it touches the
+  # spans the `traces` pipeline exports, or the streams on :8889.
+  # ---------------------------------------------------------------------------
+
+  # The 0/1 flags the `sum` connector reads. Set on EVERY span on the route,
+  # which is the whole point — a flag that is only set on failures is a `count`
+  # again and brings back the vanishing-percent defect.
+  #
+  # `error_type` and not the span's status, for the reason spelled out at
+  # length on span_metrics' dimensions above: setStatus only moves the status at
+  # 5xx, so every 4xx refusal reads STATUS_CODE_UNSET and a failure rate derived
+  # from status reports 0% on a service refusing every request it receives.
+  #
+  # `result.empty == true` and never `!= false`: it is absent on a publish and
+  # absent on a discover that errored before responding, and neither of those
+  # is "demand was met".
+  #
+  # This runs on the traces/spec pipeline ONLY, so these three attributes are
+  # invented for the connector and never reach a trace backend.
+  transform/flags:
+    trace_statements:
+      - context: span
+        statements:
+          - set(span.attributes["one_flag"], 1.0)
+          - set(span.attributes["failure_flag"], 0.0)
+          - set(span.attributes["failure_flag"], 1.0) where span.attributes["error_type"] != nil
+          - set(span.attributes["empty_flag"], 0.0)
+          - set(span.attributes["empty_flag"], 1.0) where span.attributes["result.empty"] == true
+
+  # The reporting window, and the reason traces/spec is a separate pipeline.
+  #
+  # The spec's granularity for these codes is a minute. Two things that look
+  # like they would impose it do not:
+  #
+  #   - the `interval` processor aggregates CUMULATIVE streams and passes delta
+  #     ones straight through, and these are delta. Measured: with `interval:
+  #     60s` in the metrics pipeline, a drive ending 20:12:18 exported at
+  #     20:12:18.98.
+  #   - `send_batch_size: 0` is not "no ceiling". It means every batch is
+  #     already at the ceiling, so it flushes immediately. Measured: a drive
+  #     ending 20:13:15 exported at 20:13:18.
+  #
+  # So the window is imposed on the SPANS instead, upstream of the connector:
+  # the connector emits once per trace batch it receives, so a 60s batch of
+  # spans is a 60s counting window. Measured at 1000000: spike-up 20:13:44,
+  # export 20:14:42.
+  #
+  # It needs its own pipeline because the `traces` pipeline must keep its 5s
+  # batch — delaying every span by a minute to make a counter tidy is the wrong
+  # trade. RAISE send_batch_size IF THIS SERVICE EVER SEES >1M SPANS/MINUTE;
+  # until then only the timeout fires.
+  batch/window:
+    timeout: 60s
+    send_batch_size: 1000000
+
+  # NO `keys`, and that is the configuration rather than an omission: with an
+  # empty key list this processor does nothing but COMPACT — merge every
+  # ResourceSpans carrying identical resource attributes into one.
+  #
+  # Without it the ratios are computed on fragments of the window and are
+  # WRONG, not merely split. The service exports spans in several OTLP
+  # requests; `batch` combines those requests into one payload but does not
+  # dedupe their resources, so the payload holds several ResourceSpans with
+  # byte-identical attributes. `sum` emits one ResourceMetrics per
+  # ResourceSpans and metricsgeneration divides WITHIN one, so each fragment
+  # gets its own percentage.
+  #
+  # Measured on the config that shipped without this line: four discovers, one
+  # of them a 400, arrived as 1+3 and exported `discover_api_failure_percent`
+  # twice — 0% and 33.333333% — where the true answer for the window is one
+  # datapoint reading 25%. Both numbers are defensible per fragment and neither
+  # is the metric. Compacting before the connector makes the window one
+  # denominator again.
+  groupbyattrs:
+
+  # The ratios, computed AFTER windowing — before it, numerator and denominator
+  # come from different windows and the percentage is nonsense.
+  metricsgeneration:
+    rules:
+      - name: discover_api_failure_percent
+        type: calculate
+        metric1: discover_api_failure_count
+        metric2: discover_api_total_count
+        operation: percent
+      - name: publish_api_failure_percent
+        type: calculate
+        metric1: publish_api_failure_count
+        metric2: publish_api_total_count
+        operation: percent
+      - name: discover_api_empty_result_percent
+        type: calculate
+        metric1: discover_api_empty_result_count
+        metric2: discover_api_total_count
+        operation: percent
+
+  # THE FILTER THE OLD COMMENT ON THE metrics PIPELINE DEMANDED, now that there
+  # is a pipeline that could reach a facilitator. An ALLOW-LIST of the five
+  # registered codes: the three raw numerators are scaffolding and an
+  # unregistered stream is a stream a facilitator cannot interpret.
+  #
+  # Adding a code means adding it here AND to the registry in
+  # docs/design/opentelemetry.md. A code that only exists here is unregistered
+  # on the network however correct it looks on a scrape.
+  filter/registered:
+    metrics:
+      metric:
+        - 'not (name == "discover_api_total_count" or name == "publish_api_total_count" or name == "discover_api_failure_percent" or name == "publish_api_failure_percent" or name == "discover_api_empty_result_percent")'
+
+  # The spec's required shape, which neither connector produces on its own.
+  transform/spec_shape:
+    metric_statements:
+      - context: metric
+        statements:
+          # Delta non-monotonic sum is the ONLY aggregation the METRIC signal
+          # permits (otel-specification.md:437). There is no set(is_monotonic)
+          # in OTTL; the gauge round trip is how it is spelled.
+          - convert_sum_to_gauge()
+          - convert_gauge_to_sum("delta", false)
+
+          # Unit and description are both Required and neither connector nor
+          # metricsgeneration supplies them.
+          - set(metric.unit, "%") where IsMatch(metric.name, ".*_percent$")
+          - set(metric.unit, "1") where IsMatch(metric.name, ".*_count$")
+          - set(metric.description, "discover requests served in the window") where metric.name == "discover_api_total_count"
+          - set(metric.description, "publish requests served in the window") where metric.name == "publish_api_total_count"
+          - set(metric.description, "share of discover requests refused or failed") where metric.name == "discover_api_failure_percent"
+          - set(metric.description, "share of publish requests refused or failed") where metric.name == "publish_api_failure_percent"
+          - set(metric.description, "share of discover requests that matched nothing — unmet demand") where metric.name == "discover_api_empty_result_percent"
+
+      - context: datapoint
+        statements:
+          - set(datapoint.attributes["metric.code"], metric.name)
+          - set(datapoint.attributes["metric_uuid"], UUID())
+          # A STRING of unix nanos, not an Int. That is what onix emits and what
+          # our own spans carry — see telemetry-examples/inventory.md:55. An Int
+          # here is a divergence a consumer has to special-case.
+          - set(datapoint.attributes["observedTimeUnixNano"], String(UnixNano(Now())))
+          - set(datapoint.attributes["metric.category"], "Discovery")
+          - set(datapoint.attributes["metric.granularity"], "minute")
+          - set(datapoint.attributes["metric.frequency"], "minute")
+
+  # Scope name and version are Required inside the METRIC signal, and the
+  # connector supplies its own Go module path for the name and nothing at all
+  # for the version. These two must stay equal to telemetry.ScopeName and
+  # telemetry.ScopeVersion in src/platform/telemetry/provider.go, so that the
+  # service's own instruments and these derived ones agree on who produced them.
+  transform/scope:
+    metric_statements:
+      - context: scope
+        statements:
+          - set(scope.name, "discovery_service")
+          - set(scope.version, "1.0")
+
+  # The connector inherits the TRACE Resource, which correctly says eid=API.
+  # These are the METRIC signal, so they must say METRIC — the same override
+  # traces.go's withEID performs in Go for the service's own instruments, done
+  # here because these streams never pass through the SDK.
+  transform/eid:
+    metric_statements:
+      - context: resource
+        statements:
+          - set(resource.attributes["eid"], "METRIC")
 
 exporters:
   # Traces, to the terminal. The local stack has no trace backend, and this is
@@ -164,6 +395,16 @@ exporters:
   # `make telemetry-logs` is the intended reader. A real deployment replaces
   # this with the ClickStack OTLP endpoint and keeps everything else.
   debug:
+    verbosity: detailed
+
+  # The spec METRIC signal, to the terminal, for the same reason: the local
+  # stack has no facilitator. A REAL DEPLOYMENT REPLACES THIS ONE EXPORTER with
+  # the facilitator's OTLP endpoint and changes nothing else in metrics/spec —
+  # that substitution is the entire deployment story for this signal.
+  #
+  # Separate from `debug` above so `make telemetry-logs` can read spans without
+  # the once-a-minute metric dump landing in the middle of them.
+  debug/spec:
     verbosity: detailed
 
   # Metrics, as a scrape endpoint on :8889 — the port beckn-onix's node
@@ -231,17 +472,51 @@ service:
       processors: [batch]
       exporters: [debug, span_metrics]
 
-    # Everything node-local, and there is deliberately no second metrics
-    # pipeline pointed at a facilitator.
+    # Everything node-local. THIS PIPELINE MUST NEVER REACH A FACILITATOR.
     #
-    # That absence is load-bearing. A connector-derived stream must never reach
-    # the network's METRIC signal — it has no `metric.code` and the wrong
-    # aggregation type, so it would be an unregistered stream a facilitator
-    # cannot interpret. Today the guarantee holds by construction: there is no
-    # facilitator exporter to leak into. WHOEVER ADDS ONE must add a filter
-    # admitting only the registered codes, the way onix's
-    # `filter/network_metrics` does. Do not widen this pipeline to reach it.
+    # `span_metrics`' streams have no `metric.code` and the wrong aggregation
+    # type — a monotonic counter and a histogram where the spec permits only a
+    # non-monotonic sum — so sending them as the METRIC signal puts an
+    # unregistered stream in front of a consumer that cannot interpret it. The
+    # service's own pgxpool instruments are Node-scope for the same reason.
+    #
+    # Until 2026-09-10 this comment said the guarantee held because no
+    # facilitator exporter existed to leak into, and told whoever added one to
+    # add an allow-list filter first. One now exists — metrics/spec below — and
+    # it carries that filter. The separation is now by pipeline: the boundary
+    # is that these two receiver lists share no source, not that the second
+    # pipeline is absent.
     metrics:
       receivers: [otlp, span_metrics]
       processors: [batch]
       exporters: [prometheus]
+
+    # The counting window for the spec METRIC signal, and the only reason it is
+    # a third pipeline rather than two more processors on `traces`. See
+    # batch/window. transform/flags runs BEFORE the batch so the flags are on
+    # the spans by the time the connector reads them, and groupbyattrs AFTER it
+    # so there is one ResourceSpans — and therefore one denominator — per
+    # window. Both orderings are load-bearing; see each processor.
+    traces/spec:
+      receivers: [otlp]
+      processors: [transform/flags, batch/window, groupbyattrs]
+      exporters: [sum]
+
+    # The network-telemetry-spec METRIC signal. Five registered codes, delta
+    # non-monotonic sums, eid=METRIC.
+    #
+    # ORDER IS LOAD-BEARING, twice. metricsgeneration must run before
+    # filter/registered, or the numerators it divides by have already been
+    # dropped. filter/registered must run before transform/spec_shape, or the
+    # scaffolding numerators get stamped with a `metric.code` and a UUID for no
+    # reason.
+    metrics/spec:
+      receivers: [sum]
+      processors:
+        - metricsgeneration
+        - filter/registered
+        - transform/spec_shape
+        - transform/scope
+        - transform/eid
+        - batch
+      exporters: [debug/spec]
