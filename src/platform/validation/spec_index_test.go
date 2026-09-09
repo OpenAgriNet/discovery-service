@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -316,6 +317,68 @@ func TestWriteCacheWrapsACreateTempFailure(t *testing.T) {
 
 	if err := writeCache(filepath.Join(directory, "beckn.yaml"), []byte("x")); err == nil {
 		t.Error("writeCache created a file in a directory it cannot write to")
+	}
+}
+
+// A cache that already holds the fetched document is not written again, and an
+// unwritable location is therefore not an error when there is nothing to write.
+//
+// This is the SEEDED deployment, and it is the one the Dockerfile names: the
+// image bakes in no beckn.yaml on purpose, and an air-gapped deploy supplies one
+// at VALIDATION_SPEC_CACHE_PATH instead. Mounting it read-only is the correct way
+// to supply a file the service must not be able to rewrite — docker-compose.yml
+// does exactly that — and every boot with a reachable registry then fetched the
+// identical bytes and warned that it could not overwrite them with themselves.
+// A warning that fires when nothing is wrong is a warning nobody reads on the
+// boot when something is.
+//
+// It stays an error when the bytes DIFFER, which is the case worth hearing about:
+// the registry has moved on, the cache is stale, and the next boot that loses the
+// network falls back to the older document. The comparison is what separates the
+// two, so this test pins that the skip is conditional and not a swallowed error —
+// TestWriteCacheWrapsACreateTempFailure above covers the other side with a
+// directory holding no file at all.
+func TestWriteCacheSkipsACacheThatAlreadyHoldsTheDocument(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+
+	directory := t.TempDir()
+	path := filepath.Join(directory, "beckn.yaml")
+	document := []byte("openapi: 3.0.3\n")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatalf("seed the cache: %v", err)
+	}
+
+	// Read-only, exactly as the bind mount is. Without the skip this fails
+	// CreateTemp with EACCES — the error observed on a running stack.
+	if err := os.Chmod(directory, 0o500); err != nil {
+		t.Fatalf("chmod the cache directory read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(directory, 0o700); err != nil { // let t.TempDir() clean up
+			t.Errorf("restore the cache directory's permissions: %v", err)
+		}
+	})
+
+	if err := writeCache(path, document); err != nil {
+		t.Errorf("writeCache on a cache already holding the document: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the cache back: %v", err)
+	}
+	if !bytes.Equal(after, document) {
+		t.Errorf("the cache holds %q after a skipped write, want %q", after, document)
+	}
+
+	// The other half of the condition: different bytes still have to try, and
+	// still have to fail here. A skip that ignored the content would make a stale
+	// cache permanently silent.
+	if err := writeCache(path, []byte("openapi: 3.1.0\n")); err == nil {
+		t.Error("writeCache reported success for a document the cache does not hold " +
+			"and cannot be made to hold")
 	}
 }
 

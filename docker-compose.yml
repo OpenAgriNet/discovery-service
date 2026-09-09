@@ -68,11 +68,16 @@ services:
       # no reason to be reading.
       APP_DOMAIN: ${APP_DOMAIN:-Agriculture}
     volumes:
-      # The Beckn spec, which the service refuses to boot without. Mounting the
-      # cache is what makes the stack work with no network; the boot logs one
-      # accurate warning about the fetch it skipped. Byte-identical to the
-      # core-v2.0.0-lts tag of beckn/protocol-specifications-v2 — set
-      # VALIDATION_SPEC_URL to that raw URL to exercise the fetch path.
+      # The Beckn spec, which the service refuses to boot without. Byte-identical
+      # to the core-v2.0.0-lts tag of beckn/protocol-specifications-v2, which is
+      # also VALIDATION_SPEC_URL's default — so a normal boot fetches, compiles
+      # and finds this file already holding the same bytes, and an offline boot
+      # falls back to it with one accurate warning about the fetch that failed.
+      #
+      # Read-only on purpose: this is a file the service must not be able to
+      # rewrite. writeCache skips a cache that already matches for exactly this
+      # reason — until 2026-09-10 every online boot warned that it could not
+      # overwrite these bytes with themselves.
       - ./tests/testdata/beckn-v2.0.0.yaml:/app/.cache/beckn/beckn.yaml:ro
     # No healthcheck: the distroless runtime has no shell to run one. Probes are
     # HTTP — GET /healthz for liveness, GET /readyz for PostgreSQL.

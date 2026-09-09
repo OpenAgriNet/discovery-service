@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -233,9 +234,28 @@ func loadFromCache(path string) (*SpecIndex, error) {
 // writeCache replaces the cached document through a temporary file in the same
 // directory, so a boot interrupted mid-write leaves the previous copy intact
 // rather than a truncated one the next boot cannot compile.
+//
+// A cache already holding the fetched bytes is left alone. That is not an
+// optimisation — it is what makes the SEEDED deployment quiet. The image bakes in
+// no beckn.yaml on purpose (a copy inside it is a second source of truth that
+// ages with the image), so an air-gapped deploy supplies one at
+// VALIDATION_SPEC_CACHE_PATH, and mounting it read-only is the right way to
+// supply a file the service must not be able to rewrite. docker-compose.yml does
+// exactly that with a copy byte-identical to the core-v2.0.0-lts tag, and every
+// boot with a reachable registry warned that it could not overwrite those bytes
+// with themselves. A warning that fires when nothing is wrong is one nobody reads
+// on the boot when something is.
+//
+// It stays a warning when the documents DIFFER, which is the case worth hearing:
+// the registry has moved on, the cache is stale, and the next boot that loses the
+// network falls back to the older document.
 func writeCache(path string, document []byte) error {
 	if path == "" {
 		return errors.New("no cache path is configured")
+	}
+
+	if current, err := os.ReadFile(filepath.Clean(path)); err == nil && bytes.Equal(current, document) {
+		return nil
 	}
 
 	directory := filepath.Dir(path)
