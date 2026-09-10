@@ -13,6 +13,16 @@ import (
 
 const point = `{"type":"Point","coordinates":[77.5946,12.9716]}`
 
+// roomyBudget is config.Geo.MaxGeometriesPerCatalog for a test that is not about
+// the budget: high enough that no fixture here can reach it, so a fault in one of
+// those tests is about the shape and never about the ceiling.
+const roomyBudget = 1024
+
+// tightBudget is what the budget test uses instead. Small on purpose — the
+// assertion is that the find AFTER the ceiling is named, and building a
+// production default's worth of points to reach it would only make it slow.
+const tightBudget = 3
+
 // catalogWith builds a merged catalog carrying one provider document, so a test
 // only has to say what shape it put where.
 func catalogWith(provider string) domain.Catalog {
@@ -40,7 +50,7 @@ func typesOf(found []domain.Geometry) []string {
 func TestStoredTargetPathEqualsACallersCanonicalisedTarget(t *testing.T) {
 	catalog := catalogWith(`{"availableAt":[{"geo":` + point + `}]}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(faults) != 0 {
 		t.Fatalf("faults = %v, want none", faults)
 	}
@@ -60,7 +70,7 @@ func TestStoredTargetPathEqualsACallersCanonicalisedTarget(t *testing.T) {
 func TestSourcePathKeepsItsIndexAndWildcardsTheCatalogs(t *testing.T) {
 	catalog := catalogWith(`{"availableAt":[{"geo":` + point + `},{"geo":` + point + `}]}`)
 
-	found, _ := publish.ExtractGeometries(7, catalog)
+	found, _ := publish.ExtractGeometries(7, catalog, roomyBudget)
 	if len(found) != 2 {
 		t.Fatalf("found %d geometries, want 2", len(found))
 	}
@@ -105,7 +115,7 @@ func TestOwnershipFollowsThePathNotTheFieldName(t *testing.T) {
 		},
 	}
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(faults) != 0 {
 		t.Fatalf("faults = %v, want none", faults)
 	}
@@ -156,7 +166,7 @@ func TestOwnershipFollowsThePathNotTheFieldName(t *testing.T) {
 func TestATypeNameWithoutItsMemberIsNotAGeometryAndNotAFault(t *testing.T) {
 	catalog := catalogWith(`{"rating":{"type":"Point","value":4.5},"geo":` + point + `}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(faults) != 0 {
 		t.Fatalf("faults = %v, want none — the rating is not a geometry", faults)
 	}
@@ -173,7 +183,7 @@ func TestATypeNameWithoutItsMemberIsNotAGeometryAndNotAFault(t *testing.T) {
 func TestATypeNameNotOneOfTheSevenIsNotAGeometryAndNotAFault(t *testing.T) {
 	catalog := catalogWith(`{"summary":{"type":"Feature","properties":{}},"geo":` + point + `}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(faults) != 0 {
 		t.Fatalf("faults = %v, want none — a Feature wrapper is not a bare geometry", faults)
 	}
@@ -188,7 +198,7 @@ func TestOneMalformedGeometryCostsOneGeometry(t *testing.T) {
 	broken := `{"type":"Polygon","coordinates":[[[0,0],[1]]]}`
 	catalog := catalogWith(`{"availableAt":[{"geo":` + broken + `},{"geo":` + point + `}]}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(found) != 1 {
 		t.Fatalf("found %d geometries, want 1 — the good one survives", len(found))
 	}
@@ -215,7 +225,7 @@ func TestAGeometryCollectionIsOneFind(t *testing.T) {
 	collection := `{"type":"GeometryCollection","geometries":[` + point + `,` + point + `]}`
 	catalog := catalogWith(`{"geo":` + collection + `}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(faults) != 0 {
 		t.Fatalf("faults = %v, want none", faults)
 	}
@@ -236,7 +246,7 @@ func TestANonPointGeometryIsIndexed(t *testing.T) {
 	polygon := `{"type":"Polygon","coordinates":[[[77.5,12.9],[77.7,12.9],[77.7,13.1],[77.5,13.1],[77.5,12.9]]]}`
 	catalog := catalogWith(`{"serviceArea":{"geo":` + polygon + `}}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
+	found, faults := publish.ExtractGeometries(0, catalog, roomyBudget)
 	if len(faults) != 0 {
 		t.Fatalf("faults = %v, want none", faults)
 	}
@@ -259,7 +269,7 @@ func TestAWalkPastTheDepthBoundTerminates(t *testing.T) {
 	deep.WriteString(point)
 	deep.WriteString(strings.Repeat("}", levels))
 
-	found, _ := publish.ExtractGeometries(0, catalogWith(deep.String()))
+	found, _ := publish.ExtractGeometries(0, catalogWith(deep.String()), roomyBudget)
 	if len(found) != 0 {
 		t.Errorf("found %d geometries past the bound, want none", len(found))
 	}
@@ -269,21 +279,21 @@ func TestAWalkPastTheDepthBoundTerminates(t *testing.T) {
 // reporting success while some of its shapes match nothing, which is
 // indistinguishable from a publisher's own mistake.
 func TestTheGeometryOverTheBudgetIsANamedPartial(t *testing.T) {
-	entries := make([]string, 0, publish.MaxGeometriesPerCatalog+1)
-	for i := 0; i <= publish.MaxGeometriesPerCatalog; i++ {
+	entries := make([]string, 0, tightBudget+1)
+	for i := 0; i <= tightBudget; i++ {
 		entries = append(entries, `{"geo":`+point+`}`)
 	}
 	catalog := catalogWith(`{"availableAt":[` + strings.Join(entries, ",") + `]}`)
 
-	found, faults := publish.ExtractGeometries(0, catalog)
-	if len(found) != publish.MaxGeometriesPerCatalog {
-		t.Fatalf("found %d geometries, want %d", len(found), publish.MaxGeometriesPerCatalog)
+	found, faults := publish.ExtractGeometries(0, catalog, tightBudget)
+	if len(found) != tightBudget {
+		t.Fatalf("found %d geometries, want %d", len(found), tightBudget)
 	}
 	if len(faults) != 1 {
 		t.Fatalf("faults = %d, want exactly 1 for the one geometry over", len(faults))
 	}
 
-	want := fmt.Sprintf(`$['catalogs'][0]['provider']['availableAt'][%d]['geo']`, publish.MaxGeometriesPerCatalog)
+	want := fmt.Sprintf(`$['catalogs'][0]['provider']['availableAt'][%d]['geo']`, tightBudget)
 	if faults[0].Path != want {
 		t.Errorf("fault Path = %q, want %q", faults[0].Path, want)
 	}

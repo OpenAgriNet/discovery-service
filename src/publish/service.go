@@ -31,6 +31,9 @@ type Service struct {
 
 	// zone is APP_DEFAULT_TIMEZONE, used to resolve a bare clock in `validity`.
 	zone *time.Location
+
+	// maxGeometries is GEO_MAX_GEOMETRIES_PER_CATALOG, the walk's budget.
+	maxGeometries int
 }
 
 // NewService wires the publish path. The replicator is required rather than
@@ -42,8 +45,16 @@ func NewService(
 	embedder embeddings.Embedder,
 	network string,
 	zone *time.Location,
+	maxGeometries int,
 ) *Service {
-	return &Service{repo: repo, replicator: replicator, embedder: embedder, network: network, zone: zone}
+	return &Service{
+		repo:          repo,
+		replicator:    replicator,
+		embedder:      embedder,
+		network:       network,
+		zone:          zone,
+		maxGeometries: maxGeometries,
+	}
 }
 
 // Publish processes every catalog in the action and answers one result each, in
@@ -237,7 +248,7 @@ func intakeRefusal(req request) *beckn.Error {
 // names the value the publisher sent, and the embedder.
 func (s *Service) derive(ctx context.Context, catalogIndex int) domain.DeriveFunc {
 	return func(merged *domain.Catalog, touched []string) []domain.Fault {
-		found, faults := ExtractGeometries(catalogIndex, *merged)
+		found, faults := ExtractGeometries(catalogIndex, *merged, s.maxGeometries)
 		assignGeometries(merged, found)
 
 		inPatch := domain.NewTouchedSet(touched)

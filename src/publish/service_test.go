@@ -86,7 +86,7 @@ func newServiceWith(
 ) *publish.Service {
 	t.Helper()
 
-	return publish.NewService(repo, replicator, embedder, network, kolkata(t))
+	return publish.NewService(repo, replicator, embedder, network, kolkata(t), roomyBudget)
 }
 
 // brokenEmbedder is the provider that is configured, reachable in config, and

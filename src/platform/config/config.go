@@ -278,6 +278,17 @@ type Geo struct {
 	// trade is a property of a deployment's data. Every stored cover is at this
 	// resolution, so changing it means reindexing.
 	ResolutionCells int `env:"GEO_RESOLUTION_CELLS" envDefault:"8"`
+
+	// How many shapes one catalog may contribute to the index. Over it the extra
+	// finds come back as PARTIAL faults naming their paths — never a silent drop.
+	//
+	// Configuration rather than a constant because the budget is a property of a
+	// deployment's catalogs, not of the protocol: a catalog of one polygon per
+	// state and a catalog of one point per mandi sit orders of magnitude apart,
+	// and only the operator knows which one they publish. The cost it stands in
+	// for is cells, not shapes — this many geometries times MaxIndexCoverCells is
+	// the worst case a single publish can ask the index to hold.
+	MaxGeometriesPerCatalog int `env:"GEO_MAX_GEOMETRIES_PER_CATALOG" envDefault:"256"`
 }
 
 // Load reads the four layers in precedence order and validates the result.
@@ -564,8 +575,16 @@ func domainProducerKey() string {
 // validateGeo bounds the resolution to the 0-15 H3 defines, so an out-of-range
 // value fails the boot rather than the first cover that reaches h3.
 func validateGeo(geo Geo) error {
-	return require(geo.ResolutionCells >= 0 && geo.ResolutionCells <= 15,
-		"geo.resolutionCells %d is not an H3 resolution (GEO_RESOLUTION_CELLS): H3 defines 0 through 15", geo.ResolutionCells)
+	return errors.Join(
+		require(geo.ResolutionCells >= 0 && geo.ResolutionCells <= 15,
+			"geo.resolutionCells %d is not an H3 resolution (GEO_RESOLUTION_CELLS): H3 defines 0 through 15", geo.ResolutionCells),
+		// Zero rather than negative is the reachable mistake, and it is the worse
+		// one: every publish would come back PARTIAL with every geometry faulted,
+		// which reads as a data problem and is a configuration one.
+		require(geo.MaxGeometriesPerCatalog > 0,
+			"geo.maxGeometriesPerCatalog %d is not positive (GEO_MAX_GEOMETRIES_PER_CATALOG): a catalog that may hold no geometry is undiscoverable by place",
+			geo.MaxGeometriesPerCatalog),
+	)
 }
 
 func validateApp(app App) error {

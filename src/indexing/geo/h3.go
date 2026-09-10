@@ -44,10 +44,13 @@ const (
 	// cost a bounded walk rather than the stack.
 	MaxCatalogWalkDepth = 32
 
-	// MaxGeometriesPerCatalog is the publish budget for the general walk. Over it
-	// the extra finds are PARTIAL faults naming their paths — never a silent drop,
-	// which would leave a resource undiscoverable with nothing to explain why.
-	MaxGeometriesPerCatalog = 256
+	// The publish budget for the general walk is deliberately absent here: it is
+	// config.Geo.MaxGeometriesPerCatalog, because how many shapes one catalog
+	// carries is a property of a deployment's data and not of the index. Over it
+	// the extra finds are PARTIAL faults naming their paths — never a silent
+	// drop, which would leave a resource undiscoverable with nothing to explain
+	// why. This many geometries times MaxIndexCoverCells above is the worst case
+	// a single publish can ask the index to hold.
 
 	// queryCircleVertices is the vertex count of the polygon approximating an
 	// S_DWITHIN radius. Circumscribed rather than inscribed: over-inclusion keeps
