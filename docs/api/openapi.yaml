@@ -1317,7 +1317,12 @@ components:
       properties:
         textSearch:
           type: string
-          description: Free text. Lexical by default; the semantic path is configuration-gated.
+          description: >-
+            Free text. Lexical by default; the semantic path is
+            configuration-gated. So is the field itself — a deployment running
+            `SEARCH_ENABLE_TEXT_SEARCH=false` refuses any non-empty value with
+            `SCH_TYPE_NOT_SUPPORTED` rather than answering without it, since on
+            a text-only intent dropping the term returns the whole corpus.
         filters:
           $ref: "#/components/schemas/Filters"
         spatial:

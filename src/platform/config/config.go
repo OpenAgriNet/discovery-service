@@ -165,6 +165,19 @@ type Search struct {
 	// EMBEDDING_PROVIDER=noop, so semantic is missing on every fresh deployment
 	// and refusing would break the common case (C11).
 	FailOnUnavailableMode bool `env:"SEARCH_FAIL_ON_UNAVAILABLE_MODE" envDefault:"false"`
+
+	// Whether this deployment answers `textSearch` at all (A27). True by
+	// default: switching a retrieval mode off is a decision, and the value that
+	// takes no decision has to be the one that behaves as before.
+	//
+	// Not the same switch as FailOnUnavailableMode above, and the difference is
+	// whose limitation it is. That one is about a mode the BACKEND cannot run,
+	// and false there degrades — returns what the other modes found and names
+	// the gap in X-Beckn-Degraded. This one is the deployment's own policy, and
+	// false here REFUSES: degrading a term the caller narrowed on would answer
+	// the whole corpus under a 200 on a text-only intent, which is the widening
+	// MapIntent exists to refuse.
+	EnableTextSearch bool `env:"SEARCH_ENABLE_TEXT_SEARCH" envDefault:"true"`
 }
 
 // Embeddings configures the Embedder seam — one struct for both paths (A3).

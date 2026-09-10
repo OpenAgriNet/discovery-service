@@ -30,6 +30,13 @@ search:
   # true turns the same request into a 400. Phase 1 ships with the semantic
   # mode absent by design, so refusing would break the common case.
   failOnUnavailableMode: false
+  # Whether this deployment answers textSearch at all (A27). Not the flag
+  # above under another name: that one is about a mode the BACKEND cannot run
+  # and degrades, this one is the deployment's own policy and REFUSES —
+  # SCH_TYPE_NOT_SUPPORTED, because dropping the term instead would answer the
+  # whole corpus under a 200. True here, so a deployment that overrides
+  # nothing keeps the mode it had before the flag existed.
+  enableTextSearch: true
 
 embeddings:
   # Semantic search is deferred (A5). The column, the HNSW index and the

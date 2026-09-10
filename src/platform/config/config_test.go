@@ -52,6 +52,9 @@ func TestDefaultsAreTheFloor(t *testing.T) {
 	assertEqual(t, "Search.MaxRadiusMeters", cfg.Search.MaxRadiusMeters, 200000)
 	assertEqual(t, "Search.MaxCandidatesPerMode", cfg.Search.MaxCandidatesPerMode, 500)
 	assertEqual(t, "Search.FailOnUnavailableMode", cfg.Search.FailOnUnavailableMode, false)
+	// True, and the direction matters more than the value: a deployment that
+	// configures nothing keeps the retrieval mode it had before A27 existed.
+	assertEqual(t, "Search.EnableTextSearch", cfg.Search.EnableTextSearch, true)
 	assertEqual(t, "Embeddings.Provider", cfg.Embeddings.Provider, "noop")
 	assertEqual(t, "Embeddings.Dimensions", cfg.Embeddings.Dimensions, 768)
 	assertEqual(t, "Validation.EnableL1Schema", cfg.Validation.EnableL1Schema, true)

@@ -20,6 +20,11 @@ func settings() config.Config {
 			MaxPageSize:          100,
 			MaxCandidatesPerMode: 500,
 			MaxRadiusMeters:      200000,
+
+			// Stated, not inherited: this one's default is TRUE, so a zero
+			// value here would quietly switch text search off for every test
+			// in the package that never mentions it (A27).
+			EnableTextSearch: true,
 		},
 		Geo: config.Geo{ResolutionCells: geo.DefaultTestResolution},
 	}
@@ -634,5 +639,121 @@ func TestTheMappedTextIsTrimmed(t *testing.T) {
 	}
 	if want := "wheat seed"; query.Text != want {
 		t.Errorf("Text = %q, want %q", query.Text, want)
+	}
+}
+
+// SEARCH_ENABLE_TEXT_SEARCH=false refuses the request rather than degrading it
+// (A27).
+//
+// Degrading is what negotiate does for a mode the BACKEND lacks, and it is the
+// wrong answer here for the reason negotiate's own comment gives: dropping a
+// term the caller narrowed on returns rows they never asked about. On a
+// text-only intent that is the whole corpus under a 200 — the widening MapIntent
+// exists to refuse.
+func TestTextSearchIsRefusedWhenTheDeploymentSwitchedItOff(t *testing.T) {
+	cfg := settings()
+	cfg.Search.EnableTextSearch = false
+
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, discover.Page{}, cfg)
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one — the term is the only thing wrong", codesOf(fatal))
+	}
+	if fatal[0].Code != string(beckn.CodeSchemaTypeNotSupported) {
+		t.Errorf("code = %q, want SCH_TYPE_NOT_SUPPORTED — the same code as an "+
+			"operator this service does not answer", fatal[0].Code)
+	}
+	if want := "$['message']['intent']['textSearch']"; fatal[0].Path != want {
+		t.Errorf("path = %q, want %q — the member that is refused, not the whole intent",
+			fatal[0].Path, want)
+	}
+	if !strings.Contains(fatal[0].Message, "spatial") ||
+		!strings.Contains(fatal[0].Message, "filters") {
+		t.Errorf("message = %q, want the two criteria that still work named — a "+
+			"refusal that does not say what to send instead is a dead end",
+			fatal[0].Message)
+	}
+}
+
+// Whitespace is refused for being no criterion, not for being text.
+//
+// The guard reads the TRIMMED term, like every other reader of it: `"   "`
+// asks for no retrieval mode at all, so calling it a disabled text search would
+// name the wrong mistake on a deployment that never had one enabled.
+func TestWhitespaceIsStillTheNoCriterionRefusalWhenTextSearchIsOff(t *testing.T) {
+	cfg := settings()
+	cfg.Search.EnableTextSearch = false
+
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{TextSearch: " \t "}, beckn.Context{}, discover.Page{}, cfg)
+
+	if len(fatal) != 1 || fatal[0].Code != string(beckn.CodeSchemaInvalidFormat) {
+		t.Fatalf("fatal = %s, want one SCH_INVALID_FORMAT", codesOf(fatal))
+	}
+}
+
+// Switching one mode off does not switch the other two off with it.
+func TestTheOtherTwoCriteriaSurviveTextSearchBeingOff(t *testing.T) {
+	cfg := settings()
+	cfg.Search.EnableTextSearch = false
+
+	cases := map[string]beckn.Intent{
+		"spatial": spatialIntent(within(`$.catalogs[*].provider.availableAt[*].geo`)),
+		"filters": {Filters: &beckn.Filters{
+			Type:       "jsonpath",
+			Expression: `$.catalogs[*].resources[*] ? (@.resourceAttributes.grade == "A")`,
+		}},
+	}
+
+	for name, intent := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, fatal, _ := discover.MapIntent(intent, beckn.Context{}, discover.Page{}, cfg)
+			if len(fatal) != 0 {
+				t.Errorf("%s faulted with text search off: %s", name, codesOf(fatal))
+			}
+		})
+	}
+}
+
+// The empty-intent refusal must not OFFER a criterion this deployment will then
+// refuse.
+//
+// Otherwise the caller is walked into a second 400: told to send one of three,
+// they send the first and are told it is not answered here. The list has to be
+// the list that actually works.
+//
+// It may still MENTION textSearch, and saying it is switched off beats dropping
+// it silently — a caller who read the docs would otherwise be left wondering
+// which of the three went missing. So the assertion is on the offer, not on the
+// word: the required-one-of list is the two that work, and any other mention
+// says why the third is not among them.
+func TestTheNoCriterionRefusalStopsOfferingTextSearchWhenItIsOff(t *testing.T) {
+	cfg := settings()
+	cfg.Search.EnableTextSearch = false
+
+	_, fatal, _ := discover.MapIntent(
+		beckn.Intent{}, beckn.Context{}, discover.Page{}, cfg)
+
+	if len(fatal) != 1 {
+		t.Fatalf("fatal = %s, want exactly one", codesOf(fatal))
+	}
+	if !strings.Contains(fatal[0].Message, "at least one of spatial or filters") {
+		t.Errorf("message = %q, want the required list to be the two that work",
+			fatal[0].Message)
+	}
+	if strings.Contains(fatal[0].Message, "textSearch") &&
+		!strings.Contains(fatal[0].Message, "switched off") {
+		t.Errorf("message = %q, names textSearch without saying it is refused here",
+			fatal[0].Message)
+	}
+
+	// And the enabled deployment still offers all three, or this test would pass
+	// on a build that simply stopped mentioning textSearch anywhere.
+	_, onFatal, _ := discover.MapIntent(
+		beckn.Intent{}, beckn.Context{}, discover.Page{}, settings())
+	if len(onFatal) != 1 ||
+		!strings.Contains(onFatal[0].Message, "at least one of textSearch, spatial or filters") {
+		t.Errorf("with text search on, message = %s, want all three offered", codesOf(onFatal))
 	}
 }
