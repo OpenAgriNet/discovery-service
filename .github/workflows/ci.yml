@@ -63,6 +63,10 @@ jobs:
       # job is folded in here as a step that actually blocks.
       - run: make build
       - run: make lint
+
+      # TEMPORARY (#9): proving the stale-cache theory behind the coverage
+      # disagreement. Delete with the diagnostic step below.
+      - run: go clean -cache
       - run: make test-ci
 
       # Diff-scoped, never whole-repo: the PR's own diff is the gate that
@@ -97,6 +101,14 @@ jobs:
           echo "intent_mapper rows:  $(grep -c 'intent_mapper.go' coverage.out || true)"
           echo "distinct blocks:     $(grep 'intent_mapper.go' coverage.out | awk '{print $1}' | sort -u | wc -l)"
           echo "distinct HIT blocks: $(grep 'intent_mapper.go' coverage.out | awk '$NF>0{print $1}' | sort -u | wc -l)"
+          echo "--- the tree under test ---"
+          echo "HEAD:  $(git rev-parse HEAD)"
+          echo "file:  $(md5sum src/discover/intent_mapper.go) $(wc -l < src/discover/intent_mapper.go) lines"
+          go version
+          echo "--- distinct blocks never hit ---"
+          grep 'intent_mapper.go' coverage.out | awk '$NF>0{print $1}' | sort -u > /tmp/hit
+          grep 'intent_mapper.go' coverage.out | awk '{print $1}' | sort -u > /tmp/all
+          comm -23 /tmp/all /tmp/hit | sed 's|.*intent_mapper.go:||'
 
       # cover-diff writes coverage-report.md on every exit path, including its
       # own error paths, so this needs no existence guard and no fallback text.
