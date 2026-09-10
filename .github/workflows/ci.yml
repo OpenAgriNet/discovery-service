@@ -64,9 +64,6 @@ jobs:
       - run: make build
       - run: make lint
 
-      # TEMPORARY (#9): proving the stale-cache theory behind the coverage
-      # disagreement. Delete with the diagnostic step below.
-      - run: go clean -cache
       - run: make test-ci
 
       # Diff-scoped, never whole-repo: the PR's own diff is the gate that
@@ -85,30 +82,6 @@ jobs:
         env:
           BASE_REF: origin/${{ github.event.pull_request.base.ref }}
         run: make cover-diff
-
-      # TEMPORARY (#9): cover-diff reports src/discover/intent_mapper.go at 52%
-      # here while the same profile, from the same `make test-ci` on the same
-      # commit, measures 100% locally. Per-function output says which blocks
-      # this runner thinks are cold; remove once that is answered.
-      - name: Diagnose the coverage disagreement
-        if: always()
-        run: |
-          echo "--- per-function, changed files ---"
-          go tool cover -func=coverage.out \
-            | grep -E 'intent_mapper\.go|platform/config/config\.go' || true
-          echo "--- profile facts ---"
-          echo "blocks total:        $(wc -l < coverage.out)"
-          echo "intent_mapper rows:  $(grep -c 'intent_mapper.go' coverage.out || true)"
-          echo "distinct blocks:     $(grep 'intent_mapper.go' coverage.out | awk '{print $1}' | sort -u | wc -l)"
-          echo "distinct HIT blocks: $(grep 'intent_mapper.go' coverage.out | awk '$NF>0{print $1}' | sort -u | wc -l)"
-          echo "--- the tree under test ---"
-          echo "HEAD:  $(git rev-parse HEAD)"
-          echo "file:  $(md5sum src/discover/intent_mapper.go) $(wc -l < src/discover/intent_mapper.go) lines"
-          go version
-          echo "--- distinct blocks never hit ---"
-          grep 'intent_mapper.go' coverage.out | awk '$NF>0{print $1}' | sort -u > /tmp/hit
-          grep 'intent_mapper.go' coverage.out | awk '{print $1}' | sort -u > /tmp/all
-          comm -23 /tmp/all /tmp/hit | sed 's|.*intent_mapper.go:||'
 
       # cover-diff writes coverage-report.md on every exit path, including its
       # own error paths, so this needs no existence guard and no fallback text.
