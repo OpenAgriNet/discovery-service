@@ -219,9 +219,21 @@ test-short:
 	$(TEST_ENV) $(GO) test -race -short ./...
 
 ## cover: run the suites and write a coverage profile
+#
+# -count=1 is load-bearing, and only under -coverpkg. A cached test result
+# replays the coverage rows that run wrote, and with -coverpkg those rows
+# cover OTHER packages' files. So src/publish's cached result keeps emitting
+# blocks for src/discover/intent_mapper.go at the line numbers that file had
+# when src/publish last actually ran — and a package whose own inputs are
+# unchanged is cached however much intent_mapper.go moved. Measured on CI:
+# 155 distinct blocks for a 79-block file, the same 79 hit, every function
+# below the edit at ~50% while MapIntent above it read 100%. Whole-repo
+# coverage read 68% and the gate failed on a commit that changed only string
+# literals. `make test` is deliberately left cacheable; it asserts pass/fail,
+# which the cache gets right.
 cover:
-	$(TEST_ENV) $(GO) test -race -covermode=atomic -coverpkg=$(COVERPKG) \
-		-coverprofile=coverage.out ./...
+	$(TEST_ENV) $(GO) test -race -count=1 -covermode=atomic \
+		-coverpkg=$(COVERPKG) -coverprofile=coverage.out ./...
 
 ## cover-total: the one number — total statement coverage
 cover-total: cover
@@ -243,7 +255,7 @@ cover-html: cover
 ##          the plain everyday entrypoint.
 test-ci: $(GOTESTSUM)
 	$(TEST_ENV) $(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
-		-race -coverprofile=coverage.out -covermode=atomic \
+		-race -count=1 -coverprofile=coverage.out -covermode=atomic \
 		-coverpkg=$(COVERPKG) ./...
 
 ## cover-diff: coverage restricted to files changed vs BASE_REF — a PR review

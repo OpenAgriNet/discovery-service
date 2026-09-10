@@ -143,6 +143,63 @@ func TestAMissingModeIsRefusedWhenTheDeploymentAsksToBe(t *testing.T) {
 	}
 }
 
+// SEARCH_ENABLE_TEXT_SEARCH=false stops the request at the mapper, not at the
+// backend (A27).
+//
+// The backend still declares lexical and fuzzy — the switch is the deployment's
+// policy, not a missing capability — so nothing downstream would refuse this
+// query, and `repo.calls` is what says the guard is in front rather than beside.
+// The three ranked modes running against a term the operator switched off is the
+// failure with no symptom: it answers, correctly, and bills for it.
+func TestTextSearchOffRefusesBeforeTheBackendIsSearched(t *testing.T) {
+	repo := &stubRepo{capabilities: everything()}
+
+	cfg := settings()
+	cfg.Search.EnableTextSearch = false
+
+	_, _, err := discover.NewService(repo, cfg).
+		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	if err == nil {
+		t.Fatal("Discover succeeded; want a refusal")
+	}
+	if got := codeOf(t, err); got != beckn.CodeSchemaTypeNotSupported {
+		t.Errorf("code = %q, want SCH_TYPE_NOT_SUPPORTED", got)
+	}
+	if repo.calls != 0 {
+		t.Errorf("the backend was searched %d times; a refused term runs no query", repo.calls)
+	}
+}
+
+// The complement, and the half that keeps the switch from reading as a kill
+// switch on discover: with it off, a spatial intent is answered normally.
+func TestSpatialStillAnswersWithTextSearchOff(t *testing.T) {
+	repo := &stubRepo{
+		capabilities: everything(),
+		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
+	}
+
+	cfg := settings()
+	cfg.Search.EnableTextSearch = false
+
+	catalogs, _, err := discover.NewService(repo, cfg).Discover(
+		t.Context(), beckn.Context{},
+		beckn.Intent{Spatial: []beckn.SpatialConstraint{{
+			Op:       beckn.OpSIntersects,
+			Geometry: bengaluru(),
+		}}},
+		discover.Page{})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if len(catalogs) != 1 {
+		t.Errorf("catalogs = %d, want the one the backend found", len(catalogs))
+	}
+	if hasMode(repo.gotModes, domain.CapabilityLexical) {
+		t.Errorf("modes = %v, want no ranked text mode — nothing asked for one", repo.gotModes)
+	}
+}
+
 // A filter on a backend that cannot execute the subset is REPORTED, not
 // ignored.
 //

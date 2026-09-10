@@ -63,6 +63,7 @@ jobs:
       # job is folded in here as a step that actually blocks.
       - run: make build
       - run: make lint
+
       - run: make test-ci
 
       # Diff-scoped, never whole-repo: the PR's own diff is the gate that

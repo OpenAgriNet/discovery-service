@@ -462,7 +462,9 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 | `SEARCH_MAX_RADIUS_METERS` | `200000` | largest `S_DWITHIN` accepted |
 | `SEARCH_READ_DEADLINE` | `2s` | one deadline across all retrieval modes |
 | `SEARCH_FAIL_ON_UNAVAILABLE_MODE` | `false` | `true` turns a degradation into a 400 |
+| `SEARCH_ENABLE_TEXT_SEARCH` | `true` | `false` refuses a `textSearch` with `SCH_TYPE_NOT_SUPPORTED` — see below |
 | `GEO_RESOLUTION_CELLS` | `8` | H3 resolution for both covers |
+| `GEO_MAX_GEOMETRIES_PER_CATALOG` | `256` | shapes one **publish** may index. Over it the publish still answers `PARTIAL` with a fault per shape — but those shapes are not searchable |
 | `EMBEDDING_PROVIDER` | `noop` | `noop`, `hashing` or `ollama` |
 | `EMBEDDING_MODEL` / `_ENDPOINT` / `_DIMENSIONS` | `nomic-embed-text` / `http://localhost:11434` / `768` | the Ollama seam |
 | `RATE_LIMIT_RPS` / `_BURST` | `20` / `40` | per-client limit; `burst >= rps` is enforced |
@@ -476,7 +478,7 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 | `LOG_LEVEL` | `info` | zap level |
 | `ERROR_INCLUDE_LEGACY_TYPE` | `false` | emit the v1 `type` field beside `code` |
 
-Three of these are load-bearing enough to spell out:
+Four of these are load-bearing enough to spell out:
 
 - **`APP_NETWORK_ID` is publish's default and not discover's.** A publish with
   no `visibleTo` is visible to this network. A discover with no
@@ -489,6 +491,23 @@ Three of these are load-bearing enough to spell out:
   primitives are not built and the middleware is not written, so nothing sits
   behind the flag. Failing loudly beats reporting a control that is not
   running.
+- **`SEARCH_ENABLE_TEXT_SEARCH=false` refuses, where
+  `SEARCH_FAIL_ON_UNAVAILABLE_MODE=false` degrades.** They read like one knob
+  and are not. `FAIL_ON_UNAVAILABLE_MODE` is about a mode the *backend* cannot
+  run: dropping it still leaves the query the caller wrote, so the default is
+  to answer and name the gap in `X-Beckn-Degraded`. `ENABLE_TEXT_SEARCH` is
+  the *deployment's* policy, and off it returns a 400:
+
+  ```json
+  { "code": "SCH_TYPE_NOT_SUPPORTED",
+    "path": "$['message']['intent']['textSearch']",
+    "message": "textSearch is not supported here; please discover through spatial or filters" }
+  ```
+
+  Degrading instead would run the remaining modes without the term, which on a
+  text-only intent is the whole corpus under a `200` — a wrong page that looks
+  exactly like a right one. `spatial` and `filters` keep working, and an intent
+  carrying neither is told so without being offered `textSearch` first.
 
 The `docker-compose.yml` in the repo root is a worked example of all of this.
 

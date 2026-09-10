@@ -95,7 +95,8 @@ func MapIntent(
 	filters, filterFaults := mapFilters(intent.Filters, narrowed)
 
 	fatal := append(append(append(schemaFaults, spatialFatal...), pageFaults...), filterFaults...)
-	fatal = append(fatal, criterionFaults(intent, text)...)
+	fatal = append(fatal, textSearchFaults(text, cfg.Search.EnableTextSearch)...)
+	fatal = append(fatal, criterionFaults(intent, text, cfg.Search.EnableTextSearch)...)
 
 	return domain.SearchQuery{
 		Text:        text,
@@ -108,6 +109,37 @@ func MapIntent(
 	}, fatal, partial
 }
 
+// textSearchFaults refuses a term on a deployment that switched free-text
+// retrieval off (A27).
+//
+// Refused rather than degraded, which is the opposite of what negotiate does one
+// layer down. There the mode is missing from the BACKEND and dropping it still
+// leaves the query the caller wrote; here the term IS the query, and running the
+// remaining modes without it answers the whole corpus under a 200 — the widening
+// this mapper's doc comment says it exists to refuse. On an intent that also
+// carried spatial or filters the answer would merely be too wide, which is the
+// same failure with a smaller blast radius and no reason to treat differently.
+//
+// The TRIMMED term, like every other reader of it: `"   "` asks for no retrieval
+// mode at all, so criterionFaults below is the honest complaint about it and
+// this would be a false one.
+//
+// The message names the two criteria that still work and not the environment
+// variable that turned this one off. A caller cannot act on the variable, and
+// the operator has docs/publish-and-discover.md; the response says what to send
+// instead, which is the part the caller can use.
+func textSearchFaults(text string, enabled bool) []domain.Fault {
+	if enabled || text == "" {
+		return nil
+	}
+	return []domain.Fault{{
+		Path: "$['message']['intent']['textSearch']",
+		Code: string(beckn.CodeSchemaTypeNotSupported),
+		Message: "textSearch is not supported here; please discover through " +
+			"spatial or filters",
+	}}
+}
+
 // criterionFaults refuses an intent that gives the search nothing to run: one of
 // textSearch, spatial or filters must be present, because modesFor reads those
 // three and nothing else. examples/README.md, case 17, is the reasoning.
@@ -117,14 +149,26 @@ func MapIntent(
 // stacked on the fault that already names the real mistake. `text` is the
 // exception and is taken as a parameter because it must be the TRIMMED value —
 // modesFor reads that one, so a raw guard would admit `"   "`.
-func criterionFaults(intent beckn.Intent, text string) []domain.Fault {
+//
+// The LIST it offers shrinks with the deployment (A27). Naming textSearch to a
+// caller this service would then refuse walks them into a second 400: told to
+// send one of three, they send the first and are told it is not answered. The
+// GUARD does not shrink with it — a term still satisfies "you sent a criterion",
+// and textSearchFaults above is the fault that names the real mistake. Both
+// firing on one request would report a missing criterion that was sent.
+func criterionFaults(intent beckn.Intent, text string, textSearchEnabled bool) []domain.Fault {
 	if text != "" || len(intent.Spatial) > 0 || intent.Filters != nil {
 		return nil
+	}
+
+	criteria := "textSearch, spatial or filters"
+	if !textSearchEnabled {
+		criteria = "spatial or filters (textSearch is not supported here)"
 	}
 	return []domain.Fault{{
 		Path: "$['message']['intent']",
 		Code: string(beckn.CodeSchemaInvalidFormat),
-		Message: "an intent needs at least one of textSearch, spatial or filters; " +
+		Message: "an intent needs at least one of " + criteria + "; " +
 			"schemaContext narrows a search but cannot drive one, so an intent " +
 			"carrying only it would answer an empty page rather than a refusal",
 	}}

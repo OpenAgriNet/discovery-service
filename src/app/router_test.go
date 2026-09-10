@@ -89,6 +89,10 @@ func testApp(t *testing.T, db Pinger, log *zap.Logger) *App {
 	cfg.Search.MaxPageSize = 100
 	cfg.Search.MaxCandidatesPerMode = 500
 	cfg.Search.MaxRadiusMeters = 200000
+	// Stated because its default is TRUE and this Config is a zero value: left
+	// out, every discover here would be refused for a text search this
+	// deployment never switched off (A27).
+	cfg.Search.EnableTextSearch = true
 	cfg.Validation.EnableL1Schema = true
 	cfg.Server.MaxRequestBodyBytes = 1 << 20
 	cfg.RateLimit.RPS = 1000

@@ -149,6 +149,8 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A23** | **Task 23 splits into six sub-tasks, `otelhttp` is rejected, and metrics leave this service.** The task was written when tracing meant local debugging. It is now an **interop contract**: the Sunbird-Obsrv network telemetry spec governs the wire shape, a facilitator consumes it, and a span missing a mandatory attribute is a compliance failure rather than a thin dashboard. Four things follow. **`otelhttp` cannot be used, and the original task named it.** The instrumentation scope is fixed when the span is created and is immutable afterwards, so a span started by `otelhttp` carries that package's name and version and no later call can correct it. **The reason recorded here until the 2026-09-09 audit was that the spec *requires* `scope.name` and `scope.version` on every exported batch; it does not.** The `scope` block is Optional (`otel-specification.md:140`) and the two fields are Required only inside it, so a batch without it is not rejected. The conclusion survives on narrower ground: `scope.version` is defined as the version of the *network telemetry specification*, in the field OTel defines as the instrumentation library's version, so `otelhttp` would report `v0.69.0` where the spec wants `1.0` — and no instrumentation library will ever do otherwise. The batch is accepted and quietly carries the wrong answer in a field a facilitator uses for validity checks. `Trace` is therefore hand-rolled — roughly thirty lines, against `go.opentelemetry.io/otel/trace` directly. **Metrics move out of the process.** The original task put RED metrics and retrieval-mode counters in `src/platform/telemetry/metrics.go`; a stateless service behind N replicas computing `search_api_total_count` in memory emits N partial counts that no consumer can reassemble, because nothing on the wire says what N was. `ref-impl-design.md` §Micro Observability puts metric computation in the tier that has storage and aggregation precisely for this reason, so `metrics.go` is dropped and a **metrics exporter becomes Task 24**, outside this binary. `search_degraded_modes` and `embedding_duration_ms` survive as span facts, which is what that exporter aggregates over — as `retrieval.modes_degraded` and `retrieval.embedding_ms`, both on `retrieval_info`, named in `opentelemetry.md`. **Facts are recorded once and projected twice.** `correlation` generalises from `[]zap.Field` into a timestamped per-request record; the log line and the span both read it. Six of the eight log fields are also span attributes — `duration_ms` is the span's own `end - start` and `request_id` is deliberately absent, because 23e puts `trace_id` on every log line and the join therefore runs the other way. Instrumenting them separately would put `error_type` in two places — the duplication C1 exists to prevent — while every later signal or field would be another pass through the controllers. **The record is allocated by whichever of `Trace` and `RequestLogger` runs first**, not by `RequestLogger` alone: the status is the one span attribute readable from neither the request nor a header, and `Trace` sits above the wrapper that captures it. Wholesale relocation to `Trace` is the wrong fix — `request_logger_test.go` mounts `RequestLogger` with no `Trace` above it, and 23b's acceptance is that no test file is edited. It is also what makes an AUDIT projection cheap if the network ever asks for one. **Events carry their own timestamps and must be stamped when they occur.** The phase breakdown — parse, retrieve, serialise — exists only as the deltas between `request_info`, `retrieval_info` and `response_info`. Emitted together at handler exit they collapse to one value, the breakdown reads as zeros, the total stays correct and every dashboard still renders: a silent loss with no failing assertion, which is why 23d pins monotonic event times rather than trusting the call sites. Task 20's order-assertion migration is unchanged and moves to **23c** | 8, 20, 23, 24 |
 | **A24** | **`Context` carries `senderId` and `receiverId`, and the four legacy participant fields are not modelled at all.** `bapId`, `bapUri`, `bppId` and `bppUri` are gone from the struct — not deprecated, absent. The spec retains them for backward compatibility and a caller may still send them; they are **accepted and ignored**, because `Context` declares no `additionalProperties: false` and the decoder is not strict, so a v1-style body still gets a 200 and simply does not get them back. Two reasons they went rather than staying as echoed fields. **A field this service echoes but never reads costs a reader a check and an operator a mistake:** the check is "is this used anywhere", and the mistake is reading an id on a response as an identity that was verified. **And the pair that replaced them says strictly more** — `senderId`/`receiverId` are DIDs resolving to the document that holds that party's verification keys, so one field answers both *who* and *with what key*, which is what the parked signature layer needs and what `bapId` plus a separate `bapUri` could not answer at all. **Both controllers build the response by SWAPPING them** (`SenderID: request.ReceiverID`, `ReceiverID: request.SenderID`): the legs reverse, so on the request this service was the receiver and echoing unswapped would put the caller's DID on a message the caller did not send. **Neither is verified, and on the callback that has a sharp edge.** This service's own `senderId` is whatever the caller put in `receiverId`, so a caller can name a third party there and be handed a callback asserting that DID as the sender — the same "a string the caller chose" hazard the rate limiter refuses to key on (A4). Note the two halves are not equally sound: `receiverId ← request.senderId` is correct and durable, while `senderId ← request.receiverId` is only *accidentally* correct, because `senderId` is the pointer from which the SENDER's keys resolve and must therefore be the DID whose document holds the key this service signs with. **It closes OUTSIDE this service: the adopter's layer owns participant signature verification** (owner decision, 2026-09-01), so this repo gains no self-DID config and no key resolution — until then a caller sending neither gets a callback naming neither, which is honest: an absent identity claims less than an unverified one. **`Catalog.bppId` and `Catalog.bppUri` are UNAFFECTED** and still stored, rendered and round-tripped (A17, Task 21b) — they describe the provider a catalog belongs to, which is a fact about the document rather than a claim about who sent it, so a grep for `bppId` in this plan should still find them. The removal is pinned by `src/beckn/schema_conformance_test.go`, which reflects over the struct's JSON tags against `beckn.yaml` and demands a stated reason for each of the four absences — and checks that allowlist in BOTH directions, so re-adding a field without deleting its entry fails too | 4, 7, 8, 18, 19 |
 | **A25** | **This service is one of four layers, and the plan was written as if it were all of them. Tasks 25 and 26 are added, and 23a and 23c grow one requirement each.** The other three layers — experience, network, provider — run **beckn-onix** adapters that already emit OTel traces, metrics and audit logs, and reading them changes four things here. **Two questions this plan could not answer are answered elsewhere, not nowhere.** Relevance and accuracy need what the user did *after* the response; the experience-layer adapter has the user and already emits traces, so that is where the outcome event belongs. Performance per location and per commodity is refused here because coordinates and `filters.expression` are on the never-emitted list — but the provider adapter holds both as first-class call-plan fields, so it answers them without anyone widening a deny-list. The H3-coarsening policy call that `opentelemetry.md` raised against 23d is **withdrawn** on those grounds. **Our spans would currently be exported and then silently dropped.** onix's network trace pipeline admits only spans carrying `sender.id`, which this phase makes optional and usually absent, while the stage downstream of it rebuilds `trace_id` from an attribute spelled `transaction_id`, which we planned to spell `beckn.transactionId`. A span that fails either is stored, paid for and invisible, with nothing anywhere reporting an error. The filter is onix's bug to fix — it admits on one key and joins on another — and the spelling is ours: **23c emits `transaction_id` and `message_id` as aliases**, written from the same values at the same call site so they cannot drift. Two, not three — an earlier draft named `receiver.id`, which onix puts only on audit log records; its span spelling is `recipient.id`, which we already emit, so a third alias would be paid for everywhere and read nowhere. Buying admission by inventing a `sender.id` is explicitly refused; missing from a dashboard is recoverable, poisoning the network's only participant-identity join is not. **Metrics were dropped from this service for a reason that covers only half the ground.** A23 removed `metrics.go` because a stateless replica's in-memory counter is a partial nobody can reassemble — true of the facilitator's windowed aggregates, and the reason Task 24 exists. It is not true of a *level*: three configured ceilings (`DATABASE_MAX_CONNS`, the rate limiter, the body size) have no observable distance-to-limit, and a pool at 30 of 32 refuses nothing, so it produces no span to be seen in. An earlier draft of this amendment said a 429 "produces no span, no event and no counter". **That is false, and the correction matters because it is what the task's scope was sized against**: `Trace` is index 1 of `router.go`'s `chain`, above both `Envelope` and `RateLimit`, so a 429 and a body refusal each produce a span carrying the status and — post-23d — an `error` event, both projected from the single `logNack` in `response_writer.go` that every refusal already passes through. Only "no counter" was ever true, and a counter that restates a span fact is the `duration_ms` mistake one signal up. **Task 25 is therefore the levels, not the refusals**, and it is smaller for it. Conflating the operator set with the network set is why this service has no metrics at all. **Task 25** is the operator set and is **not blocked**; Task 24 stays blocked on the registry — *five of its twelve codes have since shipped, on 2026-09-10, derived in `otel/collector.yaml`; the block stands for the other seven. See Task 24.* **And the deny-list is a rule nothing enforces** — five sub-tasks comply with it by hand. **Task 26** turns it into a pin, over the exporter's output rather than over the code that builds it | 23, 24, 25, 26 |
+| **A26** | **The publish geometry budget becomes configuration.** `MaxGeometriesPerCatalog` moves from a `const` in `src/publish/geometry.go` to `config.Geo.MaxGeometriesPerCatalog` / `GEO_MAX_GEOMETRIES_PER_CATALOG`, default **256**, threaded `container → publish.NewService → derive → ExtractGeometries → catalogWalk`. **The default does not change and no behaviour over the ceiling changes** — the extra finds are still `PARTIAL` faults naming their paths, never a silent drop. What changes is who gets to pick the number. **The failure it causes is the wrong shape to be a build-time constant.** Over the ceiling the publish still answers HTTP 200 and the publisher is told, but those shapes are not searchable, and at the operator that reads as missing data rather than as a limit: a 100 km `S_DWITHIN` returns fewer markets than exist and nothing in the response says why. Measured against a real catalog — 273 Maharashtra markets carrying a `Point` under both `coverageAreas` and `market.location`, so 546 shapes — only the first 128 markets were findable by place under 256. **Config rather than a larger constant, for the reason `ResolutionCells` two rows above already gives:** how many shapes a catalog carries is a property of a deployment's publishers, and the ceiling is reached by publishing normally rather than by abuse. That is also the line that decides which neighbours do *not* move: `MaxCatalogWalkDepth` bounds a stack against a pathological document, which is abuse, and `MaxIndexCoverCells` is a property of the index rather than of a catalog. **Zero is refused at boot**, alongside the body ceiling and for the same reason — it reads either as "unlimited" or as "refuse everything", and a catalog that may hold no geometry is undiscoverable by place. **The duplicate declaration in `src/indexing/geo/h3.go` is deleted, not rewired.** It had zero call sites; two constants of one name in two packages is how an operator raises the ceiling in the half that is not read. **What the number stands in for is cells, not shapes:** it times `MaxIndexCoverCells` (8,192) is the worst case one publish can ask the index to hold, so a points-only catalog — one cell per shape — can raise it a long way and a polygon-heavy one cannot | 2, 17, 18 |
+| **A27** | **A deployment may decline free-text retrieval, and declining REFUSES where a missing backend mode degrades.** `Search.EnableTextSearch` / `SEARCH_ENABLE_TEXT_SEARCH`, **true by default** — the value that takes no decision has to be the one that behaves as before the flag existed. With it false, an intent carrying a non-empty `textSearch` is refused in `MapIntent` with `SCH_TYPE_NOT_SUPPORTED` at `$['message']['intent']['textSearch']`, and the message names `spatial` and `filters` as what still works. **The whole content of this amendment is that it is not `FailOnUnavailableMode` under another name**, because the two read alike and behave oppositely. That flag is about a mode the **backend** cannot run — `semantic` on a `noop` deployment — and false there degrades, answering with what the other modes found and naming the gap in `X-Beckn-Degraded`; the query the caller wrote survives without it. This one is the **deployment's** policy, and degrading would be the failure C11 exists to prevent: on a text-only intent the term IS the query, so running the remaining modes without it answers **the whole corpus under a 200** — a page indistinguishable at the caller from a correct one. That is the same widening `MapIntent`'s doc comment already refuses for an unreadable `targets` or an ignored SRID, which is why the guard sits there and not in `negotiate`. **Three details are load-bearing.** The guard reads the **trimmed** term, like every other reader of it: `"   "` asks for no retrieval mode at all, so it stays the no-criterion refusal and calling it a disabled text search would name the wrong mistake. The intent's required-one-of **list** shrinks with the flag — `spatial or filters`, with a parenthetical saying why the third is absent — because offering `textSearch` to a caller this deployment would then refuse walks them into a second `400`; the **guard** does not shrink with it, since a term that was sent is a criterion that was sent and reporting it missing would be a false sentence stacked on the true one. And the wire message names the two criteria that still work rather than the environment variable, matching `negotiate` and the `filters.type` refusal: a caller cannot act on the variable, and the operator has `docs/publish-and-discover.md`. **`modesFor` is left alone.** It still maps a non-empty `Text` to all three ranked modes, because the refusal is total and unreachable past it; a second guard there would be a branch no test can reach and the kind of defence that rots into a contradiction | 2, 17, 19 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -1602,7 +1604,7 @@ derive — a domain.DeriveFunc (merged domain.Catalog, touched []string)
     # Run on the MERGE RESULT — a patch that never mentioned a geo field still
     # re-derives the same rows, which is what makes the unconditional geometry
     # replacement in UpsertCatalog idempotent.
-    found, faults ← ExtractGeometries(i, merged)
+    found, faults ← ExtractGeometries(i, merged, cfg.Geo.MaxGeometriesPerCatalog)
     merged.Geometries                 ← found where Owners is empty
     merged.Resources[k].Geometries    ← found where k ∈ Owners
     # `∈`, not `==`: one offer geometry covering three resources lands on all
@@ -2005,7 +2007,7 @@ be able to have a caller ask about either one, separately, and get different
 answers.
 
 ```pseudo
-ExtractGeometries(catalogIndex, merged) → []domain.Geometry, []domain.Fault:
+ExtractGeometries(catalogIndex, merged, maxGeometries) → []domain.Geometry, []domain.Fault:
     out, faults ← [], []
 
     walk(merged, path: "$.catalogs[{catalogIndex}]", depth: 0, owners: nil)
@@ -2020,7 +2022,7 @@ walk(node, path, depth, owners):
         parsed, err ← parseGeoJSON(node)
         if err:
             faults += fault(jsonPath(path), "malformed geometry", node)
-        else if len(out) >= MaxGeometriesPerCatalog:
+        else if len(out) >= maxGeometries:   # config.Geo.MaxGeometriesPerCatalog (A26)
             faults += fault(jsonPath(path), "geometry budget exceeded")
         else:
             out += Geometry{
@@ -2110,7 +2112,7 @@ Five rules that fall out of it:
    **once** for the whole catalog. That is what still stops three provider
    locations across forty resources from becoming 120 rows and 120 H3 fills.
 5. **The walk is bounded, and the bound is reported.** `MaxCatalogWalkDepth` (32) and
-   `MaxGeometriesPerCatalog` (256) exist because this now reads publisher-shaped
+   `Geo.MaxGeometriesPerCatalog` (256 by default, config since A26) exist because this now reads publisher-shaped
    documents rather than one known field. Hitting the geometry budget is a
    *partial* fault naming the path that was dropped, never a silent truncation —
    a publisher whose 257th polygon vanished has to be told.
@@ -2218,6 +2220,28 @@ negotiate(query, capabilities) → modes, degraded:
 
 A caller who filtered for one manufacturer and got every manufacturer has been
 actively misled. Silence is the one option that is never taken.
+
+`negotiate` is not where a **deployment** declines a mode, and A27's
+`Search.EnableTextSearch` is the case that shows why. It reaches the mapper
+instead:
+
+```pseudo
+mapTextSearch(text, config) → []domain.Fault:
+    # text is already TRIMMED. "   " asks for no mode at all and belongs to the
+    # no-criterion refusal below, which names the real mistake.
+    if config.Search.EnableTextSearch or text is empty: return nil
+    fault SCH_TYPE_NOT_SUPPORTED at $['message']['intent']['textSearch'],
+          naming spatial and filters as what this deployment still answers
+```
+
+Refuse rather than degrade, and the two sit one call apart on purpose.
+`negotiate` degrades because the missing mode is the **backend's** gap and the
+query the caller wrote survives without it. Here the term **is** the query: drop
+it and a text-only intent returns the whole corpus under a `200`, which is the
+widening the mapper exists to refuse. The intent's required-one-of list shrinks
+with the flag — offering `textSearch` to a caller this deployment would then
+refuse walks them into a second `400` — while the *guard* does not, because a
+term sent is a criterion sent and reporting it missing would be false.
 
 ### Intent → SearchQuery
 
@@ -3047,7 +3071,7 @@ disagreement reaches the caller as a result 10.1 km from a 10 km search.
 | `MaxQueryCoverCells` | 4,096 | Cells one **discover** cover may produce, enforced by H3 via `maxNumCellsReturn`, and the ceiling on a dilated cover |
 | `queryCircleVertices` | 64 | Vertices in the polygon approximating an `S_DWITHIN` radius. Circumscribing scale 1.0012 |
 | `MaxCatalogWalkDepth` | 32 | The publish walker reads publisher-shaped documents. A cyclic or pathological nesting must cost a bounded walk, not a stack |
-| `MaxGeometriesPerCatalog` | 256 | Publish budget for the general walk. Over it, the extra finds are *partial* faults naming their paths — never a silent drop |
+| `MaxGeometriesPerCatalog` | 256 | Publish budget for the general walk. Over it, the extra finds are *partial* faults naming their paths — never a silent drop. **Config, not a constant** (A26) — how many shapes a catalog carries is a property of a deployment's publishers, and the ceiling is reached by publishing normally rather than by abuse |
 
 ### Stated limits
 
@@ -3295,11 +3319,12 @@ Load():
   `time.LoadLocation` at startup so a typo fails the boot rather than silently
   shifting every daily window), `Server`, `Database`, `Search` (`DefaultPageSize`,
   `MaxPageSize`, `MaxRadiusMeters` = 200000, `ReadDeadline`,
-  `FailOnUnavailableMode` = false, `MaxCandidatesPerMode` = 500), `Embeddings` (one
+  `FailOnUnavailableMode` = false, `MaxCandidatesPerMode` = 500,
+  `EnableTextSearch` = true — A27), `Embeddings` (one
   struct — A3), `RateLimit` (`RPS`, `Burst`), `Log`, `Validation`, `Auth`,
   `OTel`, `Replication` (A7), `Errors` (`IncludeLegacyType` = false — C1),
   `Ext` (`AllowNetworkFetch` = false — the SSRF boundary under Task 10), `Geo`
-  (`ResolutionCells` = 8).
+  (`ResolutionCells` = 8, `MaxGeometriesPerCatalog` = 256 — A26).
 
 Three of those `Search` names used to be guessable only from this table.
 `DefaultPageSize` and `MaxPageSize` clamp the request's `limit`: they bound a
@@ -3308,6 +3333,13 @@ return into fusion — a different and much larger number, and the old `MaxLimit
 sat next to it saying only "max". `FailOnUnavailableMode` says what happens when
 a requested mode is missing, a `400` rather than a degraded header, where
 `StrictModes` said only that something somewhere was strict.
+
+`EnableTextSearch` (A27) is the fifth and reads like the fourth, so the names
+have to carry the difference: `FailOnUnavailableMode` is about a mode the
+**backend** lacks and `EnableTextSearch` about one the **deployment** declines.
+That is why one degrades and the other refuses, and why neither is spelled
+`StrictText` or `DisableTextSearch` — the first says nothing about which mode,
+and the second inverts a default that must read as "unchanged".
 
 **The last three groups are defined here because groups are defined only here.**
 `Errors.IncludeLegacyType` is read by Task 5, `Ext.AllowNetworkFetch` by Task 10
@@ -4551,8 +4583,8 @@ one `Retriever` per mode, `Hydrator`, `RRF`
 
 **Produces:** `publish.MapCatalog(catalog, directive, network, zone, version) →
 domain.CatalogPatch, fatal, partial` (the two fault kinds separately),
-`publish.ExtractGeometries(catalogIndex, merged domain.Catalog) →
-[]domain.Geometry, []domain.Fault`, `discover.MapIntent`,
+`publish.ExtractGeometries(catalogIndex, merged domain.Catalog, maxGeometries int) →
+[]domain.Geometry, []domain.Fault` (A26), `discover.MapIntent`,
 `jsonpath.Canonicalise`
 
 - **`MapCatalog` returns a `CatalogPatch`, not a `Catalog` (A8).** A `Catalog`
@@ -4566,7 +4598,7 @@ domain.CatalogPatch, fatal, partial` (the two fault kinds separately),
   whole catalog, recognising GeoJSON by shape rather than by field name, so a
   `targets` expression can name any geo path a publisher used. Per-geometry
   error isolation, all seven types, bounded by `MaxCatalogWalkDepth` and
-  `MaxGeometriesPerCatalog`. It lives in its own file because it owns its own
+  `Geo.MaxGeometriesPerCatalog` (A26). It lives in its own file because it owns its own
   fault handling. It takes the **merged catalog** and is called from `derive`
   inside the write transaction — post-merge, because under MERGE the document
   that must be covered is the merged one, and a patch that never mentioned a

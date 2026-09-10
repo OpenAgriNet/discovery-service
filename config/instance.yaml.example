@@ -42,13 +42,32 @@ geo:
   # you actually publish: every GeoJSON shape ANYWHERE in the document counts,
   # at any depth and under any field name, so a catalog carrying one point per
   # market AND one per coverage area needs twice its market count. A catalog of
-  # 273 mandis published both ways needs 544.
+  # 273 mandis published both ways needs 546 — and the real one measured 547,
+  # because the provider carries a shape of its own and the two per-market
+  # counts were not exactly equal. Count from a publish, not from arithmetic:
+  # the number to set is what the response reports, rounded up.
   #
   # The cost this stands in for is cells, not shapes: this number times
   # MaxIndexCoverCells (8192) is the worst case one publish can ask the index to
   # hold. Points are the cheap case — one cell each — so a points-only catalog
   # can raise this a long way. Polygons are not.
   maxGeometriesPerCatalog: 256
+
+# Uncomment to stop answering free-text queries (A27). A discover carrying
+# textSearch then gets a 400 — SCH_TYPE_NOT_SUPPORTED, naming spatial and
+# filters as what still works — instead of an answer.
+#
+# A REFUSAL and not a degradation, which is the difference from
+# failOnUnavailableMode above it: that one covers a mode the backend cannot
+# run, and dropping it still leaves the query the caller wrote. Here the term
+# IS the query, so running the rest without it would answer the whole corpus
+# under a 200.
+#
+# Turn it off when the deployment answers by place and catalogue structure and
+# the text indexes are cost rather than capability, or while a text backend is
+# being replaced — a refusal a caller can read beats a plausible wrong page.
+# search:
+#   enableTextSearch: false
 
 # Uncomment when an Ollama deployment exists to turn semantic search on (A5).
 # embeddings:
