@@ -155,7 +155,7 @@ func wire(
 		Telemetry: tracing,
 		Publish: publish.NewController(
 			publish.NewService(catalogs, NoopReplicator{}, writeEmbedder(cfg.Embeddings),
-				cfg.App.Network, zone),
+				cfg.App.Network, zone, cfg.Geo.MaxGeometriesPerCatalog),
 			cfg.Errors),
 		Discover: discover.NewController(discover.NewService(search, cfg), cfg.Errors),
 		pool:     pool,

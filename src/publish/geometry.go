@@ -18,10 +18,11 @@ import (
 // JSON (implementation-plan.md §Geospatial Design).
 const MaxCatalogWalkDepth = 32
 
-// MaxGeometriesPerCatalog bounds how many shapes one catalog may contribute to
-// the index. The geometry over it is reported as a partial fault, never dropped
-// in silence (implementation-plan.md §Geospatial Design).
-const MaxGeometriesPerCatalog = 256
+// How many shapes one catalog may contribute to the index is
+// config.Geo.MaxGeometriesPerCatalog, carried in as maxGeometries below rather
+// than fixed here: the budget is a property of a deployment's catalogs, not of
+// the protocol. The geometry over it is reported as a partial fault, never
+// dropped in silence (implementation-plan.md §Geospatial Design).
 
 // geometryTypes is the RFC 7946 set, all seven of which are indexed.
 var geometryTypes = map[string]bool{
@@ -41,8 +42,10 @@ var geometryTypes = map[string]bool{
 // transaction: a patch that never mentioned a geo field must not erase the
 // geometries the stored document still implies. The walk recognises GeoJSON by
 // shape, not by field name (implementation-plan.md §Publish — How It Works).
-func ExtractGeometries(catalogIndex int, merged domain.Catalog) ([]domain.Geometry, []domain.Fault) {
-	walk := &catalogWalk{}
+func ExtractGeometries(
+	catalogIndex int, merged domain.Catalog, maxGeometries int,
+) ([]domain.Geometry, []domain.Fault) {
+	walk := &catalogWalk{maxGeometries: maxGeometries}
 	root := []segment{{name: "catalogs"}, {index: catalogIndex}}
 
 	// Three entry points rather than one, because a domain.Catalog is a struct
@@ -74,6 +77,9 @@ func ExtractGeometries(catalogIndex int, merged domain.Catalog) ([]domain.Geomet
 type catalogWalk struct {
 	found  []domain.Geometry
 	faults []domain.Fault
+
+	// maxGeometries is config.Geo.MaxGeometriesPerCatalog, fixed for the walk.
+	maxGeometries int
 }
 
 // node visits one JSON value. Ownership is decided by the caller and carried
@@ -121,13 +127,13 @@ func (w *catalogWalk) collect(raw json.RawMessage, kind string, at []segment, ow
 		return
 	}
 
-	if len(w.found) >= MaxGeometriesPerCatalog {
+	if len(w.found) >= w.maxGeometries {
 		w.faults = append(w.faults, domain.Fault{
 			Path: renderPath(at, nil),
 			Code: string(beckn.CodePolicyGenericError),
 			Message: fmt.Sprintf(
 				"catalog carries more than %d geometries; this one was not indexed",
-				MaxGeometriesPerCatalog),
+				w.maxGeometries),
 		})
 		return
 	}

@@ -84,6 +84,7 @@ func testApp(t *testing.T, db Pinger, log *zap.Logger) *App {
 	cfg := config.Config{}
 	cfg.App.Network = "mahavistar"
 	cfg.Geo.ResolutionCells = geo.DefaultTestResolution
+	cfg.Geo.MaxGeometriesPerCatalog = 256
 	cfg.Search.DefaultPageSize = 20
 	cfg.Search.MaxPageSize = 100
 	cfg.Search.MaxCandidatesPerMode = 500
@@ -102,7 +103,7 @@ func testApp(t *testing.T, db Pinger, log *zap.Logger) *App {
 		Spec:   index,
 		Publish: publish.NewController(
 			publish.NewService(store, NoopReplicator{}, embeddings.NewNoop(768),
-				cfg.App.Network, time.UTC),
+				cfg.App.Network, time.UTC, cfg.Geo.MaxGeometriesPerCatalog),
 			cfg.Errors),
 		Discover: discover.NewController(discover.NewService(store, cfg), cfg.Errors),
 	}

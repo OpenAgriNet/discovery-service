@@ -32,6 +32,24 @@ database:
 log:
   level: info
 
+geo:
+  # How many shapes ONE catalog may contribute to the index. Past it the extra
+  # finds come back as PARTIAL faults naming their paths, so the publisher is
+  # told — but those shapes are not searchable, which is the failure that reads
+  # like a data problem and is a configuration one.
+  #
+  # The default, 256, fits a catalog of a few dozen service areas. Count what
+  # you actually publish: every GeoJSON shape ANYWHERE in the document counts,
+  # at any depth and under any field name, so a catalog carrying one point per
+  # market AND one per coverage area needs twice its market count. A catalog of
+  # 273 mandis published both ways needs 544.
+  #
+  # The cost this stands in for is cells, not shapes: this number times
+  # MaxIndexCoverCells (8192) is the worst case one publish can ask the index to
+  # hold. Points are the cheap case — one cell each — so a points-only catalog
+  # can raise this a long way. Polygons are not.
+  maxGeometriesPerCatalog: 256
+
 # Uncomment when an Ollama deployment exists to turn semantic search on (A5).
 # embeddings:
 #   provider: ollama
