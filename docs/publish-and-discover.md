@@ -501,7 +501,7 @@ Four of these are load-bearing enough to spell out:
   ```json
   { "code": "SCH_TYPE_NOT_SUPPORTED",
     "path": "$['message']['intent']['textSearch']",
-    "message": "textSearch is not answered here; this service searches by spatial or filters only" }
+    "message": "textSearch is not supported here; please discover through spatial or filters" }
   ```
 
   Degrading instead would run the remaining modes without the term, which on a

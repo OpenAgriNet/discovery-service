@@ -743,7 +743,7 @@ func TestTheNoCriterionRefusalStopsOfferingTextSearchWhenItIsOff(t *testing.T) {
 			fatal[0].Message)
 	}
 	if strings.Contains(fatal[0].Message, "textSearch") &&
-		!strings.Contains(fatal[0].Message, "textSearch is not answered here") {
+		!strings.Contains(fatal[0].Message, "textSearch is not supported here") {
 		t.Errorf("message = %q, names textSearch without saying it is refused here",
 			fatal[0].Message)
 	}

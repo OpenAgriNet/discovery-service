@@ -135,8 +135,8 @@ func textSearchFaults(text string, enabled bool) []domain.Fault {
 	return []domain.Fault{{
 		Path: "$['message']['intent']['textSearch']",
 		Code: string(beckn.CodeSchemaTypeNotSupported),
-		Message: "textSearch is not answered here; this service searches by " +
-			"spatial or filters only",
+		Message: "textSearch is not supported here; please discover through " +
+			"spatial or filters",
 	}}
 }
 
@@ -163,7 +163,7 @@ func criterionFaults(intent beckn.Intent, text string, textSearchEnabled bool) [
 
 	criteria := "textSearch, spatial or filters"
 	if !textSearchEnabled {
-		criteria = "spatial or filters (textSearch is not answered here)"
+		criteria = "spatial or filters (textSearch is not supported here)"
 	}
 	return []domain.Fault{{
 		Path: "$['message']['intent']",
