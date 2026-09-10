@@ -42,7 +42,10 @@ geo:
   # you actually publish: every GeoJSON shape ANYWHERE in the document counts,
   # at any depth and under any field name, so a catalog carrying one point per
   # market AND one per coverage area needs twice its market count. A catalog of
-  # 273 mandis published both ways needs 544.
+  # 273 mandis published both ways needs 546 — and the real one measured 547,
+  # because the provider carries a shape of its own and the two per-market
+  # counts were not exactly equal. Count from a publish, not from arithmetic:
+  # the number to set is what the response reports, rounded up.
   #
   # The cost this stands in for is cells, not shapes: this number times
   # MaxIndexCoverCells (8192) is the worst case one publish can ask the index to

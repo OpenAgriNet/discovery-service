@@ -69,6 +69,12 @@ func TestDefaultsAreTheFloor(t *testing.T) {
 	assertEqual(t, "Errors.IncludeLegacyType", cfg.Errors.IncludeLegacyType, false)
 	assertEqual(t, "Ext.AllowNetworkFetch", cfg.Ext.AllowNetworkFetch, false)
 	assertEqual(t, "Geo.ResolutionCells", cfg.Geo.ResolutionCells, 8)
+
+	// A26 made this configurable and kept the number. That is the whole safety
+	// claim of the change, and it is the kind that holds until someone rounds it
+	// while widening the field: raising it silently costs index, and lowering it
+	// silently makes shapes unsearchable on a deployment that configured nothing.
+	assertEqual(t, "Geo.MaxGeometriesPerCatalog", cfg.Geo.MaxGeometriesPerCatalog, 256)
 }
 
 func TestEveryLayerBeatsTheOneBelowIt(t *testing.T) {
@@ -380,6 +386,12 @@ func TestValidateRejects(t *testing.T) {
 		// worst possible readings of one value, so neither is reachable.
 		"a body ceiling of zero": {
 			"server:\n  maxRequestBodyBytes: 0\n", "maxRequestBodyBytes",
+		},
+		// The same two worst readings as the body ceiling, one layer down: a
+		// catalog permitted no geometry at all is undiscoverable by place, and
+		// the publish that made it so answers 200 (A26).
+		"a geometry budget of zero": {
+			"geo:\n  maxGeometriesPerCatalog: 0\n", "maxGeometriesPerCatalog",
 		},
 	}
 

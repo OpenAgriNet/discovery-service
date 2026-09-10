@@ -463,6 +463,7 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 | `SEARCH_READ_DEADLINE` | `2s` | one deadline across all retrieval modes |
 | `SEARCH_FAIL_ON_UNAVAILABLE_MODE` | `false` | `true` turns a degradation into a 400 |
 | `GEO_RESOLUTION_CELLS` | `8` | H3 resolution for both covers |
+| `GEO_MAX_GEOMETRIES_PER_CATALOG` | `256` | shapes one **publish** may index. Over it the publish still answers `PARTIAL` with a fault per shape — but those shapes are not searchable |
 | `EMBEDDING_PROVIDER` | `noop` | `noop`, `hashing` or `ollama` |
 | `EMBEDDING_MODEL` / `_ENDPOINT` / `_DIMENSIONS` | `nomic-embed-text` / `http://localhost:11434` / `768` | the Ollama seam |
 | `RATE_LIMIT_RPS` / `_BURST` | `20` / `40` | per-client limit; `burst >= rps` is enforced |
