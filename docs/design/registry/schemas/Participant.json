@@ -1,0 +1,261 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Participant",
+  "type": "object",
+  "required": [
+    "Participant"
+  ],
+  "properties": {
+    "Participant": {
+      "$ref": "#/definitions/Participant"
+    }
+  },
+  "definitions": {
+    "Participant": {
+      "description": "An admitted participant or service endpoint: identifier, name, integration type, status, base URL, OAN role, and active signing or encryption keys. This is a Sunbird entity and therefore internal — external callers see the OAN envelope and the OAN Registry contract, never this shape. `type` says which kind, and decides which of the remaining fields apply: a network_adapter speaks Beckn and is addressed by its participantId; an upstream_api is an ordinary API our adapter calls. No credential of ours appears here — how to authenticate to an upstream_api is the binding's plugin's, read from the adapter's own environment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "participantId",
+        "name",
+        "type",
+        "status",
+        "baseUrl"
+      ],
+      "properties": {
+        "participantId": {
+          "$ref": "#/definitions/ParticipantId"
+        },
+        "name": {
+          "description": "Human label.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "\\S"
+        },
+        "type": {
+          "$ref": "#/definitions/ParticipantType"
+        },
+        "status": {
+          "$ref": "#/definitions/Status"
+        },
+        "baseUrl": {
+          "description": "The base something is appended to: a Beckn action for a network_adapter, a binding's path for an upstream_api. https for a network_adapter. An upstream_api may be plaintext: with no auth field the registry cannot tell whether a call to it carries a credential, so it cannot condition the transport rule on one — that guard now sits with the binding's plugin, which holds the credential.",
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^https?://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+        },
+        "role": {
+          "$ref": "#/definitions/Role"
+        },
+        "keys": {
+          "$ref": "#/definitions/PublicKey"
+        }
+      },
+      "allOf": [
+        {
+          "description": "A network_adapter speaks Beckn: it needs a role and a key, and its id is its wire identity so it must be a hostname.",
+          "if": {
+            "properties": {
+              "type": {
+                "const": "network_adapter"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "role",
+              "keys"
+            ],
+            "properties": {
+              "participantId": {
+                "maxLength": 253,
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+              },
+              "baseUrl": {
+                "pattern": "^https://(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9.:-]*(/[A-Za-z0-9._~%-]+)*$"
+              }
+            }
+          }
+        },
+        {
+          "description": "An upstream_api does not speak Beckn: it has no role on the network and no keys we verify. It is one host and a base path, nothing more.",
+          "if": {
+            "properties": {
+              "type": {
+                "const": "upstream_api"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "role"
+                  ]
+                },
+                {
+                  "required": [
+                    "keys"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "PublicKey": {
+      "description": "An adapter's active signing or encryption key, held as material: it is public, so there is nothing to protect. It is the only key material in these three schemas, and there is no secret in them at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alg",
+        "key",
+        "validFrom",
+        "status"
+      ],
+      "properties": {
+        "keyId": {
+          "description": "Optional. Second field of the Authorization keyId, so a sender can say which key it signed with.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "use": {
+          "description": "Optional, and implied by alg. sign verifies signatures; encrypt is for encrypted payloads. An adapter holds one key, so it holds one or the other.",
+          "type": "string",
+          "enum": [
+            "sign",
+            "encrypt"
+          ]
+        },
+        "alg": {
+          "description": "ed25519 signs, x25519 encrypts. Both curves are 32-byte keys.",
+          "type": "string",
+          "enum": [
+            "ed25519",
+            "x25519"
+          ]
+        },
+        "key": {
+          "description": "base64 of the 32 raw bytes: 44 chars, one trailing '='. A truncated or wrong-curve key fails at write time.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{43}=$"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validUntil": {
+          "description": "Absent means open-ended. There is one key, so it has no successor to overlap with: a validUntil in the past leaves the adapter unable to sign, and rotation is a full replace of this object.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "description": "revoked withdraws the key early. Effective only once the reader refreshes.",
+          "type": "string",
+          "enum": [
+            "active",
+            "revoked"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "use": {
+                "const": "sign"
+              }
+            },
+            "required": [
+              "use"
+            ]
+          },
+          "then": {
+            "properties": {
+              "alg": {
+                "const": "ed25519"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "use": {
+                "const": "encrypt"
+              }
+            },
+            "required": [
+              "use"
+            ]
+          },
+          "then": {
+            "properties": {
+              "alg": {
+                "const": "x25519"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ParticipantId": {
+      "description": "Stable id, and the only id. For a network_adapter this is its network identity — what goes on the wire as senderId / receiverId; for an upstream_api it is the Beckn offer.provider.id.",
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9][a-z0-9._:-]{2,252}$"
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "inactive"
+      ]
+    },
+    "Role": {
+      "description": "Which of the three layers this adapter sits at — a different axis from type, which says how we integrate with it. consumer asks. provider answers. network exposes publish and discover, answering discover from published catalogs.",
+      "type": "string",
+      "enum": [
+        "provider",
+        "consumer",
+        "network"
+      ]
+    },
+    "ParticipantType": {
+      "description": "Integration type, and a different axis from role. network_adapter is a node: it speaks Beckn, and it can sit at any of the three layers — role says which. upstream_api is the provider's actual external system, an API we call over ordinary HTTP that does not speak Beckn and has no place on the network.",
+      "type": "string",
+      "enum": [
+        "network_adapter",
+        "upstream_api"
+      ]
+    }
+  },
+  "_osConfig": {
+    "uniqueIndexFields": [
+      "participantId"
+    ],
+    "indexFields": [
+      "status",
+      "type",
+      "baseUrl"
+    ],
+    "roles": [
+      "registryOperator"
+    ],
+    "systemFields": [
+      "osCreatedAt",
+      "osUpdatedAt",
+      "osCreatedBy",
+      "osUpdatedBy"
+    ]
+  }
+}

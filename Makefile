@@ -1,0 +1,737 @@
+# OpenAgriNet Discovery Service — build, test and toolchain targets.
+#
+# Every tool is pinned in tools/go.mod and built into bin/ on demand, so a
+# clean checkout needs nothing installed but Go itself.
+
+# Single source of truth for ci.yml and ci-release.yml: every CI step is a
+# one-line `make <target>` call, so a red check reproduces locally by running
+# the command the log shows. What is left inline in a workflow is GitHub
+# context — `${{ }}` expressions, $GITHUB_STEP_SUMMARY writes, `uses:` actions
+# — which has no meaning outside a runner and so cannot live here.
+
+GO           ?= go
+BIN_DIR      := bin
+IMAGE_NAME   ?= discovery-service
+IMAGE        ?= $(IMAGE_NAME):dev
+DATABASE_URL ?= postgres://discovery:discovery@localhost:5432/discovery?sslmode=disable
+
+# CI thresholds/pins live here, not duplicated into workflow env blocks — one
+# source of truth for both a local `make` run and the GitHub Actions runner.
+MIN_COVERAGE       ?= 80
+BASE_REF           ?= origin/main
+SEVERITY           ?= CRITICAL,HIGH,MEDIUM,LOW
+GOTESTSUM_VERSION  := v1.13.0
+TRIVY_VERSION      := v0.74.0
+ACTIONLINT_VERSION := v1.7.12
+
+# The reports the scans write, the comment renders and the gate reads — named
+# once so the three can never disagree about which files are in play.
+#
+# Derived from one boolean rather than overridden as a list, because a fork PR
+# cannot scan the image: the Dockerfile's base images are dhi.io/*, which 401
+# on an anonymous pull, and a fork gets an empty string for every secret. So
+# ci.yml sets SCAN_IMAGE=false there and the comment and the gate both narrow
+# together — spelling the list out in the workflow instead would put the
+# default in two places, and the workflow's copy is the one that rots.
+SCAN_IMAGE    ?= true
+SARIF_REPORTS ?= trivy-deps.sarif $(if $(filter true,$(SCAN_IMAGE)),trivy-image.sarif)
+
+# HTML comment markers. find-comment matches on these to update its comment in
+# place rather than posting a new one each run, and the target that writes the
+# report is the one that must emit the marker — a workflow step splicing it in
+# afterwards is a second place for the string to live, and it drifted once
+# already.
+COVERAGE_MARKER := <!-- coverage-report -->
+SEC_MARKER      := <!-- sec-scan -->
+
+# Only meaningful inside a workflow; a local run gets a placeholder rather
+# than a broken link.
+RUN_URL ?= $(if $(GITHUB_RUN_ID),$(GITHUB_SERVER_URL)/$(GITHUB_REPOSITORY)/actions/runs/$(GITHUB_RUN_ID),local run)
+
+# The arch of the machine running make, so neither a local run nor the release
+# matrix has to pass it: each arch is built on a runner of that arch, natively,
+# never under QEMU. Only ever a tag suffix — `docker build` on a native runner
+# already produces that arch.
+ARCH ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
+
+# The version a tag publishes under. `?=`, so ci-release.yml overrides this
+# from the environment with github.ref_name — the exact tag whose push started
+# the run.
+#
+# This used to be git describe unconditionally, on the reasoning that one
+# answer on a runner and on a workstation is simpler. That was wrong, and in a
+# way that only shows up on a real release: describe reports whichever tag
+# pointing at HEAD was *created* last, which is not necessarily the one that
+# was pushed. Tag a commit v1.0.0, add v1.0.1-rc1 to that same commit later,
+# push v1.0.0 — describe says v1.0.1-rc1, so the image ships under the wrong
+# name and, because that name has a hyphen, :latest silently does not move.
+#
+# The two contexts do not have the same information, so they should not be
+# forced to the same answer. CI knows the triggering ref exactly. A workstation
+# has no triggering ref at all, so describe is still right there, and still
+# renders an untagged commit as v0.0.1-rc1-3-gabc1234 rather than a branch name
+# that would then be pushed as an image tag. Needs fetch-depth: 0 in CI either
+# way, so a local describe in the same checkout stays meaningful.
+#
+# DO NOT DELETE THE `zz-decoy` TAG. It is the regression fixture for exactly the
+# bug described above, and it is on origin, not just local. It is an annotated
+# tag created deliberately AFTER v0.0.1-rc4 on the same commit, so `git describe`
+# prefers it — which is the whole point: it reproduces "describe picks the
+# tag created last" on demand, and its name matches no release trigger pattern
+# so it can never start a release run. `git describe --tags` returning
+# zz-decoy-N-g<sha> on a local build is therefore the fixture WORKING, not a
+# fault to clean up, and a local binary stamped service.version=zz-decoy-... is
+# expected. Deleting the tag would tidy away the only evidence this bug stays
+# fixed. Nothing in the tree references it by name, which is why it is called
+# out here rather than left to be rediscovered.
+VERSION ?= $(shell git describe --tags --always --dirty)
+
+# The other three quarters of the build Resource.
+#
+# BUILD_DATE is the COMMIT's timestamp and not the moment the compiler ran: it
+# answers which change is deployed, and it is the half that is reproducible —
+# building the same commit twice must not produce two different stamps.
+#
+# Each is `?=` for the same reason VERSION is: a build system that already knows
+# the answer should be able to say so rather than have us re-derive it. Each
+# degrades to empty outside a git checkout, and empty is what the linker stamp
+# reads as "nothing supplied" — see linkerStamp in src/platform/buildinfo/buildinfo.go,
+# which then falls back to unknown/unknown/epoch rather than to a lie.
+# BUILD_DATE is forced to UTC Z-form rather than %cI's local offset, because the
+# toolchain's vcs.time is UTC and OVERRIDES this value wherever it exists — so
+# the same commit would otherwise stamp two different-looking timestamps
+# depending on which build produced the binary, for no difference in meaning.
+COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null)
+BUILD_DATE ?= $(shell TZ=UTC0 git show -s --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD 2>/dev/null)
+TREE_STATE ?= $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo clean || echo dirty)
+
+# All four values this build injects at link time, and it used to be one.
+#
+# The standing preference is to read the toolchain's own build stamp instead, so
+# that Makefile, Dockerfile and CI need not agree on a flag string. Not one of
+# the four can take that route:
+#
+#   service.version  — Main.Version carries the MODULE's version and never
+#                      VERSION above.
+#   the other three  — debug.ReadBuildInfo's vcs.revision / vcs.time /
+#                      vcs.modified are written only when the toolchain can see
+#                      a git working tree, and the release image is built from a
+#                      copied context that has none. So build.commit,
+#                      build.tree_state and build.date read unknown, unknown and
+#                      the epoch on precisely the binaries you cannot identify by
+#                      looking at your own checkout. The toolchain's answer still
+#                      WINS where it exists; this is the floor under it.
+#
+# Why, and what the release image's stamp does not carry:
+# docs/design/opentelemetry.md, "Build identity".
+#
+# The Dockerfile must spell these exact strings. tests/architecture/ldflags_test.go
+# asserts the two files stamp the same set and that every symbol exists, because
+# `go build` ignores an -X naming a symbol that does not, leaving a green build
+# shipping `dev` and an unknown commit.
+#
+# The import path is written out four times rather than held in a make variable
+# on purpose: that test greps the FILE. A `$(TELEMETRY_PKG)` here would leave it
+# comparing a variable reference against the Dockerfile's literal, which is
+# exactly the drift it exists to catch.
+# Exported so `docker compose build` sees them. Compose cannot shell out to git,
+# so docker-compose.yml's build.args read these from the environment; without the
+# export, `make run` would build an image stamped dev/unknown while `make docker`
+# built a correct one from the same checkout.
+export VERSION COMMIT BUILD_DATE TREE_STATE
+
+LDFLAGS = -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.version=$(VERSION) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.commit=$(COMMIT) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.buildDate=$(BUILD_DATE) \
+          -X github.com/OpenAgriNet/discovery-service/src/platform/buildinfo.treeState=$(TREE_STATE)
+
+RELEASE_IMAGE = $(IMAGE_NAME):$(VERSION)-$(ARCH)
+
+# Where a tag push publishes. GHCR only, and unconditionally: it is the one
+# registry this project actually uses, and a switchboard for three others that
+# were never configured is not flexibility, it is four ways for a release to
+# quietly push nothing. Adding a registry back is one entry here and one login
+# step in ci-release.yml.
+#
+# GHCR image refs must be lowercase and GITHUB_REPOSITORY_OWNER preserves the
+# owner's real case (OpenAgriNet), hence the tr. Deriving the owner rather than
+# writing it out means a fork publishes to its own namespace.
+OWNER ?= $(shell printf '%s' '$(GITHUB_REPOSITORY_OWNER)' | tr '[:upper:]' '[:lower:]')
+
+IMAGE_REPOS = ghcr.io/$(OWNER)/$(IMAGE_NAME)
+
+# Test targets pin the embedding provider rather than inheriting it.
+# Production defaults to noop (A5), so without the pin the whole semantic path
+# — query embedding, HNSW, RRF, the dimension guard, the degradation report —
+# would go untested from the day semantic search was deferred.
+TEST_ENV := EMBEDDING_PROVIDER=hashing
+
+# The telemetry stack is the app stack plus one profile and one variable. It
+# was a second compose file until 2026-09-09, because it has to change the
+# service container's environment and a profile can only add containers;
+# OTEL_EXPORTER is the whole of that change, so interpolating it in the one
+# compose file replaces the overlay. Spelled once here so the three telemetry
+# targets cannot drift into disagreeing about what the stack is.
+TELEMETRY := OTEL_EXPORTER=otlp docker compose --profile app --profile telemetry
+
+# Coverage instruments these packages regardless of which test binary is
+# running. Without it Go instruments only the package under test, and
+# tests/acceptance and tests/dbtest are separate packages holding almost no
+# statements of their own — their entire job is to drive src/. So the suite that
+# exercises the most code would credit none of it: the total read 68.6% against
+# a real 88.5%, and src/beckn read 22.2% against a real 81.9%. A number that
+# understates the suite is not a conservative estimate, it is an argument for
+# writing tests that already exist.
+COVERPKG := ./src/...,./cmd/...
+
+GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
+GOVULNCHECK   := $(BIN_DIR)/govulncheck
+SQLC          := $(BIN_DIR)/sqlc
+MIGRATE       := $(BIN_DIR)/migrate
+GOTESTSUM     := $(BIN_DIR)/gotestsum
+TRIVY         := $(BIN_DIR)/trivy
+ACTIONLINT    := $(BIN_DIR)/actionlint
+
+# From GOROOT, not PATH: `go` is always resolvable here (every other target
+# needs it) and gofmt sits next to it, so this works where only the toolchain's
+# bin dir is on PATH. Expanded at recipe time, hence the `$$`.
+GOFMT = $$($(GO) env GOROOT)/bin/gofmt
+
+.DEFAULT_GOAL := help
+
+## help: list the available targets
+help:
+	@grep -hE '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort
+
+## build: compile every package and link the service binary
+# -o with a trailing slash both compiles every package and puts each main in
+# bin/. Plain `go build ./...` links a lone main into the working directory,
+# which drops a binary in the repository root.
+build:
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/ ./...
+
+## test: run the unit and integration suites
+test:
+	$(TEST_ENV) $(GO) test -race ./...
+
+## test-short: run only the suites that need no container
+test-short:
+	$(TEST_ENV) $(GO) test -race -short ./...
+
+## cover: run the suites and write a coverage profile
+cover:
+	$(TEST_ENV) $(GO) test -race -covermode=atomic -coverpkg=$(COVERPKG) \
+		-coverprofile=coverage.out ./...
+
+## cover-total: the one number — total statement coverage
+cover-total: cover
+	@$(GO) tool cover -func=coverage.out | tail -1
+
+## cover-report: per-package coverage, thinnest last
+cover-report: cover
+	@awk -f tools/cover-report.awk coverage.out
+
+## cover-html: annotated source, green covered and red not, in coverage.html
+# -o rather than letting `go tool cover` open a browser: this has to work over
+# ssh and in CI, where there is no browser to open and the command would hang.
+cover-html: cover
+	@$(GO) tool cover -html=coverage.out -o coverage.html
+	@echo "wrote coverage.html"
+
+## test-ci: run the suites through gotestsum — one line per package, coverage
+##          profile written alongside. What ci.yml calls; `make test` stays
+##          the plain everyday entrypoint.
+test-ci: $(GOTESTSUM)
+	$(TEST_ENV) $(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
+		-race -coverprofile=coverage.out -covermode=atomic \
+		-coverpkg=$(COVERPKG) ./...
+
+## cover-diff: coverage restricted to files changed vs BASE_REF — a PR review
+##             needs the diff's number, not the whole repo's. On failure,
+##             names the changed files dragging the number down (worst
+##             first) so "what broke" is answered in the same place as
+##             "did it break" — on a pass, still just the one line.
+#
+# Writes coverage-report.md on EVERY exit path, including its own error paths,
+# so the workflow can `cat` it unconditionally with no existence guard and no
+# fallback text of its own. The marker is written here too, not spliced in by
+# a later workflow step: find-comment matches on it, so a second place to
+# spell it is a second place for it to drift.
+coverage.out:
+	$(MAKE) cover
+
+# One line, one place, so a pass and a failure can't disagree about their
+# shape. $$1 is the ✅/❌ status, $$2 the sentence after the em dash.
+define COVER_REPORT
+report() { \
+	printf '%s\n📊 **Test Coverage: %s** — %s\n' "$(COVERAGE_MARKER)" "$$1" "$$2" \
+		> coverage-report.md; \
+	cat coverage-report.md; \
+}
+endef
+
+cover-diff: coverage.out
+	@$(COVER_REPORT); \
+	if ! git rev-parse --verify --quiet "$(BASE_REF)" >/dev/null; then \
+		report "⚠️ Unavailable" "cannot resolve BASE_REF=$(BASE_REF), so the changed-file set is unknown"; \
+		echo "::error::cover-diff: cannot resolve BASE_REF=$(BASE_REF)" >&2; \
+		exit 1; \
+	fi; \
+	if ! CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go'); then \
+		report "⚠️ Unavailable" "git diff against $(BASE_REF) failed, so the changed-file set is unknown"; \
+		echo "::error::cover-diff: git diff against $(BASE_REF) failed" >&2; \
+		exit 1; \
+	fi; \
+	CHANGED=$$(printf '%s\n' "$$CHANGED" | grep -v '_test\.go$$' || true); \
+	if [ -z "$$CHANGED" ]; then \
+		report "➖ Not applicable" "no non-test Go files changed vs \`$(BASE_REF)\`, so there are no lines to measure and no percentage to report"; \
+		exit 0; \
+	fi; \
+	MODULE=$$($(GO) list -m); \
+	RESULT=$$(echo "$$CHANGED" | awk -v mod="$$MODULE/" -v min="$(MIN_COVERAGE)" \
+		-f tools/cover-diff.awk - coverage.out); \
+	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
+		report "➖ Not applicable" "the changed Go files carry no coverable statements, so there are no lines to measure and no percentage to report"; \
+		exit 0; \
+	fi; \
+	PCT=$$(echo "$$RESULT" | awk -F'\t' '$$1=="TOTAL"{print $$2}'); \
+	if [ "$$PCT" -ge "$(MIN_COVERAGE)" ]; then \
+		report "✅ Passed" "$${PCT}% of changed lines covered, min $(MIN_COVERAGE)%"; \
+		exit 0; \
+	fi; \
+	report "❌ Failed" "$${PCT}% of changed lines covered, min $(MIN_COVERAGE)%"; \
+	BELOW=$$(echo "$$RESULT" | awk -F'\t' '$$1=="FILE"{printf "%s\t%s\n",$$2,$$3}' | sort -n); \
+	TOTAL_BELOW=$$(echo "$$BELOW" | wc -l); \
+	{ \
+		echo; \
+		echo "| File | Coverage |"; \
+		echo "|---|---|"; \
+		echo "$$BELOW" | head -15 | awk -F'\t' '{printf "| `%s` | %s%% |\n", $$2, $$1}'; \
+		[ "$$TOTAL_BELOW" -gt 15 ] && echo "| … | $$((TOTAL_BELOW - 15)) more file(s) below $(MIN_COVERAGE)% |"; \
+		true; \
+	} | tee -a coverage-report.md; \
+	echo "::error::coverage is below the minimum — see the per-file table above"; \
+	exit 1
+
+## trivy-deps: dependency graph scan (T4), SARIF report. Catches what the
+##             image scan structurally cannot — a vulnerable module only the
+##             test suite imports, so it's never linked into the binary and
+##             never appears in a layer. skip-dirs excludes tools/ (a
+##             separate go.mod for build-time tooling): the linter's
+##             dependency graph is not the binary's, so it can't fail a
+##             release it doesn't ship in.
+trivy-deps: $(TRIVY)
+	$(TRIVY) fs . --skip-dirs tools --severity $(SEVERITY) --exit-code 0 \
+		--format sarif --output trivy-deps.sarif
+
+TRIVY_IMAGE_SCAN = $(TRIVY) image $(IMAGE) --severity $(SEVERITY)
+
+## trivy-image: shipped image scan (T4), SARIF report — reads base layers and
+##              the Go build info embedded in the binary, including stdlib,
+##              so a Go toolchain CVE shows up here and nowhere else that the
+##              dependency scan above cannot see. IMAGE names the ref to scan.
+trivy-image: $(TRIVY)
+	$(TRIVY_IMAGE_SCAN) --exit-code 0 --format sarif --output trivy-image.sarif
+
+## trivy-release-gate: the same image scan as trivy-image, but exit 1 on a
+##                     finding instead of writing a report — the pre-push
+##                     release gate image-build runs once per arch, on the
+##                     local image, before anything is pushed anywhere.
+trivy-release-gate: $(TRIVY)
+	$(TRIVY_IMAGE_SCAN) --exit-code 1 --format table
+
+## trivy-report: render every SARIF report as ONE PR comment, trivy-report.md
+# One comment covering both scans, not one comment each: the two scans run in
+# the same job now, and two bot comments per PR was the noise this is meant to
+# cut. A missing report is written into the comment as missing rather than
+# skipped — trivy-gate fails on it, and the comment has to agree with the gate.
+#
+# Renders from the same SARIF_REPORTS list trivy-gate reads, so the comment and
+# the gate can never disagree about what was scanned.
+#
+# The jq program lives in tools/trivy-comment.jq rather than inline: as a file
+# it is lintable (`jq -n --arg severity "" -f tools/trivy-comment.jq`),
+# diffable, and free of Makefile `$$`/backslash escaping. The workflow it came
+# from carried two copies of it, and a jq-version bug in one of them took the
+# whole scan job down — which is the argument for one copy, in a file a linter
+# can actually see.
+trivy-report:
+	@{ \
+		echo "$(SEC_MARKER)"; \
+		echo "## 🛡️ Trivy security scan ($(SEVERITY))"; \
+		echo "[View full run]($(RUN_URL))"; \
+		for report in $(SARIF_REPORTS); do \
+			case "$$report" in \
+				trivy-deps.sarif)  title="Go dependencies";; \
+				trivy-image.sarif) title="Container image";; \
+				*)                 title="$$report";; \
+			esac; \
+			echo; echo "### $$title"; echo; \
+			if [ -s "$$report" ]; then \
+				jq -r --arg severity "$(SEVERITY)" -f tools/trivy-comment.jq "$$report"; \
+			else \
+				echo "⚠️ No report — the scan did not produce $$report."; \
+			fi; \
+		done; \
+	} > trivy-report.md
+	@echo "wrote trivy-report.md"
+
+## trivy-gate: fail if any SARIF report carries a finding, or is missing
+# Reads the reports the scans already produced rather than scanning a third and
+# fourth time — two scans of the same thing can disagree, since Trivy refreshes
+# its DB each run, and a gate that rescans can fail on a finding in no uploaded
+# report, the one state nobody can act on.
+#
+# A missing or unparsable report is a FAILURE, not a pass: a scan that silently
+# wrote nothing must never turn the gate into a green no-op — that is the one
+# case a security gate must not be green for.
+#
+# The ::error:: annotation is emitted here rather than by the caller so the
+# workflow step stays a bare `make trivy-gate`. Locally it is one extra line of
+# output; in CI it is what puts the failure on the PR's Files-changed view.
+trivy-gate:
+	@fail=0; \
+	for report in $(SARIF_REPORTS); do \
+		if [ ! -s "$$report" ]; then \
+			echo "$$report: MISSING — no scan produced it"; \
+			fail=1; continue; \
+		fi; \
+		count=$$(jq '[.runs[].results[]?] | length' "$$report" 2>/dev/null); \
+		if [ -z "$$count" ]; then \
+			echo "$$report: UNREADABLE — not valid SARIF"; \
+			fail=1; continue; \
+		fi; \
+		echo "$$report: $$count $(SEVERITY)"; \
+		if [ "$$count" -gt 0 ]; then \
+			jq -r '.runs[].results[]? | "\(.ruleId) \(.message.text)"' "$$report"; \
+			fail=1; \
+		fi; \
+	done; \
+	[ "$$fail" -eq 0 ] || \
+		echo "::error::Trivy findings at $(SEVERITY), or a missing report — see the log above"; \
+	exit $$fail
+
+## lint: vet, format check and static analysis
+lint: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run ./...
+	$(GOLANGCI_LINT) fmt --diff ./...
+
+## fmt: apply the formatters lint checks for
+fmt: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) fmt ./...
+
+## lint-actions: validate the workflows and composite actions
+# Not a CI check on purpose — the pre-commit hook is the gate, so a bad
+# `${{ }}` expression or a `needs:` pointing at a nonexistent job is caught
+# before the commit exists rather than after a push. Run whole-repo rather than
+# per-file: actionlint resolves `needs:` across a workflow's jobs and checks
+# `uses: ./.github/actions/...` against the action on disk, so a single file in
+# isolation is not enough to judge either.
+lint-actions: $(ACTIONLINT)
+	$(ACTIONLINT)
+
+## lint-staged: the pre-commit lints, staged files only. What the hook runs.
+# Scope is what can pass today, so it does not become something people
+# reflexively `--no-verify` past:
+#
+#   workflows   actionlint, when a workflow or composite action is staged.
+#   formatting  gofmt over staged .go files.
+#
+# Deliberately NOT the full `make lint` and NOT the test suite: golangci-lint
+# over the whole module and `go test -race ./...` are both minutes, and a
+# pre-commit hook has to stay in seconds. CI is where those belong, and both
+# are gates there.
+#
+# Reads the working tree, not the staged blob. A file staged clean but dirty in
+# the working copy is reported here; that is the conservative direction, and it
+# avoids checking the index out to a temp dir on every commit.
+lint-staged:
+	@STAGED=$$(git diff --cached --name-only --diff-filter=ACMR); \
+	if [ -z "$$STAGED" ]; then \
+		echo "lint-staged: nothing staged"; \
+		exit 0; \
+	fi; \
+	fail=0; \
+	if printf '%s\n' "$$STAGED" | grep -qE '^\.github/(workflows/.*\.ya?ml|actions/.*/action\.ya?ml)$$'; then \
+		echo "==> lint-actions (staged workflow or action change)"; \
+		$(MAKE) --no-print-directory lint-actions || fail=1; \
+	fi; \
+	GOFILES=$$(printf '%s\n' "$$STAGED" | grep '\.go$$' || true); \
+	if [ -n "$$GOFILES" ]; then \
+		echo "==> gofmt (staged Go files)"; \
+		UNFMT=$$(printf '%s\n' "$$GOFILES" | xargs $(GOFMT) -l); \
+		if [ -n "$$UNFMT" ]; then \
+			echo "not gofmt-clean:"; \
+			printf '  %s\n' $$UNFMT; \
+			echo "run \`make fmt\`, then stage the result"; \
+			fail=1; \
+		fi; \
+	fi; \
+	if [ "$$fail" -ne 0 ]; then \
+		echo; \
+		echo "pre-commit checks failed — commit aborted"; \
+		exit 1; \
+	fi; \
+	echo "lint-staged: ok"
+
+## hooks: point git at the repo's versioned hooks (run once per clone)
+# core.hooksPath rather than copying into .git/hooks: the hook stays in the
+# repo, under review, and a change to it reaches everyone on their next pull
+# instead of only the people who remember to re-copy it.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath -> .githooks, running: $$(ls .githooks | tr '\n' ' ')"
+
+## sqlc: regenerate the typed query layer from migrations/ and queries/
+sqlc: $(SQLC)
+	$(SQLC) generate
+
+## sqlc-verify: fail if the committed query layer is stale
+sqlc-verify: $(SQLC)
+	$(SQLC) diff
+
+## migrate: apply every pending migration to DATABASE_URL
+migrate: $(MIGRATE)
+	$(MIGRATE) -path migrations -database "$(DATABASE_URL)" up
+
+## migrate-down: roll back one migration — today that is the WHOLE schema
+# The schema ships as a single migration at version 1 (A21), so `down 1` is
+# `down -all`: it drops every table, function and extension the service owns.
+# Once a second migration exists this becomes the one-step operation its name
+# implies.
+migrate-down: $(MIGRATE)
+	$(MIGRATE) -path migrations -database "$(DATABASE_URL)" down 1
+
+## security: scan the dependency graph for known vulnerabilities (T4)
+security: $(GOVULNCHECK)
+	$(GOVULNCHECK) ./...
+
+## docker: build the service image
+# All four stamp values cross as build args because the build context carries no
+# .git: neither `git describe` nor `git rev-parse` can run inside the image, and
+# the toolchain writes no vcs.* build settings there either. Without them every
+# deployed binary reports `dev` and an unknown commit on its telemetry Resource,
+# and OP5's question — which build is running — is unanswerable in the one place
+# it is ever asked.
+docker:
+	docker build \
+	  --build-arg VERSION=$(VERSION) \
+	  --build-arg COMMIT=$(COMMIT) \
+	  --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  --build-arg TREE_STATE=$(TREE_STATE) \
+	  -t $(IMAGE) .
+
+## image-build: build this arch's release image locally and gate it on Trivy
+# Built and loaded locally, NOT pushed: Trivy then scans the exact bytes that
+# are about to ship, before they are tagged for or pushed to any registry. One
+# scan covers every registry, because it is one image.
+#
+# Native, never QEMU — each arch builds on a runner of that arch, so a plain
+# `docker build` already produces the right one and ARCH is only the tag suffix.
+image-build:
+	$(MAKE) docker IMAGE=$(RELEASE_IMAGE)
+	$(MAKE) trivy-release-gate IMAGE=$(RELEASE_IMAGE)
+
+## image-push: push the gated local image to every enabled registry (ARCH)
+# Re-tags the already-scanned local image per registry and pushes. No rebuild
+# and no re-scan, so what is pushed is byte-identical to what image-build
+# gated. One arch-suffixed tag each; nothing binds the plain version tag until
+# image-publish has every arch.
+image-push: require-image-repos
+	@set -e; for repo in $(IMAGE_REPOS); do \
+		dest="$$repo:$(VERSION)-$(ARCH)"; \
+		echo "==> $$dest"; \
+		docker tag $(RELEASE_IMAGE) "$$dest"; \
+		docker push "$$dest"; \
+	done
+
+## image-publish: stitch the arch tags into one multi-arch tag per registry
+# The only step that creates the tag users actually pull. imagetools create
+# makes one manifest list from the arch-specific images image-push already
+# pushed, which is what lets `docker pull` resolve the right arch by itself.
+#
+# :latest moves only for a plain release. Any pre-release renders with a `-`
+# (v0.1.1-rc3), and so does git describe on an untagged commit
+# (v0.0.1-rc1-3-gabc1234) — neither is what someone who asked for no tag at all
+# should get, so the single `*-*` case covers both.
+image-publish: require-image-repos
+	@set -e; for repo in $(IMAGE_REPOS); do \
+		tags="-t $$repo:$(VERSION)"; \
+		case "$(VERSION)" in \
+			*-*) echo "$(VERSION) is not a plain release — not moving :latest";; \
+			*)   tags="$$tags -t $$repo:latest";; \
+		esac; \
+		docker buildx imagetools create $$tags \
+			$$(for a in $(RELEASE_ARCHES); do echo "$$repo:$(VERSION)-$$a"; done); \
+		docker buildx imagetools inspect "$$repo:$(VERSION)"; \
+	done
+
+# The arches image-publish expects image-push to have produced. Named here so
+# adding one is a single edit shared with the workflow's build matrix.
+RELEASE_ARCHES ?= amd64 arm64
+
+# Split out so both push targets fail the same way, naming the thing to set,
+# instead of pushing to a path that is a bare registry and a slash.
+#
+# OWNER is the only thing that can be empty: it comes from
+# GITHUB_REPOSITORY_OWNER, which a runner always sets and a laptop never does.
+# So this is the target that tells you `make image-push` needs it, rather than
+# letting docker fail on `ghcr.io//discovery-service` and making you work out
+# why.
+require-image-repos:
+	@test -n "$(OWNER)" || \
+		{ echo "::error::OWNER is empty — set GITHUB_REPOSITORY_OWNER (CI sets it; locally, pass OWNER=<org>)"; exit 1; }
+	@case "$(VERSION)" in \
+		""|*/*|*" "*) echo "::error::VERSION is not a usable image tag: '$(VERSION)' — on a tag push this comes from github.ref_name; a value with a slash means a non-tag ref reached a release target"; exit 1;; \
+	esac
+	@printf 'publishing %s to:\n' "$(VERSION)"; printf '  %s\n' $(IMAGE_REPOS)
+
+## up: start PostgreSQL with pgvector and wait for it to accept connections
+up:
+	docker compose up -d --wait
+
+## run: build the image and start PostgreSQL plus the service on :8080
+##      migrations are embedded and applied on boot; --wait would need a
+##      healthcheck the distroless runtime has no shell to run
+run:
+	docker compose --profile app up -d --build
+
+## logs: follow the service's output
+logs:
+	docker compose --profile app logs -f discovery-service
+
+## telemetry: the same stack plus an OTel collector, with the service exporting
+##            to it. Metrics appear at localhost:8889/metrics — including
+##            discover call count and latency, which are DERIVED from the spans
+##            by the spanmetrics connector and are instrumented nowhere in Go.
+telemetry:
+	$(TELEMETRY) up -d --build
+
+## telemetry-metrics: the derived streams, which is the point of the profile.
+##                    Waits, because a bare scrape right after `make telemetry`
+##                    reports zeros that are not the answer — see below.
+telemetry-metrics:
+	@# TWO waits, in this order, because they are for different things and the
+	@# second cannot be skipped. A stream appears only on the connector's flush
+	@# interval AND only after a request of that shape, so for up to a minute
+	@# there is nothing at all. Then the histogram arrives carrying its true
+	@# count while `discovery_calls_total` still reads 0 for roughly another
+	@# minute — measured: three consecutive scrapes at 0, then 3/15/1 exactly
+	@# matching discovery_duration_milliseconds_count, stable thereafter.
+	@#
+	@# So waiting on the histogram alone still prints a zero counter, which is
+	@# the trap this target exists to close. But it has to come first: a zero
+	@# counter on its own is indistinguishable from an idle service, whereas a
+	@# nonzero _count PROVES traffic was seen — which is what makes the second
+	@# wait sound rather than a guess that something will turn up.
+	@printf 'waiting for the connector to flush'
+	@for i in $$(seq 1 30); do \
+		curl -fsS localhost:8889/metrics 2>/dev/null \
+			| grep -qE '^discovery_duration_milliseconds_count\{.* [1-9][0-9]*$$' && break; \
+		printf '.'; sleep 5; \
+	done
+	@printf ' traffic seen; waiting for the counter to converge'
+	@for i in $$(seq 1 30); do \
+		curl -fsS localhost:8889/metrics 2>/dev/null \
+			| grep -qE '^discovery_calls_total\{.* [1-9][0-9]*$$' && break; \
+		printf '.'; sleep 5; \
+	done
+	@printf ' ok\n'
+	@curl -fsS localhost:8889/metrics | grep -E '^discovery_|^pgxpool_' || \
+		{ echo "nothing yet — the connector emits on its flush interval, and a stream appears only after a request of that shape. Drive some: ./examples/verify.sh"; exit 1; }
+
+## telemetry-logs: the collector's view of the spans, since the local stack has
+##                 no trace backend to send them to
+telemetry-logs:
+	$(TELEMETRY) logs -f otel-collector
+
+## telemetry-down: stop the telemetry stack and discard its volumes
+telemetry-down:
+	$(TELEMETRY) down -v
+
+## verify: publish the sample catalog and assert text, spatial and filter
+##         retrieval against a stack already running via `make run`
+verify:
+	./examples/verify.sh
+
+## newman: the same checks through the Postman collection, if newman is around
+newman:
+	npx --yes newman run examples/OpenAgriNet-discovery-service.postman_collection.json
+
+## audit: check the answers are RIGHT, not merely unchanged. verify and newman
+##        assert id sets that were written by watching this service run, so
+##        they freeze whatever it did that day; audit recomputes the expected
+##        answer from the published catalog instead and compares.
+##        `pip install jsonschema pyyaml` to get the schema checks too — it
+##        runs without them and says loudly which checks it skipped.
+audit:
+	python3 examples/audit.py
+
+## down: stop the local stack and discard its volumes
+##       -v matters: migrations are edited in place during development, and
+##       golang-migrate tracks only version NUMBERS — so a volume migrated by
+##       an older revision of the same file keeps its old columns forever and
+##       fails at the first write instead of at boot
+down:
+	docker compose --profile app down -v
+
+## tools: build the pinned toolchain into bin/
+tools: $(GOLANGCI_LINT) $(GOVULNCHECK) $(SQLC) $(MIGRATE)
+
+## clean: remove build output, coverage profiles and scan artifacts
+# A literal glob, not $(SARIF_REPORTS): that list narrows under
+# SCAN_IMAGE=false, so cleaning in that mode would leave trivy-image.sarif
+# behind for a later run to find and read as its own.
+clean:
+	rm -rf $(BIN_DIR) coverage.out coverage.html coverage-report.md \
+		trivy-*.sarif trivy-report.md
+
+$(GOLANGCI_LINT): tools/go.mod tools/go.sum
+	@mkdir -p $(BIN_DIR)
+	$(GO) -C tools build -o ../$@ github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
+$(GOVULNCHECK): tools/go.mod tools/go.sum
+	@mkdir -p $(BIN_DIR)
+	$(GO) -C tools build -o ../$@ golang.org/x/vuln/cmd/govulncheck
+
+$(SQLC): tools/go.mod tools/go.sum
+	@mkdir -p $(BIN_DIR)
+	$(GO) -C tools build -o ../$@ github.com/sqlc-dev/sqlc/cmd/sqlc
+
+# The postgres build tag is what registers the driver golang-migrate resolves
+# DATABASE_URL against; without it the CLI builds fine and then reports every
+# migration URL as an unknown scheme.
+$(MIGRATE): tools/go.mod tools/go.sum
+	@mkdir -p $(BIN_DIR)
+	$(GO) -C tools build -tags postgres -o ../$@ github.com/golang-migrate/migrate/v4/cmd/migrate
+
+# Installed directly rather than through tools/go.mod like the four builds
+# above: gotestsum is CI-only (see ci.yml), so it doesn't belong in the
+# service's or the linter's dependency graph either one.
+$(GOTESTSUM):
+	@mkdir -p $(BIN_DIR)
+	GOBIN=$(abspath $(BIN_DIR)) $(GO) install gotest.tools/gotestsum@$(GOTESTSUM_VERSION)
+
+# CI/hook-only, like gotestsum: actionlint belongs in neither the service's
+# dependency graph nor the linter's, so it installs directly rather than
+# through tools/go.mod.
+$(ACTIONLINT):
+	@mkdir -p $(BIN_DIR)
+	GOBIN=$(abspath $(BIN_DIR)) $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
+# The prebuilt release binary, not `go install`: trivy's rpm-db parser needs
+# cgo, and its module graph is comparable in size to golangci-lint's for a
+# tool nothing here imports — the official install script is what
+# aquasecurity itself recommends over building from source for exactly this.
+$(TRIVY):
+	@mkdir -p $(BIN_DIR)
+	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | \
+		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
+
+.PHONY: help build test test-short test-ci cover cover-total cover-report \
+	cover-html cover-diff lint fmt lint-actions lint-staged hooks sqlc \
+	sqlc-verify migrate run logs migrate-down security trivy-deps \
+	trivy-image trivy-release-gate trivy-report trivy-gate docker \
+	image-build image-push image-publish require-image-repos up down \
+	verify newman audit tools clean telemetry telemetry-metrics \
+	telemetry-logs telemetry-down

@@ -1,0 +1,679 @@
+package publish_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
+	"github.com/OpenAgriNet/discovery-service/src/domain"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
+	"github.com/OpenAgriNet/discovery-service/src/indexing/geo"
+	"github.com/OpenAgriNet/discovery-service/src/publish"
+	"github.com/OpenAgriNet/discovery-service/src/storage/memory"
+)
+
+// recordingReplicator is the A7 seam under observation.
+//
+// The ordering rule it exists for — announce only after the transaction
+// commits — is invisible in every response, so the only way to assert it is to
+// record the calls and compare them against what was stored.
+type recordingReplicator struct {
+	mu        sync.Mutex
+	announced []string
+	err       error
+}
+
+func (r *recordingReplicator) Replicate(_ context.Context, catalogID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.announced = append(r.announced, catalogID)
+	return r.err
+}
+
+func (r *recordingReplicator) calls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.announced...)
+}
+
+// recordingRepo is the real in-memory store with a tap on the write.
+//
+// Embedded rather than reimplemented: the assertions about what was STORED have
+// to run against the same merge every backend runs, or a test can pass against
+// a store that agrees with nothing. The tap records the two things the response
+// cannot show — the mode the service resolved, and the patch it built.
+type recordingRepo struct {
+	*memory.Repository
+
+	modes   []domain.UpdateMode
+	patches []domain.CatalogPatch
+
+	// err, when set, fails the write. Nothing is stored, which is what makes
+	// this the rolled-back transaction the replicator must not have seen.
+	err error
+}
+
+func newRepo() *recordingRepo {
+	return &recordingRepo{Repository: memory.New(geo.DefaultTestResolution)}
+}
+
+func (r *recordingRepo) UpsertCatalog(
+	ctx context.Context, patch domain.CatalogPatch, mode domain.UpdateMode, derive domain.DeriveFunc,
+) ([]domain.Fault, error) {
+	r.modes = append(r.modes, mode)
+	r.patches = append(r.patches, patch)
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.Repository.UpsertCatalog(ctx, patch, mode, derive)
+}
+
+func newService(t *testing.T, repo domain.CatalogRepository, replicator domain.CatalogReplicator) *publish.Service {
+	t.Helper()
+
+	return newServiceWith(t, repo, replicator, embeddings.NewNoop(0))
+}
+
+func newServiceWith(
+	t *testing.T, repo domain.CatalogRepository, replicator domain.CatalogReplicator, embedder embeddings.Embedder,
+) *publish.Service {
+	t.Helper()
+
+	return publish.NewService(repo, replicator, embedder, network, kolkata(t))
+}
+
+// brokenEmbedder is the provider that is configured, reachable in config, and
+// not reachable in fact. It returns whatever it was built to return.
+type brokenEmbedder struct {
+	vector     []float32
+	err        error
+	dimensions int
+}
+
+func (b brokenEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return b.vector, b.err
+}
+
+func (b brokenEmbedder) Dimensions() int { return b.dimensions }
+
+// publishBody runs one publish request expressed as the JSON a caller sends, so
+// a test states the wire shape rather than a struct literal that has already
+// made half the decisions under test.
+//
+// The envelope carries no `version`, which is what the mapper resolves to this
+// build's own — the state every case but one here is about.
+func publishBody(t *testing.T, service *publish.Service, message string) []beckn.CatalogProcessingResult {
+	t.Helper()
+
+	return publishBodyAsVersion(t, service, "", message)
+}
+
+// publishBodyAsVersion is publishBody with `context.version` spelled out. It
+// exists so the envelope is constructed in ONE place: a second literal
+// `beckn.Context{...}` in a test would be a second thing to keep agreed with
+// the service's own reading of it.
+func publishBodyAsVersion(
+	t *testing.T, service *publish.Service, version, message string,
+) []beckn.CatalogProcessingResult {
+	t.Helper()
+
+	var action beckn.CatalogPublishAction
+	if err := json.Unmarshal([]byte(message), &action); err != nil {
+		t.Fatalf("decoding the fixture: %v", err)
+	}
+	return service.Publish(
+		t.Context(), beckn.Context{Action: beckn.ActionPublish, Version: version}, action)
+}
+
+// The envelope's version reaches the patch, and this is the ONLY case that can
+// say so.
+//
+// The mapper's own tests prove it resolves what it is given, and the storage
+// conformance suite proves a patch round-trips — but the line between them,
+// `version: envelope.Version` in Publish, is invisible to both. Every other
+// test here sends no version, so the mapper falls back to `beckn.Version` and a
+// service that passed the empty string, or `beckn.Version`, or nothing at all
+// would produce identical results. C6 hides it further by refusing any version
+// but this build's, so no end-to-end request can tell either. Asserted against
+// 2.1.0 for that reason: it is a value neither the fallback nor the column's
+// DEFAULT can produce.
+func TestTheEnvelopesVersionReachesTheStoredPatch(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	publishBodyAsVersion(t, service, "2.1.0", `{"catalogs":[{"id":"c1"}]}`)
+
+	if len(repo.patches) != 1 {
+		t.Fatalf("the repository saw %d patches, want 1", len(repo.patches))
+	}
+	if got := repo.patches[0].ProtocolVersion; got != "2.1.0" {
+		t.Errorf("ProtocolVersion = %q, want %q — the envelope's version, not the build's", got, "2.1.0")
+	}
+}
+
+// A1's other refusal, at the CATALOG rather than the resource: catalogs merge
+// by id too, and an empty one is not a key the merge can place. Distinct from
+// the acceptance suite's "the id is the empty string" case, which is about a
+// resource's id — this is intakeRefusal's own first check, on the catalog.
+func TestACatalogWithAnEmptyIDIsRejected(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	results := publishBody(t, service, `{"catalogs":[{"id":""}]}`)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want 1", results)
+	}
+	if results[0].Status != beckn.StatusRejected {
+		t.Fatalf("status = %q, want REJECTED", results[0].Status)
+	}
+	if len(results[0].Errors) != 1 || results[0].Errors[0].Code != beckn.CodeSchemaValidationFailed {
+		t.Errorf("Errors = %+v, want one SCH_VALIDATION_FAILED", results[0].Errors)
+	}
+	if len(repo.patches) != 0 {
+		t.Errorf("the repository saw %d patches; a refused catalog stores nothing", len(repo.patches))
+	}
+}
+
+func resultFor(t *testing.T, results []beckn.CatalogProcessingResult, catalogID string) beckn.CatalogProcessingResult {
+	t.Helper()
+
+	for _, result := range results {
+		if result.CatalogID == catalogID {
+			return result
+		}
+	}
+	t.Fatalf("no result for %q in %+v", catalogID, results)
+	return beckn.CatalogProcessingResult{}
+}
+
+// A1, and the per-catalog transaction boundary that makes it survivable.
+//
+// One publisher's refused catalog must not take the catalogs beside it down:
+// wrapping the request in one transaction would make a MASTER in slot two an
+// outage for slot one.
+func TestAMasterCatalogBesideARegularOneLandsTheRegularOne(t *testing.T) {
+	repo, replicator := newRepo(), &recordingReplicator{}
+
+	results := publishBody(t, newService(t, repo, replicator), `{
+		"catalogs": [{"id":"regular"}, {"id":"master"}],
+		"publishDirectives": [
+			{"catalogId":"regular","catalogType":"REGULAR"},
+			{"catalogId":"master","catalogType":"MASTER"}
+		]
+	}`)
+
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want one per catalog", len(results))
+	}
+	if got := resultFor(t, results, "regular").Status; got != beckn.StatusAccepted {
+		t.Errorf("the regular catalog came back %q, want ACCEPTED", got)
+	}
+
+	refused := resultFor(t, results, "master")
+	if refused.Status != beckn.StatusRejected {
+		t.Errorf("the master catalog came back %q, want REJECTED", refused.Status)
+	}
+	if len(refused.Errors) != 1 || refused.Errors[0].Code != beckn.CodeSchemaTypeNotSupported {
+		t.Fatalf("errors = %+v, want one SCH_TYPE_NOT_SUPPORTED", refused.Errors)
+	}
+	// The directive's REAL index. A literal `i` in a response is a placeholder
+	// that shipped.
+	if path := refused.Errors[0].Details.Path; path != "$.message.publishDirectives[1]" {
+		t.Errorf("details.path = %q, want the directive's own index", path)
+	}
+
+	if _, err := repo.GetCatalog(t.Context(), "regular"); err != nil {
+		t.Errorf("the regular catalog was not stored: %v", err)
+	}
+	if _, err := repo.GetCatalog(t.Context(), "master"); !errors.Is(err, domain.ErrCatalogNotFound) {
+		t.Error("the master catalog was stored; A1 refuses it at intake, it does not partially handle it")
+	}
+}
+
+// The other half of A1: inheritance is refused, visibly, and named at the
+// resource directive that asked for it.
+func TestAResourceDirectiveCarryingExtendsIsRefused(t *testing.T) {
+	repo := newRepo()
+
+	results := publishBody(t, newService(t, repo, &recordingReplicator{}), `{
+		"catalogs": [{"id":"c1","resources":[{"id":"r1"}]}],
+		"publishDirectives": [{"catalogId":"c1","resourceDirectives":[
+			{"resourceId":"r0"},
+			{"resourceId":"r1","extends":{"masterResourceId":"m1"}}
+		]}]
+	}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusRejected {
+		t.Fatalf("results = %+v, want one REJECTED", results)
+	}
+	if results[0].Errors[0].Code != beckn.CodeSchemaTypeNotSupported {
+		t.Errorf("code = %q, want SCH_TYPE_NOT_SUPPORTED", results[0].Errors[0].Code)
+	}
+	if path := results[0].Errors[0].Details.Path; path != "$.message.publishDirectives[0].resourceDirectives[1]" {
+		t.Errorf("details.path = %q, want the offending resource directive", path)
+	}
+	if _, err := repo.GetCatalog(t.Context(), "c1"); !errors.Is(err, domain.ErrCatalogNotFound) {
+		t.Error("a catalog whose inheritance was refused was stored anyway")
+	}
+}
+
+// One request carrying the same catalog id twice.
+//
+// Without the check both come back ACCEPTED and the stored catalog is the
+// SECOND — so one of the two success verdicts describes a document that no
+// longer exists. The pin is on what is stored, because two ACCEPTEDs is exactly
+// what the bug looks like from outside.
+func TestTheSameCatalogIDTwiceInOneRequestIsRefused(t *testing.T) {
+	repo := newRepo()
+
+	results := publishBody(t, newService(t, repo, &recordingReplicator{}), `{
+		"catalogs": [
+			{"id":"c1","provider":{"id":"first"}},
+			{"id":"c1","provider":{"id":"second"}}
+		]
+	}`)
+
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want one per entry", len(results))
+	}
+	if results[0].Status != beckn.StatusAccepted {
+		t.Errorf("the first entry came back %q, want ACCEPTED", results[0].Status)
+	}
+	if results[1].Status != beckn.StatusRejected {
+		t.Errorf("the second entry came back %q, want REJECTED", results[1].Status)
+	}
+	if code := results[1].Errors[0].Code; code != beckn.CodeSchemaValidationFailed {
+		t.Errorf("code = %q, want SCH_SCHEMA_VALIDATION_FAILED", code)
+	}
+	if path := results[1].Errors[0].Details.Path; path != "$.message.catalogs[1]" {
+		t.Errorf("details.path = %q, want the duplicate entry's own index", path)
+	}
+
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("nothing stored: %v", err)
+	}
+	if !strings.Contains(string(stored.Provider()), "first") {
+		t.Errorf("stored provider = %s, want the FIRST entry's — the one that was ACCEPTED", stored.Provider())
+	}
+}
+
+// A fatal mapping fault stores NOTHING.
+//
+// Asserted by looking in the store afterwards rather than at the verdict: a
+// service that returned REJECTED and wrote anyway would pass an
+// assertion on the response alone.
+func TestAValidationFailureStoresNothing(t *testing.T) {
+	repo := newRepo()
+
+	results := publishBody(t, newService(t, repo, &recordingReplicator{}), `{
+		"catalogs": [{"id":"c1","resources":[{"id":"good"},{"descriptor":{}}]}]
+	}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusRejected {
+		t.Fatalf("results = %+v, want one REJECTED", results)
+	}
+	if code := results[0].Errors[0].Code; !strings.HasPrefix(string(code), "SCH_") {
+		t.Errorf("code = %q, want a SCH_ code", code)
+	}
+	if _, err := repo.GetCatalog(t.Context(), "c1"); !errors.Is(err, domain.ErrCatalogNotFound) {
+		t.Error("a rejected catalog was stored")
+	}
+}
+
+// A9, field-wise, and the one that is a data-loss bug if it goes the other way.
+//
+// applyDirectiveDefaults is the only thing standing between an omitted
+// publishDirectives and a republish under FULL that deletes every resource the
+// payload did not mention.
+func TestADirectiveLessCatalogIsMergedNotReplaced(t *testing.T) {
+	repo := newRepo()
+
+	results := publishBody(t, newService(t, repo, &recordingReplicator{}),
+		`{"catalogs": [{"id":"c1"}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusAccepted {
+		t.Fatalf("results = %+v, want one ACCEPTED", results)
+	}
+	if len(repo.modes) != 1 || repo.modes[0] != domain.UpdateModeMerge {
+		t.Errorf("mode = %v, want MERGE — FULL would delete what the payload omitted", repo.modes)
+	}
+	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != network {
+		t.Errorf("VisibleTo = %v, want the request's own network (C8)", got)
+	}
+}
+
+// A directive naming ONLY catalogId must come out the same as no directive at
+// all — the publisher meant the same thing by both, so the defaults are
+// resolved field-wise rather than all-or-nothing.
+func TestAPartialDirectiveIsFilledFieldWise(t *testing.T) {
+	repo := newRepo()
+
+	publishBody(t, newService(t, repo, &recordingReplicator{}), `{
+		"catalogs": [{"id":"c1"}],
+		"publishDirectives": [{"catalogId":"c1"}]
+	}`)
+
+	if len(repo.modes) != 1 || repo.modes[0] != domain.UpdateModeMerge {
+		t.Errorf("mode = %v, want MERGE", repo.modes)
+	}
+	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != network {
+		t.Errorf("VisibleTo = %v, want the defaulted single network", got)
+	}
+}
+
+// A7, and the reason the call sits after UpsertCatalog returns rather than
+// inside the closure: a fan-out that runs before commit announces a catalog
+// that then rolls back, and no response anywhere shows it.
+func TestARolledBackTransactionDoesNotAnnounceTheCatalog(t *testing.T) {
+	repo, replicator := newRepo(), &recordingReplicator{}
+	repo.err = errors.New("the transaction rolled back")
+
+	results := publishBody(t, newService(t, repo, replicator), `{"catalogs": [{"id":"c1"}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusRejected {
+		t.Fatalf("results = %+v, want one REJECTED", results)
+	}
+	if calls := replicator.calls(); len(calls) != 0 {
+		t.Errorf("announced %v after a write that did not commit", calls)
+	}
+}
+
+// The positive half, without which the test above passes against a service that
+// never replicates at all.
+func TestACommittedCatalogIsAnnouncedOnce(t *testing.T) {
+	replicator := &recordingReplicator{}
+
+	publishBody(t, newService(t, newRepo(), replicator), `{"catalogs": [{"id":"c1"}]}`)
+
+	if calls := replicator.calls(); len(calls) != 1 || calls[0] != "c1" {
+		t.Errorf("announced %v, want exactly [c1]", calls)
+	}
+}
+
+// A failed announcement does not change the verdict. The catalog is stored;
+// re-reporting it as rejected would ask the publisher to send it again.
+func TestAFailedAnnouncementDoesNotChangeTheVerdict(t *testing.T) {
+	repo := newRepo()
+	replicator := &recordingReplicator{err: errors.New("the second store is down")}
+
+	results := publishBody(t, newService(t, repo, replicator), `{"catalogs": [{"id":"c1"}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusAccepted {
+		t.Fatalf("results = %+v, want one ACCEPTED", results)
+	}
+	if _, err := repo.GetCatalog(t.Context(), "c1"); err != nil {
+		t.Errorf("the catalog is not stored: %v", err)
+	}
+}
+
+// C5 and C12: the counts are REQUEST-scoped.
+//
+// itemCount counts what THIS request landed, not what the catalog now holds —
+// a MERGE carrying one resource into a forty-resource catalog reports 1. Read
+// back from the row set instead, a re-publish of one resource would report 40.
+func TestTheStatsCountWhatThisRequestLanded(t *testing.T) {
+	service := newService(t, newRepo(), &recordingReplicator{})
+
+	first := publishBody(t, service, `{"catalogs":[{"id":"c1","resources":[
+		{"id":"r1","resourceAttributes":{"@type":"SeedLot"}},
+		{"id":"r2","resourceAttributes":{"@type":"SeedLot"}},
+		{"id":"r3","resourceAttributes":{"@type":"Fertiliser"}}
+	]}]}`)
+
+	stats := first[0].Stats
+	if stats == nil {
+		t.Fatal("no stats on an ACCEPTED catalog")
+	}
+	if stats.ItemCount != 3 {
+		t.Errorf("itemCount = %d, want 3", stats.ItemCount)
+	}
+	if stats.ProviderCount != 1 {
+		t.Errorf("providerCount = %d, want 1 — a catalog has exactly one provider", stats.ProviderCount)
+	}
+	// Distinct @type, because the spec has no category field anywhere (C5).
+	if stats.CategoryCount != 2 {
+		t.Errorf("categoryCount = %d, want 2 distinct @type values", stats.CategoryCount)
+	}
+
+	second := publishBody(t, service,
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","resourceAttributes":{"@type":"SeedLot"}}]}]}`)
+
+	if got := second[0].Stats.ItemCount; got != 1 {
+		t.Errorf("itemCount = %d after a one-resource MERGE, want 1 — the catalog now holds 3", got)
+	}
+}
+
+// A geometry that cannot be read costs one geometry, not the catalog — and the
+// verdict says so. ACCEPTED with a non-empty errors array tells a publisher
+// whose tooling branches on the field the spec made an enum the opposite of
+// what happened.
+func TestAnUnreadableGeometryLandsTheCatalogAsPartial(t *testing.T) {
+	repo := newRepo()
+
+	results := publishBody(t, newService(t, repo, &recordingReplicator{}), `{"catalogs":[{"id":"c1",
+		"provider":{"id":"p1","availableAt":[{"geo":{"type":"Point","coordinates":[]}}]},
+		"resources":[{"id":"r1"}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusPartial {
+		t.Fatalf("results = %+v, want one PARTIAL", results)
+	}
+	if len(results[0].Errors) != 1 {
+		t.Fatalf("errors = %+v, want the one geometry that could not be read", results[0].Errors)
+	}
+	if results[0].Stats == nil || results[0].Stats.ItemCount != 1 {
+		t.Errorf("stats = %+v, want the resource that landed counted", results[0].Stats)
+	}
+	// The path is rebased onto the request, so a publisher can find the value.
+	if path := results[0].Errors[0].Details.Path; !strings.HasPrefix(path, "$.message.catalogs[0]") {
+		t.Errorf("details.path = %q, want it rooted at the request body", path)
+	}
+	if _, err := repo.GetCatalog(t.Context(), "c1"); err != nil {
+		t.Errorf("a PARTIAL catalog was not stored: %v", err)
+	}
+}
+
+// derive runs on the MERGE RESULT, inside the transaction.
+//
+// Asserted on a field only the STORED document has: the second publish patches
+// attributes and never mentions the descriptor, so a derivation reading the
+// patch would find no name at all.
+func TestDeriveRunsAgainstTheMergedDocument(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	publishBody(t, service, `{"catalogs":[{"id":"c1","resources":[
+		{"id":"r1","descriptor":{"name":"Alphonso mangoes"},
+		 "resourceAttributes":{"@context":"https://beckn.org/Agri","@type":"SeedLot","grade":"A"}}
+	]}]}`)
+	publishBody(t, service,
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","resourceAttributes":{"grade":"B"}}]}]}`)
+
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("nothing stored: %v", err)
+	}
+	if len(stored.Resources) != 1 {
+		t.Fatalf("resources = %d, want 1", len(stored.Resources))
+	}
+
+	resource := stored.Resources[0]
+	if resource.Name != "Alphonso mangoes" {
+		t.Errorf("Name = %q — derive ran against the patch rather than the merge result", resource.Name)
+	}
+	// C4's two filter columns. Nothing else in the service writes them, so a
+	// discover filtering on schemaContext matches nothing without this.
+	if resource.SchemaContext != "https://beckn.org/Agri" || resource.SchemaType != "SeedLot" {
+		t.Errorf("schema columns = %q / %q, want them read off the merged attributes",
+			resource.SchemaContext, resource.SchemaType)
+	}
+	if !strings.Contains(resource.SearchText, "Alphonso mangoes") {
+		t.Errorf("SearchText = %q, want it derived from the merged document", resource.SearchText)
+	}
+	// A5: the hash records what the derived text currently is, whether or not a
+	// vector was produced. Written only alongside a vector, every Phase 1 row
+	// would be NULL and the Phase 2 backfill could not tell stale from missing.
+	if len(resource.EmbeddingSourceHash) == 0 {
+		t.Error("EmbeddingSourceHash is empty; the noop provider must still record what was derived")
+	}
+}
+
+// C6's publish half: an omitted networkId falls back to APP_NETWORK_ID, and a
+// supplied one wins. Only visibleTo reads it, which is the whole of C8.
+func TestTheEnvelopeNetworkWinsOverTheConfiguredOne(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	var action beckn.CatalogPublishAction
+	if err := json.Unmarshal([]byte(`{"catalogs":[{"id":"c1"}]}`), &action); err != nil {
+		t.Fatalf("decoding the fixture: %v", err)
+	}
+	service.Publish(t.Context(), beckn.Context{NetworkID: "bharatvistar"}, action)
+
+	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != "bharatvistar" {
+		t.Errorf("VisibleTo = %v, want the envelope's network", got)
+	}
+}
+
+// The other rebase. The mapper walks ONE catalog and paths its faults relative
+// to it — `$['resources'][1]['id']` — while the geometry walker paths its own
+// from the catalogs array. Both are correct where they are produced and neither
+// is a path a publisher can run against the body they sent.
+//
+// Pinned separately from the geometry case because the two take different
+// branches, and the geometry test passes against a service that leaves a
+// mapper fault's path untouched.
+func TestAMapperFaultIsRebasedOntoTheRequestToo(t *testing.T) {
+	results := publishBody(t, newService(t, newRepo(), &recordingReplicator{}), `{
+		"catalogs": [{"id":"c0"},{"id":"c1","resources":[{"id":"good"},{"descriptor":{}}]}]
+	}`)
+
+	refused := resultFor(t, results, "c1")
+	if len(refused.Errors) != 1 {
+		t.Fatalf("errors = %+v, want the one unnamed resource", refused.Errors)
+	}
+	if path := refused.Errors[0].Details.Path; path != "$.message.catalogs[1].resources[1].id" {
+		t.Errorf("details.path = %q, want it rooted at the request and naming the catalog's own slot", path)
+	}
+}
+
+// derive replaces the catalog's covers, it does not add to them.
+//
+// It runs on the MERGED document, which under MERGE already carries whatever the
+// LAST publish derived — so appending doubles every geometry at each republish,
+// and the symptom is a spatial query returning the same resource N times after
+// the Nth publish rather than an error anyone would notice.
+func TestARepublishDoesNotDoubleTheGeometries(t *testing.T) {
+	repo := newRepo()
+	service := newService(t, repo, &recordingReplicator{})
+
+	body := `{"catalogs":[{"id":"c1",
+		"provider":{"id":"p1","availableAt":[{"geo":{"type":"Point","coordinates":[77.6,12.9]}}]},
+		"resources":[{"id":"r1","descriptor":{"geo":{"type":"Point","coordinates":[77.7,12.8]}}}]}]}`
+
+	for round := 1; round <= 3; round++ {
+		publishBody(t, service, body)
+
+		stored, err := repo.GetCatalog(t.Context(), "c1")
+		if err != nil {
+			t.Fatalf("round %d: nothing stored: %v", round, err)
+		}
+		if len(stored.Geometries) != 1 {
+			t.Fatalf("round %d: catalog geometries = %d, want 1", round, len(stored.Geometries))
+		}
+		if len(stored.Resources) != 1 || len(stored.Resources[0].Geometries) != 1 {
+			t.Fatalf("round %d: resource geometries = %+v, want exactly one",
+				round, stored.Resources[0].Geometries)
+		}
+	}
+}
+
+// An embedder that cannot be reached costs the vector, not the catalog.
+//
+// Fatal instead, a model outage would take every publisher's catalog offline
+// over a feature Phase 1 defers entirely — and the publisher would be asked to
+// re-send a document that has nothing wrong with it.
+func TestAnUnreachableEmbedderLandsTheCatalogAsPartial(t *testing.T) {
+	repo := newRepo()
+	broken := brokenEmbedder{err: errors.New("the model host is down"), dimensions: 8}
+
+	results := publishBody(t, newServiceWith(t, repo, &recordingReplicator{}, broken),
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","descriptor":{"name":"Wheat"}}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusPartial {
+		t.Fatalf("results = %+v, want one PARTIAL", results)
+	}
+	if path := results[0].Errors[0].Details.Path; path != "$.message.catalogs[0].resources[0]" {
+		t.Errorf("details.path = %q, want the resource that has no vector", path)
+	}
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("the catalog was not stored: %v", err)
+	}
+	if stored.Resources[0].Embedding != nil {
+		t.Error("an embedding was stored by a provider that returned an error")
+	}
+	// The A5 hash is still recorded: it describes the derived TEXT, which is
+	// true whether or not a vector came back. The Phase 2 backfill selects on a
+	// NULL embedding, so this row is picked up regardless.
+	if len(stored.Resources[0].EmbeddingSourceHash) == 0 {
+		t.Error("EmbeddingSourceHash is empty after a failed embed")
+	}
+}
+
+// A vector of the wrong width is refused rather than stored.
+//
+// pgvector fixes the column width at migration time, so a mismatched vector is
+// an insert error at best and a silently unsearchable row at worst. Checking it
+// here turns both into one named PARTIAL against the resource.
+func TestAVectorOfTheWrongWidthIsRefused(t *testing.T) {
+	repo := newRepo()
+	wrong := brokenEmbedder{vector: []float32{1, 2, 3}, dimensions: 8}
+
+	results := publishBody(t, newServiceWith(t, repo, &recordingReplicator{}, wrong),
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","descriptor":{"name":"Wheat"}}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusPartial {
+		t.Fatalf("results = %+v, want one PARTIAL", results)
+	}
+	if !strings.Contains(results[0].Errors[0].Message, "3") {
+		t.Errorf("message = %q, want it to name the width it got", results[0].Errors[0].Message)
+	}
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("the catalog was not stored: %v", err)
+	}
+	if stored.Resources[0].Embedding != nil {
+		t.Error("a mismatched vector was stored anyway")
+	}
+}
+
+// The width the provider declares IS the width that is accepted.
+//
+// Without this the test above passes against a service that refuses every
+// vector — which is the same wire behaviour and the opposite bug.
+func TestAVectorOfTheRightWidthIsStored(t *testing.T) {
+	repo := newRepo()
+	good := brokenEmbedder{vector: []float32{1, 2, 3}, dimensions: 3}
+
+	results := publishBody(t, newServiceWith(t, repo, &recordingReplicator{}, good),
+		`{"catalogs":[{"id":"c1","resources":[{"id":"r1","descriptor":{"name":"Wheat"}}]}]}`)
+
+	if len(results) != 1 || results[0].Status != beckn.StatusAccepted {
+		t.Fatalf("results = %+v, want one ACCEPTED", results)
+	}
+	stored, err := repo.GetCatalog(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("the catalog was not stored: %v", err)
+	}
+	if len(stored.Resources[0].Embedding) != 3 {
+		t.Errorf("Embedding = %v, want the provider's own vector", stored.Resources[0].Embedding)
+	}
+}
