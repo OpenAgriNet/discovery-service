@@ -723,7 +723,7 @@ func TestTheOtherTwoCriteriaSurviveTextSearchBeingOff(t *testing.T) {
 // they send the first and are told it is not answered here. The list has to be
 // the list that actually works.
 //
-// It may still MENTION textSearch, and saying it is switched off beats dropping
+// It may still MENTION textSearch, and saying it is not answered beats dropping
 // it silently — a caller who read the docs would otherwise be left wondering
 // which of the three went missing. So the assertion is on the offer, not on the
 // word: the required-one-of list is the two that work, and any other mention
@@ -743,7 +743,7 @@ func TestTheNoCriterionRefusalStopsOfferingTextSearchWhenItIsOff(t *testing.T) {
 			fatal[0].Message)
 	}
 	if strings.Contains(fatal[0].Message, "textSearch") &&
-		!strings.Contains(fatal[0].Message, "switched off") {
+		!strings.Contains(fatal[0].Message, "textSearch is not answered here") {
 		t.Errorf("message = %q, names textSearch without saying it is refused here",
 			fatal[0].Message)
 	}

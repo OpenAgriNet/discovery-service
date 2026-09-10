@@ -135,9 +135,8 @@ func textSearchFaults(text string, enabled bool) []domain.Fault {
 	return []domain.Fault{{
 		Path: "$['message']['intent']['textSearch']",
 		Code: string(beckn.CodeSchemaTypeNotSupported),
-		Message: "free-text retrieval is switched off on this deployment, so " +
-			"textSearch is not answered here; narrow the search with spatial or " +
-			"filters instead",
+		Message: "textSearch is not answered here; this service searches by " +
+			"spatial or filters only",
 	}}
 }
 
@@ -164,7 +163,7 @@ func criterionFaults(intent beckn.Intent, text string, textSearchEnabled bool) [
 
 	criteria := "textSearch, spatial or filters"
 	if !textSearchEnabled {
-		criteria = "spatial or filters (textSearch is switched off on this deployment)"
+		criteria = "spatial or filters (textSearch is not answered here)"
 	}
 	return []domain.Fault{{
 		Path: "$['message']['intent']",
