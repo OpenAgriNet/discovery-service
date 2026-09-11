@@ -14,13 +14,18 @@ name: Security
 # "Security failing" when coverage dropped.
 on:
   push:
-    # Both branches, because "the trunk" and "the default branch" are not the
-    # same ref here yet: origin/main is a single Initial commit and every one
-    # of the 301 commits that make up this service is on release-0.0.1. So
-    # release-0.0.1 is what there is to measure today and what the README's
-    # badges name, and main is listed beside it so that the day the release
-    # branch lands there, this file needs no edit to keep working.
-    branches: [main, release-0.0.1]
+    # Both, because "the trunk" and "the default branch" are not the same ref
+    # here yet: origin/main is a single Initial commit and every one of the 301
+    # commits that make up this service is on release-0.0.1. So the release
+    # branch is what there is to measure today and what the README's badges
+    # name, and main is listed beside it so that the day it lands there, this
+    # file needs no edit to keep working.
+    #
+    # release-* as a glob for the same reason one step smaller: naming
+    # release-0.0.1 works until 0.0.2 is cut, and then fails silently — no
+    # error, just a branch nobody is scanning. main stays literal; it is one
+    # branch and always will be.
+    branches: [main, release-*]
   schedule:
     # Monday 03:17 UTC. Off the hour on purpose — GitHub queues scheduled runs
     # hardest at :00, and a scan that starts twenty minutes late is a scan
