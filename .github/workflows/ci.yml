@@ -1,6 +1,13 @@
 name: CI
 
-# Two checks and no more: "End to End verification" and "Security Scan".
+# Two checks from THIS file and no more: "End to End verification" and
+# "Security Scan". A PR carries a third, "CodeQL", from codeql.yml.
+#
+# That is not a hole in the rule, because the rule was never a count. What
+# it refuses is a check that can report the opposite of a gate reading the
+# same findings — see the upload-sarif comment further down, which is still
+# refused for exactly that reason. CodeQL reports a class nothing else here
+# reports, so it has no gate to contradict.
 #
 # The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
 # job whose `if:` is false still posts a *skipped* check, and its `name:` is

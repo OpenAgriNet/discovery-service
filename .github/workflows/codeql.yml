@@ -1,0 +1,89 @@
+name: CodeQL
+
+# A different question from security.yml, which is why it is a different file.
+# Trivy and govulncheck both ask "does this depend on something with a
+# published CVE". CodeQL asks whether the code in this repo has a vulnerability
+# in it — injection, traversal, request forgery, a secret reaching a log.
+# Nothing here asked that before.
+#
+# Concretely, it is how three of CLAUDE.md's standing rules stop being held by
+# review alone:
+#
+#   "SQL is always parameterised"          -> go/sql-injection
+#   "a URL from a request body is not      -> go/request-forgery
+#    trusted"
+#   "secrets never touch a log field"      -> go/clear-text-logging,
+#                                             go/hardcoded-credentials
+#
+# It runs on pull_request, and that is a deliberate reversal of ci.yml's "two
+# checks and no more". The rule it bends is not the rule ci.yml's SARIF comment
+# defends: that one refuses a check which can report the OPPOSITE of a gate
+# looking at the same findings. CodeQL has no competing gate — it is the only
+# thing in this repo that reports this class at all — so there is nothing for
+# its check to contradict, and a finding that only appears after the merge is a
+# finding reported to the wrong person at the wrong time.
+#
+# Separate from security.yml rather than a job inside it because triggers are
+# per-workflow: a pull_request trigger there would fire the Trivy and
+# govulncheck job on every PR too, duplicating ci.yml's Security Scan exactly.
+on:
+  pull_request:
+  push:
+    # The trunk as well, not only PRs. A pull_request analysis is compared
+    # against the base branch's most recent one, so without these the "new
+    # alerts in this PR" view has nothing to subtract and every pre-existing
+    # alert reads as newly introduced.
+    branches: [main, release-0.0.1]
+  schedule:
+    # Monday 04:17 UTC — an hour after security.yml's, not the same minute, so
+    # the two are not queued against each other. Weekly because the queries
+    # themselves change: the same code re-analysed six months later is a
+    # genuinely different scan, which is the one thing a push trigger can never
+    # do.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          # manual, not autobuild: autobuild guesses at how to build a Go
+          # module, and this one is built one way — `make build`, over every
+          # package, with the ldflags that stamp buildinfo. A CodeQL database
+          # extracted from a build nobody else performs describes a program
+          # nobody else runs.
+          build-mode: manual
+
+      - run: make build
+
+      # An explicit category so this analysis sits beside trivy-deps and
+      # trivy-image in the Security tab rather than competing with them for the
+      # default one.
+      #
+      # Findings do NOT fail this job: analyze files alerts and exits 0. The
+      # check therefore says whether CodeQL ran and the Security tab says what
+      # it found. Gating on the alert count is a deliberate later decision,
+      # taken once there is a baseline to gate against.
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: codeql-go
