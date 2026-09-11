@@ -1,5 +1,13 @@
 # OpenAgriNet Discovery Service
 
+[![Coverage](https://codecov.io/gh/OpenAgriNet/discovery-service/branch/release-0.0.1/graph/badge.svg)](https://codecov.io/gh/OpenAgriNet/discovery-service)
+[![Security](https://github.com/OpenAgriNet/discovery-service/actions/workflows/security.yml/badge.svg?branch=release-0.0.1)](https://github.com/OpenAgriNet/discovery-service/security/code-scanning)
+
+Both read `release-0.0.1` — the branch every commit of this service is
+actually on — after the merge rather than on a pull request; the per-PR gates
+are in [`ci.yml`](.github/workflows/ci.yml). The security badge links to the
+alert list, which is public because this repository is.
+
 A Go service exposing synchronous `POST /publish` and `POST /discover` that
 ingest [Beckn v2.0.0](https://becknprotocol.io) catalogs into PostgreSQL and
 serve geo + lexical discovery. One discover over ten thousand resources answers

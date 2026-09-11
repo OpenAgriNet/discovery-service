@@ -1,0 +1,137 @@
+name: Security
+
+# The badge on the README and the alert list behind it: what is wrong with the
+# trunk today, as opposed to what a PR changed.
+#
+# The weekly schedule is the point of this file. ci.yml scans every PR, which
+# answers "did this diff introduce a vulnerability" — it structurally cannot
+# answer "was one published against code nobody has touched since", and that is
+# the shape almost every real finding takes. A repo with no PRs for a month is
+# a repo with no scans for a month.
+#
+# Separate from coverage.yml rather than two jobs in one workflow because the
+# badge is per-workflow: one file would render a single badge that reads
+# "Security failing" when coverage dropped.
+on:
+  push:
+    # Both branches, because "the trunk" and "the default branch" are not the
+    # same ref here yet: origin/main is a single Initial commit and every one
+    # of the 301 commits that make up this service is on release-0.0.1. So
+    # release-0.0.1 is what there is to measure today and what the README's
+    # badges name, and main is listed beside it so that the day the release
+    # branch lands there, this file needs no edit to keep working.
+    branches: [main, release-0.0.1]
+  schedule:
+    # Monday 03:17 UTC. Off the hour on purpose — GitHub queues scheduled runs
+    # hardest at :00, and a scan that starts twenty minutes late is a scan
+    # whose result is twenty minutes late.
+    #
+    # A schedule only ever runs on the DEFAULT branch, whatever the push
+    # trigger above lists. So until this file is on main, the weekly scan does
+    # not happen at all, and when it does it scans main — which is the right
+    # tree to scan the moment main stops being one empty commit, and the wrong
+    # one only for as long as release-0.0.1 has not landed. Push-triggered
+    # scans of release-0.0.1 cover the gap.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan the trunk
+    runs-on: ubuntu-latest
+    # security-events: write is the SARIF upload — the one permission ci.yml's
+    # scan job deliberately does not take. See the upload step below for why
+    # that is not a contradiction.
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/trivy-cache
+      # govulncheck is built from tools/go.mod, so this job needs a toolchain
+      # even though the Trivy half of it does not.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+
+      # Both scans, for the reasons ci.yml gives at length: the dependency scan
+      # sees a vulnerable module that only the test suite imports and is never
+      # linked into a layer, and the image scan sees stdlib CVEs read out of the
+      # compiled binary's build info, which the dependency scan cannot reach.
+      #
+      # SCAN_IMAGE is left at its default of true and never set here: this
+      # workflow cannot run from a fork, so the reason ci.yml narrows it does
+      # not exist, and SARIF_REPORTS stays the full list the gate reads.
+      - run: make trivy-deps
+
+      - name: Log in to dhi.io
+        uses: ./.github/actions/dhi-login
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build the image
+        run: make docker IMAGE=discovery-service:${{ github.sha }}
+
+      - name: Scan the image
+        run: make trivy-image IMAGE=discovery-service:${{ github.sha }}
+
+      # Here the upload IS right, and ci.yml's refusal of it still is too. What
+      # it objected to was a third CHECK on a pull request — one that reports
+      # "No new alerts in code change" while make trivy-gate fails on the same
+      # SARIF. This workflow does not run on pull_request, so it posts no PR
+      # check and there is no second opinion to disagree with the gate. What
+      # ci.yml called the cost of its decision — "no Security-tab history for
+      # Trivy" — is paid back here, off the PR path.
+      #
+      # Two uploads with distinct categories, not one: category is what makes
+      # GitHub keep the two analyses side by side. Uploading both under the
+      # default category would make each run's second upload supersede its
+      # first, and the tab would show whichever scan happened to go last.
+      #
+      # Before the gates, so the alerts are published even on the runs where
+      # something is found — that is precisely the run whose findings someone
+      # needs to read.
+      - name: Publish the dependency findings
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-deps
+
+      - name: Publish the image findings
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # Call-graph aware where Trivy is manifest- and layer-level: govulncheck
+      # reports a CVE only when the vulnerable symbol is actually reachable from
+      # this binary, and it reports one in a module Trivy's dependency scan
+      # cleared because the advisory landed in the Go vulnerability database
+      # first. Wired into no workflow until now.
+      #
+      # continue-on-error on both gates, resolved by the step after them: run
+      # them in sequence and the first failure hides the second scan's findings
+      # entirely, so a red badge would name one problem while concealing
+      # another.
+      - name: Gate on the Trivy findings
+        id: trivy
+        continue-on-error: true
+        run: make trivy-gate
+
+      - name: Gate on the govulncheck findings
+        id: govulncheck
+        continue-on-error: true
+        run: make security
+
+      - name: Fail if either scan found something
+        if: steps.trivy.outcome == 'failure' || steps.govulncheck.outcome == 'failure'
+        run: exit 1
