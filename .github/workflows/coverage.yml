@@ -1,7 +1,7 @@
 name: Coverage
 
 # Publishes the one number the README badge reads: total statement coverage of
-# main, right now.
+# the trunk, right now — release-0.0.1 today, main once that branch lands there.
 #
 # Deliberately not a job in ci.yml. That file gates a PR against its OWN diff
 # (make cover-diff, MIN_COVERAGE), because the repo's existing total is not
@@ -15,7 +15,13 @@ name: Coverage
 # PR at all.
 on:
   push:
-    branches: [main]
+    # Both branches, because "the trunk" and "the default branch" are not the
+    # same ref here yet: origin/main is a single Initial commit and every one
+    # of the 301 commits that make up this service is on release-0.0.1. So
+    # release-0.0.1 is what there is to measure today and what the README's
+    # badges name, and main is listed beside it so that the day the release
+    # branch lands there, this file needs no edit to keep working.
+    branches: [main, release-0.0.1]
   workflow_dispatch:
 
 permissions:
@@ -53,7 +59,8 @@ jobs:
       # is the only signal that the README has gone stale.
       #
       # The token is required even though the repo is public: tokenless uploads
-      # are refused when the branch is protected, and main is.
+      # are refused when the branch is protected. It is an OpenAgriNet org
+      # secret, inherited here — there is nothing to add to this repo.
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7
         with:
