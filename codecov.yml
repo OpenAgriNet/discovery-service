@@ -1,0 +1,31 @@
+# Codecov renders the README's coverage badge and the per-file page behind it.
+# It judges nothing.
+#
+# `make cover-diff` in ci.yml is the only coverage gate in this repo, and it
+# stays the only one. Codecov's default project/patch statuses would be a second
+# check computing the same kind of number from a different base commit, free to
+# go red while the gate is green — the exact failure this repo already refused
+# once, for Trivy's SARIF upload: "Two checks disagreeing about one scan is
+# worse than one check, and the gate is the one that is right."
+# (.github/workflows/ci.yml). informational keeps the statuses permanently
+# green; the number is still computed, still graphed, still on the badge.
+#
+# comment: false for the same reason a step lower — ci.yml already posts a
+# coverage comment on every PR, rendered by cover-diff, marked and updated in
+# place. A second bot comment about coverage is noise at best and a
+# contradiction at worst.
+#
+# This file exists rather than these two settings being clicked in the Codecov
+# dashboard. A dashboard toggle is not reviewable, not diffable, and invisible
+# to anyone reading the repo — the pin would hold only as long as nobody
+# wondered what it was for.
+comment: false
+
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true

@@ -1,5 +1,7 @@
 # OpenAgriNet Discovery Service
 
+[![Coverage](https://codecov.io/gh/OpenAgriNet/discovery-service/branch/main/graph/badge.svg)](https://codecov.io/gh/OpenAgriNet/discovery-service)
+
 A Go service exposing synchronous `POST /publish` and `POST /discover` that
 ingest [Beckn v2.0.0](https://becknprotocol.io) catalogs into PostgreSQL and
 serve geo + lexical discovery. One discover over ten thousand resources answers

@@ -1,0 +1,66 @@
+name: Coverage
+
+# Publishes the one number the README badge reads: total statement coverage of
+# main, right now.
+#
+# Deliberately not a job in ci.yml. That file gates a PR against its OWN diff
+# (make cover-diff, MIN_COVERAGE), because the repo's existing total is not
+# something a PR can be asked to answer for — and a whole-repo total is not a
+# question a PR can answer anyway, since it only becomes true once the merge
+# lands. So the gate runs before the merge and this runs after it, and the two
+# never compete to be the check that blocks.
+#
+# ci.yml's "main moves solely by merging a PR, so re-running on the push is
+# redundant" reasoning does not cover this: what runs here was never run on the
+# PR at all.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second merge landing while the first is still measuring makes the first
+# obsolete — the badge must show the tip of main, not whichever run finished
+# last.
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Publish coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # A glob, not a list: tools/ is a second module, and a literal
+          # go.sum path would miss it and half-disable the cache.
+          cache-dependency-path: "**/go.sum"
+
+      # The exact target ci.yml runs, over the exact COVERPKG set, writing the
+      # exact coverage.out the PR gate measures. One command, so the badge's
+      # number and the gate's number are produced identically and cannot drift
+      # into disagreeing about the same tree.
+      - run: make test-ci
+
+      # fail_ci_if_error, not the default: a silently dropped upload leaves the
+      # badge showing a number from some earlier commit, which is worse than no
+      # badge — it is a wrong answer that looks like a right one. A red run here
+      # is the only signal that the README has gone stale.
+      #
+      # The token is required even though the repo is public: tokenless uploads
+      # are refused when the branch is protected, and main is.
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          # `files` ADDS to whatever the action's own search turns up; without
+          # this it would also upload anything else on disk it decides is a
+          # coverage report. One profile, named, and nothing else.
+          disable_search: true
+          fail_ci_if_error: true
