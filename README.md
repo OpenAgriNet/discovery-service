@@ -1,6 +1,11 @@
 # OpenAgriNet Discovery Service
 
 [![Coverage](https://codecov.io/gh/OpenAgriNet/discovery-service/branch/main/graph/badge.svg)](https://codecov.io/gh/OpenAgriNet/discovery-service)
+[![Security](https://github.com/OpenAgriNet/discovery-service/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/OpenAgriNet/discovery-service/security/code-scanning)
+
+Both read `main` after the merge rather than a pull request; the per-PR
+gates are in [`ci.yml`](.github/workflows/ci.yml). The security badge links
+to the alert list, which is public because this repository is.
 
 A Go service exposing synchronous `POST /publish` and `POST /discover` that
 ingest [Beckn v2.0.0](https://becknprotocol.io) catalogs into PostgreSQL and
