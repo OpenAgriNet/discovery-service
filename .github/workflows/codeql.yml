@@ -33,7 +33,12 @@ on:
     # against the base branch's most recent one, so without these the "new
     # alerts in this PR" view has nothing to subtract and every pre-existing
     # alert reads as newly introduced.
-    branches: [main, release-0.0.1]
+    #
+    # release-* as a glob, not release-0.0.1 by name: the next release branch
+    # is the exact moment nobody remembers a workflow names the old one, and
+    # the symptom is silent — no failure, just a branch that stopped being
+    # analysed. The glob is why this file needs no edit at 0.0.2.
+    branches: [main, release-*]
   schedule:
     # Monday 04:17 UTC — an hour after security.yml's, not the same minute, so
     # the two are not queued against each other. Weekly because the queries
