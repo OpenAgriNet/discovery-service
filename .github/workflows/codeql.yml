@@ -73,6 +73,14 @@ jobs:
           # extracted from a build nobody else performs describes a program
           # nobody else runs.
           build-mode: manual
+          # security-extended, not the default suite. The default returned zero
+          # on this tree, which is the only condition under which widening is
+          # cheap: there is no backlog for the extra queries to be lost in, so
+          # anything this surfaces is both new and attributable. It adds the
+          # lower-confidence and the harder-to-exploit queries — the ones worth
+          # reading rather than the ones worth blocking on, which is why this
+          # job still does not fail on findings.
+          queries: security-extended
 
       - run: make build
 
