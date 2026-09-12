@@ -56,6 +56,18 @@ services:
       # sweep, and a 429 NACK carries no `catalogs`. Not zero: burst >= rps > 0.
       RATE_LIMIT_RPS: "100000"
       RATE_LIMIT_BURST: "100000"
+      # Raised from the 256 default (A26) because that number counts SHAPES
+      # while the cost it guards is incurred per H3 CELL, and the two differ by
+      # up to MaxIndexCoverCells (8,192) apiece. The mandi catalog is 272
+      # markets carrying a Point under both `coverageAreas` and
+      # `market.location` — 544 shapes, one cell each, so 544 cells against the
+      # 2,097,152 the default stands in for. Under 256 only the first ~128
+      # markets were indexed and the rest came back PARTIAL, which at the
+      # operator reads as missing data rather than as a limit. A26 sanctions
+      # exactly this: a points-only catalog "can raise it a long way". 50,000
+      # Points is ~3 s and ~18 MB of index. Interim — #32 moves the budget onto
+      # cells, where it can be a constant and this line goes away.
+      GEO_MAX_GEOMETRIES_PER_CATALOG: "50000"
       # The telemetry switch, and the only environment change the old
       # docker-compose.telemetry.yml overlay carried.
       OTEL_EXPORTER: ${OTEL_EXPORTER:-none}
