@@ -332,3 +332,47 @@ func TestTheEndpointAcceptsBothFormsAnOperatorWillWrite(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAuditResourceSaysAUDITAndAgreesOnEverythingElse is the third signal's
+// half of the assertion above.
+//
+// The spec (otel-specification.md:599) makes eid Required on a log record's
+// Resource too, and its value AUDIT — the signal is called LOG and its eid is
+// not. fact.ResourceEID has carried AUDIT among its Values since before anything
+// emitted one, so the constant catching up to the registry is the whole change
+// here; getting it wrong spells a conformant stream as an unregistered one.
+func TestTheAuditResourceSaysAUDITAndAgreesOnEverythingElse(t *testing.T) {
+	traces, err := projectResource(context.Background(), testIdentity(), buildinfo.Read())
+	if err != nil {
+		t.Fatalf("projectResource: %v", err)
+	}
+
+	audit, err := withEID(traces, eidAudit)
+	if err != nil {
+		t.Fatalf("withEID: %v", err)
+	}
+
+	eid := fact.Of(fact.ResourceEID).SpanKey
+	fromTraces := attributesOf(t, traces.Attributes())
+	fromAudit := attributesOf(t, audit.Attributes())
+
+	if got := fromAudit[eid]; got != eidAudit {
+		t.Errorf("the audit Resource carries %s = %q, want %q — an audit record labelled "+
+			"API is an unregistered stream a facilitator will route as a trace", eid, got, eidAudit)
+	}
+
+	if len(fromAudit) != len(fromTraces) {
+		t.Errorf("the audit Resource carries %d attributes and the trace Resource %d; "+
+			"the override adds and removes nothing", len(fromAudit), len(fromTraces))
+	}
+	for key, wantValue := range fromTraces {
+		if key == eid {
+			continue
+		}
+		if got := fromAudit[key]; got != wantValue {
+			t.Errorf("the audit Resource carries %s = %q and the trace Resource %q; a "+
+				"facilitator correlating an audit record with its trace cannot tell they "+
+				"came from the same participant", key, got, wantValue)
+		}
+	}
+}

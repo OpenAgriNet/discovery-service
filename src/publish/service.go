@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/indexing/embeddings"
 	"github.com/OpenAgriNet/discovery-service/src/platform/jsonpath"
 	"github.com/OpenAgriNet/discovery-service/src/platform/logger"
+	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
 // Service is the publish request path: it turns one wire action into one verdict
@@ -127,6 +129,12 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 		return rejected(req.catalog.ID, catalogRelative(fatal, req.catalogIndex)...)
 	}
 
+	// READ BEFORE THE WRITE, and only for its state: the spec makes
+	// item.prevstate Required, and after UpsertCatalog returns the previous
+	// state is gone — the row holds one `active` column and keeps no history.
+	// This is the whole reason the AUDIT signal needs a read at all.
+	previous := s.stateOf(ctx, req.catalog.ID)
+
 	mode := domain.UpdateMode(req.directive.UpdateMode)
 	derived, err := s.repo.UpsertCatalog(ctx, patch, mode, s.derive(ctx, req.catalogIndex))
 	if err != nil {
@@ -139,6 +147,13 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 			Details: &beckn.ErrorDetails{Path: catalogPath(req.catalogIndex)},
 		})
 	}
+	// AFTER the write returns and only on the path where it succeeded, for the
+	// reason the replication below is: an audit record written before the
+	// commit claims a transition that a rollback then undoes, and an audit
+	// trail that is sometimes wrong is worse than one that is absent.
+	fact.AuditStateChange(ctx, fact.ItemTypeCatalog, req.catalog.ID,
+		previous, fact.CatalogState(true, patch.Active))
+
 	// The two families stay apart all the way to the wire, because they are
 	// rooted differently and only the caller knows which is which.
 	faults := append(
@@ -166,6 +181,26 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 		Errors:    faults,
 		Stats:     statsFor(patch),
 	}
+}
+
+// stateOf reads what state a catalog is in right now, for the audit record's
+// item.prevstate.
+//
+// Any error that is not "not stored" reads as absent, deliberately: this runs
+// on the publish path, and a store that cannot answer a read must not fail a
+// write that would otherwise succeed. The cost of guessing is one audit record
+// that says absent where it should have said active; the cost of the
+// alternative is a refused publish because telemetry was unavailable.
+func (s *Service) stateOf(ctx context.Context, catalogID string) string {
+	stored, err := s.repo.GetCatalog(ctx, catalogID)
+	if err != nil {
+		if !errors.Is(err, domain.ErrCatalogNotFound) {
+			logger.FromContext(ctx).Warn("reading the catalog's previous state failed",
+				zap.String("catalog_id", catalogID), zap.Error(err))
+		}
+		return fact.CatalogState(false, false)
+	}
+	return fact.CatalogState(true, stored.Active)
 }
 
 // directiveFor finds the directive that names a catalog, and says where it sat.

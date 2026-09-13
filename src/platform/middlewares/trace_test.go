@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -62,7 +63,7 @@ func only(t *testing.T, spans []telemetry.Span) telemetry.Span {
 func tracing(t *testing.T) (func(http.Handler) http.Handler, *telemetry.Recorder) {
 	t.Helper()
 	provider, recorder := telemetry.NewRecorder()
-	return Trace(provider.Tracer(), recipient), recorder
+	return Trace(provider.Tracer(), nil, recipient), recorder
 }
 
 // TestTheSpanIsNamedByTheActionAndNotTheRoute is the shape the worked example
@@ -403,7 +404,7 @@ func TestAnUnconfiguredSubscriberIsAbsentRatherThanEmpty(t *testing.T) {
 	provider, recorder := telemetry.NewRecorder()
 
 	traced(t, httptest.NewRequest(http.MethodPost, "/discover", nil),
-		[]func(http.Handler) http.Handler{Trace(provider.Tracer(), "")},
+		[]func(http.Handler) http.Handler{Trace(provider.Tracer(), nil, "")},
 		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	span := only(t, recorder.Spans())
@@ -730,7 +731,7 @@ func TestTheCorrelatorsAreAbsentRatherThanEmptyUnderExporterNone(t *testing.T) {
 		}
 	})
 
-	logged := tracedAndLogged(t, Trace(provider.Tracer(), recipient))
+	logged := tracedAndLogged(t, Trace(provider.Tracer(), nil, recipient))
 
 	if logged.Len() == 0 {
 		t.Fatal("nothing was logged, so this test would pass vacuously")
@@ -742,5 +743,98 @@ func TestTheCorrelatorsAreAbsentRatherThanEmptyUnderExporterNone(t *testing.T) {
 					entry.Message, key, got)
 			}
 		}
+	}
+}
+
+// --- The AUDIT signal's drain ---------------------------------------------
+//
+// Here rather than in an audit_test.go of its own, because these are tests of
+// trace.go and the SDK allow-list in tests/architecture is a list of FILES that
+// is meant to be awkward to extend. A seventh entry for a file that could be
+// this file would be the first entry added out of convenience.
+
+// collectingAuditor stands in for telemetry.Provider, which is the real
+// Auditor. An interface here rather than the Provider itself because what this
+// file tests is the DRAIN — that a state change a handler recorded reaches an
+// emitter exactly once, with the request's span context still on it. Whether
+// the record then carries the spec's five attributes is telemetry's own test.
+type collectingAuditor struct {
+	events   []fact.AuditEvent
+	sampled  []bool
+	contexts int
+}
+
+func (c *collectingAuditor) EmitAudit(ctx context.Context, event fact.AuditEvent) {
+	c.events = append(c.events, event)
+	c.sampled = append(c.sampled, oteltrace.SpanContextFromContext(ctx).IsValid())
+	c.contexts++
+}
+
+// auditedRequest serves one request whose handler records the given state
+// changes, and hands back what the auditor saw.
+func auditedRequest(t *testing.T, events ...fact.AuditEvent) *collectingAuditor {
+	t.Helper()
+
+	provider, _ := telemetry.NewRecorder()
+	auditor := &collectingAuditor{}
+
+	traced(t, httptest.NewRequest(http.MethodPost, "/publish", nil),
+		[]func(http.Handler) http.Handler{Trace(provider.Tracer(), auditor, recipient)},
+		func(_ http.ResponseWriter, r *http.Request) {
+			for _, event := range events {
+				fact.AuditStateChange(r.Context(), event.ItemType, event.ItemID,
+					event.PrevState, event.State)
+			}
+		})
+
+	return auditor
+}
+
+// The drain. A state change the write path recorded is invisible until
+// something emits it, and nothing below Trace links the SDK.
+func TestEveryStateChangeTheRequestRecordedIsEmittedOnce(t *testing.T) {
+	auditor := auditedRequest(t,
+		fact.AuditEvent{ItemType: fact.ItemTypeCatalog, ItemID: "c1",
+			PrevState: "absent", State: "active"},
+		fact.AuditEvent{ItemType: fact.ItemTypeCatalog, ItemID: "c2",
+			PrevState: "active", State: "inactive"},
+	)
+
+	if len(auditor.events) != 2 {
+		t.Fatalf("the auditor saw %d events, want one per recorded state change", len(auditor.events))
+	}
+	if auditor.events[0].ItemID != "c1" || auditor.events[1].ItemID != "c2" {
+		t.Errorf("the auditor saw %+v, want them in the order they happened", auditor.events)
+	}
+	if auditor.events[1].State != "inactive" {
+		t.Errorf("item.state = %q, want the value the handler recorded", auditor.events[1].State)
+	}
+}
+
+// The emit runs while the span is still current, which is the only reason the
+// record gets a traceId at all. Moving it after span.End(), or out to a
+// goroutine with a fresh context, loses the correlation silently — the record
+// still arrives, and a facilitator can no longer get from it to the request.
+func TestTheEmitCarriesTheRequestsSpanContext(t *testing.T) {
+	auditor := auditedRequest(t,
+		fact.AuditEvent{ItemType: fact.ItemTypeCatalog, ItemID: "c1",
+			PrevState: "absent", State: "active"})
+
+	if len(auditor.sampled) != 1 {
+		t.Fatalf("the auditor saw %d events, want 1", len(auditor.sampled))
+	}
+	if !auditor.sampled[0] {
+		t.Error("the emit ran with no span in context; the record would carry no traceId " +
+			"and nothing would connect it to the request that caused it")
+	}
+}
+
+// A request that changed nothing must not wake the exporter. Not an
+// optimisation: an audit stream with an empty record per GET /healthz is a
+// stream nobody reads.
+func TestARequestThatChangedNothingEmitsNothing(t *testing.T) {
+	if auditor := auditedRequest(t); auditor.contexts != 0 {
+		t.Errorf("the auditor was called %d times for a request that recorded no state change, want 0",
+			auditor.contexts)
 	}
 }
