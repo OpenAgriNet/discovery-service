@@ -101,3 +101,29 @@ func TestARejectedCatalogAuditsNoTransition(t *testing.T) {
 		t.Errorf("a refused publish recorded %+v, want no state change at all", audits)
 	}
 }
+
+// A publish that changed nothing still audits, and the record says so by
+// carrying the same state on both sides.
+//
+// Pinned because it is a decision, not a side effect. The spec opens "audit
+// events ... communicate about updates AND state changes"
+// (otel-specification.md:591), so the re-assertion of a catalog a publisher
+// already had active belongs in the trail: it is the only evidence the catalog
+// is still being maintained, and dropping it would make "last seen" and "last
+// changed" the same question. A consumer wanting transitions alone filters
+// item.prevstate != item.state.
+func TestRepublishingAnUnchangedCatalogStillAuditsTheUpdate(t *testing.T) {
+	requests := publishAudits(t,
+		`{"catalogs":[{"id":"c1","provider":{"id":"p1"}}]}`,
+		`{"catalogs":[{"id":"c1","provider":{"id":"p1"}}]}`)
+
+	if len(requests[1]) != 1 {
+		t.Fatalf("the re-publish recorded %d state changes, want 1: an update is an "+
+			"audit event even when it moved nothing", len(requests[1]))
+	}
+	got := requests[1][0]
+	if got.PrevState != "active" || got.State != "active" {
+		t.Errorf("item.prevstate/item.state = %q/%q, want active/active — the record has to "+
+			"say the state did not move, not omit that it was asked to", got.PrevState, got.State)
+	}
+}

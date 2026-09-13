@@ -129,30 +129,10 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 		return rejected(req.catalog.ID, catalogRelative(fatal, req.catalogIndex)...)
 	}
 
-	// READ BEFORE THE WRITE, and only for its state: the spec makes
-	// item.prevstate Required, and after UpsertCatalog returns the previous
-	// state is gone — the row holds one `active` column and keeps no history.
-	// This is the whole reason the AUDIT signal needs a read at all.
-	previous := s.stateOf(ctx, req.catalog.ID)
-
-	mode := domain.UpdateMode(req.directive.UpdateMode)
-	derived, err := s.repo.UpsertCatalog(ctx, patch, mode, s.derive(ctx, req.catalogIndex))
-	if err != nil {
-		logger.FromContext(ctx).Error("storing the catalog failed",
-			zap.String("catalog_id", req.catalog.ID), zap.Error(err))
-
-		return rejected(req.catalog.ID, beckn.Error{
-			Code:    beckn.CodeNetworkInternalError,
-			Message: "the catalog could not be stored",
-			Details: &beckn.ErrorDetails{Path: catalogPath(req.catalogIndex)},
-		})
+	derived, failure := s.store(ctx, req, patch)
+	if failure != nil {
+		return rejected(req.catalog.ID, *failure)
 	}
-	// AFTER the write returns and only on the path where it succeeded, for the
-	// reason the replication below is: an audit record written before the
-	// commit claims a transition that a rollback then undoes, and an audit
-	// trail that is sometimes wrong is worse than one that is absent.
-	fact.AuditStateChange(ctx, fact.ItemTypeCatalog, req.catalog.ID,
-		previous, fact.CatalogState(true, patch.Active))
 
 	// The two families stay apart all the way to the wire, because they are
 	// rooted differently and only the caller knows which is which.
@@ -181,6 +161,61 @@ func (s *Service) publishOne(ctx context.Context, req request) beckn.CatalogProc
 		Errors:    faults,
 		Stats:     statsFor(patch),
 	}
+}
+
+// store writes the catalog and audits the transition it made.
+//
+// The three steps are one function because they are one decision: the audit
+// needs what the read saw and the write then destroyed. After UpsertCatalog
+// returns, the previous state is gone — the row holds one `active` column and
+// keeps no history — so item.prevstate, which the spec makes Required, has to
+// be read before the write or not at all.
+//
+// Returns the derive faults, or the refusal to report when the write failed.
+func (s *Service) store(
+	ctx context.Context, req request, patch domain.CatalogPatch,
+) ([]domain.Fault, *beckn.Error) {
+	// READ BEFORE THE WRITE, and only for its state.
+	//
+	// Outside UpsertCatalog's transaction, which is a known and accepted
+	// inaccuracy: the row lock inside the write serialises concurrent publishes
+	// of one catalog, but not this read, so two racing publishes of the same id
+	// can both observe `absent` and both audit a creation. Narrow — A1 already
+	// refuses a duplicate id WITHIN one request, so it needs two requests in
+	// flight — and the alternative is widening domain.CatalogRepository to
+	// return the pre-write state, which is a telemetry concern reshaping the
+	// storage contract. The trade is one wrong prevstate under a race against a
+	// permanently more complicated interface.
+	previous := s.stateOf(ctx, req.catalog.ID)
+
+	mode := domain.UpdateMode(req.directive.UpdateMode)
+	derived, err := s.repo.UpsertCatalog(ctx, patch, mode, s.derive(ctx, req.catalogIndex))
+	if err != nil {
+		logger.FromContext(ctx).Error("storing the catalog failed",
+			zap.String("catalog_id", req.catalog.ID), zap.Error(err))
+
+		return nil, &beckn.Error{
+			Code:    beckn.CodeNetworkInternalError,
+			Message: "the catalog could not be stored",
+			Details: &beckn.ErrorDetails{Path: catalogPath(req.catalogIndex)},
+		}
+	}
+
+	// AFTER the write returns and only on the path where it succeeded, for the
+	// reason the replication in publishOne is: an audit record written before
+	// the commit claims a transition that a rollback then undoes, and an audit
+	// trail that is sometimes wrong is worse than one that is absent.
+	//
+	// Unconditional, INCLUDING when the state did not change. The spec opens
+	// "audit events ... communicate about updates AND state changes"
+	// (otel-specification.md:591), so a publisher re-asserting a catalog it
+	// already had active is an update the trail should carry: it is the only
+	// evidence the catalog is still being maintained. A consumer that wants
+	// transitions alone filters item.prevstate != item.state.
+	fact.AuditStateChange(ctx, fact.ItemTypeCatalog, req.catalog.ID,
+		previous, fact.CatalogState(true, patch.Active))
+
+	return derived, nil
 }
 
 // stateOf reads what state a catalog is in right now, for the audit record's

@@ -14,6 +14,17 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
+// Auditor is the emitting half of the AUDIT signal, declared here as the
+// narrowest thing Trace needs rather than taken as *telemetry.Provider.
+//
+// It exists because the write paths cannot emit: tests/architecture refuses
+// them the SDK, so they record a state change onto the fact.Record and Trace —
+// which already owns the record and already links the SDK — drains it. One
+// interface method is the whole coupling.
+type Auditor interface {
+	EmitAudit(ctx context.Context, event fact.AuditEvent)
+}
+
 // Trace is the tracing slot in the chain: it joins the caller's trace, allocates
 // the request's fact record, starts the server span and — at the end, from a
 // deferred function — projects the record onto it.
@@ -33,17 +44,6 @@ import (
 // and its spans are non-recording — a record whose lifetime depended on an
 // environment variable would make 23b's invariant untestable in the
 // configuration `make test` runs in.
-// Auditor is the emitting half of the AUDIT signal, declared here as the
-// narrowest thing Trace needs rather than taken as *telemetry.Provider.
-//
-// It exists because the write paths cannot emit: tests/architecture refuses
-// them the SDK, so they record a state change onto the fact.Record and Trace —
-// which already owns the record and already links the SDK — drains it. One
-// interface method is the whole coupling.
-type Auditor interface {
-	EmitAudit(ctx context.Context, event fact.AuditEvent)
-}
-
 func Trace(tracer oteltrace.Tracer, auditor Auditor, recipient string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -155,10 +155,11 @@ func complete(ctx context.Context, span oteltrace.Span, record *fact.Record, aud
 
 // emitAudits hands each state change the request recorded to the Auditor.
 //
-// Nothing at all when the request changed nothing, which is the common case:
-// every GET, every health probe, every discover. The guard is not the
-// optimisation it looks like — Audits() copies, so the alternative allocates on
-// every request to hand an emitter an empty slice.
+// The nil check is for the callers that have no emitter — the middleware tests,
+// and any wiring that builds a chain without telemetry. It is not an
+// optimisation for the empty case: Audits() already returns nil when the
+// request recorded nothing, which is the common path (every GET, every health
+// probe, every discover) and costs one length check.
 func emitAudits(ctx context.Context, record *fact.Record, auditor Auditor) {
 	if auditor == nil {
 		return
