@@ -300,19 +300,29 @@ func NewIdentity(cfg config.Config) Identity {
 	}
 }
 
-// The two Resource values that are constants rather than configuration.
+// The three Resource values that are constants rather than configuration.
 const (
-	// eidAPI and eidMetric are the entity ids for the two signals this service
-	// emits. The third, AUDIT, has no constant because nothing here emits the
-	// LOG signal — it is optional in the spec (otel-specification.md:27) and
-	// discovery transitions no entity, so there is no item.prevstate to report.
-	// A constant for a signal nobody sends is a claim the code does not keep.
+	// eidAPI, eidMetric and eidAudit are the entity ids for the three signals
+	// this service emits.
+	//
+	// eidAudit was absent until 2026-09-13, on the reasoning that discovery
+	// transitions no entity and so has no item.prevstate to report. That was
+	// wrong: domain.Catalog carries Active, and publish takes a catalog in and
+	// out of the discoverable set through it (src/publish/service.go). A
+	// catalog going inactive is exactly the state change the LOG signal is for
+	// (otel-specification.md:589), and the question it answers — why a catalog
+	// stopped appearing in discover results — had no other record at all.
+	//
+	// The signal is named LOG and its eid is AUDIT. That mismatch is the one
+	// detail a second implementation guesses wrong, which is why fact.ResourceEID
+	// says so in a Note.
 	//
 	// This is the one Resource attribute the projections vary, which is why it
 	// is a registry row (fact.ResourceEID, Values API/METRIC/AUDIT) rather than
 	// a literal.
 	eidAPI    = "API"
 	eidMetric = "METRIC"
+	eidAudit  = "AUDIT"
 
 	// serviceName is what SOFTWARE this is and does not vary by deployment,
 	// which is the whole difference from Identity.Producer.

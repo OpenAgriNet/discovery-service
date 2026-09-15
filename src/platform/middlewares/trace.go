@@ -14,6 +14,17 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
 )
 
+// Auditor is the emitting half of the AUDIT signal, declared here as the
+// narrowest thing Trace needs rather than taken as *telemetry.Provider.
+//
+// It exists because the write paths cannot emit: tests/architecture refuses
+// them the SDK, so they record a state change onto the fact.Record and Trace —
+// which already owns the record and already links the SDK — drains it. One
+// interface method is the whole coupling.
+type Auditor interface {
+	EmitAudit(ctx context.Context, event fact.AuditEvent)
+}
+
 // Trace is the tracing slot in the chain: it joins the caller's trace, allocates
 // the request's fact record, starts the server span and — at the end, from a
 // deferred function — projects the record onto it.
@@ -33,7 +44,7 @@ import (
 // and its spans are non-recording — a record whose lifetime depended on an
 // environment variable would make 23b's invariant untestable in the
 // configuration `make test` runs in.
-func Trace(tracer oteltrace.Tracer, recipient string) func(http.Handler) http.Handler {
+func Trace(tracer oteltrace.Tracer, auditor Auditor, recipient string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Join, do not replace: the caller's span becomes this one's parent,
@@ -57,7 +68,7 @@ func Trace(tracer oteltrace.Tracer, recipient string) func(http.Handler) http.Ha
 			// straight-line code after next.ServeHTTP this would not run, and
 			// the span would leak on exactly the request an operator opened the
 			// trace to understand.
-			defer complete(span, record)
+			defer complete(ctx, span, record, auditor)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -109,7 +120,7 @@ func observeRequest(record *fact.Record, r *http.Request, recipient string) {
 // complete finishes the span from Trace's deferred function. The order is fixed
 // — end time, name, status, project, End — and everything must precede End,
 // because the SDK ignores mutations to an ended span silently.
-func complete(span oteltrace.Span, record *fact.Record) {
+func complete(ctx context.Context, span oteltrace.Span, record *fact.Record, auditor Auditor) {
 	// The one fact observable nowhere else: when the request finished, in unix
 	// nanos, which is what a facilitator aligns our spans with onix's on.
 	record.ObserveString(fact.ObservedTimeUnixNano, strconv.FormatInt(time.Now().UnixNano(), 10))
@@ -130,7 +141,32 @@ func complete(span oteltrace.Span, record *fact.Record) {
 
 	addEvents(span, record)
 
+	// BEFORE End, and with the request's own ctx: the span context is what puts
+	// traceId and spanId on the record, and it is the only thing connecting an
+	// audit record to the request that caused it.
+	//
+	// Here rather than at the call site for the reason SpanAttributes is here:
+	// the write path names a transition, and exactly one place turns names into
+	// exported signal.
+	emitAudits(ctx, record, auditor)
+
 	span.End()
+}
+
+// emitAudits hands each state change the request recorded to the Auditor.
+//
+// The nil check is for the callers that have no emitter — the middleware tests,
+// and any wiring that builds a chain without telemetry. It is not an
+// optimisation for the empty case: Audits() already returns nil when the
+// request recorded nothing, which is the common path (every GET, every health
+// probe, every discover) and costs one length check.
+func emitAudits(ctx context.Context, record *fact.Record, auditor Auditor) {
+	if auditor == nil {
+		return
+	}
+	for _, event := range record.Audits() {
+		auditor.EmitAudit(ctx, event)
+	}
 }
 
 // addEvents puts the point-in-time facts on the span as timestamped events.

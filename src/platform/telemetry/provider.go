@@ -36,12 +36,15 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -88,9 +91,19 @@ type Provider struct {
 	// spans batch, metrics are collected on a period.
 	meters *sdkmetric.MeterProvider
 
+	// And a third, for the same reason again: the LOG signal exports on its own
+	// schedule and carries its own Resource (eid=AUDIT).
+	//
+	// auditLogger is held rather than derived per call because the
+	// instrumentation scope is fixed when the logger is obtained, exactly as it
+	// is for the tracer.
+	logs        *sdklog.LoggerProvider
+	auditLogger log.Logger
+
 	// Ours, not the SDK's: sdktrace.TracerProvider.Shutdown is idempotent and
 	// sdkmetric.MeterProvider.Shutdown is not.
 	metersOnce sync.Once
+	logsOnce   sync.Once
 }
 
 // Init builds the Resource, the exporter and the tracer provider.
@@ -128,10 +141,17 @@ func Init(ctx context.Context, cfg config.Config) (*Provider, error) {
 		return nil, err
 	}
 
+	logs, err := newLoggerProvider(ctx, cfg, res)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Provider{
-		provider: provider,
-		tracer:   provider.Tracer(ScopeName, trace.WithInstrumentationVersion(ScopeVersion)),
-		meters:   meters,
+		provider:    provider,
+		tracer:      provider.Tracer(ScopeName, trace.WithInstrumentationVersion(ScopeVersion)),
+		meters:      meters,
+		logs:        logs,
+		auditLogger: logs.Logger(ScopeName, log.WithInstrumentationVersion(ScopeVersion)),
 	}, nil
 }
 
@@ -181,6 +201,43 @@ func (p *Provider) MeterProvider() metric.MeterProvider {
 		return metricnoop.NewMeterProvider()
 	}
 	return p.meters
+}
+
+// newLoggerProvider builds the audit half, over the trace Resource with its
+// `eid` overridden to AUDIT.
+//
+// Derived rather than handed in, for the reason newMeterProvider is: there is
+// no argument here that could carry eid=API, so the mistake that shipped
+// eid="API" on every metric until 2026-09-10 cannot repeat on this signal.
+//
+// The spec names the signal LOG and its eid AUDIT (otel-specification.md:589
+// and :599). That mismatch is the detail a second implementation guesses wrong,
+// which is why fact.ResourceEID carries it as a Note.
+//
+// Under any exporter but otlp it gets NO processor, which is the logs
+// equivalent of the absent metrics reader and of NeverSample: records are
+// constructed and dropped, so a collector-less boot runs the same code path a
+// real one does and the emit sites are exercised by every test that boots the
+// app.
+func newLoggerProvider(ctx context.Context, cfg config.Config, res *resource.Resource) (*sdklog.LoggerProvider, error) {
+	auditRes, err := withEID(res, eidAudit)
+	if err != nil {
+		return nil, err
+	}
+
+	options := []sdklog.LoggerProviderOption{sdklog.WithResource(auditRes)}
+
+	if cfg.OTel.Exporter != config.ExporterOTLP {
+		return sdklog.NewLoggerProvider(options...), nil
+	}
+
+	exporter, err := newLogExporter(ctx, cfg.OTel.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return sdklog.NewLoggerProvider(append(options,
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+	)...), nil
 }
 
 // withExport appends the option that decides where spans go.
@@ -243,6 +300,14 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 		p.metersOnce.Do(func() { p.meters.Shutdown(ctx) })
 	}
 
+	if p.logs != nil {
+		//nolint:errcheck,gosec // Dropped for the reason the meter provider's
+		// is: a BatchProcessor flushes on shutdown, so with no collector
+		// listening it fails, and an audit record that could not be delivered
+		// must not read as a failed shutdown of the process.
+		p.logsOnce.Do(func() { p.logs.Shutdown(ctx) })
+	}
+
 	if p.provider == nil {
 		return nil
 	}
@@ -300,6 +365,23 @@ func newMetricExporter(ctx context.Context, endpoint string) (sdkmetric.Exporter
 	exporter, err := otlpmetricgrpc.New(ctx, options...)
 	if err != nil {
 		return nil, fmt.Errorf("build the otlp metric exporter for %q: %w", endpoint, err)
+	}
+	return exporter, nil
+}
+
+// newLogExporter is newExporter's logs twin: same two endpoint spellings, same
+// reasons, and it does not dial either.
+func newLogExporter(ctx context.Context, endpoint string) (sdklog.Exporter, error) {
+	var options []otlploggrpc.Option
+	if hasScheme(endpoint) {
+		options = append(options, otlploggrpc.WithEndpointURL(endpoint))
+	} else {
+		options = append(options, otlploggrpc.WithEndpoint(endpoint), otlploggrpc.WithInsecure())
+	}
+
+	exporter, err := otlploggrpc.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("build the otlp log exporter for %q: %w", endpoint, err)
 	}
 	return exporter, nil
 }

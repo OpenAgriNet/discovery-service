@@ -51,6 +51,11 @@ type Observation struct {
 type Record struct {
 	mutex    sync.Mutex
 	observed []Observation
+
+	// audits is a separate list rather than more Observations: an Observation is
+	// one last-write-wins value about the request, and a state change is an
+	// event of its own that one request can produce many of. See audit.go.
+	audits []AuditEvent
 }
 
 // recordKey is unexported, so no other package's context value can collide.
