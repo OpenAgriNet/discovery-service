@@ -15,25 +15,22 @@ name: CodeQL
 #   "secrets never touch a log field"      -> go/clear-text-logging,
 #                                             go/hardcoded-credentials
 #
-# It runs on pull_request, and that is a deliberate reversal of ci.yml's "two
-# checks and no more". The rule it bends is not the rule ci.yml's SARIF comment
-# defends: that one refuses a check which can report the OPPOSITE of a gate
-# looking at the same findings. CodeQL has no competing gate — it is the only
-# thing in this repo that reports this class at all — so there is nothing for
-# its check to contradict, and a finding that only appears after the merge is a
-# finding reported to the wrong person at the wrong time.
+# No pull_request trigger here — ci.yml's security-scan job runs this same
+# analyze step, on the same category, as part of a PR's one Security Scan
+# check, so a PR gets a live CodeQL pass without a second job-level check for
+# it. This file exists so that pass has something to compare against: a
+# pull_request analysis reads as "new alerts" only relative to the base
+# branch's most recent analysis, and this is what keeps that baseline current
+# on every push to the trunk. The weekly schedule additionally re-runs the
+# same code through query packs that update independently of any commit here
+# — the one kind of finding a push trigger can never produce on its own.
 #
 # Separate from security.yml rather than a job inside it because triggers are
-# per-workflow: a pull_request trigger there would fire the Trivy and
-# govulncheck job on every PR too, duplicating ci.yml's Security Scan exactly.
+# per-workflow: putting this in security.yml would fire the Trivy and
+# govulncheck job on every trunk push CodeQL runs on too — same problem
+# ci.yml's security-scan job solves for the PR side, just on the trunk side.
 on:
-  pull_request:
   push:
-    # The trunk as well, not only PRs. A pull_request analysis is compared
-    # against the base branch's most recent one, so without these the "new
-    # alerts in this PR" view has nothing to subtract and every pre-existing
-    # alert reads as newly introduced.
-    #
     # release-* as a glob, not release-0.0.1 by name: the next release branch
     # is the exact moment nobody remembers a workflow names the old one, and
     # the symptom is silent — no failure, just a branch that stopped being

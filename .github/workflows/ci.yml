@@ -1,21 +1,26 @@
 name: CI
 
 # Two checks from THIS file and no more: "End to End verification" and
-# "Security Scan". A PR carries two further checks, both from codeql.yml:
-# "CodeQL", which is its job, and "Code scanning results / CodeQL", which
-# GitHub posts for the analysis upload and which is not a job at all — it
-# cannot be renamed, reordered or switched off.
+# "Security Scan" — the latter runs Trivy AND CodeQL as steps in one job, so a
+# PR carries exactly these two controllable checks. codeql.yml no longer
+# triggers on pull_request; it only keeps the trunk baseline and weekly scan
+# fresh for the "new alerts in this PR" comparison this job's own CodeQL run
+# reads against.
 #
-# That second one is the exact shape this file refuses for Trivy further
-# down, so the rule has to be stated properly rather than by count. What it
-# refuses is a check that can report the OPPOSITE of a gate reading the same
-# findings. Trivy has such a gate, make trivy-gate, and the upload goes green
-# with "No new alerts in code change" whenever the findings are not new to the
-# diff — while the gate fails on the same SARIF. CodeQL has no gate to
-# contradict: it is the only thing here that reports its class, and codeql.yml
-# deliberately does not fail on findings. So its results check is redundant
-# rather than contradictory. Redundant is a cost worth paying for per-PR
-# alerts; a check that can be green while the truth is red is not.
+# The one entry this cannot remove: GitHub posts "Code scanning results /
+# CodeQL" itself for the SARIF upload inside codeql-action/analyze, which is
+# not a job and so has no `name:` of its own and cannot be renamed, reordered
+# or switched off — see the comment on that step in security-scan. That is
+# the exact shape this file refuses for Trivy further down, so the rule has
+# to be stated properly rather than by count: what it refuses is a check that
+# can report the OPPOSITE of a gate reading the same findings. Trivy has such
+# a gate, make trivy-gate, and the upload goes green with "No new alerts in
+# code change" whenever the findings are not new to the diff — while the gate
+# fails on the same SARIF. CodeQL has no gate to contradict: it is the only
+# thing here that reports its class, and analyze deliberately does not fail
+# on findings. So its results check is redundant rather than contradictory.
+# Redundant is a cost worth paying for per-PR alerts; a check that can be
+# green while the truth is red is not.
 #
 # The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
 # job whose `if:` is false still posts a *skipped* check, and its `name:` is
@@ -140,19 +145,70 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
-    # Both scans in one job, one check. They were two jobs plus a gate job, and
-    # three red-or-green checks to answer one question — "is this branch
-    # shippable" — was more to read than it was worth. The dependency scan
-    # needs only a checkout, so it runs first and its findings are in the log
-    # before the image has finished building.
+    # CodeQL and both Trivy scans, one job, one check — a PR gets exactly two
+    # checks total from this repo's controllable CI (this job and verify
+    # above). codeql.yml still runs CodeQL again on a trunk push and on its
+    # weekly schedule for the "new alerts in this PR" baseline and the
+    # deep re-scan a push trigger can never give, but it no longer triggers
+    # on pull_request — this job is the only place a PR sees CodeQL run.
     #
-    # pull-requests: write is the PR comment. No security-events: write — the
-    # SARIF upload is gone, see below.
+    # The one thing folding it in here does NOT remove: GitHub posts its own
+    # "Code scanning results / CodeQL" check for the SARIF upload inside
+    # codeql-action/analyze below, regardless of which job hosts that step.
+    # It is not a workflow job, has no `name:` of its own and cannot be
+    # suppressed — see the comment on that step for why it is accepted rather
+    # than refused the way a Trivy SARIF upload is refused further down.
+    #
+    # pull-requests: write is the PR comment. security-events: write is
+    # CodeQL's own SARIF upload — Trivy's SARIF upload is NOT taken here, see
+    # the comment further down for why that one stays PR-forbidden even
+    # though this permission would allow it.
     permissions:
       contents: read
       pull-requests: write
+      security-events: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+
+      # CodeQL first — it only needs the Go toolchain and `make build`, so it
+      # runs before anything Docker-shaped and does not care whether this PR
+      # is from a fork (no secrets involved).
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          # manual, not autobuild: autobuild guesses at how to build a Go
+          # module, and this one is built one way — `make build`, over every
+          # package, with the ldflags that stamp buildinfo. A CodeQL database
+          # extracted from a build nobody else performs describes a program
+          # nobody else runs.
+          build-mode: manual
+          # security-extended, not the default suite. The default returned
+          # zero on this tree, which is the only condition under which
+          # widening is cheap: there is no backlog for the extra queries to
+          # be lost in, so anything this surfaces is both new and
+          # attributable. It adds the lower-confidence and harder-to-exploit
+          # queries — the ones worth reading rather than the ones worth
+          # blocking on, which is why this step still does not fail the job
+          # on findings.
+          queries: security-extended
+
+      - run: make build
+
+      # An explicit category so this analysis sits beside trivy-deps and
+      # trivy-image in the Security tab rather than competing with them for
+      # the default one, and so it matches codeql.yml's trunk runs for the
+      # "new alerts" comparison. Findings do NOT fail this job: analyze files
+      # alerts and exits 0. This upload IS allowed on a PR, unlike Trivy's
+      # below: CodeQL has no competing gate anywhere in this repo, so there is
+      # nothing for its own check to contradict.
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: codeql-go
+
       - uses: ./.github/actions/trivy-cache
 
       # Fork PRs get an empty string for every secrets.* reference, so the
