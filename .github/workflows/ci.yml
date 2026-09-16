@@ -2,10 +2,11 @@ name: CI
 
 # Two checks from THIS file and no more: "End to End verification" and
 # "Security Scan" — the latter runs Trivy AND CodeQL as steps in one job, so a
-# PR carries exactly these two controllable checks. codeql.yml no longer
-# triggers on pull_request; it only keeps the trunk baseline and weekly scan
-# fresh for the "new alerts in this PR" comparison this job's own CodeQL run
-# reads against.
+# PR carries exactly these two controllable checks. CodeQL has no job of its
+# own that triggers on pull_request; security.yml's trunk job runs the same
+# analyze step again on every push and on its weekly schedule, which is what
+# keeps the baseline fresh for the "new alerts in this PR" comparison this
+# job's own CodeQL run reads against.
 #
 # The one entry this cannot remove: GitHub posts "Code scanning results /
 # CodeQL" itself for the SARIF upload inside codeql-action/analyze, which is
@@ -147,10 +148,11 @@ jobs:
     runs-on: ubuntu-latest
     # CodeQL and both Trivy scans, one job, one check — a PR gets exactly two
     # checks total from this repo's controllable CI (this job and verify
-    # above). codeql.yml still runs CodeQL again on a trunk push and on its
-    # weekly schedule for the "new alerts in this PR" baseline and the
-    # deep re-scan a push trigger can never give, but it no longer triggers
-    # on pull_request — this job is the only place a PR sees CodeQL run.
+    # above). security.yml's trunk job runs CodeQL again on a trunk push and
+    # on its weekly schedule for the "new alerts in this PR" baseline and the
+    # deep re-scan a push trigger can never give, but CodeQL has no job of its
+    # own that triggers on pull_request — this job is the only place a PR
+    # sees CodeQL run.
     #
     # The one thing folding it in here does NOT remove: GitHub posts its own
     # "Code scanning results / CodeQL" check for the SARIF upload inside
@@ -200,7 +202,7 @@ jobs:
 
       # An explicit category so this analysis sits beside trivy-deps and
       # trivy-image in the Security tab rather than competing with them for
-      # the default one, and so it matches codeql.yml's trunk runs for the
+      # the default one, and so it matches security.yml's trunk runs for the
       # "new alerts" comparison. Findings do NOT fail this job: analyze files
       # alerts and exits 0. This upload IS allowed on a PR, unlike Trivy's
       # below: CodeQL has no competing gate anywhere in this repo, so there is
