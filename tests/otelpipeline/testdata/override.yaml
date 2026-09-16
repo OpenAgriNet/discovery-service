@@ -1,0 +1,28 @@
+# The ONLY thing the pipeline test changes about otel/collector.yaml.
+#
+# The collector deep-merges several --config files, so everything not named
+# here is the shipped configuration verbatim — the connector, every processor,
+# the allow-list and the processor order are all under test rather than
+# re-declared. Anything added here is something the test stops checking, so add
+# nothing without a reason written down.
+#
+# `metrics/spec` normally exports to `debug/spec`, which a test would have to
+# read back by scraping container logs and parsing a human-readable dump. The
+# file exporter writes OTLP JSON, one export per line, which is the same bytes
+# a facilitator's OTLP endpoint would receive.
+#
+# Note what is NOT overridden: batch/window's 60s timeout. The test flushes by
+# shutting the collector down rather than by shortening the window, so the
+# window the test exercises is the window that ships.
+#
+# /spec is a directory the test bind-mounts, not a path inside the image. The
+# image is distroless and has no /tmp; the file exporter cannot create one, and
+# a file exporter that fails to open its path fails the collector's startup.
+exporters:
+  file:
+    path: /spec/metrics.json
+
+service:
+  pipelines:
+    metrics/spec:
+      exporters: [file]

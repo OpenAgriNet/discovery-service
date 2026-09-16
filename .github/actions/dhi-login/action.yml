@@ -1,0 +1,36 @@
+name: Log in to dhi.io
+description: >
+  Authenticates to dhi.io (Docker Hardened Images), gated on a Docker
+  subscription — anonymous pulls 401. Both the Dockerfile's stages default to
+  dhi.io/* base images (see the Dockerfile's FROM comment), so every job that
+  builds or scans the image needs this first. Written directly to
+  ~/.docker/config.json rather than through docker/login-action, whose
+  username/password inputs don't accept a pre-combined blob — this matches
+  the format `docker login` itself writes.
+
+inputs:
+  username:
+    description: DHI credential username (org secret DOCKERHUB_USERNAME — DHI's subscription is tied to a Docker Hub account)
+    required: true
+  token:
+    description: DHI credential token (org secret DOCKERHUB_TOKEN)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The credentials reach the script through env:, never through a `${{ }}`
+    # spliced into the body. An expression is substituted into the script TEXT
+    # before bash parses it, so the secret becomes part of the program — a
+    # value containing a quote or a backtick would be parsed as shell rather
+    # than passed as data. As an env var it is only ever data.
+    - shell: bash
+      env:
+        DHI_USERNAME: ${{ inputs.username }}
+        DHI_TOKEN: ${{ inputs.token }}
+      run: |
+        AUTH=$(printf '%s:%s' "$DHI_USERNAME" "$DHI_TOKEN" | base64 -w0)
+        mkdir -p ~/.docker
+        cat > ~/.docker/config.json <<EOF
+        {"auths":{"dhi.io":{"auth":"${AUTH}"}}}
+        EOF

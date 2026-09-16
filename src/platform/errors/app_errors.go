@@ -1,0 +1,196 @@
+// Package errors builds the faults this service reports to a caller.
+//
+// An AppError is a value, not a control-flow device: it carries the Beckn code,
+// the JSONPath into the request that failed and — under C7 — the chain of
+// further faults hanging off it. It knows what it is and nothing about how to
+// write itself down; serialising one is src/platform/httpx's job and only its
+// job, held as a package boundary rather than as a convention.
+package errors
+
+import (
+	stderrors "errors"
+	"fmt"
+	"time"
+
+	"github.com/OpenAgriNet/discovery-service/src/beckn"
+)
+
+// internalMessage is what a fault with no Beckn code of its own is reported as.
+//
+// Fixed text, because the alternative is the underlying error's own string, and
+// that string is written by a driver for an operator reading a log — a dialled
+// host and port, a query, a file path. None of it is the caller's.
+const internalMessage = "internal error"
+
+// AppError is one fault, with the code and the path that name it.
+//
+// Cause is C7's answer to a validation pass that produced several faults: they
+// become a chain, each the details.cause of the one before, and Chain is the
+// only thing that builds it.
+//
+// Status and error_type are not fields. Both are decided by the code's own
+// prefix, so two call sites reporting one fault cannot disagree about what it is
+// worth on the wire.
+type AppError struct {
+	Code    beckn.ErrorCode
+	Message string
+
+	// A JSONPath into the request — `$.message.publishDirectives[1]`, the form
+	// the spec's own example uses. Empty where the fault is about the request as
+	// a whole rather than a field in it.
+	Path string
+
+	// The next fault in the chain, or nil at the end of it.
+	Cause *AppError
+
+	// The back-off A4 requires beside a 429. Zero everywhere else, and the one
+	// piece of state the writer turns into a header rather than into the body.
+	RetryAfter time.Duration
+}
+
+// Context builds a fault in the CTX_ family — context and routing.
+func Context(code beckn.ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
+// Auth builds a fault in the AUT_ family — authentication and trust.
+func Auth(code beckn.ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
+// Schema builds a fault in the SCH_ family — core and linked-data schema, the
+// family for a body this service will not accept as written.
+func Schema(code beckn.ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
+// Network builds a fault in the NET_ family — networking, and the gaps in a
+// deployment's own capabilities.
+func Network(code beckn.ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
+// Business builds a fault in the BIZ_ family — application and business logic.
+func Business(code beckn.ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
+// Policy builds a fault in the POL_ family — a refusal this deployment's policy
+// requires rather than one the request earned.
+func Policy(code beckn.ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
+// RateLimited builds the AUT_RATE_LIMITED refusal A4 specifies, carrying the
+// back-off the limiter computed.
+//
+// It has a constructor of its own because it is the only code that puts
+// something in a header — Retry-After — and a caller who must remember to set a
+// field after construction is one who will eventually not.
+func RateLimited(retryAfter time.Duration, message string) *AppError {
+	return &AppError{Code: beckn.CodeAuthRateLimited, Message: message, RetryAfter: retryAfter}
+}
+
+// Internal is the fault an error with no Beckn code of its own becomes: a 500
+// and a fixed message, with whatever actually failed left for the log.
+func Internal() *AppError {
+	return Network(beckn.CodeNetworkInternalError, internalMessage)
+}
+
+// At returns a copy of the fault pointing at path.
+//
+// A copy, because one fault is often built once and reported against several
+// paths — a mapper walking an array of directives — and mutating in place would
+// leave every report carrying whichever path was set last.
+func (e *AppError) At(path string) *AppError {
+	copied := *e
+	copied.Path = path
+	return &copied
+}
+
+// Chain folds faults into one, each becoming the details.cause of the one
+// before it (C7). It returns nil for no faults, so a caller can hand it the
+// result of a validation pass without checking whether the pass found anything.
+//
+// The faults are copied rather than linked, so chaining one twice cannot leave
+// the first chain's links hanging off a value the caller still holds, and a
+// fault pointed at itself cannot become a serialiser that does not terminate.
+//
+// An argument that is itself a chain is flattened rather than truncated at its
+// head. C7's invariant is that no fault is dropped, and this service chains at
+// two levels — envelope validation, then the intent mapper — so keeping only
+// each argument's first link would lose the inner ones silently. Copying is what
+// stops the caller's values being mutated; walking is what stops their tails
+// being discarded. Both are needed.
+//
+// Only the NACK path calls this; publish reports faults in the array C7 gives
+// it.
+func Chain(faults ...*AppError) *AppError {
+	// Keyed by the address of the original, so a chain that closes on itself
+	// terminates. Such a chain is a caller's mistake, but flattening is what
+	// would turn it into a walk that never returns.
+	seen := map[*AppError]bool{}
+
+	var head, tail *AppError
+	for _, fault := range faults {
+		for link := fault; link != nil; link = link.Cause {
+			if seen[link] {
+				break
+			}
+			seen[link] = true
+
+			copied := *link
+			copied.Cause = nil
+			if head == nil {
+				head, tail = &copied, &copied
+				continue
+			}
+			tail.Cause = &copied
+			tail = &copied
+		}
+	}
+	return head
+}
+
+// FromError returns err as an *AppError, coercing anything without a code of
+// its own to Internal.
+//
+// This is what lets the response writer be total: one function decides what an
+// unrecognised error becomes, rather than each handler inventing a status and
+// body for the failures it did not anticipate.
+func FromError(err error) *AppError {
+	if err == nil {
+		return nil
+	}
+
+	var fault *AppError
+	if stderrors.As(err, &fault) {
+		return fault
+	}
+	return Internal()
+}
+
+// Error implements error.
+func (e *AppError) Error() string {
+	text := fmt.Sprintf("%s: %s", e.Code, e.Message)
+	if e.Path != "" {
+		text += " at " + e.Path
+	}
+	if e.Cause != nil {
+		text += ": " + e.Cause.Error()
+	}
+	return text
+}
+
+// Unwrap returns the next fault in the chain, so errors.Is and errors.As walk
+// a C7 chain the way they walk a %w one.
+//
+// The nil check is not defensive: returning e.Cause directly would hand back an
+// error interface holding a nil *AppError, which is non-nil to errors.As and
+// reports a match on a fault that is not there.
+func (e *AppError) Unwrap() error {
+	if e.Cause == nil {
+		return nil
+	}
+	return e.Cause
+}

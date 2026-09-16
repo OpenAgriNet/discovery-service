@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+
+# Agent tooling state — machine-local, regenerated, never shared
+.claude/
+.claude-flow/
+
+# Build output and the pinned toolchain built into it — derived, never shared
+bin/
+coverage.out
+coverage.html
+
+# CI artefacts that `make` now writes locally too, so that the gates are
+# runnable off a laptop: the coverage and Trivy comment bodies and the SARIF
+# they are rendered from. Reproducible from a run; committing one would pin a
+# scan result to a commit that no longer describes it.
+coverage-report.md
+trivy-report.md
+trivy-*.sarif
+
+# Fetched-at-boot artefacts: beckn.yaml is cached here, not committed. Only a
+# pinned CI fixture of the spec is in the tree.
+.cache/
+
+# Secrets and deployment-local config (see Config in the design doc)
+.env
+.env.*
+config/instance.yaml
+
+# Working notes, drafts and source requirements — not the shared record.
+# The shared record lives in docs/. Anything here that should be shared
+# gets moved into docs/ and committed, not un-ignored in place.
+documentations/
+
+# Byte-compiled Python from the examples/ tooling. Derived, and a .pyc that
+# outlives its .py is worse than no cache at all.
+__pycache__/

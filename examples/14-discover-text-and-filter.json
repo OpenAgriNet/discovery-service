@@ -1,0 +1,19 @@
+{
+  "context": {
+    "domain": "agriculture",
+    "action": "discover",
+    "version": "2.0.0",
+    "transactionId": "a1000000-0000-4000-8000-000000000014",
+    "messageId": "b1000000-0000-4000-8000-000000000014",
+    "timestamp": "2026-08-27T06:30:00Z"
+  },
+  "message": {
+    "intent": {
+      "textSearch": "cotton cyclone",
+      "filters": {
+        "type": "jsonpath",
+        "expression": "$.catalogs[*].offers[*] ? (@.descriptor.code == \"FREE-TIER\")"
+      }
+    }
+  }
+}
