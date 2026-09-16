@@ -2,7 +2,6 @@ package domain
 
 import (
 	"encoding/json"
-	"math"
 	"slices"
 	"time"
 )
@@ -52,14 +51,11 @@ func mergeValue(target, patch any) any {
 		targetObject = map[string]any{}
 	}
 
-	// CodeQL go/allocation-size-overflow: targetObject and patchObject are
-	// decoded map lengths, not attacker-controlled byte counts, but the sum
-	// still gets a guard so make() never receives an overflowed capacity.
-	capacity := 0
-	if a, b := len(targetObject), len(patchObject); a <= math.MaxInt-b {
-		capacity = a + b
-	}
-	merged := make(map[string]any, capacity)
+	// No capacity hint: CodeQL (go/allocation-size-overflow) flags len()+len()
+	// reaching an allocation even behind an explicit overflow guard, so the
+	// only fix it accepts is not summing the two lengths at all. The map
+	// grows via its normal resize path instead of being pre-sized.
+	merged := make(map[string]any)
 	for name, value := range targetObject {
 		merged[name] = value
 	}
