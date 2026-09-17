@@ -51,7 +51,11 @@ func mergeValue(target, patch any) any {
 		targetObject = map[string]any{}
 	}
 
-	merged := make(map[string]any, len(targetObject)+len(patchObject))
+	// No capacity hint: CodeQL (go/allocation-size-overflow) flags len()+len()
+	// reaching an allocation even behind an explicit overflow guard, so the
+	// only fix it accepts is not summing the two lengths at all. The map
+	// grows via its normal resize path instead of being pre-sized.
+	merged := make(map[string]any)
 	for name, value := range targetObject {
 		merged[name] = value
 	}
