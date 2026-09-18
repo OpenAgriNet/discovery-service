@@ -109,13 +109,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
-      # Builds the image into this runner's local Docker daemon and gates it on
-      # Trivy — exit 1 on a finding, not a report — so the exact bytes about to
-      # ship are scanned before they are tagged for or pushed to any registry.
+      # Builds the image into this runner's local Docker daemon and scans it
+      # there, so the exact bytes about to ship are scanned before they are
+      # tagged for or pushed to any registry. The scan reports and does not
+      # block — findings raise a warning annotation; only a scan that fails to
+      # run stops the release. See trivy-release-scan in the Makefile.
       - run: make image-build ARCH=${{ matrix.arch }}
 
       # Re-tags that same scanned image and pushes it. No rebuild and no
-      # re-scan, so what lands in the registry is what the gate above passed.
+      # re-scan, so what lands in the registry is what the scan above reported
+      # on.
       - run: make image-push ARCH=${{ matrix.arch }}
 
   publish-artifact:

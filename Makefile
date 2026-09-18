@@ -345,12 +345,30 @@ TRIVY_IMAGE_SCAN = $(TRIVY) image $(IMAGE) --severity $(SEVERITY)
 trivy-image: $(TRIVY)
 	$(TRIVY_IMAGE_SCAN) --exit-code 0 --format sarif --output trivy-image.sarif
 
-## trivy-release-gate: the same image scan as trivy-image, but exit 1 on a
-##                     finding instead of writing a report — the pre-push
-##                     release gate image-build runs once per arch, on the
-##                     local image, before anything is pushed anywhere.
-trivy-release-gate: $(TRIVY)
-	$(TRIVY_IMAGE_SCAN) --exit-code 1 --format table
+## trivy-release-scan: report-only image scan, does not block the release
+##                     — image-build runs it once per arch on the local
+##                     image, before anything is pushed.
+#
+# Findings warn and the release proceeds. Blocking on them is trivy-gate's job,
+# on PRs; a LOW CVE in a transitive dependency must not mean the tag ships no
+# artifact at all.
+#
+# Exit 13, not 1: Trivy exits 1 on its own errors too, so `|| true` on a
+# --exit-code 1 scan would swallow a DB fetch failure and call it a clean
+# report. A scan that did not run still fails the build.
+TRIVY_FINDINGS_EXIT = 13
+
+trivy-release-scan: $(TRIVY)
+	@$(TRIVY_IMAGE_SCAN) --exit-code $(TRIVY_FINDINGS_EXIT) --format table; \
+	rc=$$?; \
+	case "$$rc" in \
+		0) ;; \
+		$(TRIVY_FINDINGS_EXIT)) \
+			echo "::warning::Trivy found $(SEVERITY) vulnerabilities in $(IMAGE) — reported above, not blocking the release";; \
+		*) \
+			echo "::error::Trivy failed to scan $(IMAGE) (exit $$rc) — no report was produced"; \
+			exit $$rc;; \
+	esac
 
 ## trivy-report: render every SARIF report as ONE PR comment, trivy-report.md
 # One comment covering both scans, not one comment each: the two scans run in
@@ -533,21 +551,23 @@ docker:
 	  --build-arg TREE_STATE=$(TREE_STATE) \
 	  -t $(IMAGE) .
 
-## image-build: build this arch's release image locally and gate it on Trivy
+## image-build: build this arch's release image locally and scan it with Trivy
 # Built and loaded locally, NOT pushed: Trivy then scans the exact bytes that
 # are about to ship, before they are tagged for or pushed to any registry. One
 # scan covers every registry, because it is one image.
+#
+# The scan reports and does not block — see trivy-release-scan.
 #
 # Native, never QEMU — each arch builds on a runner of that arch, so a plain
 # `docker build` already produces the right one and ARCH is only the tag suffix.
 image-build:
 	$(MAKE) docker IMAGE=$(RELEASE_IMAGE)
-	$(MAKE) trivy-release-gate IMAGE=$(RELEASE_IMAGE)
+	$(MAKE) trivy-release-scan IMAGE=$(RELEASE_IMAGE)
 
-## image-push: push the gated local image to every enabled registry (ARCH)
+## image-push: push the scanned local image to every enabled registry (ARCH)
 # Re-tags the already-scanned local image per registry and pushes. No rebuild
 # and no re-scan, so what is pushed is byte-identical to what image-build
-# gated. One arch-suffixed tag each; nothing binds the plain version tag until
+# scanned. One arch-suffixed tag each; nothing binds the plain version tag until
 # image-publish has every arch.
 image-push: require-image-repos
 	@set -e; for repo in $(IMAGE_REPOS); do \
@@ -743,7 +763,7 @@ $(TRIVY):
 .PHONY: help build test test-short test-ci cover cover-total cover-report \
 	cover-html cover-diff lint fmt lint-actions lint-staged hooks sqlc \
 	sqlc-verify migrate run logs migrate-down security trivy-deps \
-	trivy-image trivy-release-gate trivy-report trivy-gate docker \
+	trivy-image trivy-release-scan trivy-report trivy-gate docker \
 	image-build image-push image-publish require-image-repos up down \
 	verify newman audit tools clean telemetry telemetry-metrics \
 	telemetry-logs telemetry-down
