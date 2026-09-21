@@ -84,7 +84,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ./.github/actions/trivy-cache
 
       # First, before the registry logins: this action replaces the Docker
       # credential store wholesale, while `docker login` merges into it, so the
@@ -109,13 +108,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
-      # Builds the image into this runner's local Docker daemon and gates it on
-      # Trivy — exit 1 on a finding, not a report — so the exact bytes about to
-      # ship are scanned before they are tagged for or pushed to any registry.
+      # Builds into this runner's local Docker daemon so the next step re-tags
+      # these exact bytes. No Trivy here — ci.yml and security.yml already scan
+      # this image; see image-build in the Makefile.
       - run: make image-build ARCH=${{ matrix.arch }}
 
-      # Re-tags that same scanned image and pushes it. No rebuild and no
-      # re-scan, so what lands in the registry is what the gate above passed.
+      # Re-tags that local image and pushes it. No rebuild, so every registry
+      # gets identical bytes.
       - run: make image-push ARCH=${{ matrix.arch }}
 
   publish-artifact:
