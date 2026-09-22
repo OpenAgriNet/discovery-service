@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
@@ -29,8 +30,8 @@ func (r *recording) ForceFlush(context.Context) error                       { re
 
 func attributesOfRecord(rec sdklog.Record) map[string]string {
 	out := map[string]string{}
-	rec.WalkAttributes(func(kv log.KeyValue) bool {
-		out[kv.Key] = kv.Value.String()
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		out[string(kv.Key)] = kv.Value.String()
 		return true
 	})
 	return out
