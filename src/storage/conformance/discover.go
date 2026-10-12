@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -212,6 +213,15 @@ func pageOrder(result domain.SearchResult) []string {
 		}
 	}
 	return ids
+}
+
+// totalOf renders a result's total for a failure message, where a nil pointer
+// would print as an address.
+func totalOf(result domain.SearchResult) string {
+	if result.Total == nil {
+		return "absent"
+	}
+	return strconv.Itoa(*result.Total)
 }
 
 // offerIDs is every offer hydrated onto the page, sorted.
@@ -642,10 +652,17 @@ func pageTwoDoesNotOverlapPageOne() Case {
 				t.Errorf("page two is %v, want [r-02 r-03]", got)
 			}
 
-			// There is no total to assert (A19). What remains is the property
-			// a caller walking pages actually depends on: the offset SLICES a
-			// stable order rather than re-ranking it, so page two holds the
-			// next two and not two of the same.
+			// The offset SLICES a stable order rather than re-ranking it, so
+			// page two holds the next two and not two of the same.
+
+			// And both pages report the same exact total (A28): five matched,
+			// none of them capped, so the count is the size of the set being
+			// paged — whichever page asked.
+			for name, result := range map[string]domain.SearchResult{"one": first, "two": second} {
+				if result.Total == nil || *result.Total != len(resources) {
+					t.Errorf("page %s reports total %v, want %d", name, totalOf(result), len(resources))
+				}
+			}
 		},
 	}
 }

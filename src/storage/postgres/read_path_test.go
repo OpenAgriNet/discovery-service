@@ -380,6 +380,33 @@ func TestPageTwoDoesNotOverlapPageOne(t *testing.T) {
 	}
 }
 
+// A mode that returned as many ids as its cap may have stopped early, so the
+// fused list is a truncation and its length is not the number that matched.
+// The total is then left OUT (A28) rather than reported short — this is the
+// only backend with a cap, which is why the case lives here and not in the
+// conformance suite. searchConfig's cap is 8; ten lots match.
+func TestATotalIsReportedOnlyWhenNoModeHitItsCap(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{catalog: "cat-capped", resources: kharifLots(10)})
+
+	capped := search(t, repository, domain.SearchQuery{Text: "kharif", Limit: 4})
+	if capped.Total != nil {
+		t.Errorf("total = %d with every mode at its cap of %d, want it absent",
+			*capped.Total, searchConfig().MaxCandidatesPerMode)
+	}
+}
+
+func TestATotalUnderTheCapIsExact(t *testing.T) {
+	repository, _ := publish(t, nil, readFixture{catalog: "cat-counted", resources: kharifLots(6)})
+
+	result := search(t, repository, domain.SearchQuery{Text: "kharif", Limit: 4})
+	if result.Total == nil || *result.Total != 6 {
+		t.Errorf("total = %v, want exactly 6", result.Total)
+	}
+	if got := len(matchedIDs(result)); got != 4 {
+		t.Errorf("the page holds %d, want 4 — the total counts the set, not the page", got)
+	}
+}
+
 // A mode that ERRORS is degraded, and the page is what the other modes found.
 //
 // The vectors are 768 wide because the column is, and the repository embeds at

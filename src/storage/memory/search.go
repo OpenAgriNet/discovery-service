@@ -62,9 +62,13 @@ func (r *Repository) Search(
 		page = nil
 	}
 
+	// This backend retrieves without a cap, so the ranked list is every match
+	// and its length is always the exact total.
+	total := len(page)
 	return domain.SearchResult{
 		Catalogs: r.hydrate(pageOf(page, query.Offset, query.Limit), scope),
 		Degraded: degraded,
+		Total:    &total,
 	}, nil
 }
 

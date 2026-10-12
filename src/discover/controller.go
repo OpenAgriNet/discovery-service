@@ -68,19 +68,19 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	observeIntent(ctx, envelope.Context, action.Intent)
 
-	page, err := pageFrom(r.URL.Query())
+	page, err := pageFrom(action, r.URL.Query())
 	if err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 		return
 	}
 
-	catalogs, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
+	answer, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
 	if err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 		return
 	}
 
-	observeResult(ctx, catalogs)
+	observeResult(ctx, answer.Catalogs)
 
 	// Before the body: WriteJSON writes the status line, and a header set after
 	// that is a header nobody receives.
@@ -90,20 +90,26 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	body := httpx.Envelope[beckn.OnDiscoverAction]{
 		Context: responseContext(envelope.Context),
-		Message: beckn.OnDiscoverAction{Catalogs: catalogs},
+		Message: answer,
 	}
 	if err := httpx.WriteJSON(ctx, w, http.StatusOK, body); err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 	}
 }
 
-// pageFrom reads pagination off the query string, where it lives rather than
-// inside the intent.
+// pageFrom reads the page off the body, field by field falling back to the
+// query string (A28).
 //
-// An unreadable value is refused, not defaulted: zero already means "the default
-// page size" to the mapper, so reading `limit=twenty` as zero would answer a page
-// the caller never asked for and say nothing about it.
-func pageFrom(query url.Values) (Page, error) {
+// The body is the signed half, so a field it names wins. The query string is
+// the deprecated route and stays only so that callers written before the OAN
+// profile added limit and offset to DiscoverAction keep working; the schema
+// already bounds the body's values, which is why only the query's are parsed
+// here.
+//
+// An unreadable query value is refused, not defaulted: zero already means "the
+// default page size" to the mapper, so reading `limit=twenty` as zero would
+// answer a page the caller never asked for and say nothing about it.
+func pageFrom(action beckn.DiscoverAction, query url.Values) (Page, error) {
 	limit, err := intParam(query, "limit")
 	if err != nil {
 		return Page{}, err
@@ -111,6 +117,12 @@ func pageFrom(query url.Values) (Page, error) {
 	offset, err := intParam(query, "offset")
 	if err != nil {
 		return Page{}, err
+	}
+	if action.Limit != nil {
+		limit = *action.Limit
+	}
+	if action.Offset != nil {
+		offset = *action.Offset
 	}
 	return Page{Limit: limit, Offset: offset}, nil
 }

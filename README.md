@@ -69,8 +69,9 @@ That stack applies its own migrations (they are compiled into the binary) and
 reads the Beckn specification from `tests/testdata/beckn-v2.0.0.yaml`, mounted
 at the cache path. The boot logs one warning about the registry fetch it did
 not do, which is why it works with no network. That file is byte-identical to
-the `core-v2.0.0-lts` tag of `beckn/protocol-specifications-v2`; set
-`VALIDATION_SPEC_URL` to its raw URL to exercise the fetch path instead.
+the OAN profile of the spec at commit `dfc1097` of
+`OpenAgriNet/protocol-specifications-v2` (A28); set `VALIDATION_SPEC_URL` to its
+raw URL to exercise the fetch path instead.
 
 With the stack up, there is a worked catalog and the requests that find it:
 
@@ -118,9 +119,10 @@ overrides; that file is gitignored. **Secrets — `DATABASE_URL` above all —
 belong in neither YAML file.**
 
 The Beckn specification is fetched at boot from `VALIDATION_SPEC_URL` and
-cached under `.cache/beckn/`. It defaults to the `core-v2.0.0-lts` tag of
-`beckn/protocol-specifications-v2` — a tag rather than a branch, so an upstream
-merge cannot change the validator under a running deployment. It is not baked
+cached under `.cache/beckn/`. It defaults to the OAN profile at commit
+`dfc1097` of `OpenAgriNet/protocol-specifications-v2` (A28) — a commit rather
+than a branch, so an upstream merge cannot change the validator under a running
+deployment. It is not baked
 into the image; air-gapped deploys mount a cache file at
 `VALIDATION_SPEC_CACHE_PATH`.
 

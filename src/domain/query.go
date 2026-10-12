@@ -125,11 +125,17 @@ type SearchQuery struct {
 // SearchResult is one page of an answered query.
 //
 // Degraded names the retrieval modes that did not contribute and reaches the
-// caller as the X-Beckn-Degraded header, not a body key (C11). There is no
-// Total (A19).
+// caller as the X-Beckn-Degraded header, not a body key (C11).
+//
+// Total is the size of the fused candidate set the page was sliced from, and
+// nil whenever that size is not the number that matched — when a retrieval mode
+// returned as many ids as its cap, it may have stopped early (A28). It is never
+// a count query: A19 deleted that for costing 100x the search it accompanied,
+// and this is the number the search already holds.
 type SearchResult struct {
 	Catalogs []Catalog
 	Degraded []string
+	Total    *int
 }
 
 // Scope is the request-wide gate every retrieval mode reads (A6).

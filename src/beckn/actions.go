@@ -135,18 +135,37 @@ type CatalogStats struct {
 }
 
 // DiscoverAction is the `message` of a discover request.
+//
+// Limit and Offset are the OAN profile's addition (A28): the page rides in the
+// signed body rather than the query string, which the request signature does
+// not cover. Pointers, because absent and zero differ — an absent field falls
+// back to the query string, and the schema refuses a zero limit outright.
 type DiscoverAction struct {
 	Intent Intent `json:"intent"`
+	Limit  *int   `json:"limit,omitempty"`
+	Offset *int   `json:"offset,omitempty"`
 }
 
-// OnDiscoverAction is the `message` of the discover response, and it is exactly
-// one field.
+// OnDiscoverAction is the `message` of the discover response.
 //
-// It must NOT grow a Degraded field. The v2.0.0 schema is
-// additionalProperties:false with `catalogs` as its only property, so an extra
-// key is a response that fails its own schema — and `omitempty` would hide that
-// on the ordinary path while shipping the invalid body on the degraded one, the
-// path that matters. The degraded list travels as X-Beckn-Degraded (C11).
+// It must NOT grow a Degraded field. The schema is additionalProperties:false
+// with `catalogs` and `pagination` as its only properties, so an extra key is a
+// response that fails its own schema — and `omitempty` would hide that on the
+// ordinary path while shipping the invalid body on the degraded one, the path
+// that matters. The degraded list travels as X-Beckn-Degraded (C11).
 type OnDiscoverAction struct {
-	Catalogs []Catalog `json:"catalogs"`
+	Catalogs   []Catalog   `json:"catalogs"`
+	Pagination *Pagination `json:"pagination,omitempty"`
+}
+
+// Pagination is the page a discover answer APPLIED — after the default and the
+// clamp, not as requested — so the caller computes the next offset from what
+// it actually got.
+//
+// Total is a pointer and omitted when nil: it is sent only when exact (A28).
+// Offset is never omitted, because zero is the first page and not "unset".
+type Pagination struct {
+	Limit  int  `json:"limit"`
+	Offset int  `json:"offset"`
+	Total  *int `json:"total,omitempty"`
 }
