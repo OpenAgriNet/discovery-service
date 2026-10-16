@@ -412,3 +412,100 @@ func TestARefusedOperatorIsA400(t *testing.T) {
 		t.Errorf("the backend was searched %d times; a refused intent runs no query", repo.calls)
 	}
 }
+
+// The page travels in the SIGNED body now (A28). The OAN profile of the schema
+// declares limit and offset on DiscoverAction, so a caller no longer needs the
+// query string — which the request signature does not cover.
+func TestLimitAndOffsetAreReadFromTheBody(t *testing.T) {
+	repo := &stubRepo{capabilities: everything()}
+
+	recorder := post(t, mount(t, repo, settings()), "/discover",
+		`{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":5,"offset":10}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body)
+	}
+	if repo.gotQuery.Limit != 5 || repo.gotQuery.Offset != 10 {
+		t.Errorf("page = limit %d offset %d, want the body's 5 and 10", repo.gotQuery.Limit, repo.gotQuery.Offset)
+	}
+}
+
+// Each field the body names wins over the same field in the query string, and a
+// field the body omits still falls back to it. The body is the signed half, so
+// it is the one to believe when the two disagree.
+func TestTheBodyWinsOverTheQueryStringFieldByField(t *testing.T) {
+	repo := &stubRepo{capabilities: everything()}
+
+	recorder := post(t, mount(t, repo, settings()), "/discover?limit=7&offset=40",
+		`{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"offset":10}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body)
+	}
+	if repo.gotQuery.Offset != 10 {
+		t.Errorf("Offset = %d, want the body's 10 over the query's 40", repo.gotQuery.Offset)
+	}
+	if repo.gotQuery.Limit != 7 {
+		t.Errorf("Limit = %d, want the query's 7 — the body named none", repo.gotQuery.Limit)
+	}
+}
+
+// The answer says which page it is: the limit and offset actually APPLIED, after
+// the default and the clamp, and the total when the backend could count it.
+func TestTheResponseReportsThePageItApplied(t *testing.T) {
+	total := 3
+	repo := &stubRepo{
+		capabilities: everything(),
+		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}, Total: &total},
+	}
+
+	message := onDiscover(t, post(t, mount(t, repo, settings()), "/discover?limit=1000&offset=4", wheat))
+
+	want := beckn.Pagination{Limit: settings().Search.MaxPageSize, Offset: 4}
+	if message.Pagination == nil {
+		t.Fatal("pagination is absent, want the applied page")
+	}
+	if got := *message.Pagination; got.Limit != want.Limit || got.Offset != want.Offset ||
+		got.Total == nil || *got.Total != total {
+		t.Errorf("pagination = %+v (total %v), want limit %d offset %d total %d",
+			got, got.Total, want.Limit, want.Offset, total)
+	}
+}
+
+// A total the backend could not count exactly is left OUT, not sent as zero or
+// as a guess. A caller reads its absence as "more matched than a page walk can
+// reach"; a zero would read as "nothing matched".
+func TestAnUncountedTotalIsAbsentFromTheWire(t *testing.T) {
+	repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Total: nil}}
+
+	recorder := post(t, mount(t, repo, settings()), "/discover", wheat)
+	envelope := decodeResponse(t, recorder)
+
+	var message struct {
+		Pagination map[string]any `json:"pagination"`
+	}
+	if err := json.Unmarshal(envelope.Message, &message); err != nil {
+		t.Fatalf("decoding the message: %v", err)
+	}
+	pagination := message.Pagination
+	if pagination == nil {
+		t.Fatal("pagination is absent, want the applied page without a total")
+	}
+	if _, ok := pagination["total"]; ok {
+		t.Errorf("pagination = %v, want no total key", pagination)
+	}
+	if offset, ok := pagination["offset"]; !ok || offset != float64(0) {
+		t.Errorf("pagination = %v, want offset 0 present — zero is a real offset", pagination)
+	}
+}
+
+func onDiscover(t *testing.T, recorder *httptest.ResponseRecorder) beckn.OnDiscoverAction {
+	t.Helper()
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body)
+	}
+	var message beckn.OnDiscoverAction
+	if err := json.Unmarshal(decodeResponse(t, recorder).Message, &message); err != nil {
+		t.Fatalf("decoding the message: %v", err)
+	}
+	return message
+}

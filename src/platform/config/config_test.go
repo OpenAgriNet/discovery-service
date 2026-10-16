@@ -377,6 +377,13 @@ func TestValidateRejects(t *testing.T) {
 		"a candidate pool smaller than one page": {
 			"search:\n  maxPageSize: 100\n  maxCandidatesPerMode: 50\n", "maxCandidatesPerMode",
 		},
+		// The schema caps a page at 100 (A28). Above it, a body asking for more
+		// is refused before the clamp is reached, and a query-string caller is
+		// answered with a pagination.limit that fails the response's own
+		// schema.
+		"a max page size above the schema's maximum": {
+			"search:\n  maxPageSize: 101\n  maxCandidatesPerMode: 500\n", "maxPageSize",
+		},
 		"an unloadable timezone": {
 			"app:\n  defaultTimezone: Mars/Olympus_Mons\n", "defaultTimezone",
 		},

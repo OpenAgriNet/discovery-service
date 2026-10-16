@@ -81,8 +81,9 @@ services:
       APP_DOMAIN: ${APP_DOMAIN:-Agriculture}
     volumes:
       # The Beckn spec, which the service refuses to boot without. Byte-identical
-      # to the core-v2.0.0-lts tag of beckn/protocol-specifications-v2, which is
-      # also VALIDATION_SPEC_URL's default — so a normal boot fetches, compiles
+      # to the OAN profile at commit dfc1097 of
+      # OpenAgriNet/protocol-specifications-v2 (A28), which is also
+      # VALIDATION_SPEC_URL's default — so a normal boot fetches, compiles
       # and finds this file already holding the same bytes, and an offline boot
       # falls back to it with one accurate warning about the fetch that failed.
       #

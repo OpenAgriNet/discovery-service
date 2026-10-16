@@ -270,20 +270,22 @@ does not remove the requirement.
 It is fetched from `VALIDATION_SPEC_URL`, which now defaults to
 
 ```
-https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml
+https://raw.githubusercontent.com/OpenAgriNet/protocol-specifications-v2/dfc109759b3781fde74539adc79df63fccbadb83/api/v2.0.0/beckn.yaml
 ```
 
 and cached under `VALIDATION_SPEC_CACHE_PATH` (`.cache/beckn/beckn.yaml`). That
 is why running the binary from the host needs no spec configuration at all: it
 fetches once and reads the cache afterwards.
 
-A **tag**, not a branch, which is the whole reason there can be a default. A
+A **commit**, not a branch, which is the whole reason there can be a default. A
 branch would let an upstream merge change the validator under a running
-deployment without a deploy; `refs/tags/core-v2.0.0-lts` cannot move. A network
+deployment without a deploy; a commit cannot move. It is OpenAgriNet's profile
+of the Beckn spec rather than beckn's `core-v2.0.0-lts` tag because the profile
+adds discover pagination (A28), and it becomes a tag when one is cut. A network
 that trusts a different document still overrides it.
 
 Compose additionally mounts `tests/testdata/beckn-v2.0.0.yaml` straight into
-the cache path. That file is byte-identical to the tag, so the two paths agree
+the cache path. That file is byte-identical to that commit, so the two paths agree
 — and the mount is what lets the container stack come up with no network at
 all. If the fetch fails, the boot logs one loud warning and falls back to the
 cache; that warning is accurate and is not a failure.

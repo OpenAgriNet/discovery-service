@@ -33,15 +33,16 @@ func NewService(repo domain.SearchRepository, cfg config.Config) *Service {
 	return &Service{repo: repo, cfg: cfg}
 }
 
-// Discover answers one intent with one page of catalogs and the retrieval modes
-// that did not contribute. The degraded list is returned beside the catalogs
-// rather than inside them, because it reaches the caller as a header (C11).
+// Discover answers one intent with one page of catalogs, the page it applied,
+// and the retrieval modes that did not contribute. The degraded list is
+// returned beside the message rather than inside it, because it reaches the
+// caller as a header (C11).
 func (s *Service) Discover(
 	ctx context.Context, envelope beckn.Context, intent beckn.Intent, page Page,
-) ([]beckn.Catalog, []string, error) {
+) (beckn.OnDiscoverAction, []string, error) {
 	query, fatal, partial := MapIntent(intent, envelope, page, s.cfg)
 	if len(fatal) > 0 {
-		return nil, nil, refusal(fatal)
+		return beckn.OnDiscoverAction{}, nil, refusal(fatal)
 	}
 	reportPartials(ctx, partial)
 
@@ -54,12 +55,12 @@ func (s *Service) Discover(
 
 	modes, degraded, err := s.negotiate(query)
 	if err != nil {
-		return nil, nil, err
+		return beckn.OnDiscoverAction{}, nil, err
 	}
 
 	result, err := s.repo.Search(ctx, query, modes)
 	if err != nil {
-		return nil, nil, typedSearchFailure(ctx, err)
+		return beckn.OnDiscoverAction{}, nil, typedSearchFailure(ctx, err)
 	}
 
 	// Both halves, joined once: negotiate's are the modes this deployment cannot
@@ -68,7 +69,12 @@ func (s *Service) Discover(
 	degraded = append(degraded, result.Degraded...)
 	observeRetrieval(ctx, modes, degraded)
 
-	return render(result.Catalogs), degraded, nil
+	return beckn.OnDiscoverAction{
+		Catalogs: render(result.Catalogs),
+		// What MapIntent applied, not what was asked: a caller that sent 5000
+		// must read back the 100 it got, or its next offset skips results.
+		Pagination: &beckn.Pagination{Limit: query.Limit, Offset: query.Offset, Total: result.Total},
+	}, degraded, nil
 }
 
 // typedSearchFailure says whose mistake a failed search was.
@@ -84,7 +90,7 @@ func typedSearchFailure(ctx context.Context, err error) error {
 	if errors.Is(err, domain.ErrRetrievalDepth) {
 		return apperrors.
 			Schema(beckn.CodeSchemaInvalidFormat, err.Error()).
-			At(jsonpath.Dot("$['offset']"))
+			At(jsonpath.Dot("$['message']['offset']"))
 	}
 
 	// An expression the store's own parser refused is the caller's mistake too,
