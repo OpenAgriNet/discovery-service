@@ -14,9 +14,8 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/jsonpath"
 )
 
-// Page is the request's pagination: DiscoverAction's limit and offset, each
-// falling back to the deprecated query parameter of the same name (A28). Zero
-// means "the default". A struct rather than two adjacent ints, because
+// Page is the request's pagination, which arrives as HTTP query parameters
+// rather than inside the intent. A struct rather than two adjacent ints, because
 // `limit, offset` and `offset, limit` compile identically.
 type Page struct {
 	Limit  int
@@ -230,7 +229,7 @@ func mapPage(page Page, search config.Search) (limit, offset int, faults []domai
 
 	if offset+limit > search.MaxCandidatesPerMode {
 		faults = append(faults, domain.Fault{
-			Path: "$['message']['offset']",
+			Path: "$['offset']",
 			Code: string(beckn.CodeSchemaInvalidFormat),
 			Message: fmt.Sprintf(
 				"offset %d plus limit %d passes the retrieval depth of %d",

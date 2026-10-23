@@ -350,9 +350,7 @@ func (s *service) discoverOn(t *testing.T, networkID string, intent map[string]a
 
 // discoverPaged is discover with an explicit page size.
 //
-// The page is a member of DiscoverAction, beside the intent rather than inside
-// it (A28). It moved there from the query string, and this was the one call
-// site to move.
+// The page is `limit` in the message, beside the intent.
 //
 // Two scenarios need it because the default page is twenty and their fixtures
 // are forty: a scenario asserting on a count would otherwise be asserting on

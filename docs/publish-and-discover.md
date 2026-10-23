@@ -19,10 +19,9 @@ That is the whole of it:
 | `GET /readyz` | the platform | can it also reach PostgreSQL |
 
 Four routes, no wildcard mount, no aliases. Both APIs are implemented against
-the Beckn v2.0.0 specification as OpenAgriNet profiles it —
-[`OpenAgriNet/protocol-specifications-v2`](https://github.com/OpenAgriNet/protocol-specifications-v2/blob/dfc109759b3781fde74539adc79df63fccbadb83/api/v2.0.0/beckn.yaml)
-at commit `dfc1097`, which adds discover pagination to beckn's `core-v2.0.0-lts`
-(A28), pinned in this repo as
+the published Beckn v2.0.0 specification —
+[`beckn/protocol-specifications-v2`](https://github.com/beckn/protocol-specifications-v2/blob/core-v2.0.0-lts/api/v2.0.0/beckn.yaml)
+at the `core-v2.0.0-lts` tag, pinned in this repo as
 [`tests/testdata/beckn-v2.0.0.yaml`](../tests/testdata/beckn-v2.0.0.yaml). That
 document *is* the validator: the service loads it and validates every request
 against it, rather than restating the protocol in Go.
@@ -470,7 +469,7 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 | `EMBEDDING_MODEL` / `_ENDPOINT` / `_DIMENSIONS` | `nomic-embed-text` / `http://localhost:11434` / `768` | the Ollama seam |
 | `RATE_LIMIT_RPS` / `_BURST` | `20` / `40` | per-client limit; `burst >= rps` is enforced |
 | `VALIDATION_ENABLE_L1_SCHEMA` | `true` | Beckn schema validation of the payload |
-| `VALIDATION_SPEC_URL` | the OAN profile's raw URL at commit `dfc1097` | where to fetch the spec; a commit, so it cannot move under a running deployment |
+| `VALIDATION_SPEC_URL` | the `core-v2.0.0-lts` raw URL | where to fetch the spec; a tag, so it cannot move under a running deployment |
 | `VALIDATION_SPEC_CACHE_PATH` | `.cache/beckn/beckn.yaml` | where the spec is read from |
 | `AUTH_ENABLE_SIGNATURE_VERIFICATION` | `false` | `true` refuses the boot — see below |
 | `EXT_ALLOW_NETWORK_FETCH` | `false` | may a URL from a *request body* be fetched |

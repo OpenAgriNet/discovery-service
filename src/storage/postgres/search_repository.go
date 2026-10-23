@@ -128,29 +128,7 @@ func (s *SearchRepository) Search(
 	if err != nil {
 		return domain.SearchResult{}, err
 	}
-	return domain.SearchResult{
-		Catalogs: catalogs,
-		Degraded: degraded,
-		Total:    s.exactTotal(lists, fused),
-	}, nil
-}
-
-// exactTotal is len(fused) when that is the number that matched, and nil when
-// it is not (A28).
-//
-// A list as long as MaxCandidatesPerMode may have been cut by its LIMIT, so the
-// fusion of it is a truncation. A list of exactly the cap that happened to be
-// complete is reported as uncounted too — the one false negative, and the safe
-// direction: an absent total says "narrow the query", a short one says "this is
-// everything" when it is not.
-func (s *SearchRepository) exactTotal(lists [][]string, fused []string) *int {
-	for _, ids := range lists {
-		if len(ids) >= s.search.MaxCandidatesPerMode {
-			return nil
-		}
-	}
-	total := len(fused)
-	return &total
+	return domain.SearchResult{Catalogs: catalogs, Degraded: degraded}, nil
 }
 
 // withinRetrievalDepth refuses a page past what any mode retrieves. Checked

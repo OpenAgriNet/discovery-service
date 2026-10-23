@@ -73,7 +73,7 @@ func (s *Service) Discover(
 		Catalogs: render(result.Catalogs),
 		// What MapIntent applied, not what was asked: a caller that sent 5000
 		// must read back the 100 it got, or its next offset skips results.
-		Pagination: &beckn.Pagination{Limit: query.Limit, Offset: query.Offset, Total: result.Total},
+		Pagination: &beckn.Pagination{Limit: query.Limit, Offset: query.Offset},
 	}, degraded, nil
 }
 
@@ -90,7 +90,7 @@ func typedSearchFailure(ctx context.Context, err error) error {
 	if errors.Is(err, domain.ErrRetrievalDepth) {
 		return apperrors.
 			Schema(beckn.CodeSchemaInvalidFormat, err.Error()).
-			At(jsonpath.Dot("$['message']['offset']"))
+			At(jsonpath.Dot("$['offset']"))
 	}
 
 	// An expression the store's own parser refused is the caller's mistake too,

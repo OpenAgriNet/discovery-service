@@ -101,12 +101,13 @@ func TestAModeTheBackendLacksIsNamedRatherThanDropped(t *testing.T) {
 
 	answer, degraded, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat seeds"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	if len(answer.Catalogs) != 1 {
-		t.Errorf("catalogs = %d, want the one the backend found — degrading is not failing", len(answer.Catalogs))
+	if len(catalogs) != 1 {
+		t.Errorf("catalogs = %d, want the one the backend found — degrading is not failing", len(catalogs))
 	}
 	if !slices.Equal(degraded, []string{string(domain.CapabilitySemantic)}) {
 		t.Errorf("degraded = %v, want [semantic]", degraded)
@@ -188,12 +189,13 @@ func TestSpatialStillAnswersWithTextSearchOff(t *testing.T) {
 			Geometry: bengaluru(),
 		}}},
 		discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	if len(answer.Catalogs) != 1 {
-		t.Errorf("catalogs = %d, want the one the backend found", len(answer.Catalogs))
+	if len(catalogs) != 1 {
+		t.Errorf("catalogs = %d, want the one the backend found", len(catalogs))
 	}
 	if hasMode(repo.gotModes, domain.CapabilityLexical) {
 		t.Errorf("modes = %v, want no ranked text mode — nothing asked for one", repo.gotModes)
@@ -220,12 +222,13 @@ func TestAFilterABackendCannotRunIsDegradedRatherThanIgnored(t *testing.T) {
 			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
 		}},
 		discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	if len(answer.Catalogs) != 1 {
-		t.Errorf("catalogs = %d, want the one the backend found — degrading is not failing", len(answer.Catalogs))
+	if len(catalogs) != 1 {
+		t.Errorf("catalogs = %d, want the one the backend found — degrading is not failing", len(catalogs))
 	}
 	if !slices.Equal(degraded, []string{string(domain.CapabilityJSONPath)}) {
 		t.Errorf("degraded = %v, want [jsonpath] — a filter this backend cannot run and "+
@@ -514,10 +517,10 @@ func TestARenderedCatalogCarriesItsDocumentsVerbatim(t *testing.T) {
 
 	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	catalogs := answer.Catalogs
 	if len(catalogs) != 1 || len(catalogs[0].Offers) != 1 {
 		t.Fatalf("rendered = %+v, want one catalog carrying one offer", catalogs)
 	}
@@ -579,10 +582,10 @@ func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
 
 	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	catalogs := answer.Catalogs
 
 	if len(catalogs) != 1 || len(catalogs[0].Resources) != 1 || catalogs[0].Resources[0].ID != "wheat" {
 		t.Fatalf("rendered = %+v, want only the matched resource", catalogs)
@@ -661,10 +664,10 @@ func TestACatalogWithAnUnreadableDocumentIsDropped(t *testing.T) {
 
 	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	catalogs := answer.Catalogs
 	if len(catalogs) != 0 {
 		t.Errorf("catalogs = %+v, want none", catalogs)
 	}
@@ -684,10 +687,10 @@ func TestAResourceWithAnUnreadableDocumentIsDropped(t *testing.T) {
 
 	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	catalogs := answer.Catalogs
 	if len(catalogs) != 1 || len(catalogs[0].Resources) != 1 || catalogs[0].Resources[0].ID != "r2" {
 		t.Fatalf("resources = %+v, want only r2 — r1's document could not be read", catalogs[0].Resources)
 	}
@@ -706,10 +709,10 @@ func TestAnOfferWithAnUnreadableDocumentIsDropped(t *testing.T) {
 
 	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	catalogs := answer.Catalogs
 	if len(catalogs) != 1 || len(catalogs[0].Offers) != 1 || catalogs[0].Offers[0].ID != "o2" {
 		t.Fatalf("offers = %+v, want only o2 — o1's document could not be read", catalogs[0].Offers)
 	}
@@ -811,34 +814,5 @@ func TestAMalformedFilterExpressionIsTheCallersFaultNotAFiveHundred(t *testing.T
 		t.Errorf("message = %q, want exactly %q — the backend's wrapping names the "+
 			"operation it was running, and `run the candidate retrieval` is an "+
 			"internal that must not reach the caller", fault.Message, want)
-	}
-}
-
-// The answer carries the page the service APPLIED — the default when none was
-// asked for, the clamp when too much was — beside the backend's total. A caller
-// that sent limit 5000 must read 100 back, or it will compute the next offset
-// from a page size it never got.
-func TestTheAnswerReportsTheAppliedPageAndTheBackendsTotal(t *testing.T) {
-	total := 42
-	repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Total: &total}}
-	cfg := settings()
-
-	answer, _, err := discover.NewService(repo, cfg).Discover(
-		t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"},
-		discover.Page{Limit: 5000, Offset: 20})
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-
-	page := answer.Pagination
-	if page == nil {
-		t.Fatal("pagination is absent")
-	}
-	if page.Limit != cfg.Search.MaxPageSize || page.Offset != 20 {
-		t.Errorf("pagination = limit %d offset %d, want the clamped %d and 20",
-			page.Limit, page.Offset, cfg.Search.MaxPageSize)
-	}
-	if page.Total == nil || *page.Total != total {
-		t.Errorf("total = %v, want the backend's %d", page.Total, total)
 	}
 }

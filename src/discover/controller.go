@@ -2,10 +2,7 @@ package discover
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -68,11 +65,7 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	observeIntent(ctx, envelope.Context, action.Intent)
 
-	page, err := pageFrom(action, r.URL.Query())
-	if err != nil {
-		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
-		return
-	}
+	page := Page{Limit: action.Limit, Offset: action.Offset}
 
 	answer, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
 	if err != nil {
@@ -95,52 +88,6 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 	if err := httpx.WriteJSON(ctx, w, http.StatusOK, body); err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 	}
-}
-
-// pageFrom reads the page off the body, field by field falling back to the
-// query string (A28).
-//
-// The body is the signed half, so a field it names wins. The query string is
-// the deprecated route and stays only so that callers written before the OAN
-// profile added limit and offset to DiscoverAction keep working; the schema
-// already bounds the body's values, which is why only the query's are parsed
-// here.
-//
-// An unreadable query value is refused, not defaulted: zero already means "the
-// default page size" to the mapper, so reading `limit=twenty` as zero would
-// answer a page the caller never asked for and say nothing about it.
-func pageFrom(action beckn.DiscoverAction, query url.Values) (Page, error) {
-	limit, err := intParam(query, "limit")
-	if err != nil {
-		return Page{}, err
-	}
-	offset, err := intParam(query, "offset")
-	if err != nil {
-		return Page{}, err
-	}
-	if action.Limit != nil {
-		limit = *action.Limit
-	}
-	if action.Offset != nil {
-		offset = *action.Offset
-	}
-	return Page{Limit: limit, Offset: offset}, nil
-}
-
-// intParam reads one numeric query parameter. Absent is zero, which the mapper
-// resolves to its own default; present and unreadable is a refusal.
-func intParam(query url.Values, name string) (int, error) {
-	raw := query.Get(name)
-	if raw == "" {
-		return 0, nil
-	}
-
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, apperrors.Schema(beckn.CodeSchemaInvalidFormat,
-			fmt.Sprintf("%s is not a whole number", name)).At("$." + name)
-	}
-	return value, nil
 }
 
 // responseContext turns the request's envelope into the response's. The

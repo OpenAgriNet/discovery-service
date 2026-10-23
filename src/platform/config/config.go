@@ -219,19 +219,14 @@ type Validation struct {
 	// beckn.yaml is fetched at boot rather than baked into the image, so a
 	// deployment names the document it validates against.
 	//
-	// The default is IMMUTABLE, and that is the whole reason there can be one.
-	// This field carried no default until 2026-09-09, on the argument that which
-	// spec a network trusts is not a repository-wide decision — true of a branch,
+	// The default is a TAG, and that is the whole reason there can be one. This
+	// field carried no default until 2026-09-09, on the argument that which spec
+	// a network trusts is not a repository-wide decision — true of a branch,
 	// which would let an upstream merge change the validator under a running
-	// deployment without a deploy. A tag or a commit cannot move, so the default
-	// names one document and a network that trusts a different one still
-	// overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical to it, so
-	// the fetch path and an air-gapped mount agree.
-	//
-	// It is the OAN profile at a COMMIT, not beckn's core-v2.0.0-lts tag (A28):
-	// the profile adds limit/offset to DiscoverAction and pagination to
-	// OnDiscoverAction, and its branch carries no tag yet. Swap the SHA for a
-	// tag when one is cut — never for the branch name.
+	// deployment without a deploy. A pinned commit of the OAN profile (which adds
+	// discover pagination) cannot move, so the default names one immutable
+	// document and a network that trusts a different one still overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical
+	// to it, so the fetch path and an air-gapped mount agree.
 	//
 	// The cost is that boot now makes a network call before falling back to
 	// SpecCachePath. LoadSpecIndex already warns loudly and falls back, so an
@@ -638,19 +633,9 @@ func validateDatabase(database Database) error {
 	)
 }
 
-// schemaMaxPageSize is PaginationParams.limit's `maximum` in the OAN profile of
-// the spec (A28). A copy rather than a read of the document, because config
-// validates before the spec index is built; the two drifting apart shows up as
-// a boot refusal here or as a schema failure on the response, never silently.
-const schemaMaxPageSize = 100
-
 func validateSearch(search Search) error {
 	return errors.Join(
 		require(search.DefaultPageSize > 0, "search.defaultPageSize %d is not positive", search.DefaultPageSize),
-		require(search.MaxPageSize <= schemaMaxPageSize,
-			"search.maxPageSize %d is above the schema's limit maximum of %d — a body asking for more is refused "+
-				"before the clamp, and a query-string caller would be answered with a pagination.limit that fails its own schema",
-			search.MaxPageSize, schemaMaxPageSize),
 		require(search.MaxPageSize >= search.DefaultPageSize,
 			"search.maxPageSize %d is below search.defaultPageSize %d — a ceiling under the value it clamps",
 			search.MaxPageSize, search.DefaultPageSize),

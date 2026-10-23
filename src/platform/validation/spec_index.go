@@ -241,7 +241,7 @@ func loadFromCache(path string) (*SpecIndex, error) {
 // ages with the image), so an air-gapped deploy supplies one at
 // VALIDATION_SPEC_CACHE_PATH, and mounting it read-only is the right way to
 // supply a file the service must not be able to rewrite. docker-compose.yml does
-// exactly that with a copy byte-identical to VALIDATION_SPEC_URL's default, and every
+// exactly that with a copy byte-identical to the core-v2.0.0-lts tag, and every
 // boot with a reachable registry warned that it could not overwrite those bytes
 // with themselves. A warning that fires when nothing is wrong is one nobody reads
 // on the boot when something is.

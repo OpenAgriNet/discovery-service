@@ -324,10 +324,6 @@ func TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused(t *testing.T) {
 	if !strings.Contains(fatal[0].Message, "500") {
 		t.Errorf("Message = %q, want it to name the boundary", fatal[0].Message)
 	}
-	// The page is a body field now (A28), so the fault points into the body.
-	if fatal[0].Path != "$['message']['offset']" {
-		t.Errorf("Path = %q, want $['message']['offset']", fatal[0].Path)
-	}
 }
 
 // NetworkID is NOT set here. The service sets it from the envelope, and empty

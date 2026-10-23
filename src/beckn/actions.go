@@ -134,16 +134,12 @@ type CatalogStats struct {
 	CategoryCount int `json:"categoryCount"`
 }
 
-// DiscoverAction is the `message` of a discover request.
-//
-// Limit and Offset are the OAN profile's addition (A28): the page rides in the
-// signed body rather than the query string, which the request signature does
-// not cover. Pointers, because absent and zero differ — an absent field falls
-// back to the query string, and the schema refuses a zero limit outright.
+// DiscoverAction is the `message` of a discover request. Limit and Offset are
+// the page; zero means "the default".
 type DiscoverAction struct {
 	Intent Intent `json:"intent"`
-	Limit  *int   `json:"limit,omitempty"`
-	Offset *int   `json:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 }
 
 // OnDiscoverAction is the `message` of the discover response.
@@ -158,12 +154,8 @@ type OnDiscoverAction struct {
 	Pagination *Pagination `json:"pagination,omitempty"`
 }
 
-// Pagination is the page a discover answer APPLIED — after the default and the
-// clamp, not as requested — so the caller computes the next offset from what
-// it actually got.
-//
-// Total is a pointer and omitted when nil: it is sent only when exact (A28).
-// Offset is never omitted, because zero is the first page and not "unset".
+// Pagination is the page the answer applied, after default and clamp. Total is
+// declared by the schema and not yet set.
 type Pagination struct {
 	Limit  int  `json:"limit"`
 	Offset int  `json:"offset"`
