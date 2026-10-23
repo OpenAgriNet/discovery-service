@@ -99,8 +99,9 @@ func TestAModeTheBackendLacksIsNamedRatherThanDropped(t *testing.T) {
 		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
 	}
 
-	catalogs, degraded, err := discover.NewService(repo, settings()).
+	answer, degraded, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat seeds"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -181,13 +182,14 @@ func TestSpatialStillAnswersWithTextSearchOff(t *testing.T) {
 	cfg := settings()
 	cfg.Search.EnableTextSearch = false
 
-	catalogs, _, err := discover.NewService(repo, cfg).Discover(
+	answer, _, err := discover.NewService(repo, cfg).Discover(
 		t.Context(), beckn.Context{},
 		beckn.Intent{Spatial: []beckn.SpatialConstraint{{
 			Op:       beckn.OpSIntersects,
 			Geometry: bengaluru(),
 		}}},
 		discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -214,12 +216,13 @@ func TestAFilterABackendCannotRunIsDegradedRatherThanIgnored(t *testing.T) {
 		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
 	}
 
-	catalogs, degraded, err := discover.NewService(repo, settings()).Discover(
+	answer, degraded, err := discover.NewService(repo, settings()).Discover(
 		t.Context(), beckn.Context{},
 		beckn.Intent{Filters: &beckn.Filters{
 			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
 		}},
 		discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -512,8 +515,9 @@ func TestARenderedCatalogCarriesItsDocumentsVerbatim(t *testing.T) {
 		}},
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -576,8 +580,9 @@ func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
 		t.Fatalf("seeding: %v", err)
 	}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -657,8 +662,9 @@ func TestACatalogWithAnUnreadableDocumentIsDropped(t *testing.T) {
 		Document: json.RawMessage(`not json`),
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -679,8 +685,9 @@ func TestAResourceWithAnUnreadableDocumentIsDropped(t *testing.T) {
 		},
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -700,8 +707,9 @@ func TestAnOfferWithAnUnreadableDocumentIsDropped(t *testing.T) {
 		},
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}

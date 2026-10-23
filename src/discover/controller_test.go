@@ -312,14 +312,13 @@ func TestAnUnavailableModeIsA400WhenTheDeploymentAsksToBe(t *testing.T) {
 	}
 }
 
-// Pagination arrives as query parameters rather than inside the intent, and an
-// oversize limit is clamped rather than refused (C11's neighbour: the caller
+// Pagination arrives in the body beside the intent, and an oversize limit is clamped rather than refused (C11's neighbour: the caller
 // still gets the results they asked about).
-func TestLimitAndOffsetAreReadFromTheQueryString(t *testing.T) {
+func TestLimitAndOffsetAreReadFromTheBody(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 	handler := mount(t, repo, settings())
 
-	if got := post(t, handler, "/discover?limit=1000&offset=40", wheat).Code; got != http.StatusOK {
+	if got := post(t, handler, "/discover", `{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":1000,"offset":40}}`).Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want 200 — an oversize limit is clamped, not refused", got)
 	}
 	if repo.gotQuery.Limit != settings().Search.MaxPageSize {
@@ -336,7 +335,7 @@ func TestLimitAndOffsetAreReadFromTheQueryString(t *testing.T) {
 func TestAPaginationParameterThatIsNotANumberIsRefused(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 
-	recorder := post(t, mount(t, repo, settings()), "/discover?limit=twenty", wheat)
+	recorder := post(t, mount(t, repo, settings()), "/discover", `{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":"twenty"}}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
 	}
@@ -345,13 +344,12 @@ func TestAPaginationParameterThatIsNotANumberIsRefused(t *testing.T) {
 	}
 }
 
-// The same refusal for offset, which pageFrom reads with its own call to
-// intParam rather than reusing limit's — a valid limit must not mask an
-// unreadable offset.
+// The same refusal for offset — a valid limit must not mask an unreadable
+// offset.
 func TestAnUnreadableOffsetIsRefused(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 
-	recorder := post(t, mount(t, repo, settings()), "/discover?limit=10&offset=twenty", wheat)
+	recorder := post(t, mount(t, repo, settings()), "/discover", `{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":10,"offset":"twenty"}}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
 	}
