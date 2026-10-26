@@ -3,6 +3,7 @@ package discover
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -65,7 +66,11 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	observeIntent(ctx, envelope.Context, action.Intent)
 
-	page := Page{Limit: action.Limit, Offset: action.Offset}
+	page, err := pageFrom(r.URL.Query(), action)
+	if err != nil {
+		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
+		return
+	}
 
 	answer, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
 	if err != nil {
@@ -88,6 +93,19 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 	if err := httpx.WriteJSON(ctx, w, http.StatusOK, body); err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 	}
+}
+
+// pageFrom reads the page off the body.
+//
+// 0.1.0 read it off the query string. Ignoring a leftover parameter would
+// answer the default page with a 200, and a client walking offsets would loop
+// on page one; refusing it says where the page lives now.
+func pageFrom(query url.Values, action beckn.DiscoverAction) (Page, error) {
+	if query.Has("limit") || query.Has("offset") {
+		return Page{}, apperrors.Schema(beckn.CodeSchemaInvalidFormat,
+			"pagination moved from the query string to message.limit and message.offset").At(messageRoot)
+	}
+	return Page{Limit: action.Limit, Offset: action.Offset}, nil
 }
 
 // responseContext turns the request's envelope into the response's. The

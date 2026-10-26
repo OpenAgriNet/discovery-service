@@ -329,6 +329,32 @@ func TestLimitAndOffsetAreReadFromTheBody(t *testing.T) {
 	}
 }
 
+// The query string carried pagination in 0.1.0. Ignoring it would answer the
+// default page with a 200, and a client walking offsets would loop on page one,
+// so a leftover parameter is refused and the refusal names the new location.
+func TestQueryStringPaginationIsRefused(t *testing.T) {
+	for _, path := range []string{"/discover?limit=5", "/discover?offset=40"} {
+		t.Run(path, func(t *testing.T) {
+			repo := &stubRepo{capabilities: everything()}
+
+			recorder := post(t, mount(t, repo, settings()), path, wheat)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
+			}
+			body := recorder.Body.String()
+			if !strings.Contains(body, string(beckn.CodeSchemaInvalidFormat)) {
+				t.Errorf("body = %s, want SCH_INVALID_FORMAT", body)
+			}
+			if !strings.Contains(body, "message.limit") {
+				t.Errorf("body = %s, want the refusal to name message.limit/offset", body)
+			}
+			if repo.calls != 0 {
+				t.Errorf("the backend was searched %d times; a refused page runs no query", repo.calls)
+			}
+		})
+	}
+}
+
 // A limit that is not a number is refused rather than read as zero. Zero means
 // "the default page size", so a typo would be answered confidently with a page
 // the caller did not ask for.
