@@ -475,6 +475,58 @@ func TestAPagePastTheRetrievalDepthIsAFaultAndNotAnEmptyPage(t *testing.T) {
 	}
 }
 
+// The cap counts ids PER MODE, so two modes over the same corpus fuse to more
+// ids than either retrieved. Total is the fused list's length capped at the
+// depth, so a page cut from an uncapped list runs past the total the caller is
+// paging against — it reads the last page, finds more resources on it than
+// `total` leaves room for, and `offset + count == total` never comes true.
+//
+// Two catalogs whose text differs, so lexical and fuzzy rank them differently
+// and their top-`depth` lists are not the same ids. One catalog of identical
+// lots does not reproduce it: both modes return the same ids and the union is
+// the cap.
+func TestTheLastPageDoesNotRunPastTheTotal(t *testing.T) {
+	alpha := make([]domain.ResourcePatch, 0, 12)
+	for index := range 12 {
+		alpha = append(alpha, searchable(
+			fmt.Sprintf("a-%02d", index), fmt.Sprintf("kharif seed lot %02d of the northern district consignment", index),
+			"", "https://beckn.org/Agri", "SeedLot"))
+	}
+	bravo := make([]domain.ResourcePatch, 0, 6)
+	for index := range 6 {
+		bravo = append(bravo, searchable(
+			fmt.Sprintf("b-%02d", index), fmt.Sprintf("khariff %02d", index),
+			"", "https://beckn.org/Agri", "SeedLot"))
+	}
+
+	repository, _ := publish(t, nil,
+		readFixture{catalog: "cat-overrun-a", resources: alpha},
+		readFixture{catalog: "cat-overrun-b", resources: bravo})
+
+	depth := searchConfig().MaxCandidatesPerMode
+	offset := depth - 2
+
+	result, err := repository.Search(context.Background(),
+		domain.SearchQuery{Text: "kharif", Limit: 4, Offset: offset}, bothTextModes)
+	if err != nil {
+		t.Fatalf("the last reachable page was refused: %v", err)
+	}
+
+	if result.Total != depth {
+		t.Fatalf("Total = %d, want it capped at the depth %d — the corpus must "+
+			"fuse to more ids than the cap for this test to mean anything", result.Total, depth)
+	}
+	got := 0
+	for _, catalog := range result.Catalogs {
+		got += len(catalog.Resources)
+	}
+	if offset+got != result.Total {
+		t.Errorf("offset %d + %d resources = %d, want it to land on Total %d — "+
+			"a caller cannot tell it has reached the end otherwise",
+			offset, got, offset+got, result.Total)
+	}
+}
+
 // A mode that returns exactly its cap is a mode whose list is a truncation
 // rather than the answer, and that is the one state the count guards read. The
 // corpus is wider than the cap on the ordinary query, not on a pathological

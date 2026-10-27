@@ -121,7 +121,14 @@ func (s *SearchRepository) Search(
 		lists = append(lists, ids)
 	}
 
+	// Trimmed to the depth BEFORE the page is cut, because the cap counts ids
+	// per mode and fusing several of them yields more than any one retrieved.
+	// Total is this list's length, so a page cut from an untrimmed one would run
+	// past the total the caller pages against.
 	fused := RRF(lists...)
+	if len(fused) > s.search.MaxCandidatesPerMode {
+		fused = fused[:s.search.MaxCandidatesPerMode]
+	}
 	page := pageOf(fused, query.Offset, query.Limit)
 
 	catalogs, err := s.hydrator.Hydrate(ctx, page, scope)
