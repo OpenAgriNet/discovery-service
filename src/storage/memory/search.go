@@ -288,11 +288,7 @@ func pageOf(ranked []domain.Resource, offset, limit int) []domain.Resource {
 	if offset >= len(ranked) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(ranked) {
-		end = len(ranked)
-	}
-	return ranked[offset:end]
+	return ranked[offset:min(offset+limit, len(ranked))]
 }
 
 // hydrate folds the page back into catalogs, in the PAGE's order.
