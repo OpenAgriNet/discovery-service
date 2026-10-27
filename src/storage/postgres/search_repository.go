@@ -128,7 +128,7 @@ func (s *SearchRepository) Search(
 	if err != nil {
 		return domain.SearchResult{}, err
 	}
-	return domain.SearchResult{Catalogs: catalogs, Degraded: degraded}, nil
+	return domain.SearchResult{Catalogs: catalogs, Degraded: degraded, Total: len(fused)}, nil
 }
 
 // withinRetrievalDepth refuses a page past what any mode retrieves. Checked

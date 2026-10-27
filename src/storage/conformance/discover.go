@@ -642,10 +642,12 @@ func pageTwoDoesNotOverlapPageOne() Case {
 				t.Errorf("page two is %v, want [r-02 r-03]", got)
 			}
 
-			// There is no total to assert (A19). What remains is the property
-			// a caller walking pages actually depends on: the offset SLICES a
-			// stable order rather than re-ranking it, so page two holds the
-			// next two and not two of the same.
+			if first.Total != 5 || second.Total != 5 {
+				t.Errorf("Total = %d and %d, want 5 on both pages", first.Total, second.Total)
+			}
+
+			// The offset SLICES a stable order rather than re-ranking it, so
+			// page two holds the next two and not two of the same.
 		},
 	}
 }

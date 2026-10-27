@@ -65,6 +65,7 @@ func (r *Repository) Search(
 	return domain.SearchResult{
 		Catalogs: r.hydrate(pageOf(page, query.Offset, query.Limit), scope),
 		Degraded: degraded,
+		Total:    len(page),
 	}, nil
 }
 

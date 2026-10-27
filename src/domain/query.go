@@ -125,11 +125,12 @@ type SearchQuery struct {
 // SearchResult is one page of an answered query.
 //
 // Degraded names the retrieval modes that did not contribute and reaches the
-// caller as the X-Beckn-Degraded header, not a body key (C11). There is no
-// Total (A19).
+// caller as the X-Beckn-Degraded header, not a body key (C11). Total counts
+// the ranked ids before paging, not a separate count query (A19).
 type SearchResult struct {
 	Catalogs []Catalog
 	Degraded []string
+	Total    int
 }
 
 // Scope is the request-wide gate every retrieval mode reads (A6).

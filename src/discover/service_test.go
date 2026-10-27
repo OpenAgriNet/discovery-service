@@ -397,6 +397,23 @@ func TestAnOversizeLimitIsClampedAndAnUnreachablePageIsRefused(t *testing.T) {
 	}
 }
 
+// Total is what the backend matched, capped at the retrieval depth: past it no
+// page can be fetched, so a larger number would point the caller at a refusal.
+func TestTheTotalIsReturnedAndCappedAtTheRetrievalDepth(t *testing.T) {
+	for matched, want := range map[int]int{42: 42, 900: settings().Search.MaxCandidatesPerMode} {
+		repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Total: matched}}
+
+		answer, _, err := discover.NewService(repo, settings()).Discover(
+			t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+		if err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		if got := answer.Pagination.Total; got == nil || *got != want {
+			t.Errorf("matched %d: Total = %v, want %d", matched, got, want)
+		}
+	}
+}
+
 // A fatal mapper fault refuses the request and runs no query. Continuing would
 // WIDEN it, and a widened answer is indistinguishable at the caller from a
 // correct one.

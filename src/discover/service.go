@@ -69,11 +69,15 @@ func (s *Service) Discover(
 	degraded = append(degraded, result.Degraded...)
 	observeRetrieval(ctx, modes, degraded)
 
+	// Capped at the retrieval depth, the last page a caller can fetch;
+	// a true count past it is a count query per request (A19).
+	total := min(result.Total, s.cfg.Search.MaxCandidatesPerMode)
+
 	return beckn.OnDiscoverAction{
 		Catalogs: render(result.Catalogs),
 		// What MapIntent applied, not what was asked: a caller that sent 5000
 		// must read back the 100 it got, or its next offset skips results.
-		Pagination: &beckn.Pagination{Limit: query.Limit, Offset: query.Offset},
+		Pagination: &beckn.Pagination{Limit: query.Limit, Offset: query.Offset, Total: &total},
 	}, degraded, nil
 }
 

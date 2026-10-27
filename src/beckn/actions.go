@@ -154,8 +154,8 @@ type OnDiscoverAction struct {
 	Pagination *Pagination `json:"pagination,omitempty"`
 }
 
-// Pagination is the page the answer applied, after default and clamp. Total is
-// declared by the schema and not yet set.
+// Pagination is the page the answer applied, after default and clamp, and the
+// number of results that can be paged through.
 type Pagination struct {
 	Limit  int  `json:"limit"`
 	Offset int  `json:"offset"`
