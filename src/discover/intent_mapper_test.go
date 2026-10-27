@@ -501,16 +501,18 @@ func TestValidateConstraintReportsEveryFaultNotJustTheFirst(t *testing.T) {
 	}
 }
 
-// mapPage's own boundary: `>` refuses, so a page landing EXACTLY on the
-// retrieval depth must be answered, not refused. TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused
-// only asserts the over side of this line.
-func TestAPageExactlyAtTheRetrievalDepthIsNotRefused(t *testing.T) {
+// mapPage's own boundary: the guard reads the offset alone, so the last
+// reachable offset must be answered however large the limit is. A limit that
+// overhangs the depth is the tail the page slice truncates, not a refusal —
+// otherwise the final results are unreachable at any limit the depth does not
+// divide evenly.
+func TestTheLastReachableOffsetIsNotRefused(t *testing.T) {
 	cfg := settings()
-	page := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode - 100}
+	page := discover.Page{Limit: 100, Offset: cfg.Search.MaxCandidatesPerMode - 1}
 
 	_, fatal, _ := discover.MapIntent(beckn.Intent{TextSearch: "wheat"}, beckn.Context{}, page, cfg)
 	if len(fatal) != 0 {
-		t.Fatalf("fatal = %s, want none — offset+limit lands exactly on the depth, not past it", codesOf(fatal))
+		t.Fatalf("fatal = %s, want none — the offset is inside the depth, only the limit overhangs it", codesOf(fatal))
 	}
 }
 

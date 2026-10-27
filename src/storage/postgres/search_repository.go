@@ -135,10 +135,10 @@ func (s *SearchRepository) Search(
 // before anything runs, and named in the error so the caller can tell it from
 // the end of the results.
 func (s *SearchRepository) withinRetrievalDepth(query domain.SearchQuery) error {
-	if query.Offset+query.Limit > s.search.MaxCandidatesPerMode {
+	if query.Offset >= s.search.MaxCandidatesPerMode {
 		return fmt.Errorf(
-			"%w: offset %d plus limit %d passes the %d ids a mode retrieves",
-			domain.ErrRetrievalDepth, query.Offset, query.Limit, s.search.MaxCandidatesPerMode)
+			"%w: offset %d starts past the %d ids a mode retrieves",
+			domain.ErrRetrievalDepth, query.Offset, s.search.MaxCandidatesPerMode)
 	}
 	return nil
 }

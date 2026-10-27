@@ -392,7 +392,7 @@ func TestAnOversizeLimitIsClampedAndAnUnreachablePageIsRefused(t *testing.T) {
 
 	if _, _, err := service.Discover(
 		t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"},
-		discover.Page{Limit: 20, Offset: 490}); err == nil {
+		discover.Page{Limit: 20, Offset: 500}); err == nil {
 		t.Error("a page past the retrieval depth was answered; want a refusal naming the boundary")
 	}
 }

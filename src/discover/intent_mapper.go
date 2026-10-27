@@ -222,13 +222,13 @@ func mapPage(page Page, search config.Search) (limit, offset int, faults []domai
 		offset = 0
 	}
 
-	if offset+limit > search.MaxCandidatesPerMode {
+	if offset >= search.MaxCandidatesPerMode {
 		faults = append(faults, domain.Fault{
 			Path: "$['offset']",
 			Code: string(beckn.CodeSchemaInvalidFormat),
 			Message: fmt.Sprintf(
-				"offset %d plus limit %d passes the retrieval depth of %d",
-				offset, limit, search.MaxCandidatesPerMode),
+				"offset %d starts past the retrieval depth of %d",
+				offset, search.MaxCandidatesPerMode),
 		})
 	}
 	return limit, offset, faults
