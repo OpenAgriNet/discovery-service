@@ -66,11 +66,11 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	observeIntent(ctx, envelope.Context, action.Intent)
 
-	page, err := pageFrom(r.URL.Query(), action)
-	if err != nil {
+	if err := rejectQueryStringPagination(r.URL.Query()); err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 		return
 	}
+	page := pageFrom(action)
 
 	answer, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
 	if err != nil {
@@ -95,13 +95,19 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// pageFrom reads the page from the body; ?limit= is refused (ADR-0017).
-func pageFrom(query url.Values, action beckn.DiscoverAction) (Page, error) {
+// rejectQueryStringPagination refuses a page the request signature does not
+// cover (ADR-0017).
+func rejectQueryStringPagination(query url.Values) error {
 	if query.Has("limit") || query.Has("offset") {
-		return Page{}, apperrors.Schema(beckn.CodeSchemaInvalidFormat,
+		return apperrors.Schema(beckn.CodeSchemaInvalidFormat,
 			"pagination moved from the query string to message.limit and message.offset").At(messageRoot)
 	}
-	return Page{Limit: action.Limit, Offset: action.Offset}, nil
+	return nil
+}
+
+// pageFrom reads the page out of the signed body.
+func pageFrom(action beckn.DiscoverAction) Page {
+	return Page{Limit: action.Limit, Offset: action.Offset}
 }
 
 // responseContext turns the request's envelope into the response's. The

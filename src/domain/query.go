@@ -125,8 +125,13 @@ type SearchQuery struct {
 // SearchResult is one page of an answered query.
 //
 // Degraded names the retrieval modes that did not contribute and reaches the
-// caller as the X-Beckn-Degraded header, not a body key (C11). Total counts
-// the ranked ids before paging (ADR-0017).
+// caller as the X-Beckn-Degraded header, not a body key (C11).
+//
+// Total is the length of the ranked list the page was cut from, before paging.
+// It is NOT yet the number a caller can page to: a backend may rank deeper than
+// the retrieval depth, so the request layer caps it at Search.MaxCandidatesPerMode
+// before putting it on the wire (ADR-0017). Capping there rather than here is
+// what lets a backend that has no depth of its own still answer correctly.
 type SearchResult struct {
 	Catalogs []Catalog
 	Degraded []string

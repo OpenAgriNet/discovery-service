@@ -25,7 +25,13 @@ signature does not cover. The OAN profile of the spec moves them into
    still reports it.
 5. **`total` is the ranked list's length, capped at
    `maxCandidatesPerMode`** — the last page a caller can fetch.
-6. **Order is stable across pages.** RRF breaks score ties by id.
+6. **The cap is applied to the fused list before the page is cut.**
+   `maxCandidatesPerMode` counts ids *per retrieval mode*, so fusing several
+   modes yields a list longer than any one of them returned. Slicing first and
+   capping the count afterwards produces a last page carrying more resources
+   than `total` leaves room for, and `offset + count == total` never becomes
+   true. The storage layer caps, and the request layer reports what it is given.
+7. **Order is stable across pages.** RRF breaks score ties by id.
 
 ## Alternatives considered
 
@@ -48,3 +54,8 @@ signature does not cover. The OAN profile of the spec moves them into
   depth. The spec allows this: a CN must treat it as the end of what is
   pageable, not as an absolute match count.
 - A page past the retrieval depth is a 400, not an empty page.
+- `offset >= maxCandidatesPerMode` is the refusal test, not
+  `offset + limit > maxCandidatesPerMode`. `pageOf` already truncates a page
+  whose tail runs past the end, so testing the tail refuses the last page at
+  every limit that does not divide the depth exactly, and the caller never
+  reaches the `offset + count == total` that marks the end of the results.

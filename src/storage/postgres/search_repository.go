@@ -121,14 +121,9 @@ func (s *SearchRepository) Search(
 		lists = append(lists, ids)
 	}
 
-	// Trimmed to the depth BEFORE the page is cut, because the cap counts ids
-	// per mode and fusing several of them yields more than any one retrieved.
-	// Total is this list's length, so a page cut from an untrimmed one would run
-	// past the total the caller pages against.
+	// Capped before the page is cut, not after (ADR-0017).
 	fused := RRF(lists...)
-	if len(fused) > s.search.MaxCandidatesPerMode {
-		fused = fused[:s.search.MaxCandidatesPerMode]
-	}
+	fused = fused[:s.search.CapToDepth(len(fused))]
 	page := pageOf(fused, query.Offset, query.Limit)
 
 	catalogs, err := s.hydrator.Hydrate(ctx, page, scope)
@@ -142,7 +137,7 @@ func (s *SearchRepository) Search(
 // before anything runs, and named in the error so the caller can tell it from
 // the end of the results.
 func (s *SearchRepository) withinRetrievalDepth(query domain.SearchQuery) error {
-	if query.Offset >= s.search.MaxCandidatesPerMode {
+	if s.search.OffsetBeyondDepth(query.Offset) {
 		return fmt.Errorf(
 			"%w: offset %d starts past the %d ids a mode retrieves",
 			domain.ErrRetrievalDepth, query.Offset, s.search.MaxCandidatesPerMode)

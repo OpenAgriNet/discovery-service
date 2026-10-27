@@ -146,9 +146,10 @@ type Search struct {
 	MaxPageSize int `env:"SEARCH_MAX_PAGE_SIZE" envDefault:"100"`
 
 	// How many ids one retrieval mode may return into fusion. Also the reachable
-	// pagination depth: a request whose offset + limit passes it is refused, since
-	// slicing past the end of the fused list would answer with an empty page that
-	// reads exactly like the end of the results.
+	// pagination depth: a request whose offset starts at or past it is refused,
+	// because slicing past the end of the fused list would answer with an empty
+	// page that reads exactly like the end of the results. Read it through
+	// OffsetBeyondDepth and CapToDepth rather than comparing against it directly.
 	MaxCandidatesPerMode int `env:"SEARCH_MAX_CANDIDATES_PER_MODE" envDefault:"500"`
 
 	// The largest S_DWITHIN radius a caller may ask for.
@@ -178,6 +179,21 @@ type Search struct {
 	// the whole corpus under a 200 on a text-only intent, which is the widening
 	// MapIntent exists to refuse.
 	EnableTextSearch bool `env:"SEARCH_ENABLE_TEXT_SEARCH" envDefault:"true"`
+}
+
+// OffsetBeyondDepth says whether a page starts at or past the last id a caller
+// can reach. The request layer turns a true into a client fault and the storage
+// layer into a guard; the comparison itself is written once, here, so the two
+// cannot drift into refusing different pages.
+func (s Search) OffsetBeyondDepth(offset int) bool {
+	return offset >= s.MaxCandidatesPerMode
+}
+
+// CapToDepth trims a count to what a caller can page to. Fusing several modes
+// yields more ids than any one of them retrieved, so a fused list is capped
+// before it is either sliced or reported as a total (ADR-0017).
+func (s Search) CapToDepth(n int) int {
+	return min(n, s.MaxCandidatesPerMode)
 }
 
 // Embeddings configures the Embedder seam — one struct for both paths (A3).

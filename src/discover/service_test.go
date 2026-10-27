@@ -81,11 +81,11 @@ func hasMode(modes []domain.Capability, wanted domain.Capability) bool {
 func codeOf(t *testing.T, err error) beckn.ErrorCode {
 	t.Helper()
 
-	fault := apperrors.FromError(err)
-	if fault == nil {
-		t.Fatalf("expected a fault, got nil")
+	if fault := apperrors.FromError(err); fault != nil {
+		return fault.Code
 	}
-	return fault.Code
+	t.Fatalf("expected a fault, got nil")
+	return ""
 }
 
 // A textSearch on a deployment with no semantic mode answers, and says what it

@@ -70,11 +70,13 @@ func (s *Service) Discover(
 
 	return beckn.OnDiscoverAction{
 		Catalogs: render(result.Catalogs),
-		// The applied page, and total capped at the retrieval depth (ADR-0017).
+		// The applied page. Total is capped here, at the one place every
+		// backend's answer passes through, so a store that ranks deeper than
+		// the depth cannot report a total no caller can page to (ADR-0017).
 		Pagination: &beckn.DiscoverPagination{
 			Limit:  query.Limit,
 			Offset: query.Offset,
-			Total:  min(result.Total, s.cfg.Search.MaxCandidatesPerMode),
+			Total:  s.cfg.Search.CapToDepth(result.Total),
 		},
 	}, degraded, nil
 }
