@@ -126,7 +126,7 @@ type SearchQuery struct {
 //
 // Degraded names the retrieval modes that did not contribute and reaches the
 // caller as the X-Beckn-Degraded header, not a body key (C11). Total counts
-// the ranked ids before paging, not a separate count query (A19).
+// the ranked ids before paging (ADR-0017).
 type SearchResult struct {
 	Catalogs []Catalog
 	Degraded []string

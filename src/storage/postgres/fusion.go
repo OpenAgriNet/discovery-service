@@ -36,11 +36,7 @@ func RRF(ranked ...[]string) []string {
 		}
 	}
 
-	// By score, then by id. The tiebreak is not cosmetic: the page is a SLICE of
-	// this list, so two equally-scored ids that swap between runs of the same
-	// query put one of them on both page 1 and page 2 and the other on neither.
-	// Ties are the common case — every id only one mode returned, at the same
-	// rank, scores identically.
+	// By score, then by id, so pages are stable (ADR-0017).
 	slices.SortFunc(order, func(left, right string) int {
 		if byScore := cmp.Compare(scores[right], scores[left]); byScore != 0 {
 			return byScore

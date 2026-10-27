@@ -95,11 +95,7 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// pageFrom reads the page off the body.
-//
-// 0.1.0 read it off the query string. Ignoring a leftover parameter would
-// answer the default page with a 200, and a client walking offsets would loop
-// on page one; refusing it says where the page lives now.
+// pageFrom reads the page from the body; ?limit= is refused (ADR-0017).
 func pageFrom(query url.Values, action beckn.DiscoverAction) (Page, error) {
 	if query.Has("limit") || query.Has("offset") {
 		return Page{}, apperrors.Schema(beckn.CodeSchemaInvalidFormat,

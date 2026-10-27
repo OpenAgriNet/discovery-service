@@ -312,8 +312,7 @@ func TestAnUnavailableModeIsA400WhenTheDeploymentAsksToBe(t *testing.T) {
 	}
 }
 
-// Pagination arrives in the body beside the intent, and an oversize limit is clamped rather than refused (C11's neighbour: the caller
-// still gets the results they asked about).
+// Pagination arrives in the body; an oversize limit is clamped (ADR-0017).
 func TestLimitAndOffsetAreReadFromTheBody(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 	handler := mount(t, repo, settings())
@@ -329,9 +328,7 @@ func TestLimitAndOffsetAreReadFromTheBody(t *testing.T) {
 	}
 }
 
-// The query string carried pagination in 0.1.0. Ignoring it would answer the
-// default page with a 200, and a client walking offsets would loop on page one,
-// so a leftover parameter is refused and the refusal names the new location.
+// A 0.1.0 caller still sending ?limit= must get a 400, not a silent default page.
 func TestQueryStringPaginationIsRefused(t *testing.T) {
 	for _, path := range []string{"/discover?limit=5", "/discover?offset=40"} {
 		t.Run(path, func(t *testing.T) {

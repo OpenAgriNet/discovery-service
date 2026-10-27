@@ -134,8 +134,7 @@ type CatalogStats struct {
 	CategoryCount int `json:"categoryCount"`
 }
 
-// DiscoverAction is the `message` of a discover request. Limit and Offset are
-// the page; zero means "the default".
+// DiscoverAction is the `message` of a discover request.
 type DiscoverAction struct {
 	Intent Intent `json:"intent"`
 	Limit  int    `json:"limit,omitempty"`
@@ -144,20 +143,19 @@ type DiscoverAction struct {
 
 // OnDiscoverAction is the `message` of the discover response.
 //
-// It must NOT grow a Degraded field. The schema is additionalProperties:false
-// with `catalogs` and `pagination` as its only properties, so an extra key is a
-// response that fails its own schema — and `omitempty` would hide that on the
-// ordinary path while shipping the invalid body on the degraded one, the path
-// that matters. The degraded list travels as X-Beckn-Degraded (C11).
+// It must NOT grow a Degraded field. The v2.0.0 schema is
+// additionalProperties:false with only `catalogs` and `pagination`, so an extra
+// key is a response that fails its own schema — and `omitempty` would hide that
+// on the ordinary path while shipping the invalid body on the degraded one, the
+// path that matters. The degraded list travels as X-Beckn-Degraded (C11).
 type OnDiscoverAction struct {
-	Catalogs   []Catalog   `json:"catalogs"`
-	Pagination *Pagination `json:"pagination,omitempty"`
+	Catalogs   []Catalog           `json:"catalogs"`
+	Pagination *DiscoverPagination `json:"pagination,omitempty"`
 }
 
-// Pagination is the page the answer applied, after default and clamp, and the
-// number of results that can be paged through.
-type Pagination struct {
-	Limit  int  `json:"limit"`
-	Offset int  `json:"offset"`
-	Total  *int `json:"total,omitempty"`
+// DiscoverPagination is the page the answer applied (ADR-0017).
+type DiscoverPagination struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+	Total  int `json:"total"`
 }

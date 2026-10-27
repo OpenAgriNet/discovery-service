@@ -30,8 +30,8 @@ import (
 //     not the order: Postgres ranks by ts_rank_cd, memory has no relevance to
 //     rank by. They agree on the stable (catalog_id, id) tail, which the one
 //     deliberately text-free pagination case pins.
-//   - No case asserts a total; there is none (A19). What a paginating caller
-//     depends on is pinned instead — the offset SLICES a stable order.
+//   - The pagination case asserts Total and that the offset SLICES a stable
+//     order.
 //   - No case names `jsonpath` to SEARCH with: since Task 22 Postgres executes
 //     the subset and memory declines it, which is what puts the filter's own
 //     tests on the Postgres side. The one case naming it asserts what a backend

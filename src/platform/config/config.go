@@ -219,19 +219,19 @@ type Validation struct {
 	// beckn.yaml is fetched at boot rather than baked into the image, so a
 	// deployment names the document it validates against.
 	//
-	// The default is a TAG, and that is the whole reason there can be one. This
+	// The default is a SHA, and that is the whole reason there can be one. This
 	// field carried no default until 2026-09-09, on the argument that which spec
 	// a network trusts is not a repository-wide decision — true of a branch,
 	// which would let an upstream merge change the validator under a running
-	// deployment without a deploy. A pinned commit of the OAN profile (which adds
-	// discover pagination) cannot move, so the default names one immutable
-	// document and a network that trusts a different one still overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical
+	// deployment without a deploy. A pinned commit cannot move, so the
+	// default names one immutable document and a network that trusts a different
+	// one still overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical
 	// to it, so the fetch path and an air-gapped mount agree.
 	//
 	// The cost is that boot now makes a network call before falling back to
 	// SpecCachePath. LoadSpecIndex already warns loudly and falls back, so an
 	// offline boot is slower and noisier, not broken.
-	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/OpenAgriNet/protocol-specifications-v2/dfc109759b3781fde74539adc79df63fccbadb83/api/v2.0.0/beckn.yaml"`
+	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/OpenAgriNet/protocol-specifications-v2/a8451c48909e27bb86e26dec21ce7f71c5cb90b2/api/v2.0.0/beckn.yaml"`
 
 	// Where the fetched spec is cached, and what an air-gapped deployment
 	// mounts in place of the fetch.

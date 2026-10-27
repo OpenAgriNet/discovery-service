@@ -69,7 +69,7 @@ func bindings() []binding {
 
 		{"DiscoverAction", DiscoverAction{}, schemaPath("DiscoverAction")},
 		{"OnDiscoverAction", OnDiscoverAction{}, schemaPath("OnDiscoverAction")},
-		{"Pagination", Pagination{}, schemaPath("Pagination")},
+		{"DiscoverPagination", DiscoverPagination{}, schemaPath("DiscoverPagination")},
 
 		{"Nack", Nack{}, schemaPath("NackBadRequest")},
 		{"NackMessage", NackMessage{}, schemaPath("NackBadRequest", "properties", "message")},
@@ -135,7 +135,7 @@ func TestWireStructsMatchTheSpecification(t *testing.T) {
 
 	var found []deviation
 	for _, b := range bindings() {
-		found = append(found, deviations(t, b, flattenAllOf(t, spec, resolve(t, spec, b.path)))...)
+		found = append(found, deviations(t, b, resolve(t, spec, b.path))...)
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].key < found[j].key })
 
@@ -156,40 +156,6 @@ func TestWireStructsMatchTheSpecification(t *testing.T) {
 			t.Errorf("allowlist entry %q (%s) matches no deviation; the struct or the spec has changed", key, why)
 		}
 	}
-}
-
-// flattenAllOf merges the properties of an allOf node's members into one
-// properties map, following each member's local $ref. Pagination is the first
-// bound schema composed this way — allOf[PaginationParams, {total}] in the OAN
-// profile — and a walk that read only the top-level `properties` would find
-// none and fail the binding rather than check it. A node without allOf comes
-// back unchanged.
-func flattenAllOf(t *testing.T, spec map[string]any, node map[string]any) map[string]any {
-	t.Helper()
-
-	members, ok := node["allOf"].([]any)
-	if !ok {
-		return node
-	}
-
-	merged := map[string]any{}
-	for _, member := range members {
-		part, ok := member.(map[string]any)
-		if !ok {
-			t.Fatalf("an allOf member is not an object: %v", member)
-		}
-		if ref, isRef := part["$ref"].(string); isRef {
-			part = resolve(t, spec, strings.Split(strings.TrimPrefix(ref, "#/"), "/"))
-		}
-		properties, ok := flattenAllOf(t, spec, part)["properties"].(map[string]any)
-		if !ok {
-			t.Fatalf("an allOf member declares no properties: %v", member)
-		}
-		for name, schema := range properties {
-			merged[name] = schema
-		}
-	}
-	return map[string]any{"properties": merged}
 }
 
 // deviations compares one struct's JSON tags against its schema node's

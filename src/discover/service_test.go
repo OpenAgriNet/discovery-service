@@ -397,8 +397,7 @@ func TestAnOversizeLimitIsClampedAndAnUnreachablePageIsRefused(t *testing.T) {
 	}
 }
 
-// Total is what the backend matched, capped at the retrieval depth: past it no
-// page can be fetched, so a larger number would point the caller at a refusal.
+// A total past the retrieval depth would point the caller at a page it cannot fetch.
 func TestTheTotalIsReturnedAndCappedAtTheRetrievalDepth(t *testing.T) {
 	for matched, want := range map[int]int{42: 42, 900: settings().Search.MaxCandidatesPerMode} {
 		repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Total: matched}}
@@ -408,8 +407,8 @@ func TestTheTotalIsReturnedAndCappedAtTheRetrievalDepth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Discover: %v", err)
 		}
-		if got := answer.Pagination.Total; got == nil || *got != want {
-			t.Errorf("matched %d: Total = %v, want %d", matched, got, want)
+		if got := answer.Pagination.Total; got != want {
+			t.Errorf("matched %d: Total = %d, want %d", matched, got, want)
 		}
 	}
 }

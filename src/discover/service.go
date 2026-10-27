@@ -33,10 +33,9 @@ func NewService(repo domain.SearchRepository, cfg config.Config) *Service {
 	return &Service{repo: repo, cfg: cfg}
 }
 
-// Discover answers one intent with one page of catalogs, the page it applied,
-// and the retrieval modes that did not contribute. The degraded list is
-// returned beside the message rather than inside it, because it reaches the
-// caller as a header (C11).
+// Discover answers one intent with one page of catalogs and the retrieval modes
+// that did not contribute. The degraded list is returned beside the catalogs
+// rather than inside them, because it reaches the caller as a header (C11).
 func (s *Service) Discover(
 	ctx context.Context, envelope beckn.Context, intent beckn.Intent, page Page,
 ) (beckn.OnDiscoverAction, []string, error) {
@@ -69,15 +68,14 @@ func (s *Service) Discover(
 	degraded = append(degraded, result.Degraded...)
 	observeRetrieval(ctx, modes, degraded)
 
-	// Capped at the retrieval depth, the last page a caller can fetch;
-	// a true count past it is a count query per request (A19).
-	total := min(result.Total, s.cfg.Search.MaxCandidatesPerMode)
-
 	return beckn.OnDiscoverAction{
 		Catalogs: render(result.Catalogs),
-		// What MapIntent applied, not what was asked: a caller that sent 5000
-		// must read back the 100 it got, or its next offset skips results.
-		Pagination: &beckn.Pagination{Limit: query.Limit, Offset: query.Offset, Total: &total},
+		// The applied page, and total capped at the retrieval depth (ADR-0017).
+		Pagination: &beckn.DiscoverPagination{
+			Limit:  query.Limit,
+			Offset: query.Offset,
+			Total:  min(result.Total, s.cfg.Search.MaxCandidatesPerMode),
+		},
 	}, degraded, nil
 }
 
