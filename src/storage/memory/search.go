@@ -62,9 +62,12 @@ func (r *Repository) Search(
 		page = nil
 	}
 
+	// The full ranked length: this store has no retrieval depth to cap against,
+	// and domain.SearchResult.Total says the request layer caps it.
 	return domain.SearchResult{
 		Catalogs: r.hydrate(pageOf(page, query.Offset, query.Limit), scope),
 		Degraded: degraded,
+		Total:    len(page),
 	}, nil
 }
 
@@ -285,11 +288,7 @@ func pageOf(ranked []domain.Resource, offset, limit int) []domain.Resource {
 	if offset >= len(ranked) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(ranked) {
-		end = len(ranked)
-	}
-	return ranked[offset:end]
+	return ranked[offset:min(offset+limit, len(ranked))]
 }
 
 // hydrate folds the page back into catalogs, in the PAGE's order.

@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -351,10 +350,7 @@ func (s *service) discoverOn(t *testing.T, networkID string, intent map[string]a
 
 // discoverPaged is discover with an explicit page size.
 //
-// The page is a query parameter rather than a member of the intent: `limit` and
-// `offset` are read off the URL, which is the one part of the transport the
-// plan does not spell out. Named here rather than in each scenario so that if
-// it moves into the body there is one call site to move.
+// The page is `limit` in the message, beside the intent.
 //
 // Two scenarios need it because the default page is twenty and their fixtures
 // are forty: a scenario asserting on a count would otherwise be asserting on
@@ -364,12 +360,12 @@ func (s *service) discoverPaged(
 ) []beckn.Catalog {
 	t.Helper()
 
-	body := envelope(beckn.ActionDiscover, map[string]any{"intent": intent})
+	body := envelope(beckn.ActionDiscover, map[string]any{"intent": intent, "limit": limit})
 	if networkID != "" {
 		onNetwork(networkID)(nested(body, "context"))
 	}
 
-	answer := s.post(t, "/discover?limit="+strconv.Itoa(limit), body)
+	answer := s.post(t, "/discover", body)
 	if answer.status != http.StatusOK {
 		t.Fatalf("POST /discover = %d, want 200\nbody: %s", answer.status, answer.body)
 	}

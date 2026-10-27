@@ -146,9 +146,10 @@ type Search struct {
 	MaxPageSize int `env:"SEARCH_MAX_PAGE_SIZE" envDefault:"100"`
 
 	// How many ids one retrieval mode may return into fusion. Also the reachable
-	// pagination depth: a request whose offset + limit passes it is refused, since
-	// slicing past the end of the fused list would answer with an empty page that
-	// reads exactly like the end of the results.
+	// pagination depth: a request whose offset starts at or past it is refused,
+	// because slicing past the end of the fused list would answer with an empty
+	// page that reads exactly like the end of the results. Read it through
+	// OffsetBeyondDepth and CapToDepth rather than comparing against it directly.
 	MaxCandidatesPerMode int `env:"SEARCH_MAX_CANDIDATES_PER_MODE" envDefault:"500"`
 
 	// The largest S_DWITHIN radius a caller may ask for.
@@ -178,6 +179,21 @@ type Search struct {
 	// the whole corpus under a 200 on a text-only intent, which is the widening
 	// MapIntent exists to refuse.
 	EnableTextSearch bool `env:"SEARCH_ENABLE_TEXT_SEARCH" envDefault:"true"`
+}
+
+// OffsetBeyondDepth says whether a page starts at or past the last id a caller
+// can reach. The request layer turns a true into a client fault and the storage
+// layer into a guard; the comparison itself is written once, here, so the two
+// cannot drift into refusing different pages.
+func (s Search) OffsetBeyondDepth(offset int) bool {
+	return offset >= s.MaxCandidatesPerMode
+}
+
+// CapToDepth trims a count to what a caller can page to. Fusing several modes
+// yields more ids than any one of them retrieved, so a fused list is capped
+// before it is either sliced or reported as a total (ADR-0017).
+func (s Search) CapToDepth(n int) int {
+	return min(n, s.MaxCandidatesPerMode)
 }
 
 // Embeddings configures the Embedder seam — one struct for both paths (A3).
@@ -219,11 +235,11 @@ type Validation struct {
 	// beckn.yaml is fetched at boot rather than baked into the image, so a
 	// deployment names the document it validates against.
 	//
-	// The default is a TAG, and that is the whole reason there can be one. This
+	// The default is a SHA, and that is the whole reason there can be one. This
 	// field carried no default until 2026-09-09, on the argument that which spec
 	// a network trusts is not a repository-wide decision — true of a branch,
 	// which would let an upstream merge change the validator under a running
-	// deployment without a deploy. refs/tags/core-v2.0.0-lts cannot move, so the
+	// deployment without a deploy. A pinned commit cannot move, so the
 	// default names one immutable document and a network that trusts a different
 	// one still overrides it. tests/testdata/beckn-v2.0.0.yaml is byte-identical
 	// to it, so the fetch path and an air-gapped mount agree.
@@ -231,7 +247,7 @@ type Validation struct {
 	// The cost is that boot now makes a network call before falling back to
 	// SpecCachePath. LoadSpecIndex already warns loudly and falls back, so an
 	// offline boot is slower and noisier, not broken.
-	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml"`
+	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/OpenAgriNet/protocol-specifications-v2/a8451c48909e27bb86e26dec21ce7f71c5cb90b2/api/v2.0.0/beckn.yaml"`
 
 	// Where the fetched spec is cached, and what an air-gapped deployment
 	// mounts in place of the fetch.

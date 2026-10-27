@@ -312,14 +312,12 @@ func TestAnUnavailableModeIsA400WhenTheDeploymentAsksToBe(t *testing.T) {
 	}
 }
 
-// Pagination arrives as query parameters rather than inside the intent, and an
-// oversize limit is clamped rather than refused (C11's neighbour: the caller
-// still gets the results they asked about).
-func TestLimitAndOffsetAreReadFromTheQueryString(t *testing.T) {
+// Pagination arrives in the body; an oversize limit is clamped (ADR-0017).
+func TestLimitAndOffsetAreReadFromTheBody(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 	handler := mount(t, repo, settings())
 
-	if got := post(t, handler, "/discover?limit=1000&offset=40", wheat).Code; got != http.StatusOK {
+	if got := post(t, handler, "/discover", `{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":1000,"offset":40}}`).Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want 200 — an oversize limit is clamped, not refused", got)
 	}
 	if repo.gotQuery.Limit != settings().Search.MaxPageSize {
@@ -330,13 +328,37 @@ func TestLimitAndOffsetAreReadFromTheQueryString(t *testing.T) {
 	}
 }
 
+// A 0.1.0 caller still sending ?limit= must get a 400, not a silent default page.
+func TestQueryStringPaginationIsRefused(t *testing.T) {
+	for _, path := range []string{"/discover?limit=5", "/discover?offset=40"} {
+		t.Run(path, func(t *testing.T) {
+			repo := &stubRepo{capabilities: everything()}
+
+			recorder := post(t, mount(t, repo, settings()), path, wheat)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
+			}
+			body := recorder.Body.String()
+			if !strings.Contains(body, string(beckn.CodeSchemaInvalidFormat)) {
+				t.Errorf("body = %s, want SCH_INVALID_FORMAT", body)
+			}
+			if !strings.Contains(body, "message.limit") {
+				t.Errorf("body = %s, want the refusal to name message.limit/offset", body)
+			}
+			if repo.calls != 0 {
+				t.Errorf("the backend was searched %d times; a refused page runs no query", repo.calls)
+			}
+		})
+	}
+}
+
 // A limit that is not a number is refused rather than read as zero. Zero means
 // "the default page size", so a typo would be answered confidently with a page
 // the caller did not ask for.
 func TestAPaginationParameterThatIsNotANumberIsRefused(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 
-	recorder := post(t, mount(t, repo, settings()), "/discover?limit=twenty", wheat)
+	recorder := post(t, mount(t, repo, settings()), "/discover", `{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":"twenty"}}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
 	}
@@ -345,13 +367,12 @@ func TestAPaginationParameterThatIsNotANumberIsRefused(t *testing.T) {
 	}
 }
 
-// The same refusal for offset, which pageFrom reads with its own call to
-// intParam rather than reusing limit's — a valid limit must not mask an
-// unreadable offset.
+// The same refusal for offset — a valid limit must not mask an unreadable
+// offset.
 func TestAnUnreadableOffsetIsRefused(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 
-	recorder := post(t, mount(t, repo, settings()), "/discover?limit=10&offset=twenty", wheat)
+	recorder := post(t, mount(t, repo, settings()), "/discover", `{"context":{"action":"discover"},"message":{"intent":{"textSearch":"wheat"},"limit":10,"offset":"twenty"}}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", recorder.Code, recorder.Body)
 	}

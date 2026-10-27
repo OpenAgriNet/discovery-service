@@ -69,6 +69,7 @@ func bindings() []binding {
 
 		{"DiscoverAction", DiscoverAction{}, schemaPath("DiscoverAction")},
 		{"OnDiscoverAction", OnDiscoverAction{}, schemaPath("OnDiscoverAction")},
+		{"DiscoverPagination", DiscoverPagination{}, schemaPath("DiscoverPagination")},
 
 		{"Nack", Nack{}, schemaPath("NackBadRequest")},
 		{"NackMessage", NackMessage{}, schemaPath("NackBadRequest", "properties", "message")},
