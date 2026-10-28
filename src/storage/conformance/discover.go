@@ -38,7 +38,7 @@ import (
 //     owes if it DECLARES the mode, and skips on one that does not.
 func DiscoverCases(resolution int) []Case {
 	return []Case{
-		theScopeIsExactlyTheNetworksTheCallerNamed(),
+		anOmittedNetworkSearchesEveryNetwork(),
 		theGateHidesWhatIsNotLive(),
 		aWindowThatWrapsMidnightIsLiveAndItsForwardTwinIsNot(),
 		schemaFilteringComparesContextAndTypeAsAPair(),
@@ -272,7 +272,7 @@ func dateRange(from, to time.Time) *domain.TimePeriodPatch {
 
 // The three scoping rules in one story, because a backend can get any one of
 // them right while breaking the next (A29).
-func theScopeIsExactlyTheNetworksTheCallerNamed() Case {
+func anOmittedNetworkSearchesEveryNetwork() Case {
 	publish := func(id, resource string, audience ...string) Publish {
 		return Publish{
 			Patch: domain.CatalogPatch{

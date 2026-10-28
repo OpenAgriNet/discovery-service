@@ -329,9 +329,8 @@ func TestEveryWireStructIsBound(t *testing.T) {
 		bound[b.name] = true
 	}
 
-	// NetworkIDs models `Context.properties.networkId`, which is a oneOf of a
-	// string and an array. The walk compares struct fields to schema
-	// properties, and that node declares none.
+	// NetworkIDs models a oneOf node, which declares no properties for the
+	// walk to compare its (zero) fields against.
 	bound["NetworkIDs"] = true
 
 	for _, name := range exportedStructNames(t) {

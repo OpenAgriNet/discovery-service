@@ -340,7 +340,7 @@ func TestTwoDegradedModesAreBothReturned(t *testing.T) {
 // The config carries a network id precisely so the assertion has something to
 // fail against: with App.Network empty, a service that wrongly defaulted would
 // pass this test by coincidence.
-func TestAnOmittedNetworkIDBecomesTheWildcard(t *testing.T) {
+func TestAnOmittedNetworkIDSearchesEveryNetwork(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 
 	cfg := settings()
@@ -357,7 +357,7 @@ func TestAnOmittedNetworkIDBecomesTheWildcard(t *testing.T) {
 }
 
 // Both wire shapes reach the repository as the set the caller named.
-func TestTheNetworksThatWereSentScopeTheSearch(t *testing.T) {
+func TestANetworkIDThatWasSentScopesTheSearch(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		sent beckn.NetworkIDs

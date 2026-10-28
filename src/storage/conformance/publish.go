@@ -29,7 +29,7 @@ func PublishCases() []Case {
 		deriveWritesReachTheStore(),
 		mergeKeepsAnOmittedResource(),
 		fullRemovesAnOmittedResource(),
-		anEmptyVisibleToBecomesPublic(),
+		anEmptyVisibleToBecomesTheNetwork(),
 		theUpsertReturnsTheStoredRowOnConflict(),
 		fieldLevelMergeSurvivesTheRoundTrip(),
 		derivationRunsAfterTheMerge(),
@@ -271,7 +271,7 @@ func fullRemovesAnOmittedResource() Case {
 }
 
 // The writer's own copy of the default, the one that survives a mapper change.
-func anEmptyVisibleToBecomesPublic() Case {
+func anEmptyVisibleToBecomesTheNetwork() Case {
 	patch := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
 	patch.VisibleTo = nil
 

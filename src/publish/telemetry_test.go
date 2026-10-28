@@ -114,9 +114,10 @@ func TestTheShapeOfAPublishIsObserved(t *testing.T) {
 }
 
 // The resolved set, not the sent one, and that is a deliberate difference from
-// publish.catalog_types beside it. Reporting an empty list would say the
-// catalog reached no network, which is the one thing that did not happen.
-func TestAnOmittedVisibleToIsReportedAsTheWildcard(t *testing.T) {
+// publish.catalog_types beside it. The question this attribute answers is which
+// networks the data reached, and for an omitted visibleTo that is every one —
+// reporting an empty list would say it reached none, which did not happen.
+func TestAnOmittedVisibleToResolvesToTheRequestsOwnNetwork(t *testing.T) {
 	record := recorded(t, `{"context":{"action":"publish","networkId":"oan"},
 		"message":{"catalogs":[{"id":"c1"}]}}`)
 

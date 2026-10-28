@@ -527,7 +527,7 @@ func TestDeriveRunsAgainstTheMergedDocument(t *testing.T) {
 
 // The envelope's network no longer decides the audience: an unstated one is
 // public whoever sent it.
-func TestTheEnvelopeNetworkDoesNotDecideTheAudience(t *testing.T) {
+func TestTheEnvelopeNetworkWinsOverTheConfiguredOne(t *testing.T) {
 	repo := newRepo()
 	service := newService(t, repo, &recordingReplicator{})
 

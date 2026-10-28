@@ -29,7 +29,7 @@ func observePublish(ctx context.Context, _ beckn.Context, action beckn.CatalogPu
 
 	fact.ObserveStrings(ctx, fact.PublishProviderIDs, publisherIDs(action.Catalogs))
 
-	types, modes, networks := directives(action)
+	types, modes, networks := directives(action, "")
 	fact.ObserveStrings(ctx, fact.PublishCatalogTypes, types)
 	fact.ObserveStrings(ctx, fact.PublishUpdateModes, modes)
 	fact.ObserveStrings(ctx, fact.PublishVisibleTo, networks)
@@ -70,7 +70,9 @@ func publisherIDs(catalogs []beckn.Catalog) []string {
 // would be invisible — the span would say MERGE while the row was replaced. The
 // loop walks the CATALOGS and looks the directive up, so a catalog with no
 // directive at all resolves the same way as one naming only catalogId.
-func directives(action beckn.CatalogPublishAction) (types, modes, networks []string) {
+func directives(
+	action beckn.CatalogPublishAction, _ string,
+) (types, modes, networks []string) {
 	for _, catalog := range action.Catalogs {
 		sent, _ := directiveFor(action, catalog.ID)
 		directive := applyDirectiveDefaults(sent, catalog.ID, "")

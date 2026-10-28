@@ -277,6 +277,9 @@ func TestQuantifierNoneInvertsTheMatch(t *testing.T) {
 // Scenario 29. The three scoping rules, in one story, because a service can
 // get any one of them right while breaking the next.
 //
+// Renamed: it was TestOmittedNetworkIDSearchesEveryNetwork, which is now the
+// opposite of what it asserts.
+//
 // Every assertion is a search; the three catalogs behind them never change. A
 // caller sees the networks it named and nothing else, and public is a network
 // it names rather than a bonus it is handed.

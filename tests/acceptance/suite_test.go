@@ -234,8 +234,7 @@ func onNetwork(id string) func(map[string]any) {
 	return func(context map[string]any) { context["networkId"] = id }
 }
 
-// onNetworks is the array form of the same field, which is how a caller asks
-// for its own network and the public catalogs in one request.
+// onNetworks is the ARRAY form of the same field.
 func onNetworks(ids ...string) func(map[string]any) {
 	return func(context map[string]any) { context["networkId"] = ids }
 }
@@ -335,29 +334,14 @@ func (s *service) discover(t *testing.T, intent map[string]any) []beckn.Catalog 
 	return body.Message.Catalogs
 }
 
-// discoverOn is discover scoped to one network, sent as the STRING form of
-// context.networkId. discoverOnAll below sends the array form.
+// discoverOn is discover scoped to one network, which is what makes a
+// visibleTo gate observable: an intent carrying no networkId searches only the
+// public catalogs, so a scenario about a narrow one has to name it.
 func (s *service) discoverOn(t *testing.T, networkID string, intent map[string]any) []beckn.Catalog {
 	t.Helper()
 
-	return s.discoverScoped(t, intent, onNetwork(networkID))
-}
-
-// discoverOnAll is the same request with the ARRAY form of networkId, which is
-// how a caller asks for its own network and the public catalogs at once.
-func (s *service) discoverOnAll(t *testing.T, ids []string, intent map[string]any) []beckn.Catalog {
-	t.Helper()
-
-	return s.discoverScoped(t, intent, onNetworks(ids...))
-}
-
-func (s *service) discoverScoped(
-	t *testing.T, intent map[string]any, scope func(map[string]any),
-) []beckn.Catalog {
-	t.Helper()
-
 	answer := s.post(t, "/discover",
-		envelope(beckn.ActionDiscover, map[string]any{"intent": intent}, scope))
+		envelope(beckn.ActionDiscover, map[string]any{"intent": intent}, onNetwork(networkID)))
 	if answer.status != http.StatusOK {
 		t.Fatalf("POST /discover = %d, want 200\nbody: %s", answer.status, answer.body)
 	}
@@ -914,4 +898,21 @@ func normalised(t *testing.T, want any) any {
 		t.Fatalf("decode the expectation: %v", err)
 	}
 	return decoded
+}
+
+// discoverOnAll is discoverOn with the array form of networkId.
+func (s *service) discoverOnAll(t *testing.T, ids []string, intent map[string]any) []beckn.Catalog {
+	t.Helper()
+
+	answer := s.post(t, "/discover",
+		envelope(beckn.ActionDiscover, map[string]any{"intent": intent}, onNetworks(ids...)))
+	if answer.status != http.StatusOK {
+		t.Fatalf("POST /discover = %d, want 200\nbody: %s", answer.status, answer.body)
+	}
+
+	var body struct {
+		Message beckn.OnDiscoverAction `json:"message"`
+	}
+	answer.decode(t, &body)
+	return body.Message.Catalogs
 }

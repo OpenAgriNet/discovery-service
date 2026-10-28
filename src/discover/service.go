@@ -45,9 +45,8 @@ func (s *Service) Discover(
 	}
 	reportPartials(ctx, partial)
 
-	// From the ENVELOPE, and NOT defaulted to config.App.Network: naming no
-	// network means the public catalogs, not this deployment's own. Resolved
-	// HERE so no backend carries the rule a second time.
+	// From the ENVELOPE, never config.App.Network. Resolved here so no backend
+	// carries the rule a second time.
 	query.NetworkIDs = scopedNetworks(envelope.NetworkID)
 
 	modes, degraded, err := s.negotiate(query)
@@ -287,8 +286,7 @@ func reportPartials(ctx context.Context, partial []domain.Fault) {
 	}
 }
 
-// scopedNetworks is what the caller asked for, or the public catalogs when
-// they asked for nothing.
+// scopedNetworks is what the caller named, or the public catalogs if nothing.
 func scopedNetworks(asked beckn.NetworkIDs) []string {
 	if networks := asked.Networks(); len(networks) > 0 {
 		return networks
