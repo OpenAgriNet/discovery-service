@@ -80,10 +80,12 @@ Every task inherits these.
 The PRD and `beckn.yaml` v2.0.0 disagree in twelve places, the spec
 contradicts itself in a thirteenth, it is silent in a fourteenth, and in a
 fifteenth it declares a field that no value can satisfy. These resolutions are
-binding. C8, C9 and
+binding. C9 and
 C10 are **deliberate deviations** — cases where this service knowingly does
 something other than what the spec says, each with the reason written down,
-because an undocumented deviation is indistinguishable from a bug. C13 is not a
+because an undocumented deviation is indistinguishable from a bug. C8 was the
+third until **A28** made it conformant; its row keeps the deviation's reasoning
+because that reasoning is what A28 traded away. C13 is not a
 deviation but a choice between two things the schema says at once.
 
 | | Conflict | Resolution |
@@ -95,7 +97,7 @@ deviation but a choice between two things the schema says at once.
 | **C5** | PRD requires categories; the spec has **no `category` field anywhere**. `Resource` is exactly `{id, descriptor, resourceAttributes}`, and `Intent` is `additionalProperties: false` with no category filter | No column, no index, no derivation. `stats.categoryCount` in the publish ack *is* in the spec, so it is answered as the count of distinct `@type` values in the catalog — the only grouping the schema actually has |
 | **C6** | `Context` declares no `required` list, so L1 alone cannot reject a missing `transactionId` | Envelope rules are enforced separately by struct tags: `action`, `version`(=2.0.0), `messageId`(uuid4), `transactionId`(uuid4), `timestamp`(RFC3339) required. `senderId`, `receiverId`, `networkId` stay optional (**A24** — the two participant DIDs are unverified in this phase, and a required field this service cannot check would demand an identity and then take the caller's word for it; `networkId` is a filter with a default, C8). Runs even when L1 is off. **The same absence is what lets OAN decline `bapId`/`bppId` in `context` at no cost.** The spec's prose says the context "MUST include at minimum … `bapId` or `bppId`" (`:66-72`), and its machine-readable half says nothing at all: `Context` carries no `required`, no `additionalProperties` and no `oneOf`/`anyOf`, so an envelope with `senderId`/`receiverId` and neither legacy id validates cleanly. `senderId` and `receiverId` are themselves declared properties of that same schema — OAN is *selecting from* the spec's own property list, not deviating from it. This is one of the few places the spec's prose and its schema disagree with each other rather than with us, and the rule "the schema wins" resolves it in OAN's favour. Unlike `Catalog`, which closes with `additionalProperties: false` and so pins `bppId` as the only accepted spelling there |
 | **C7** | Validation produces many faults, and `Error` is singular. But `Error.details` is itself `additionalProperties: false` with exactly two keys, `path` and `cause` — a list of extra pointers cannot go there and still validate | Two answers, because the spec already supplies both. **Publish:** `CatalogProcessingResult.errors` is natively `array of Error`, so every fault is its own `Error` and there is nothing to pack. **A NACK:** one `Error`, and each remaining fault is the `details.cause` of the one before it — a chain, which is exactly what that self-referencing field is documented for. `details.path` is a JSONPath (`$.message.publishDirectives[1]`), the form the spec's own example uses. No fault is dropped silently |
-| **C8** | `publishDirectives.visibleTo`: *"When omitted, the catalog is visible to all eligible subscribers"* | **Deviation.** Omitted or empty becomes `[network]` — the request's `networkId`, else `APP_NETWORK_ID` (`mahavistar`, `bharatvistar`, …). Publishing to every network by a typo is the worse failure of the two, and a publisher wanting network-wide reach can say so explicitly. **The default applies in both update modes** (A9): a republish that does not mention `visibleTo` gets `[network]`, exactly as a first publish does. A field with a declared default is never "absent" by the time the merge sees it, so MERGE and FULL cannot disagree about what a silent publisher meant. An explicit `[]` resolves to `[network]` too |
+| **C8** | `publishDirectives.visibleTo`: *"When omitted, the catalog is visible to all eligible subscribers"* | ~~**Deviation.** Omitted or empty becomes `[network]`~~ — **conformant since A28: omitted or empty becomes `['*']`, the wildcard every network matches.** The deviation's reasoning is kept because it is what A28 traded away: *publishing to every network by a typo is the worse failure of the two, and a publisher wanting network-wide reach can say so explicitly.* It was traded because the opposite typo turned out to be just as real and far quieter — a publisher who omits the field gets a catalog no other network can find, and is told `ACCEPTED`. One of the two failures is visible to its victim; the other is not. **The default still applies in both update modes** (A9): a republish that does not mention `visibleTo` resolves it, exactly as a first publish does. `APP_NETWORK_ID` no longer fills this field |
 | **C9** | With no `publishDirectives`, the spec **infers** the type from content: catalogs with offers are `regular`, catalogs with only resources are `master` | **Deviation.** An absent directive is REGULAR. Honouring the inference would make A1 reject every ordinary catalog that happens to carry no offers — the common case. Only an explicit `catalogType: MASTER`, or a resource carrying `extends`, is refused |
 | **C10** | `Intent.filters.expression` names no grammar normatively, and its only example is RFC 9535: `$[?(@.rating.value >= 4.0 && @.electronic.brand.name == 'Premium Tech')]` | **Deviation.** Only PostgreSQL SQL/JSON path is executed (`$ ? (@.x == "y")`). An RFC 9535 expression is a `400` / `SCH_INVALID_JSONPATH` — never attempted, because a filter that matches nothing is indistinguishable from an honest empty result |
 | **C11** | `OnDiscoverAction` is `additionalProperties: false` with exactly one property, `catalogs`. There is nowhere in the response **body** to say that a retrieval mode was degraded | The list moves to the **`X-Beckn-Degraded`** response header, comma-separated, absent when nothing degraded. The same move C1 makes for `error.type`, for the same reason: a key the schema forbids is not an extension, it is a response that fails validation at the first consumer strict enough to check. `SEARCH_FAIL_ON_UNAVAILABLE_MODE=true` stays available for callers who would rather have a `400` than a header they might not read |
@@ -104,9 +106,10 @@ deviation but a choice between two things the schema says at once.
 | **C14** | The `ErrorCode` enum has **no member for a payload this receiver will not accept on size**. All 76 are checked: the nearest are `AUT_RATE_LIMITED`, which is about pace and carries `Retry-After`, and `POL_NP_CAPACITY_EXCEEDED`, which `NackTooManyRequests` describes as *"a policy-governed engagement capacity limit"* at 429. There is no `SCH_` or `NET_` code for it either | **`POL_NP_CAPACITY_EXCEEDED` at HTTP 413**, and the request body is capped at `SERVER_MAX_REQUEST_BODY_BYTES` (10 MiB) in `Envelope`. The family is right and the status is not the family's: `POL_` is *a refusal this deployment's policy requires rather than one the request earned*, which is exactly what a size ceiling is — the same request succeeds unchanged against a deployment configured to accept it. 403 would send the caller to inspect their credentials for a fault that is in their payload, so `Status()` overrides it to 413 alongside the two overrides already there. **The reuse is safe only because this service runs no engagements**: the spec's other use of this code has no code path here, so within this service the code means one thing and maps to one status. A deployment that grows an engagement lifecycle must give that refusal a code of its own — the one thing it must not do is make this mapping carry two statuses, because `Status()` derives from the code precisely so that two call sites cannot disagree about what a fault is worth on the wire. **413 is not a status the spec declares anywhere**, and that is the deviation worth stating plainly rather than the choice between 403 and 413. `/discover` and `/catalog/publish` each declare exactly `200, 400, 401, 403, 429, 500` (`/discover` adds `202`), and the string `413` does not occur in the 4995-line fixture at all. So a caller generated from the OpenAPI document has no branch for this response and will fall through to its default handler. The body is still schema-valid — it is a `NackBadRequest`-shaped `{message:{status,messageId,error}}` carrying an enum member — so what a strict client loses is the status line, not the payload. It is accepted because the alternative is worse in the direction that matters: 403 is declared but sends the caller to their credentials, and 429 is declared but tells them to retry a body that will be refused identically for ever. A wrong declared status is a wrong instruction; an undeclared correct one is a missing branch. The moment the enum grows a size-refusal member, this reverts to whichever status that member's response schema declares. The ceiling is a knob and not a constant because the largest legitimate body is a property of a deployment's catalogs, not of the protocol; zero is refused at boot, because it reads as *unlimited* and behaves as *refuse everything* |
 | **C15** | `AddOn` is a bare `oneOf: [Resource, Offer]`, and NEITHER branch sets `additionalProperties: false`. `Resource` requires only `id`; `Offer` requires only `id`. **Every possible AddOn value therefore matches both branches, and `oneOf` requires exactly one** | **No resolution is available at this layer, and none is invented.** `Offer.addOns` is refused by L1 with `400 SCH_SCHEMA_VALIDATION_FAILED` at `$…offers[N].addOns[M]` — measured in Task 21b, not inferred. The alternatives were each worse: relaxing `oneOf` to `anyOf` in the vendored spec makes this service accept payloads the network rejects, and excluding `addOns` from L1 makes one field silently unvalidated. A schema that admits no value is a defect to report upstream, and the honest behaviour meanwhile is the 400 that names the path. Nothing else in the pipeline treats `addOns` specially: were the schema fixed tomorrow, A17 already stores it, because it stores the offer whole |
 
-**`networkId` is a filter, not an identity claim, and the two mappers answer
-"it's absent" differently.** On **publish**, absent → scope to
-`APP_NETWORK_ID` — used only to fill an empty `visibleTo` (C8). On
+**`networkId` is a filter, not an identity claim, and since A28 the two
+mappers answer "it's absent" the same way — openly.** On **publish**, absent
+`visibleTo` means `['*']`, the wildcard (C8, A28); `networkId` no longer feeds
+it, and `APP_NETWORK_ID` is not consulted. On
 **discover**, absent means **no network predicate at all**: the query matches
 every network's catalogs, `visible_to` included. That is deliberate, not an
 oversight — `visibleTo` is how a publisher *restricts* a catalog to one or
@@ -116,7 +119,9 @@ scoped to exactly that network, same as always. This is why it cannot be
 required either way — a publish carrying only the five required fields is a
 valid request, and it is what publishers send. The networks a catalog becomes
 discoverable *on* come from `publishDirective.visibleTo`, which is a message
-field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
+field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`) — or the
+single wildcard element `*`, which is how A28 spells "every network" inside
+that same array rather than inventing a second field to say it.
 
 ---
 
@@ -134,7 +139,7 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A8** | `updateMode` becomes a **content** rule, not only a row-set rule. **MERGE** is RFC 7396 JSON Merge Patch against the stored documents — an absent key keeps its stored value, an explicit `null` deletes it, an array replaces wholesale — with `resources` and `offers` matched by `id` rather than by array position. **FULL** replaces the catalog outright, its own columns included: omissions reset to defaults, and resources and offers the payload omits are deleted. Publish therefore becomes read-modify-write under a row lock, and every derived column is computed **after** the merge | 11, 15, 17, 18, 21 |
 | **A10** | **Spatial search is answered as cell-set algebra, not as a prefilter in front of an exact stage.** Every geometry stores two H3 covers — `CONTAINMENT_FULL` (a guaranteed subset, which proves positives) and `CONTAINMENT_OVERLAPPING` (a guaranteed superset, which proves negatives) — and each CQL2 operator becomes an array predicate over the pair. **Seven of the nine operators are answered** where the previous design answered `S_DWITHIN` alone; `S_TOUCHES` and `S_CROSSES` are refused as unapproximable at any resolution rather than deferred. All seven RFC 7946 types work on **both** sides of the constraint, so the Point-only limit and the `NONE`-inversion it caused are gone. The costs are accuracy of one cell (~1.1 km at r8), oversize geometries decided by bounding box, and no path to cadastral precision without PostGIS | 11, 12, 14, 16, 17, 21 |
 | **A11** | **`RequestLogger` moves above `Recover` in the fixed middleware order**, and `Recover` learns to abort rather than write a second body. Nested the other way, a recovered panic answers 500 *outside* the response wrapper, so the panicking request carries no `X-Response-Time` and produces no completion line — the failures are exactly the requests missing from the log. `RequestLogger` writes its line from a `defer`, so an unwinding panic does not take the line with it; `Recover` asks the writer below whether the response is already committed and, when it is, logs once and re-panics with `http.ErrAbortHandler` instead of appending a NACK document to a half-written body under an already-claimed 200 | 8, 20, 23 |
-| **A9** | **Declared defaults are resolved before the merge runs and apply in both update modes.** The directive fields — `catalogType`, `updateMode`, `visibleTo` — are filled by `applyDirectiveDefaults` in `publishOne`, before the mapper runs; `catalog.isActive` and an offer's `resourceIds` are filled in the mapper when it builds the patch. Either way, an omitted field reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule | 11, 15, 17, 18, 21 |
+| **A9** | **Declared defaults are resolved before the merge runs and apply in both update modes.** The directive fields — `catalogType`, `updateMode`, `visibleTo` — are filled by `applyDirectiveDefaults` in `publishOne`, before the mapper runs; `catalog.isActive` and an offer's `resourceIds` are filled in the mapper when it builds the patch. Either way, an omitted field reads as *sent with its default* rather than as *absent*, under MERGE as much as under FULL. Only fields with **no** declared default (`provider`, `validity`, `descriptor`, `resourceAttributes`, the offer body) preserve absence and follow the A8 merge rule. A28 changed what `visibleTo` resolves TO without changing when: it is still filled in both modes, by the same two lines | 11, 15, 17, 18, 21 |
 | **A12** | **L1 reconciles the two publish spellings against the document's own `const`, rather than the document being edited to admit both.** C2 says `publish` and `catalog/publish` are one request; the published schema constrains `context.action` to `const: catalog/publish`, and kin-openapi enforces `const` — so a body spelling it `publish`, which the protocol admits and this service routes, fails L1 on the very field that identified it. `SpecIndex` therefore stores, per action key, both the compiled schema and the canonical spelling **read out of that schema**, and `L1` rewrites `$.context.action` to it. The rewrite happens in the map `L1` decoded for itself, never in the buffered body, so the bytes this service signs, hashes and audits stay identical to the ones the caller sent. Hard-coding the mapping instead would put a second copy of the protocol in Go, which is exactly what D4 rejects; editing `beckn.yaml` would fork the published document | 9 |
 | **A13** | **`messageId` and `transactionId` are required to be a canonical-form UUID of any version, not specifically uuid4.** C6's parenthetical says uuid4; the schema declares `format: uuid`, which the schema wins on. Narrowing to v4 would refuse a conformant v7 id — the version publishers are moving to precisely because it sorts — and refuse it with `CTX_INVALID_FIELD`, which reads as the caller's mistake and is not. The check is a 12-line predicate over the 8-4-4-4-12 hyphenated form rather than a uuid dependency, matching `request_id.go`'s existing choice of `rand.Text` over a library; `urn:uuid:`, braced and unhyphenated spellings are refused, because a service that accepts four spellings of an id cannot correlate on it | 9 |
 | **A14** | **`DeriveFunc` takes the merged catalog by POINTER: `func(merged *Catalog, touched []string) []Fault`.** A8 makes derive the post-merge seam that WRITES `searchText`, `embedding`, `embeddingSourceHash`, `schemaContext`, `schemaType` and the geometry finds onto the merged catalog before the repository stores it. Taking the catalog by value gave it a copy: everything it computed was discarded, and the columns it exists to fill would have gone to the store empty while every test that only checked the returned faults passed. The `[]Fault` return stays, because a fault is a PARTIAL that travels to the response and is not a field of the catalog | 13, 14, 15, 17 |
@@ -151,6 +156,9 @@ field carrying **an array of network ids** (not `PUBLIC`/`PRIVATE`).
 | **A25** | **This service is one of four layers, and the plan was written as if it were all of them. Tasks 25 and 26 are added, and 23a and 23c grow one requirement each.** The other three layers — experience, network, provider — run **beckn-onix** adapters that already emit OTel traces, metrics and audit logs, and reading them changes four things here. **Two questions this plan could not answer are answered elsewhere, not nowhere.** Relevance and accuracy need what the user did *after* the response; the experience-layer adapter has the user and already emits traces, so that is where the outcome event belongs. Performance per location and per commodity is refused here because coordinates and `filters.expression` are on the never-emitted list — but the provider adapter holds both as first-class call-plan fields, so it answers them without anyone widening a deny-list. The H3-coarsening policy call that `opentelemetry.md` raised against 23d is **withdrawn** on those grounds. **Our spans would currently be exported and then silently dropped.** onix's network trace pipeline admits only spans carrying `sender.id`, which this phase makes optional and usually absent, while the stage downstream of it rebuilds `trace_id` from an attribute spelled `transaction_id`, which we planned to spell `beckn.transactionId`. A span that fails either is stored, paid for and invisible, with nothing anywhere reporting an error. The filter is onix's bug to fix — it admits on one key and joins on another — and the spelling is ours: **23c emits `transaction_id` and `message_id` as aliases**, written from the same values at the same call site so they cannot drift. Two, not three — an earlier draft named `receiver.id`, which onix puts only on audit log records; its span spelling is `recipient.id`, which we already emit, so a third alias would be paid for everywhere and read nowhere. Buying admission by inventing a `sender.id` is explicitly refused; missing from a dashboard is recoverable, poisoning the network's only participant-identity join is not. **Metrics were dropped from this service for a reason that covers only half the ground.** A23 removed `metrics.go` because a stateless replica's in-memory counter is a partial nobody can reassemble — true of the facilitator's windowed aggregates, and the reason Task 24 exists. It is not true of a *level*: three configured ceilings (`DATABASE_MAX_CONNS`, the rate limiter, the body size) have no observable distance-to-limit, and a pool at 30 of 32 refuses nothing, so it produces no span to be seen in. An earlier draft of this amendment said a 429 "produces no span, no event and no counter". **That is false, and the correction matters because it is what the task's scope was sized against**: `Trace` is index 1 of `router.go`'s `chain`, above both `Envelope` and `RateLimit`, so a 429 and a body refusal each produce a span carrying the status and — post-23d — an `error` event, both projected from the single `logNack` in `response_writer.go` that every refusal already passes through. Only "no counter" was ever true, and a counter that restates a span fact is the `duration_ms` mistake one signal up. **Task 25 is therefore the levels, not the refusals**, and it is smaller for it. Conflating the operator set with the network set is why this service has no metrics at all. **Task 25** is the operator set and is **not blocked**; Task 24 stays blocked on the registry — *five of its twelve codes have since shipped, on 2026-09-10, derived in `otel/collector.yaml`; the block stands for the other seven. See Task 24.* **And the deny-list is a rule nothing enforces** — five sub-tasks comply with it by hand. **Task 26** turns it into a pin, over the exporter's output rather than over the code that builds it | 23, 24, 25, 26 |
 | **A26** | **The publish geometry budget becomes configuration.** `MaxGeometriesPerCatalog` moves from a `const` in `src/publish/geometry.go` to `config.Geo.MaxGeometriesPerCatalog` / `GEO_MAX_GEOMETRIES_PER_CATALOG`, default **256**, threaded `container → publish.NewService → derive → ExtractGeometries → catalogWalk`. **The default does not change and no behaviour over the ceiling changes** — the extra finds are still `PARTIAL` faults naming their paths, never a silent drop. What changes is who gets to pick the number. **The failure it causes is the wrong shape to be a build-time constant.** Over the ceiling the publish still answers HTTP 200 and the publisher is told, but those shapes are not searchable, and at the operator that reads as missing data rather than as a limit: a 100 km `S_DWITHIN` returns fewer markets than exist and nothing in the response says why. Measured against a real catalog — 273 Maharashtra markets carrying a `Point` under both `coverageAreas` and `market.location`, so 546 shapes — only the first 128 markets were findable by place under 256. **Config rather than a larger constant, for the reason `ResolutionCells` two rows above already gives:** how many shapes a catalog carries is a property of a deployment's publishers, and the ceiling is reached by publishing normally rather than by abuse. That is also the line that decides which neighbours do *not* move: `MaxCatalogWalkDepth` bounds a stack against a pathological document, which is abuse, and `MaxIndexCoverCells` is a property of the index rather than of a catalog. **Zero is refused at boot**, alongside the body ceiling and for the same reason — it reads either as "unlimited" or as "refuse everything", and a catalog that may hold no geometry is undiscoverable by place. **The duplicate declaration in `src/indexing/geo/h3.go` is deleted, not rewired.** It had zero call sites; two constants of one name in two packages is how an operator raises the ceiling in the half that is not read. **What the number stands in for is cells, not shapes:** it times `MaxIndexCoverCells` (8,192) is the worst case one publish can ask the index to hold, so a points-only catalog — one cell per shape — can raise it a long way and a polygon-heavy one cannot | 2, 17, 18 |
 | **A27** | **A deployment may decline free-text retrieval, and declining REFUSES where a missing backend mode degrades.** `Search.EnableTextSearch` / `SEARCH_ENABLE_TEXT_SEARCH`, **true by default** — the value that takes no decision has to be the one that behaves as before the flag existed. With it false, an intent carrying a non-empty `textSearch` is refused in `MapIntent` with `SCH_TYPE_NOT_SUPPORTED` at `$['message']['intent']['textSearch']`, and the message names `spatial` and `filters` as what still works. **The whole content of this amendment is that it is not `FailOnUnavailableMode` under another name**, because the two read alike and behave oppositely. That flag is about a mode the **backend** cannot run — `semantic` on a `noop` deployment — and false there degrades, answering with what the other modes found and naming the gap in `X-Beckn-Degraded`; the query the caller wrote survives without it. This one is the **deployment's** policy, and degrading would be the failure C11 exists to prevent: on a text-only intent the term IS the query, so running the remaining modes without it answers **the whole corpus under a 200** — a page indistinguishable at the caller from a correct one. That is the same widening `MapIntent`'s doc comment already refuses for an unreadable `targets` or an ignored SRID, which is why the guard sits there and not in `negotiate`. **Three details are load-bearing.** The guard reads the **trimmed** term, like every other reader of it: `"   "` asks for no retrieval mode at all, so it stays the no-criterion refusal and calling it a disabled text search would name the wrong mistake. The intent's required-one-of **list** shrinks with the flag — `spatial or filters`, with a parenthetical saying why the third is absent — because offering `textSearch` to a caller this deployment would then refuse walks them into a second `400`; the **guard** does not shrink with it, since a term that was sent is a criterion that was sent and reporting it missing would be a false sentence stacked on the true one. And the wire message names the two criteria that still work rather than the environment variable, matching `negotiate` and the `filters.type` refusal: a caller cannot act on the variable, and the operator has `docs/publish-and-discover.md`. **`modesFor` is left alone.** It still maps a non-empty `Text` to all three ranked modes, because the refusal is total and unreachable past it; a second guard there would be a branch no test can reach and the kind of defence that rots into a contradiction | 2, 17, 19 |
+| **A28** | **An omitted `visibleTo` means PUBLIC.** The default was quiet in the direction that hurts: a publisher who never thought about the field got a catalog only their own network could find, and an `ACCEPTED` telling them nothing. It becomes the wildcard `['*']`, which is what the spec's own sentence says, so C8 stops being a deviation. Resolved exactly where `[network]` was — in `applyDirectiveDefaults` and in the mapper's `visibleTo`, one literal each — so **A9 is untouched**: the default still applies in both update modes, and a republish that omits `visibleTo` still resolves it rather than keeping what is stored. That last point was decided twice. The first attempt made an omitted `visibleTo` mean *keep* under MERGE, on the argument that widening an audience a publisher narrowed is a change nobody is told of; review took it out, because it is a change to what MERGE means rather than a change to a default, and it belongs in its own issue with its own argument. The hazard it named is real and is recorded in Deferred. The wildcard is a row VALUE and not a second column, because every reader is already a set test over `visible_to`. `EnsureVisibleTo` fills `['*']`, and both `visible_to` columns keep `NOT NULL DEFAULT '{}'`. `APP_NETWORK_ID` loses this reader and keeps the telemetry Resource (A25). **Rows already stored are NOT migrated**: rewriting them would publish catalogs onto networks their publishers never named, which is the worse of the two wrongs a second time. `isActive` is **untouched** and still resets in both modes (A9, scenario 26). One cost, recorded rather than discovered: the spec says a `visibleTo` value *"MUST be a registry-registered network participant identifier"*, and `*` is not one. The schema declares no `pattern`, `enum` or `minItems`, so L1 accepts it — a second, smaller deviation living inside the one that closed C8 | 11, 15, 17, 18, 21, 27 |
+
+| **A29** | **`context.networkId` becomes one-or-many, and a discover answers exactly the networks it names.** `release-0.2.0` of the protocol (pinned at `7a9fdf0d`) redeclares the field as `oneOf: [string, array minItems 1]`, which is the only schema change in a 39-line diff. Three rules replace the old pair, and the middle one reverses the read half A28 shipped days earlier: an **omitted** `networkId` matches `['*']` and nothing else; a **named** network matches that network and nothing else; an **array** matches the union of its entries, `*` included if the caller lists it. So `["n1","*"]` is how a caller asks for its own network plus everything public, and that pairing — not a default — is what a farmer-facing app sends. The reversal is deliberate: A28 bolted public onto every scoped search because a scoped caller had no other way to reach a public catalog, and the array gives them one. **An omitted `networkId` therefore narrows**, from every catalog to the public ones, and that is the one behaviour here an existing caller loses without asking. It is the price of `networkId` meaning the same thing in all three forms rather than "a filter, except when absent, when it is not one". The predicate collapses with it: five queries lose the `sqlc.narg(...) IS NULL OR` dance and the separate `ARRAY['*']` arm for a single `r.visible_to && @network_ids::text[]`, because the scope is now always a non-empty set — `{'*'}` when the caller said nothing. `&&` is GIN-indexable, so one bitmap scan answers what two OR'd `@>` arms did. `beckn.Context.NetworkID` becomes `beckn.NetworkIDs`, a named `[]string` that unmarshals from either shape; it marshals a single id back as a **string**, so a caller who sent `["n1"]` is echoed `"n1"` — identical under the `oneOf`, and the alternative is carrying arrival-shape state through a struct the response re-marshals. The spec calls the array an ordered registry-resolution list with fallback, and we read it as an unordered filter set; nothing here resolves a registry, so the two do not collide, but it is a second meaning on one field and it is recorded rather than discovered | 16, 20, 21, 28 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -214,6 +222,8 @@ Two sit on the boundary and are called out rather than dismissed:
 | `S_TOUCHES` and `S_CROSSES` | **Not deferred — refused.** A cell decomposition has no measure-zero boundary, so no resolution answers them. Listing them as "later" would be a promise nothing in this design can keep | `400` + `SCH_TYPE_NOT_SUPPORTED`, naming the operator |
 | `otelpgx` for database spans | **A spike, not a commitment, and not a gate on anything.** The 2026-09-09 build-vs-reuse audit found `github.com/exaring/otelpgx` v0.11.1 the one library of six worth real investigation: it is a `pgx` tracer, which is exactly the seam `storage/postgres/pool.go` already has, and it would supply per-query spans this service does not emit. Two things must be answered before any of that matters, and the first is fatal if it goes the wrong way: **does it obtain its own tracer?** If it does, A23's `scope.version` collision applies to it exactly as it does to `otelhttp` — the span carries the library's version where the network spec wants `1.0` — and the answer is no. It is **not** a reason to revisit Task 25's two pool counters, which are a levels signal `otelpgx` does not produce | Nothing. The pool instruments Task 25 shipped by hand, and no DB-query spans |
 | `fact.Definition.Visibility` | **Deleted on 2026-09-09, and 23f is the task that reintroduces it.** It was built to govern 23f's facilitator deny-list, 23f is blocked on O1/O2/O4, and in the meantime the column had **zero runtime consumers** — `telemetry/redact.go` is not a file. Two things settled it: `fact.go` documented behaviour that did not exist ("the projection treats Unspecified as LocalOnly at runtime"), and all 54 rows carried `Public` with none ever carrying `LocalOnly`, so the column had never distinguished one row from another. Every new row still had to choose a value for it. Re-adding it is the same mechanical work in reverse — one type, one struct field, N declarations, one golden regeneration — and 23f is the commit that will know what the deny-list actually needs, which today nobody does. The design it encoded is preserved here so 23f restores rather than re-derives it: `type Visibility uint8`, with `const (VisibilityUnspecified Visibility = iota; Public; LocalOnly)`. The zero was `Unspecified` and the projection was to treat `Unspecified` as `LocalOnly` at runtime, because a forgotten field must not mean "exported" | Nothing, and **nothing is lost:** the deny-list was never enforceable from a per-row column anyway. The risk is in attribute *values* — a caller-supplied `beckn.schemaContext` URI, a `status.message`, a `zap.Error(err)` — not in key names, which is why Task 26 asserts over the **serialised bytes** of the facilitator projection. That test was always the enforcer; the column was insurance beside it |
+| A MERGE republish that omits `visibleTo` widens the audience | **Built in Task 27, taken out in review.** A publisher who narrowed a catalog to one network and later sends a one-attribute patch without `visibleTo` has it resolved to `['*']` — public — and nothing says so. The fix is to make an omitted `visibleTo` mean *keep what is stored* under MERGE. It is not deferred for lack of merit: it changes what MERGE means rather than what a default is, and it carried most of a review that was about a default. It needs its own issue, where the argument is the only thing on the page | Nothing. The window is open, and `isActive` has had the same shape of hazard since A9 |
+| `Catalog.NetworkID` has no reader | **Left dead by A28 on 2026-10-28.** `EnsureVisibleTo` was its only reader and now fills the wildcard instead, so the field, `CatalogPatch.NetworkID`, `MapCatalog`'s `network` parameter and `publish.Service.network` all carry a value nothing consumes. Removing them in Task 27 was tried and reverted: the field is the longest key in three struct literals, so deleting it makes gofmt re-align every neighbouring line and puts ten whitespace-only lines plus eleven otherwise-untouched files into a review that is about something else. The removal is worth one small commit of its own, where the realignment is the whole diff and obvious | The field stays, and the three doc comments that claimed a reader now say there is none. `APP_NETWORK_ID` still reaches it, and still has a real reader in the telemetry Resource (A25) |
 | `Replication.Targets` has no consumer | **Found by the 2026-09-09 config audit.** `CatalogReplicator` (A7) is a real seam — Task 20 constructs it and `publish.Service` calls `Replicate` after every commit — but `container.go` wires `NoopReplicator` unconditionally and reads nothing off `cfg.Replication`. The field cannot select a second store because no task has built one yet, so naming a target here is accepted by the config loader and does nothing: no replication happens and the boot does not refuse it either, despite an earlier version of `config.go`'s comment claiming it would. The comment is corrected (2026-09-09); the field itself stays, because the seam it configures already ships (A7) and removing it now would mean re-adding it the moment a second store lands | `NoopReplicator`, regardless of `REPLICATION_TARGETS`. The task that builds the second store is also the task that makes this field do something and, at that point, decides whether a named target with no matching implementation should fail the boot |
 
 ---
@@ -489,8 +499,13 @@ CREATE TABLE catalogs (
     -- from. An array because that is what the directive carries — a publisher
     -- naming two networks publishes into both from one call.
     --
+    -- The single element '*' is the wildcard: every network matches it, and it
+    -- is what an omitted or empty visibleTo resolves to (A28). It lives in the
+    -- array rather than in a second boolean column so that every reader stays
+    -- one @> containment test against one GIN index.
+    --
     -- DEFAULT '{}' is a fail-safe, not a valid state: the writer fills an empty
-    -- list with the request's network first, because a catalog visible to
+    -- list with '*' first, because a catalog visible to
     -- nobody is findable by nobody while reporting success.
     visible_to   TEXT[]      NOT NULL DEFAULT '{}',
 
@@ -555,8 +570,9 @@ and read by nothing:
 - `provider_id` was `document->'provider'->>'id'` copied out, and the only
   index on it served no query in this plan — `CatalogRepository` has no
   list-by-provider.
-- `network_id` was pure audit. The writer uses the request's network at publish
-  time to fill an empty `visible_to`; that happens in Go, before the insert.
+- `network_id` was pure audit. The writer filled an empty `visible_to` with the
+  request's network, in Go, before the insert; since A28 it fills `'{*}'` and
+  does not consult the request's network at all.
   If the audit trail matters it belongs in the log line, not on every row.
 - `catalog_type` could only ever hold `REGULAR`, because A1 refuses MASTER at
   intake. Adding it back when inheritance lands is `ALTER TABLE ADD COLUMN`
@@ -1259,6 +1275,7 @@ what comes back:
 
 ```sql
 (sqlc.narg('network_id')::text IS NULL
+ OR r.visible_to @> ARRAY['*']
  OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
   AND r.active
   AND (r.valid_from IS NULL OR r.valid_from <= now())
@@ -1274,6 +1291,14 @@ pattern `target_paths` and `schema_contexts` already use above, applied to the
 one clause in this block that used to be unconditional. A caller who supplies
 `networkId` still gets exactly that network's rows; nothing about the scoped
 case changes.
+
+**The `'*'` arm is A28's half, and it is a third arm rather than a widening of
+the second.** `r.visible_to @> ARRAY[sqlc.narg('network_id'), '*']` would mean
+*both*, which no row holds. Each arm is its own sargable `@>` against
+`idx_resources_visible_to`, so the planner answers the pair with a BitmapOr over
+one index rather than losing it — the same property the `NULL` arm is written
+to preserve, which is why the wildcard is a value in this column and not a
+separate one.
 
 **`plan_cache_mode = force_custom_plan`, and it is this pattern that requires
 it.** `$1 IS NULL OR r.visible_to @> ARRAY[$1]` is only index-usable when
@@ -1302,7 +1327,11 @@ the custom plan is a test that cannot observe this at all.
 hydration, after the page is already decided. Task 16 has a test that reads the
 SQL file and proves no query omits the gate — the nullable `network_id` clause
 included, so a query that hard-codes `visible_to @> ARRAY[$1]` instead of the
-nullable form is caught as surely as one that drops the clause outright.
+nullable form is caught as surely as one that drops the clause outright. Since
+A28 that test also fails a query carrying the nullable form but **not** the
+`'*'` arm: such a query hides every public catalog from every scoped caller,
+which is an empty page rather than an error and so is invisible to the
+acceptance suite unless something reads the SQL.
 
 ### Validity — two independent windows
 
@@ -1429,7 +1458,9 @@ POST /publish            // the only publish route (C2)
     "action": "publish", "version": "2.0.0",
     "messageId": "<uuid4>", "transactionId": "<uuid4>",
     "timestamp": "<RFC3339>",
-    "networkId": "mahavistar"        // OPTIONAL → defaults to APP_NETWORK_ID
+    "networkId": "mahavistar"        // OPTIONAL, and since A28 the publish path
+                                     // reads it for nothing — visibleTo no
+                                     // longer defaults from it
   },
   "message": {
     "catalogs": [ { "id": "cat-1", "provider": { "id": "p-1", ... },
@@ -1444,7 +1475,9 @@ POST /publish            // the only publish route (C2)
       "catalogId":   "cat-1",
       "catalogType": "REGULAR",       // MASTER → REJECTED (A1)
       "updateMode":  "MERGE",         // omitted → MERGE; RFC 7396 patch (A8)
-      "visibleTo":   ["mahavistar", "oan"],   // ARRAY OF NETWORK IDS
+      "visibleTo":   ["mahavistar", "oan"],   // ARRAY OF NETWORK IDS, or ["*"]
+                                      // omitted → ["*"] on a first publish or
+                                      // under FULL; under MERGE → keep stored (A28)
       "resourceDirectives": [ ... ]   // any `extends` → REJECTED (A1)
     }]
   }
@@ -1516,8 +1549,8 @@ service.Publish(ctx, reqContext, action):
 ```pseudo
 publishOne(ctx, network, catalog, directive):
     # A catalog may arrive with no directive at all — publishDirectives is
-    # optional. Absent means REGULAR, MERGE, and visibleTo = [network], which
-    # is the ordinary single-network publish and must not need boilerplate.
+    # optional. Absent means REGULAR, MERGE, and a public catalog, which
+    # is the ordinary publish and must not need boilerplate.
     directive ← applyDirectiveDefaults(directive, catalog.id, network)
         # FIELD-WISE, not all-or-nothing (A9). A directive that is absent
         # entirely and a directive that names only `catalogId` must come out
@@ -1525,7 +1558,7 @@ publishOne(ctx, network, catalog, directive):
         #   catalogId    ← catalog.id
         #   catalogType  ← REGULAR   if empty
         #   updateMode   ← MERGE     if empty
-        #   visibleTo    ← [network] if empty        # in BOTH modes
+        #   visibleTo    ← ['*'] if empty            # in BOTH modes (A28)
         #   resourceDirectives ← []  if nil
         # Spelled out rather than implied, because UpsertCatalog branches on
         # `updateMode == FULL` and FULL deletes the resources the payload did
@@ -1684,9 +1717,10 @@ never a row. A resource is removed by a FULL republish that omits it and by
 nothing else, because "remove this resource" and "clear this field" are one
 typo apart and only one of them is recoverable.
 
-**Declared defaults are resolved first, and they do not care which mode this
-is (A9).** Before anything is merged, every field the spec gives a default is
-filled — the directive fields (`catalogType`, `updateMode`, `visibleTo`) in
+**Declared defaults are resolved first, and — `visibleTo` excepted — they do
+not care which mode this is (A9).** Before anything is merged, every field the
+spec gives a default is
+filled — the directive fields (`catalogType`, `updateMode`) in
 `publishOne`, `isActive`, `context.version` and an offer's `resourceIds` in the
 mapper. The
 publisher contract is then one sentence — *a default means the default,
@@ -1696,7 +1730,7 @@ always* — rather than a sentence that has to name the update mode to be true.
 |---|---|---|
 | `publishDirective.catalogType` | `REGULAR` | `REGULAR` |
 | `publishDirective.updateMode` | `MERGE` | `MERGE` |
-| `publishDirective.visibleTo` | `[network]` | `[network]` — **not** the stored list |
+| `publishDirective.visibleTo` | `['*']` (A28) | `['*']` — **not** the stored list |
 | `catalog.isActive` | `true` | `true` — **not** the stored flag |
 | `offer.resourceIds` | `[]` (catalog-wide) | `[]` |
 | `context.version` | `beckn.Version` | this build's version — **not** the stored one (A22) |
@@ -1704,13 +1738,11 @@ always* — rather than a sentence that has to name the update mode to be true.
 
 **The consequence, stated rather than discovered.** A publisher who withdrew a
 catalog with `isActive: false` and later sends a one-attribute patch **without**
-`isActive` republishes it live, and a publisher who narrowed `visibleTo` and
-later patches without it goes back to `[network]`. That is the deliberate cost
-of a defaulting rule that does not branch on mode: the two fields that decide
-whether a catalog is visible at all are the two a publisher must keep sending.
-It is stated in the publisher-facing docs, and scenario 26 asserts it, because
-the alternative — defaults that mean different things in different modes — is a
-rule nobody remembers correctly at 3 a.m.
+`isActive` republishes it live, and one who narrowed `visibleTo` and later
+patches without it goes back to `['*']` — public. That is the deliberate cost
+of a defaulting rule that does not branch on mode, and scenario 26 asserts the
+first half, because the alternative — a default that means different things in
+different modes — is a rule nobody remembers correctly at 3 a.m.
 
 `context.version` is in the table for completeness and is unreachable today:
 C6 makes it required and pins it to `beckn.Version`, so an absent one is
@@ -1779,8 +1811,8 @@ repo.UpsertCatalog(ctx, patch, updateMode, derive):
         # Documents by RFC 7396, `resources` and `offers` by id. A stored
         # entity the patch does not name comes through untouched.
 
-    if merged.VisibleTo is empty: merged.VisibleTo ← [merged.NetworkID]
-        # Belt and braces. The mapper already applied this default (A9), in
+    if merged.VisibleTo is empty: merged.VisibleTo ← ['*']
+        # Belt and braces. The mapper already applied this default (A28), in
         # both modes, so this line should never fire. It stays because a
         # catalog visible to no network is findable by nobody while reporting
         # success, and that is not a failure worth reaching production to
@@ -3096,7 +3128,7 @@ ticket, which is why it is a numbered limit and not a caveat in a paragraph.
 
 ## Scenarios
 
-Thirty-five end-to-end scenarios in `tests/acceptance/`, run against the
+Thirty-seven end-to-end scenarios in `tests/acceptance/`, run against the
 assembled service: real router, real PostgreSQL, real migrations, over HTTP.
 Only the embedder is stubbed.
 
@@ -3161,7 +3193,8 @@ goes looking for.
 
 | # | Scenario | Pins |
 |---|---|---|
-| 26 | `AnOmittedDefaultResetsInBothModes` | A9, on the two fields where it costs something. Publish a catalog with `isActive: false` and `visibleTo: ["mahavistar","oan"]`; republish it under **MERGE** with a one-attribute patch and no `publishDirectives` at all; the catalog is live again and visible only to `mahavistar`. Then the same pair under FULL, with the same result. This scenario exists to make the surprising half of A9 *deliberate*: it is the test that fails the day someone "fixes" MERGE to preserve an omitted default, which would make the two modes disagree about what silence means |
+| 26 | `AnOmittedDefaultResetsInBothModes` | A9, on the field where it costs something. Publish a catalog with `isActive: false`; republish it under **MERGE** with a one-attribute patch and no `publishDirectives` at all; the catalog is live again. Then the same under FULL, with the same result. It exists to make the surprising half of A9 *deliberate*: it is the test that fails the day someone "fixes" MERGE to preserve an omitted default |
+| 26a | `APublishNamingNoAudienceIsPublic` | A28's publish half, end to end. A catalog published with no `publishDirectives` at all is found by a search that also names no network — the request that asks for exactly the public catalogs. A narrow catalog would answer nothing, so the assertion cannot pass by accident |
 
 ### Geometry paths — `geopath_test.go`
 
@@ -3179,7 +3212,8 @@ repository tests instead.
 
 | # | Scenario | Pins |
 |---|---|---|
-| 29 | `OmittedNetworkIdSearchesEveryNetwork` | Two catalogs published to non-overlapping networks — `visibleTo: ["mahavistar"]` and `visibleTo: ["bharatvistar"]`. A discover with **no** `networkId` returns both. The same intent with `networkId: "mahavistar"` returns only the first. `visibleTo` restricts which networks a publisher chose to expose a catalog on; it is not an access boundary a network-less caller is presumed locked out of — a caller wanting isolation supplies `networkId` |
+| 29 | `ASearchMatchesTheNetworksItNamed` | A29's three rules in one story, because a service can get any one of them right while breaking the next. Three catalogs — `mahavistar`, `bharatvistar` and `['*']` — and three searches against them: naming no network returns the public one alone; naming `mahavistar` returns `mahavistar`'s alone; naming `["mahavistar","*"]` returns both. Public is a network a caller asks for, not a bonus it is handed |
+| 29a | `BothWireShapesOfNetworkIDAnswerTheSame` | `"mahavistar"` and `["mahavistar"]` are one request under two spellings (A29). A service handling only the array breaks every caller sending today's string; one handling only the string silently ignores the networks an array names. Neither failure is an error — both are a page |
 ### Spatial operators — `spatial_test.go`
 
 | # | Scenario | Pins |
@@ -3232,8 +3266,8 @@ POST /discover  { "message": { "intent": { "spatial": [{
 
 ## Tasks
 
-Twenty-six tasks, dependency-ordered — 23 as originally planned, 24 added by
-A23 and 25 and 26 by A25. Each is one reviewable unit ending in a
+Twenty-eight tasks, dependency-ordered — 23 as originally planned, 24 added by
+A23, 25 and 26 by A25, 27 by A28 and 28 by A29. Each is one reviewable unit ending in a
 testable deliverable, and each follows the same cycle:
 
 > **write the failing test → run it, see it fail → implement → run it, see it
@@ -3898,7 +3932,7 @@ CatalogPatch{ID, NetworkID string,
                                             # in — see A9 below
              Validity  *TimePeriodPatch,    # nil = absent
              Active    bool,                # NOT a pointer — defaulted (A9)
-             VisibleTo []string,            # NOT nilable — defaulted (A9)
+             VisibleTo []string,            # NOT nilable — defaulted (A28)
              ProtocolVersion string,        # NOT nilable — the mapper resolved
                                             # an absent one to beckn.Version
                                             # before this point (A22)
@@ -3910,10 +3944,8 @@ CatalogPatch{ID, NetworkID string,
     # distinction into the difference between keeping a publisher's data and
     # deleting it.
     #
-    # Active and VisibleTo are deliberately NOT pointers (A9). Active's default
-    # is resolved here, in the mapper; VisibleTo arrives already resolved from
-    # publishOne's applyDirectiveDefaults, and the mapper only copies it.
-    # Either way, by the time the merge runs there is no absence left to
+    # Active is deliberately NOT a pointer (A9): its default is resolved here,
+    # in the mapper, so by the time the merge runs there is no absence left to
     # represent — and a pointer that can never be nil is an invitation to
     # write the branch that makes it nil.
 
@@ -4107,10 +4139,11 @@ Scope{NetworkID string, Now time.Time}                    # A6: a value
     # was live at 23:00 without waiting until 23:00.
     # NetworkID == "" means UNSCOPED — every backend must read it as "emit no
     # network predicate", never as a literal network id that matches nothing
-    # and never by falling back to APP_NETWORK_ID. That fallback belongs to
-    # publish's visibleTo default (C8), a different field answering a
-    # different question; the memory backend's conformance suite runs the
-    # empty-NetworkID case for exactly this reason.
+    # and never by falling back to APP_NETWORK_ID — which since A28 fills
+    # nothing on the publish side either. A SET NetworkID matches rows naming
+    # it AND rows holding the wildcard '*' (A28); a backend that implements
+    # only the first hides every public catalog from every scoped caller.
+    # The memory backend's conformance suite runs both cases for this reason.
 
 Retriever{Retrieve(ctx, query, scope) → ranked ids}       # one per mode
 Hydrator{ScopeFilter, Hydrate, Count}
@@ -4426,7 +4459,7 @@ always had two.
   pseudocode run under the catalog row lock, so their cost is lock hold time.
 
 **Tests pin:** MERGE keeps an omitted resource, FULL removes it; an empty
-`visibleTo` becomes `{network_id}`; a mid-transaction failure leaves no partial
+`visibleTo` becomes `{*}` (A28); a mid-transaction failure leaves no partial
 catalog; republishing replaces a geometry rather than accumulating it; a cascade
 delete removes geometries and offers. Two more on the write path itself:
 
@@ -4521,12 +4554,17 @@ one `Retriever` per mode, `Hydrator`, `RRF`
   predicate. A mode that drops the clause entirely leaks another network's
   catalog to a caller who scoped their request; a mode that hard-codes
   `visible_to @> ARRAY[$1]` instead of the nullable form silently reintroduces
-  single-network scoping as the default.
+  single-network scoping as the default. **The `ARRAY['*']` arm is asserted by
+  the same test (A28):** a query carrying the nullable form without it hides
+  every public catalog from every scoped caller, and an empty page is not an
+  error anything else here would notice.
 - **An omitted `networkId` returns catalogs from every network,** including
   one whose `visibleTo` names a single network the caller never mentioned —
   and the same intent with `networkId` set still returns only that network's
-  rows. Pinned as one test with two assertions, because a fix aimed at one
-  direction is a regression in the other.
+  rows **plus every `['*']` catalog** (A28). Pinned as one test with three
+  assertions, because a fix aimed at one direction is a regression in another:
+  narrow the wildcard arm and public catalogs vanish from scoped searches,
+  widen the scoped arm and `visibleTo` stops restricting anything.
 - **Schema filtering** matches as a pair: two resources, one `schema.org` +
   `GroceryItem` and one `beckn.org/Mobility` + `RideService`, queried with both
   fragments at once, return both — and a query for
@@ -4655,9 +4693,10 @@ no `endTime` is a fatal fault; `09:00:00+05:30` and a bare `09:00:00` under
 
 Then the pair that separates A9 from A8, because they pull in opposite
 directions and one mapper has to do both. **Defaulted:** a payload omitting
-`isActive` yields `Active == true` and one omitting `visibleTo` yields
-`[network]`, in MERGE as much as in FULL — the mapper resolves them, so no
-absence reaches the merge. **Not defaulted:** a payload omitting `validity`
+`isActive` yields `Active == true`, in MERGE as much as in FULL — the mapper
+resolves it, so no absence reaches the merge. **Defaulted, but per mode
+(A28):** a payload omitting `visibleTo` yields `['*']` under FULL and `nil`
+— absent — under MERGE, while an explicit `[]` yields `['*']` in both. **Not defaulted:** a payload omitting `validity`
 yields `Validity == nil` while `"validity": null` yields the explicit delete,
 and the same for `provider`, `descriptor` and `resourceAttributes`. These look
 pedantic and are the whole of A8 and A9 — a mapper that flattens the second
@@ -4779,7 +4818,7 @@ database down and `/readyz` does not; shutdown completes an in-flight request.
 `tests/acceptance/{suite,publish,discover,offers,validity,performance,
                   defaults,geopath,spatial}_test.go`
 
-The thirty-five scenarios above, over HTTP against the assembled service with
+The thirty-seven scenarios above, over HTTP against the assembled service with
 a real database. Only the embedder is stubbed. One file per scenario group, so
 the file a failure names is the section of this plan it came from.
 
@@ -4858,7 +4897,8 @@ into the patch document before the merge runs, so the merge sees an explicit
 `isActive` and sets it. `validity` is untouched by this: it keeps its
 `TimePeriodPatch` tri-state and its absence still means "keep", which is what
 RFC 7396 does anyway — the two agree, and only `isActive` disagreed. `visibleTo`
-never enters the document at all, because it arrives on the directive.
+never enters the document at all, because it arrives on the directive; since
+A28 it keeps a tri-state of its own on the patch instead.
 
 **The mapper keeps the raw.** `MapCatalog` currently decodes into typed structs
 and reassembles; it must instead carry the publisher's bytes through, stripping
@@ -5019,7 +5059,8 @@ exporter and its shutdown
 - The Resource carries `eid=API`, `producer`, `domain`, `service.name` and
   `network.id`. `service.name` is the **same value** as `producer`: they are one
   identity until one participant runs several services, and two spellings of one
-  thing is a grouping that splits. `network.id` comes from `APP_NETWORK_ID` (C8).
+  thing is a grouping that splits. `network.id` comes from `APP_NETWORK_ID`,
+  which since A28 is the only thing that reads it.
 - Shutdown flushes. A dropped tail is a request the facilitator never sees.
 
 **Tests pin:** `OTEL_EXPORTER=none` does not fail startup; the Resource carries
@@ -5389,6 +5430,71 @@ of, which is the only failure mode that matters.
 Follows 23f, which builds the exporter it asserts against. Fixture-driven so
 that adding a denied field is a fixture line rather than a new test.
 
+### Task 27 — Public by Default (A28)
+
+**Produces:** changes to `src/publish/{mapper,service}.go`, `src/domain/gate.go`
+and `src/domain/catalog.go`, plus the conformance and acceptance suites.
+
+Shipped in one branch with Task 28, because A29 rewrites the read half of the
+scope gate and landing them apart would change deployed behaviour twice.
+
+1. **`domain.NetworkWildcard`.** `'*'` appears in four Go files; a literal in
+   four places is a typo waiting to be undiagnosable.
+2. **The two defaults change their literal and nothing else.** `visibleTo` in
+   the mapper and the `visibleTo` branch of `applyDirectiveDefaults` both
+   return `['*']` where they returned `[network]`. Names, signatures and
+   call sites are untouched: a default's VALUE changing should not move four
+   files.
+3. **`EnsureVisibleTo` fills `['*']`.**
+4. **Scenario 26a**, and scenario 26 loses nothing — `isActive` still resets.
+
+**Not in this task:** `isActive`, which resets the same way. A publisher sees a
+retired catalog come back; they do not see an audience change.
+
+**Rejected, and recorded in Deferred:** making an omitted `visibleTo` mean
+*keep what is stored* under MERGE. It was built, then taken out in review: it
+is a change to what MERGE means rather than a change to a default, and it
+needs its own issue and its own argument. The hazard it named — a publisher
+who narrowed a catalog and later patches without the field goes public, with
+nothing said — is real and unaddressed until that lands.
+
+**Also rejected:** deleting `Catalog.NetworkID`, which A28 leaves with no
+reader. It is the longest key in three struct literals, so gofmt re-aligns
+every neighbouring line and the removal drags ten whitespace-only lines and
+eleven otherwise-untouched files into a review about something else. Deferred,
+for a commit where that realignment is the whole diff.
+
+### Task 28 — One-or-many `networkId` (A29)
+
+**Produces:** a newer vendored spec, `beckn.NetworkIDs`, and a scope predicate
+that is one array overlap instead of three OR'd arms.
+
+1. **Upgrade the vendored spec and the pin.** `VALIDATION_SPEC_URL` moves to
+   the `7a9fdf0d` commit of `release-0.2.0`, never the branch ref: a branch
+   moves and the validator would then disagree with itself between two boots.
+   `tests/testdata/beckn-v2.0.0.yaml` is the cache and must be the same bytes.
+2. **`beckn.NetworkIDs`**, which decodes a string or an array and **remembers
+   which arrived**, because the response echoes the request's context. The
+   rest of the service reads `Networks()` and never asks. Its test decodes
+   both shapes and re-encodes them: a type that round-trips only the shape its
+   author thought of is the whole hazard.
+3. **`SearchQuery.NetworkIDs` and `Scope.NetworkIDs`,** filled in
+   `discover.Service` and nowhere else. A backend never sees them empty, which
+   is what lets the storage layer stop defaulting — the opposite of A28's
+   wildcard, which every backend had to know about.
+4. **One predicate.** `r.visible_to && @network_ids::text[]` in the five gated
+   queries. `'*'` then appears in no query at all: it is an ordinary entry the
+   caller sends. The memory backend's guard becomes the same overlap, which
+   DELETES its helper rather than growing one.
+5. **Telemetry.** `fact.BecknNetworkID` becomes `KindStrings`.
+6. **Scenarios 29 and 29a**, as the Scenarios section states them.
+
+**Re-baseline, not re-interpret:** `examples/` and the Postman collection call
+discover unscoped and will return fewer catalogs. The recorded answers change
+because the question changed, so `make audit` — which recomputes from the
+published catalog rather than trusting the recording — is the gate that says
+the new answers are right rather than merely new.
+
 ---
 
 ## Open Items
@@ -5429,7 +5535,7 @@ undocumented decision is indistinguishable from an accident:
 | Unavailable retrieval mode | Whether a mode the backend cannot run should degrade or refuse | **Degrade by default; refuse on request.** `SEARCH_FAIL_ON_UNAVAILABLE_MODE` defaults to `false`: the modes that work run, results come back, and the missing one is named in `X-Beckn-Degraded` (C11). Setting it `true` makes the same request a `400` / `NET_CATALOG_SOURCE_UNAVAILABLE`. The default points at degrade for one reason: Phase 1 ships `EMBEDDING_PROVIDER=noop`, so `semantic` is missing on every fresh deployment, and defaulting to refuse would make every `textSearch` a `400` until an Ollama deployment exists — a default that breaks the common case is a default nobody keeps. Silently ignoring the mode remains the option that is never taken |
 | Structured filtering | Whether JSONPath attribute filtering ships in Phase 1 or waits | **Phase 1.** `Intent.filters` is evaluated, not degraded — PostgreSQL SQL/JSON path only (C10), run through `@?` against the single `resources.filter_doc` composite (A18), with no rebase because the column is already rooted at `$.catalogs`. It costs one migration (the column and its GIN index) rather than none, which is the price of answering a predicate that crosses catalog, resource and offer — including under OR, which three separate `document` columns cannot answer at all. Scenario 18 changed from asserting the degradation to asserting the filter |
 | Semantic search (A5) | When embeddings are turned on | **Not in Phase 1 — confirmed.** `EMBEDDING_PROVIDER=noop` ships; the column, the HNSW index and the `Embedder` seam ship with it, and `embedding IS NULL` is the backfill queue for whenever an Ollama deployment exists. Deferred deliberately, not undecided |
-| `networkId` default (discover) | Whether an omitted `networkId` scopes to `APP_NETWORK_ID` or searches every network | **Searches every network.** `visibleTo` is how a publisher restricts a catalog to specific networks; it is not an access boundary a network-less discover caller is presumed locked out of by default. A caller wanting isolation supplies `networkId`. Publish's own default — `APP_NETWORK_ID`, to fill an empty `visibleTo` — is unchanged (C8); the two fields answer different questions and no longer share a fallback |
+| `networkId` default (discover) | Whether an omitted `networkId` scopes to `APP_NETWORK_ID` or searches every network | **Searches every network.** `visibleTo` is how a publisher restricts a catalog to specific networks; it is not an access boundary a network-less discover caller is presumed locked out of by default. A caller wanting isolation supplies `networkId` — and still sees every `['*']` catalog, because public is not the same as unscoped (A28). ~~Publish's own default — `APP_NETWORK_ID`, to fill an empty `visibleTo`~~ — is **gone** since A28: an omitted `visibleTo` is `['*']`, and the two fields now share no fallback because neither has one |
 
 ---
 
