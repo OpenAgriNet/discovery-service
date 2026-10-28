@@ -158,7 +158,7 @@ that same array rather than inventing a second field to say it.
 | **A27** | **A deployment may decline free-text retrieval, and declining REFUSES where a missing backend mode degrades.** `Search.EnableTextSearch` / `SEARCH_ENABLE_TEXT_SEARCH`, **true by default** — the value that takes no decision has to be the one that behaves as before the flag existed. With it false, an intent carrying a non-empty `textSearch` is refused in `MapIntent` with `SCH_TYPE_NOT_SUPPORTED` at `$['message']['intent']['textSearch']`, and the message names `spatial` and `filters` as what still works. **The whole content of this amendment is that it is not `FailOnUnavailableMode` under another name**, because the two read alike and behave oppositely. That flag is about a mode the **backend** cannot run — `semantic` on a `noop` deployment — and false there degrades, answering with what the other modes found and naming the gap in `X-Beckn-Degraded`; the query the caller wrote survives without it. This one is the **deployment's** policy, and degrading would be the failure C11 exists to prevent: on a text-only intent the term IS the query, so running the remaining modes without it answers **the whole corpus under a 200** — a page indistinguishable at the caller from a correct one. That is the same widening `MapIntent`'s doc comment already refuses for an unreadable `targets` or an ignored SRID, which is why the guard sits there and not in `negotiate`. **Three details are load-bearing.** The guard reads the **trimmed** term, like every other reader of it: `"   "` asks for no retrieval mode at all, so it stays the no-criterion refusal and calling it a disabled text search would name the wrong mistake. The intent's required-one-of **list** shrinks with the flag — `spatial or filters`, with a parenthetical saying why the third is absent — because offering `textSearch` to a caller this deployment would then refuse walks them into a second `400`; the **guard** does not shrink with it, since a term that was sent is a criterion that was sent and reporting it missing would be a false sentence stacked on the true one. And the wire message names the two criteria that still work rather than the environment variable, matching `negotiate` and the `filters.type` refusal: a caller cannot act on the variable, and the operator has `docs/publish-and-discover.md`. **`modesFor` is left alone.** It still maps a non-empty `Text` to all three ranked modes, because the refusal is total and unreachable past it; a second guard there would be a branch no test can reach and the kind of defence that rots into a contradiction | 2, 17, 19 |
 | **A28** | **An omitted `visibleTo` means PUBLIC.** The default was quiet in the direction that hurts: a publisher who never thought about the field got a catalog only their own network could find, and an `ACCEPTED` telling them nothing. It becomes the wildcard `['*']`, which is what the spec's own sentence says, so C8 stops being a deviation. Resolved exactly where `[network]` was — in `applyDirectiveDefaults` and in the mapper's `visibleTo`, one literal each — so **A9 is untouched**: the default still applies in both update modes, and a republish that omits `visibleTo` still resolves it rather than keeping what is stored. That last point was decided twice. The first attempt made an omitted `visibleTo` mean *keep* under MERGE, on the argument that widening an audience a publisher narrowed is a change nobody is told of; review took it out, because it is a change to what MERGE means rather than a change to a default, and it belongs in its own issue with its own argument. The hazard it named is real and is recorded in Deferred. The wildcard is a row VALUE and not a second column, because every reader is already a set test over `visible_to`. `EnsureVisibleTo` fills `['*']`, and both `visible_to` columns keep `NOT NULL DEFAULT '{}'`. `APP_NETWORK_ID` loses this reader and keeps the telemetry Resource (A25). **Rows already stored are NOT migrated**: rewriting them would publish catalogs onto networks their publishers never named, which is the worse of the two wrongs a second time. `isActive` is **untouched** and still resets in both modes (A9, scenario 26). One cost, recorded rather than discovered: the spec says a `visibleTo` value *"MUST be a registry-registered network participant identifier"*, and `*` is not one. The schema declares no `pattern`, `enum` or `minItems`, so L1 accepts it — a second, smaller deviation living inside the one that closed C8 | 11, 15, 17, 18, 21, 27 |
 
-| **A29** | **`context.networkId` becomes one-or-many, and a discover answers exactly the networks it names.** `release-0.2.0` of the protocol (pinned at `7a9fdf0d`) redeclares the field as `oneOf: [string, array minItems 1]`, which is the only schema change in a 39-line diff. Three rules replace the old pair, and the middle one reverses the read half A28 shipped days earlier: an **omitted** `networkId` matches `['*']` and nothing else; a **named** network matches that network and nothing else; an **array** matches the union of its entries, `*` included if the caller lists it. So `["n1","*"]` is how a caller asks for its own network plus everything public, and that pairing — not a default — is what a farmer-facing app sends. The reversal is deliberate: A28 bolted public onto every scoped search because a scoped caller had no other way to reach a public catalog, and the array gives them one. **An omitted `networkId` therefore narrows**, from every catalog to the public ones, and that is the one behaviour here an existing caller loses without asking. It is the price of `networkId` meaning the same thing in all three forms rather than "a filter, except when absent, when it is not one". The predicate collapses with it: five queries lose the `sqlc.narg(...) IS NULL OR` dance and the separate `ARRAY['*']` arm for a single `r.visible_to && @network_ids::text[]`, because the scope is now always a non-empty set — `{'*'}` when the caller said nothing. `&&` is GIN-indexable, so one bitmap scan answers what two OR'd `@>` arms did. `beckn.Context.NetworkID` becomes `beckn.NetworkIDs`, a named `[]string` that unmarshals from either shape; it marshals a single id back as a **string**, so a caller who sent `["n1"]` is echoed `"n1"` — identical under the `oneOf`, and the alternative is carrying arrival-shape state through a struct the response re-marshals. The spec calls the array an ordered registry-resolution list with fallback, and we read it as an unordered filter set; nothing here resolves a registry, so the two do not collide, but it is a second meaning on one field and it is recorded rather than discovered | 16, 20, 21, 28 |
+| **A29** | **`context.networkId` becomes one-or-many, and a discover answers exactly the networks it names.** `release-0.2.0` of the protocol (pinned at `7a9fdf0d`) redeclares the field as `oneOf: [string, array minItems 1]`, which is the only schema change in a 39-line diff. Three rules replace the old pair, and the middle one reverses the read half A28 shipped days earlier: an **omitted** `networkId` matches `['*']` and nothing else; a **named** network matches that network and nothing else; an **array** matches the union of its entries, `*` included if the caller lists it. So `["n1","*"]` is how a caller asks for its own network plus everything public, and that pairing — not a default — is what a farmer-facing app sends. The reversal is deliberate: A28 bolted public onto every scoped search because a scoped caller had no other way to reach a public catalog, and the array gives them one. **An omitted `networkId` therefore narrows**, from every catalog to the public ones, and that is the one behaviour here an existing caller loses without asking. It is the price of `networkId` meaning the same thing in all three forms rather than "a filter, except when absent, when it is not one". The predicate collapses with it: five queries lose the `sqlc.narg(...) IS NULL OR` dance and the separate `ARRAY['*']` arm for a single `r.visible_to && @network_ids::text[]`, because the scope is now always a non-empty set — `{'*'}` when the caller said nothing. `&&` is GIN-indexable, so one bitmap scan answers what two OR'd `@>` arms did. `beckn.Context.NetworkID` becomes `beckn.NetworkIDs`, which unmarshals from either shape and **echoes back the one that arrived**: a caller who sent `"n1"` is echoed `"n1"` and one who sent `["n1"]` is echoed `["n1"]`. The `oneOf` permits either spelling for either request, so collapsing a one-element array to a string would be conformant — and still a surprise, because the response context is the request's context read back and a field that changes shape in it reads as something having happened to it. The arrival shape is one bool on the struct; that is the cost, and it is smaller than the question it removes. The spec calls the array an ordered registry-resolution list with fallback, and we read it as an unordered filter set; nothing here resolves a registry, so the two do not collide, but it is a second meaning on one field and it is recorded rather than discovered | 16, 20, 21, 28 |
 
 A6 and A7 exist for one requirement: *swap the text backend later, keep geo on
 PG, and let publish write to two stores.* Both build **seams plus conformance
@@ -1274,9 +1274,7 @@ retriever rank out-of-scope rows into the page and make `Total` disagree with
 what comes back:
 
 ```sql
-(sqlc.narg('network_id')::text IS NULL
- OR r.visible_to @> ARRAY['*']
- OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
+r.visible_to && @network_ids::text[]
   AND r.active
   AND (r.valid_from IS NULL OR r.valid_from <= now())
   AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -1284,38 +1282,38 @@ what comes back:
                           (now() AT TIME ZONE 'UTC')::time)
 ```
 
-**`network_id` is `sqlc.narg`, not `@`, and that is the whole mechanism.** A
-`NULL` short-circuits the `OR` to true for every row, which is what makes an
-omitted `networkId` search every network rather than none — the identical
-pattern `target_paths` and `schema_contexts` already use above, applied to the
-one clause in this block that used to be unconditional. A caller who supplies
-`networkId` still gets exactly that network's rows; nothing about the scoped
-case changes.
+**The scope is a set, and the gate is one overlap test (A29).** `@network_ids`
+is never empty — a request naming no network arrives here as `{'*'}`, filled by
+`discover.Service`, so there is no absent-predicate case to write. A caller gets
+exactly the networks it named: `{'n1'}` matches rows visible to `n1` and not the
+public ones, `{'n1','*'}` matches both, `{'*'}` matches the public ones alone.
 
-**The `'*'` arm is A28's half, and it is a third arm rather than a widening of
-the second.** `r.visible_to @> ARRAY[sqlc.narg('network_id'), '*']` would mean
-*both*, which no row holds. Each arm is its own sargable `@>` against
-`idx_resources_visible_to`, so the planner answers the pair with a BitmapOr over
-one index rather than losing it — the same property the `NULL` arm is written
-to preserve, which is why the wildcard is a value in this column and not a
-separate one.
+**`&&` is why the wildcard is a row VALUE and not a second column.** Overlap is
+sargable against `idx_resources_visible_to`'s `array_ops` opclass, so the whole
+gate is one bitmap scan however many networks the caller lists. This replaced a
+three-arm `sqlc.narg(...) IS NULL OR ... @> ARRAY['*'] OR ... @> ARRAY[$1]`
+whose arms the planner answered with a BitmapOr; the set form is the same index
+and one arm. **The predicate is still on every query that reads** — every
+retriever, the counter and the hydrator (A6) — for the reason above.
 
-**`plan_cache_mode = force_custom_plan`, and it is this pattern that requires
-it.** `$1 IS NULL OR r.visible_to @> ARRAY[$1]` is only index-usable when
+**`plan_cache_mode = force_custom_plan`, and it is the nullable pattern that
+requires it.** `$1 IS NULL OR col @> ARRAY[$1]` is only index-usable when
 PostgreSQL knows `$1`: with the value in hand it folds the first arm to FALSE
 and is left with a sargable `@>`. With the value unknown it must keep both arms,
 and an `OR` whose first arm does not mention the column cannot be answered by an
 index on that column — so the GIN index is dropped and the clause becomes a
-sequential-scan filter. pgx speaks the extended protocol, and PostgreSQL builds
+sequential-scan filter. A29 took `network_id` out of this set by making the
+scope always non-empty; `target_paths`, `spatial_op`, the four box bounds and
+`schema_contexts` are still in it, so the setting is unchanged. pgx speaks the extended protocol, and PostgreSQL builds
 a **custom** plan for the first five executions of a prepared statement and may
 switch to a **generic** one thereafter. So the fast plan is the one a cold
 connection gets, and the slow plan is the one a warm connection settles into —
 the exact opposite of how a performance problem is usually shaped, and
 invisible to any `EXPLAIN` run once.
 
-Every nullable clause in this plan has the property: `network_id` here,
-`target_paths`, `spatial_op` and the four box bounds in the spatial `EXISTS`,
-and `schema_contexts` above. That is the whole read path, so the setting is not
+Every nullable clause in this plan has the property: `target_paths`,
+`spatial_op` and the four box bounds in the spatial `EXISTS`, and
+`schema_contexts` above. That is the whole read path, so the setting is not
 a tuning knob but the condition under which the query shapes in this document
 mean what they say. It is applied in `pool.go`'s on-acquire block beside
 `hnsw.ef_search` and `statement_timeout`, and Task 14's `EXPLAIN` assertions run
@@ -1325,13 +1323,12 @@ the custom plan is a test that cannot observe this at all.
 **Every column here is on `resources`.** No query in the read path joins
 `catalogs` — the provider document is fetched once per catalog on the page, at
 hydration, after the page is already decided. Task 16 has a test that reads the
-SQL file and proves no query omits the gate — the nullable `network_id` clause
-included, so a query that hard-codes `visible_to @> ARRAY[$1]` instead of the
-nullable form is caught as surely as one that drops the clause outright. Since
-A28 that test also fails a query carrying the nullable form but **not** the
-`'*'` arm: such a query hides every public catalog from every scoped caller,
-which is an empty page rather than an error and so is invisible to the
-acceptance suite unless something reads the SQL.
+SQL file and proves no query omits the gate — the `r.visible_to &&
+@network_ids::text[]` clause included, so a query that hard-codes
+`visible_to @> ARRAY[$1]` instead of the overlap is caught as surely as one
+that drops the clause outright. That substitution hides every public catalog
+from every scoped caller, which is an empty page rather than an error and so is
+invisible to the acceptance suite unless something reads the SQL.
 
 ### Validity — two independent windows
 
@@ -4549,22 +4546,21 @@ one `Retriever` per mode, `Hydrator`, `RRF`
 
 **Tests pin:**
 - A **SQL source test** that reads `discover.sql` and asserts every query
-  contains the scope gate — the nullable `network_id` clause, `active`, both
-  date bounds **and** `within_daily_window` — plus the `geo_distance_m`
+  contains the scope gate — `r.visible_to && @network_ids::text[]`, `active`,
+  both date bounds **and** `within_daily_window` — plus the `geo_distance_m`
   predicate. A mode that drops the clause entirely leaks another network's
   catalog to a caller who scoped their request; a mode that hard-codes
-  `visible_to @> ARRAY[$1]` instead of the nullable form silently reintroduces
-  single-network scoping as the default. **The `ARRAY['*']` arm is asserted by
-  the same test (A28):** a query carrying the nullable form without it hides
-  every public catalog from every scoped caller, and an empty page is not an
-  error anything else here would notice.
-- **An omitted `networkId` returns catalogs from every network,** including
-  one whose `visibleTo` names a single network the caller never mentioned —
-  and the same intent with `networkId` set still returns only that network's
-  rows **plus every `['*']` catalog** (A28). Pinned as one test with three
-  assertions, because a fix aimed at one direction is a regression in another:
-  narrow the wildcard arm and public catalogs vanish from scoped searches,
-  widen the scoped arm and `visibleTo` stops restricting anything.
+  `visible_to @> ARRAY[$1]` instead of the overlap silently reintroduces
+  single-network scoping and hides every public catalog from a scoped caller,
+  and an empty page is not an error anything else here would notice.
+- **A search matches exactly the networks it named** (A29). Pinned as one test
+  over three catalogs — one on `mahavistar`, one on `private.example.com` and
+  one on `['*']` — with three assertions, because a fix aimed at one rule is a
+  regression in another: an omitted `networkId` returns the public catalog
+  alone, `['mahavistar']` returns that network's alone, and
+  `['mahavistar','*']` returns both. Widen the omitted case and `visibleTo`
+  stops restricting anything; hand public catalogs to a scoped caller and
+  `['n1','*']` stops being the way to ask for them.
 - **Schema filtering** matches as a pair: two resources, one `schema.org` +
   `GroceryItem` and one `beckn.org/Mobility` + `RideService`, queried with both
   fragments at once, return both — and a query for
