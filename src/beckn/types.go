@@ -19,7 +19,9 @@ package beckn
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 )
 
 // NetworkIDs is context.networkId, which the spec declares as one network or a
@@ -46,6 +48,12 @@ func (n NetworkIDs) Networks() []string { return n.ids }
 // IsZero drives `omitzero`, so an absent networkId stays absent in the echo.
 func (n NetworkIDs) IsZero() bool { return len(n.ids) == 0 }
 
+// The spec declares no minLength on the string branch, so "" passes L1, becomes
+// a scope no row's visible_to holds, and answers 200 with an empty page that a
+// caller cannot tell from "nothing matched". This is the only place that sees
+// the value before the scope is built, so it is refused here.
+var errEmptyNetworkID = errors.New("networkId must not be an empty string")
+
 // UnmarshalJSON takes either shape and refuses anything else, so a caller
 // learns at the edge rather than by searching and finding nothing.
 func (n *NetworkIDs) UnmarshalJSON(data []byte) error {
@@ -56,6 +64,9 @@ func (n *NetworkIDs) UnmarshalJSON(data []byte) error {
 
 	var one string
 	if err := json.Unmarshal(data, &one); err == nil {
+		if one == "" {
+			return errEmptyNetworkID
+		}
 		*n = OneNetwork(one)
 		return nil
 	}
@@ -63,6 +74,9 @@ func (n *NetworkIDs) UnmarshalJSON(data []byte) error {
 	var many []string
 	if err := json.Unmarshal(data, &many); err != nil {
 		return fmt.Errorf("networkId is a string or an array of strings: %w", err)
+	}
+	if slices.Contains(many, "") {
+		return errEmptyNetworkID
 	}
 	*n = SomeNetworks(many...)
 	return nil

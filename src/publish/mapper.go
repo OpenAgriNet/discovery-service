@@ -71,7 +71,7 @@ func MapCatalog(
 		Validity:  validity,
 
 		Active:    active,
-		VisibleTo: visibleTo(directive, network),
+		VisibleTo: visibleTo(directive),
 
 		ProtocolVersion: protocolVersion(version),
 
@@ -131,7 +131,7 @@ func catalogID(catalog beckn.Catalog, directive beckn.PublishDirective) string {
 
 // visibleTo resolves C8: an omitted or empty visibleTo is every network, which
 // is what the spec says it means. Narrowing is the publisher's to ask for.
-func visibleTo(directive beckn.PublishDirective, _ string) []string {
+func visibleTo(directive beckn.PublishDirective) []string {
 	if len(directive.VisibleTo) == 0 {
 		return []string{domain.NetworkWildcard}
 	}

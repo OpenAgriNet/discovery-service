@@ -157,9 +157,13 @@ func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture
 	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 
 	for _, fixture := range fixtures {
+		// The same default the publish mapper applies (A28): a fixture that
+		// says nothing about its audience is public, so the cases here that
+		// are about paging or geometry rather than the scope are found by the
+		// wildcard search() builds when they name no network.
 		visibleTo := fixture.visibleTo
 		if visibleTo == nil {
-			visibleTo = []string{"local-network"}
+			visibleTo = []string{domain.NetworkWildcard}
 		}
 		derive := fixture.derive
 		if derive == nil {
@@ -168,7 +172,7 @@ func publish(t *testing.T, embedder embeddings.Embedder, fixtures ...readFixture
 
 		faults, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
 			ID:              fixture.catalog,
-			NetworkID:       visibleTo[0],
+			NetworkID:       "local-network",
 			Document:        fixture.document,
 			Active:          true,
 			ProtocolVersion: beckn.Version,
@@ -203,11 +207,31 @@ func matchedIDs(result domain.SearchResult) []string {
 	return ids
 }
 
+// publicScope is the scope discover.Service builds for a request that names no
+// network (A29): the wildcard, which is also what a fixture's default audience
+// holds. The cases that call a retriever or the hydrator directly need it,
+// because nothing above them is running to fill it in.
+func publicScope(now time.Time) domain.Scope {
+	return domain.Scope{NetworkIDs: []string{domain.NetworkWildcard}, Now: now}
+}
+
+// publicQuery is the same default on the query side, for the cases that call
+// the repository or a retriever directly rather than through search().
+func publicQuery(query domain.SearchQuery) domain.SearchQuery {
+	query.NetworkIDs = []string{domain.NetworkWildcard}
+	return query
+}
+
 func search(t *testing.T, repository *postgres.SearchRepository, query domain.SearchQuery) domain.SearchResult {
 	t.Helper()
 
 	if query.Limit == 0 {
 		query.Limit = searchConfig().MaxPageSize
+	}
+	// discover.Service fills this before a backend ever sees it, and these
+	// cases call the backend directly.
+	if len(query.NetworkIDs) == 0 {
+		query.NetworkIDs = []string{domain.NetworkWildcard}
 	}
 	result, err := repository.Search(context.Background(), query, bothTextModes)
 	if err != nil {
@@ -220,11 +244,11 @@ func search(t *testing.T, repository *postgres.SearchRepository, query domain.Se
 // the network gate
 // ---------------------------------------------------------------------------
 
-// Both directions in ONE test, because a fix aimed at either one is a
-// regression in the other: defaulting the empty case to the service's own
-// network makes the first assertion fail, and dropping the predicate entirely
-// makes the second.
-func TestAnOmittedNetworkIdSearchesEveryNetworkAndAGivenOneNarrows(t *testing.T) {
+// All three rules in ONE test, because a fix aimed at any one of them is a
+// regression in another: defaulting the empty case to every network makes the
+// first assertion fail, dropping the predicate entirely makes the second, and
+// treating the scope as a single id makes the third.
+func TestAnOmittedNetworkIdMatchesOnlyPublicAndANamedOneNarrows(t *testing.T) {
 	repository, _ := publish(t, nil,
 		readFixture{
 			catalog:   "cat-open",
@@ -236,20 +260,30 @@ func TestAnOmittedNetworkIdSearchesEveryNetworkAndAGivenOneNarrows(t *testing.T)
 			visibleTo: []string{"private.example.com"},
 			resources: []domain.ResourcePatch{searchable("r-closed", "wheat seed", "", "https://beckn.org/Agri", "SeedLot")},
 		},
+		readFixture{
+			catalog:   "cat-public",
+			visibleTo: []string{domain.NetworkWildcard},
+			resources: []domain.ResourcePatch{searchable("r-public", "wheat seed", "", "https://beckn.org/Agri", "SeedLot")},
+		},
 	)
 
-	everyNetwork := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat"}))
-	if !slices.Contains(everyNetwork, "r-closed") {
-		t.Errorf("an omitted networkId returned %v; it must search EVERY network, "+
-			"including one whose visibleTo names a network the caller never mentioned", everyNetwork)
-	}
-	if len(everyNetwork) != 2 {
-		t.Errorf("an omitted networkId matched %d resources, want both: %v", len(everyNetwork), everyNetwork)
+	public := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat"}))
+	if !slices.Equal(public, []string{"r-public"}) {
+		t.Errorf("an omitted networkId returned %v, want only the public row; "+
+			"naming no network asks for the public catalogs, not for every network", public)
 	}
 
 	scoped := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat", NetworkIDs: []string{"mahavistar"}}))
 	if !slices.Equal(scoped, []string{"r-open"}) {
-		t.Errorf("networkId=mahavistar returned %v, want only that network's row", scoped)
+		t.Errorf("networkId=mahavistar returned %v, want only that network's row; "+
+			"a named network is not handed the public catalogs as well", scoped)
+	}
+
+	both := matchedIDs(search(t, repository,
+		domain.SearchQuery{Text: "wheat", NetworkIDs: []string{"mahavistar", domain.NetworkWildcard}}))
+	slices.Sort(both)
+	if !slices.Equal(both, []string{"r-open", "r-public"}) {
+		t.Errorf("networkId=[mahavistar,*] returned %v, want that network's row and the public one", both)
 	}
 }
 
@@ -401,7 +435,7 @@ func TestAModeThatFailsIsDegradedAndThePageIsWhatTheOthersFound(t *testing.T) {
 		derive:    deriveVectors("r-00", "r-01", "r-02"),
 	})
 
-	query := domain.SearchQuery{Text: "papaya", Limit: searchConfig().MaxPageSize}
+	query := publicQuery(domain.SearchQuery{Text: "papaya", Limit: searchConfig().MaxPageSize})
 	result, err := repository.Search(context.Background(), query,
 		[]domain.Capability{domain.CapabilityLexical, domain.CapabilityFuzzy, domain.CapabilitySemantic})
 	if err != nil {
@@ -428,7 +462,7 @@ func TestAnUnreachableEmbedderDegradesTheModeRatherThanFailingTheSearch(t *testi
 	})
 
 	result, err := repository.Search(context.Background(),
-		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		publicQuery(domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize}),
 		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
 	if err != nil {
 		t.Fatalf("an unreachable embedder failed the whole search: %v", err)
@@ -463,7 +497,7 @@ func TestAPagePastTheRetrievalDepthIsAFaultAndNotAnEmptyPage(t *testing.T) {
 
 	depth := searchConfig().MaxCandidatesPerMode
 	result, err := repository.Search(context.Background(),
-		domain.SearchQuery{Text: "kharif", Limit: 4, Offset: depth}, bothTextModes)
+		publicQuery(domain.SearchQuery{Text: "kharif", Limit: 4, Offset: depth}), bothTextModes)
 
 	if err == nil {
 		t.Fatalf("a page at offset %d returned %d catalogs and no error; the boundary "+
@@ -507,7 +541,7 @@ func TestTheLastPageDoesNotRunPastTheTotal(t *testing.T) {
 	offset := depth - 2
 
 	result, err := repository.Search(context.Background(),
-		domain.SearchQuery{Text: "kharif", Limit: 4, Offset: offset}, bothTextModes)
+		publicQuery(domain.SearchQuery{Text: "kharif", Limit: 4, Offset: offset}), bothTextModes)
 	if err != nil {
 		t.Fatalf("the last reachable page was refused: %v", err)
 	}
@@ -539,14 +573,14 @@ func TestARetrieverNeverReturnsMoreThanItsCap(t *testing.T) {
 	writer := postgres.NewCatalogRepository(pool, geo.DefaultTestResolution)
 	if _, err := writer.UpsertCatalog(context.Background(), domain.CatalogPatch{
 		ID: "cat-cap", NetworkID: "local-network", Active: true, ProtocolVersion: beckn.Version,
-		VisibleTo: []string{"local-network"}, Resources: resources,
+		VisibleTo: []string{domain.NetworkWildcard}, Resources: resources,
 	}, domain.UpdateModeFull, deriveSearchable); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
 	retriever := postgres.NewLexicalRetriever(pool, depth)
 	ids, err := retriever.Retrieve(context.Background(),
-		domain.SearchQuery{Text: "kharif"}, domain.Scope{Now: time.Now().UTC()})
+		publicQuery(domain.SearchQuery{Text: "kharif"}), publicScope(time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
@@ -570,7 +604,7 @@ func TestAModeThisBackendCannotRunIsDegradedAndDoesNotFailTheSearch(t *testing.T
 	})
 
 	result, err := repository.Search(context.Background(),
-		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		publicQuery(domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize}),
 		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
 	if err != nil {
 		t.Fatalf("a missing mode failed the whole search: %v", err)
@@ -611,7 +645,7 @@ func TestFuzzyRetrieverNamesItsOwnQueryFailure(t *testing.T) {
 	}})
 
 	retriever := postgres.NewFuzzyRetriever(&postgres.DBTXFailsAt{DBTX: pool, N: 1}, 10)
-	_, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: "kharif"}, domain.Scope{})
+	_, err := retriever.Retrieve(context.Background(), publicQuery(domain.SearchQuery{Text: "kharif"}), publicScope(time.Time{}))
 	if err == nil || !strings.Contains(err.Error(), "fuzzy retriever") {
 		t.Errorf("err = %v, want it naming the fuzzy retriever", err)
 	}
@@ -640,7 +674,7 @@ func TestAQueryEmbedderThatLiesAboutItsWidthDegradesTheMode(t *testing.T) {
 	})
 
 	result, err := repository.Search(context.Background(),
-		domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize},
+		publicQuery(domain.SearchQuery{Text: "kharif", Limit: searchConfig().MaxPageSize}),
 		[]domain.Capability{domain.CapabilityLexical, domain.CapabilitySemantic})
 	if err != nil {
 		t.Fatalf("a lying embedder failed the whole search: %v", err)
@@ -681,7 +715,7 @@ func TestSemanticRetrieverFindsTheResourceItWasEmbeddedFor(t *testing.T) {
 	})
 
 	result, err := repository.Search(context.Background(),
-		domain.SearchQuery{Text: "kharif wheat", Limit: searchConfig().MaxPageSize},
+		publicQuery(domain.SearchQuery{Text: "kharif wheat", Limit: searchConfig().MaxPageSize}),
 		[]domain.Capability{domain.CapabilitySemantic})
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -706,7 +740,7 @@ func TestSemanticRetrieverWithNoTextEmbedsNothing(t *testing.T) {
 	}})
 
 	retriever := postgres.NewSemanticRetriever(pool, embeddings.NewHashing(columnDimensions), 10)
-	if _, err := retriever.Retrieve(context.Background(), domain.SearchQuery{Text: ""}, domain.Scope{}); err != nil {
+	if _, err := retriever.Retrieve(context.Background(), publicQuery(domain.SearchQuery{Text: ""}), publicScope(time.Time{})); err != nil {
 		t.Errorf("Retrieve with no text: %v, want no error", err)
 	}
 }
@@ -946,7 +980,7 @@ func TestScopeFilterKeepsAdmittedIdsInTheCallersOrder(t *testing.T) {
 		domain.ResourceKey("cat-scope", "not-a-real-resource"),
 		domain.ResourceKey("cat-scope", "wheat"),
 	}
-	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), ids, domain.Scope{})
+	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), ids, publicScope(time.Time{}))
 	if err != nil {
 		t.Fatalf("ScopeFilter: %v", err)
 	}
@@ -991,7 +1025,7 @@ func TestScopeFilterAppliesTheNetworkGate(t *testing.T) {
 func TestScopeFilterOfNoIdsRunsNoQuery(t *testing.T) {
 	_, pool := publish(t, nil, readFixture{catalog: "cat-scope-empty"})
 
-	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), nil, domain.Scope{})
+	kept, err := postgres.NewHydrator(pool).ScopeFilter(context.Background(), nil, publicScope(time.Time{}))
 	if err != nil {
 		t.Fatalf("ScopeFilter: %v", err)
 	}
@@ -1047,7 +1081,7 @@ func TestHydrateNamesWhicheverOfItsFourQueriesFailed(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(fmt.Sprintf("call %d", testCase.call), func(t *testing.T) {
 			hydrator := postgres.NewHydrator(&postgres.DBTXFailsAt{DBTX: pool, N: testCase.call})
-			_, err := hydrator.Hydrate(context.Background(), []string{id}, domain.Scope{})
+			_, err := hydrator.Hydrate(context.Background(), []string{id}, publicScope(time.Time{}))
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Errorf("err = %v, want it naming %q", err, testCase.want)
 			}
@@ -1063,7 +1097,7 @@ func TestScopeFilterNamesItsOwnQueryFailure(t *testing.T) {
 	id := domain.ResourceKey("cat-scope-fail", "wheat")
 
 	hydrator := postgres.NewHydrator(&postgres.DBTXFailsAt{DBTX: pool, N: 1})
-	_, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{})
+	_, err := hydrator.ScopeFilter(context.Background(), []string{id}, publicScope(time.Time{}))
 	if err == nil || !strings.Contains(err.Error(), "scope gate") {
 		t.Errorf("err = %v, want it naming the scope gate", err)
 	}
@@ -1091,8 +1125,9 @@ var filterModes = []domain.Capability{domain.CapabilityJSONPath}
 // filterFor is the query one expression answers, alone.
 func filterFor(expression string) domain.SearchQuery {
 	return domain.SearchQuery{
-		Filters: []domain.AttributeFilter{{Expression: expression}},
-		Limit:   searchConfig().MaxPageSize,
+		Filters:    []domain.AttributeFilter{{Expression: expression}},
+		Limit:      searchConfig().MaxPageSize,
+		NetworkIDs: []string{domain.NetworkWildcard},
 	}
 }
 

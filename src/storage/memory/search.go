@@ -137,8 +137,8 @@ func (r *Repository) candidates(query domain.SearchQuery, scope domain.Scope) []
 // gate onto every resource unconditionally, and reading it from anywhere else
 // would let this backend answer correctly while the copy Postgres reads was wrong.
 //
-// An empty scope network is UNSCOPED and emits no predicate at all — never a
-// literal that matches nothing, and never this service's own network id.
+// The scope is always a non-empty set of networks — {'*'} when the caller named
+// none (A29) — so the gate is one overlap test and never an absent predicate.
 func admitted(resource domain.Resource, scope domain.Scope) bool {
 	if !visibleOn(resource.VisibleTo, scope.NetworkIDs) {
 		return false
