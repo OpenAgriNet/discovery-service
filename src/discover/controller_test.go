@@ -122,8 +122,8 @@ func TestTheResponseIsTheOnDiscoverEnvelope(t *testing.T) {
 		t.Errorf("correlation = %q / %q, want the request's own",
 			envelope.Context.TransactionID, envelope.Context.MessageID)
 	}
-	if envelope.Context.NetworkID != "mahavistar" {
-		t.Errorf("networkId = %q, want it echoed", envelope.Context.NetworkID)
+	if got := envelope.Context.NetworkID.Networks(); len(got) != 1 || got[0] != "mahavistar" {
+		t.Errorf("networkId = %v, want it echoed", envelope.Context.NetworkID.Networks())
 	}
 	if envelope.Context.Version != beckn.Version {
 		t.Errorf("version = %q, want %q", envelope.Context.Version, beckn.Version)

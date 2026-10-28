@@ -103,8 +103,8 @@ type AttributeFilter struct {
 type SearchQuery struct {
 	Text string
 
-	// "" means UNSCOPED — every network. See Scope.
-	NetworkID string
+	// Defaulted by discover.Service, so a backend never sees it empty.
+	NetworkIDs []string
 
 	// Empty means no schema predicate at all, NOT a predicate matching nothing.
 	Schemas []SchemaFilter
@@ -144,13 +144,11 @@ type SearchResult struct {
 // on it. Postgres ignores it and calls now(); it exists for the backends that
 // have none — the memory store, and tests that ask what was live at 23:00.
 //
-// NetworkID == "" means UNSCOPED, which every backend must read as "emit no
-// network predicate" — never as a literal id, and never by falling back to
-// APP_NETWORK_ID, which is publish's visibleTo default (C8) answering a
-// different question.
+// NetworkIDs is the set a resource's audience must overlap. Never empty:
+// discover.Service turned "the caller named none" into the wildcard.
 type Scope struct {
-	NetworkID string
-	Now       time.Time
+	NetworkIDs []string
+	Now        time.Time
 }
 
 // Capability is one thing a backend can do. A backend that cannot do one

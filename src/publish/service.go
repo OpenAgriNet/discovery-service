@@ -68,9 +68,9 @@ func NewService(
 func (s *Service) Publish(
 	ctx context.Context, envelope beckn.Context, action beckn.CatalogPublishAction,
 ) []beckn.CatalogProcessingResult {
-	network := envelope.NetworkID
-	if network == "" {
-		network = s.network
+	network := s.network
+	if named := envelope.NetworkID.Networks(); len(named) > 0 {
+		network = named[0]
 	}
 
 	results := make([]beckn.CatalogProcessingResult, 0, len(action.Catalogs))
@@ -257,7 +257,7 @@ func directiveFor(action beckn.CatalogPublishAction, catalogID string) (beckn.Pu
 // a zero value reading as FULL turns every directive-less republish into a
 // partial wipe of everything the payload did not mention.
 func applyDirectiveDefaults(
-	directive beckn.PublishDirective, catalogID, network string,
+	directive beckn.PublishDirective, catalogID, _ string,
 ) beckn.PublishDirective {
 	if directive.CatalogID == "" {
 		directive.CatalogID = catalogID
@@ -269,7 +269,7 @@ func applyDirectiveDefaults(
 		directive.UpdateMode = beckn.UpdateModeMerge
 	}
 	if len(directive.VisibleTo) == 0 {
-		directive.VisibleTo = []string{network}
+		directive.VisibleTo = []string{domain.NetworkWildcard}
 	}
 	if directive.ResourceDirectives == nil {
 		directive.ResourceDirectives = []beckn.ResourceDirective{}

@@ -70,8 +70,7 @@ const discoverQueries = "queries/discover.sql"
 // and drops every unscoped caller's results to one network. Matching the
 // `sqlc.narg` spelling is the only way to tell the two apart from here.
 var scopeGate = []string{
-	"sqlc.narg('network_id')::text IS NULL",
-	"r.visible_to @> ARRAY[sqlc.narg('network_id')::text]",
+	"r.visible_to && @network_ids::text[]",
 	"r.active",
 	"r.valid_from IS NULL OR r.valid_from <= now()",
 	"r.valid_to   IS NULL OR r.valid_to   >= now()",

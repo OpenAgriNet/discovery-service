@@ -274,36 +274,68 @@ func TestQuantifierNoneInvertsTheMatch(t *testing.T) {
 	}
 }
 
-// Scenario 29. An omitted networkId searches every network.
+// Scenario 29. The three scoping rules, in one story, because a service can
+// get any one of them right while breaking the next.
 //
-// visibleTo restricts which networks a PUBLISHER chose to expose a catalog on.
-// It is not an access boundary a network-less caller is presumed locked out
-// of — a caller wanting isolation supplies networkId, and this is the scenario
-// that keeps the two questions apart.
+// Renamed: it was TestOmittedNetworkIDSearchesEveryNetwork, which is now the
+// opposite of what it asserts.
 //
-// The failure it prevents is a discover that borrowed publish's C8 default:
-// with APP_NETWORK_ID standing in for an absent networkId, the unscoped search
-// below would quietly return one catalog and look entirely correct.
-func TestOmittedNetworkIDSearchesEveryNetwork(t *testing.T) {
+// Every assertion is a search; the three catalogs behind them never change. A
+// caller sees the networks it named and nothing else, and public is a network
+// it names rather than a bonus it is handed.
+func TestASearchMatchesTheNetworksItNamed(t *testing.T) {
 	svc := newService(t)
+	nearby := spatial(dwithin(providerGeoPath, majestic, 5000))
 
 	svc.publishWith(t,
 		[]any{
 			aCatalog("c-mahavistar", availableAt(majestic), resources(aResource("r-mahavistar", "Mahavistar"))),
 			aCatalog("c-bharatvistar", availableAt(majestic), resources(aResource("r-bharatvistar", "Bharatvistar"))),
+			aCatalog("c-public", availableAt(majestic), resources(aResource("r-public", "Public"))),
 		},
 		directive("c-mahavistar", visibleTo("mahavistar")),
-		directive("c-bharatvistar", visibleTo("bharatvistar")))
+		directive("c-bharatvistar", visibleTo("bharatvistar")),
+		directive("c-public", visibleTo("*")))
 
-	both := resourceIDs(svc.near(t, majestic, 5000))
-	slices.Sort(both)
-	if !slices.Equal(both, []string{"r-bharatvistar", "r-mahavistar"}) {
-		t.Errorf("an intent with no networkId returned %v, want both networks", both)
+	if got := resourceIDs(svc.discover(t, nearby)); !slices.Equal(got, []string{"r-public"}) {
+		t.Errorf("an intent naming no network returned %v, want [r-public]", got)
 	}
 
-	one := resourceIDs(svc.discoverOn(t, "mahavistar", spatial(dwithin(providerGeoPath, majestic, 5000))))
+	one := resourceIDs(svc.discoverOn(t, "mahavistar", nearby))
 	if !slices.Equal(one, []string{"r-mahavistar"}) {
-		t.Errorf("an intent scoped to mahavistar returned %v, want [r-mahavistar]", one)
+		t.Errorf("an intent naming mahavistar returned %v, want [r-mahavistar]", one)
+	}
+
+	both := resourceIDs(svc.discoverOnAll(t, []string{"mahavistar", "*"}, nearby))
+	slices.Sort(both)
+	if !slices.Equal(both, []string{"r-mahavistar", "r-public"}) {
+		t.Errorf(`an intent naming ["mahavistar","*"] returned %v, want both`, both)
+	}
+}
+
+// Scenario 29a. The two wire shapes of one field must reach the same query.
+//
+// The string form is what every caller sends today and the array form is what
+// the spec added beside it; a service that handled only the second would break
+// every existing caller, and one that handled only the first would silently
+// ignore the networks an array named.
+func TestBothWireShapesOfNetworkIDAnswerTheSame(t *testing.T) {
+	svc := newService(t)
+	nearby := spatial(dwithin(providerGeoPath, majestic, 5000))
+
+	svc.publishWith(t,
+		[]any{aCatalog("c-one", availableAt(majestic), resources(aResource("r-one", "One")))},
+		directive("c-one", visibleTo("mahavistar")))
+
+	asString := resourceIDs(svc.discoverOn(t, "mahavistar", nearby))
+	asArray := resourceIDs(svc.discoverOnAll(t, []string{"mahavistar"}, nearby))
+
+	if !slices.Equal(asString, asArray) {
+		t.Errorf(`"mahavistar" returned %v and ["mahavistar"] returned %v, want the same page`,
+			asString, asArray)
+	}
+	if !slices.Equal(asString, []string{"r-one"}) {
+		t.Errorf("both shapes returned %v, want [r-one]", asString)
 	}
 }
 

@@ -113,19 +113,16 @@ func TestTheShapeOfAPublishIsObserved(t *testing.T) {
 	}
 }
 
-// TestAnOmittedVisibleToResolvesToTheRequestsOwnNetwork (C8).
-//
 // The resolved set, not the sent one, and that is a deliberate difference from
 // publish.catalog_types beside it. The question this attribute answers is which
-// networks the data reached, and for an omitted visibleTo the honest answer is
-// the request's own — reporting an empty list would say it reached none, which
-// is the one thing that did not happen.
+// networks the data reached, and for an omitted visibleTo that is every one —
+// reporting an empty list would say it reached none, which did not happen.
 func TestAnOmittedVisibleToResolvesToTheRequestsOwnNetwork(t *testing.T) {
 	record := recorded(t, `{"context":{"action":"publish","networkId":"oan"},
 		"message":{"catalogs":[{"id":"c1"}]}}`)
 
-	if got := look(t, record, fact.PublishVisibleTo).List; !slices.Equal(got, []string{"oan"}) {
-		t.Errorf("publish.visible_to = %v, want [oan]", got)
+	if got := look(t, record, fact.PublishVisibleTo).List; !slices.Equal(got, []string{"*"}) {
+		t.Errorf("publish.visible_to = %v, want [*]", got)
 	}
 }
 

@@ -329,6 +329,10 @@ func TestEveryWireStructIsBound(t *testing.T) {
 		bound[b.name] = true
 	}
 
+	// NetworkIDs models a oneOf node, which declares no properties for the
+	// walk to compare its (zero) fields against.
+	bound["NetworkIDs"] = true
+
 	for _, name := range exportedStructNames(t) {
 		if !bound[name] {
 			t.Errorf("%s is an exported struct in package beckn with no entry in bindings(); "+

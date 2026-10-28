@@ -247,7 +247,7 @@ type Validation struct {
 	// The cost is that boot now makes a network call before falling back to
 	// SpecCachePath. LoadSpecIndex already warns loudly and falls back, so an
 	// offline boot is slower and noisier, not broken.
-	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/OpenAgriNet/protocol-specifications-v2/a8451c48909e27bb86e26dec21ce7f71c5cb90b2/api/v2.0.0/beckn.yaml"`
+	SpecURL string `env:"VALIDATION_SPEC_URL" envDefault:"https://raw.githubusercontent.com/OpenAgriNet/protocol-specifications-v2/7a9fdf0df44cc1393727ebef23b5252d3f7b4eb0/api/v2.0.0/beckn.yaml"`
 
 	// Where the fetched spec is cached, and what an air-gapped deployment
 	// mounts in place of the fetch.

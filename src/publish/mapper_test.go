@@ -48,8 +48,8 @@ func TestTheDeclaredDefaultsAreResolvedByTheMapper(t *testing.T) {
 	if !patch.Active {
 		t.Error("Active = false for a payload that omitted isActive, want true")
 	}
-	if len(patch.VisibleTo) != 1 || patch.VisibleTo[0] != network {
-		t.Errorf("VisibleTo = %v, want [%s]", patch.VisibleTo, network)
+	if len(patch.VisibleTo) != 1 || patch.VisibleTo[0] != domain.NetworkWildcard {
+		t.Errorf("VisibleTo = %v, want [%s]", patch.VisibleTo, domain.NetworkWildcard)
 	}
 }
 
