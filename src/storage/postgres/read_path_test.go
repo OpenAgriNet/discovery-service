@@ -247,7 +247,7 @@ func TestAnOmittedNetworkIdSearchesEveryNetworkAndAGivenOneNarrows(t *testing.T)
 		t.Errorf("an omitted networkId matched %d resources, want both: %v", len(everyNetwork), everyNetwork)
 	}
 
-	scoped := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat", NetworkID: "mahavistar"}))
+	scoped := matchedIDs(search(t, repository, domain.SearchQuery{Text: "wheat", NetworkIDs: []string{"mahavistar"}}))
 	if !slices.Equal(scoped, []string{"r-open"}) {
 		t.Errorf("networkId=mahavistar returned %v, want only that network's row", scoped)
 	}
@@ -969,7 +969,7 @@ func TestScopeFilterAppliesTheNetworkGate(t *testing.T) {
 	id := domain.ResourceKey("cat-scope-net", "wheat")
 	hydrator := postgres.NewHydrator(pool)
 
-	kept, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkID: "mahavistar"})
+	kept, err := hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkIDs: []string{"mahavistar"}})
 	if err != nil {
 		t.Fatalf("ScopeFilter: %v", err)
 	}
@@ -977,7 +977,7 @@ func TestScopeFilterAppliesTheNetworkGate(t *testing.T) {
 		t.Errorf("kept = %v, want %v — mahavistar is the network it was published to", kept, []string{id})
 	}
 
-	kept, err = hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkID: "bharatvistar"})
+	kept, err = hydrator.ScopeFilter(context.Background(), []string{id}, domain.Scope{NetworkIDs: []string{"bharatvistar"}})
 	if err != nil {
 		t.Fatalf("ScopeFilter: %v", err)
 	}
@@ -1012,7 +1012,7 @@ func TestHydrateOfAGateRefusedPageReturnsNoCatalogs(t *testing.T) {
 
 	id := domain.ResourceKey("cat-hydrate-empty", "wheat")
 	catalogs, err := postgres.NewHydrator(pool).Hydrate(
-		context.Background(), []string{id}, domain.Scope{NetworkID: "bharatvistar"})
+		context.Background(), []string{id}, domain.Scope{NetworkIDs: []string{"bharatvistar"}})
 	if err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}

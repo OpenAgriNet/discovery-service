@@ -514,9 +514,11 @@ func TestACallerOverItsRateGetsA429(t *testing.T) {
 func TestChangingVisibleToWithNoResourcesInThePayloadTakesEffect(t *testing.T) {
 	svc := newService(t)
 
-	svc.publishCatalogs(t, aCatalog("c-gate",
-		availableAt(majestic),
-		resources(aResource("r-gated", "Gated"))))
+	// Named rather than left to the default: this scenario is about a gate
+	// MOVING, so it has to start somewhere narrow enough to move from.
+	svc.publishWith(t,
+		[]any{aCatalog("c-gate", availableAt(majestic), resources(aResource("r-gated", "Gated")))},
+		directive("c-gate", visibleTo(network)))
 
 	if got := resourceIDs(svc.discoverOn(t, network, spatial(dwithin(providerGeoPath, majestic, 5000)))); !slices.Equal(got, []string{"r-gated"}) {
 		t.Fatalf("before the change %s sees %v, want [r-gated]", network, got)

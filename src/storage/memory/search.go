@@ -41,7 +41,7 @@ func (r *Repository) Search(
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	scope := domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()}
+	scope := domain.Scope{NetworkIDs: query.NetworkIDs, Now: time.Now().UTC()}
 
 	ranked, filtering, degraded := r.negotiate(modes)
 	matched := r.candidates(query, scope)
@@ -140,12 +140,20 @@ func (r *Repository) candidates(query domain.SearchQuery, scope domain.Scope) []
 // An empty scope network is UNSCOPED and emits no predicate at all — never a
 // literal that matches nothing, and never this service's own network id.
 func admitted(resource domain.Resource, scope domain.Scope) bool {
-	if scope.NetworkID != "" && !slices.Contains(resource.VisibleTo, scope.NetworkID) {
+	if !visibleOn(resource.VisibleTo, scope.NetworkIDs) {
 		return false
 	}
 	return resource.Active && live(
 		resource.ValidFrom, resource.ValidTo,
 		resource.ValidTimeFrom, resource.ValidTimeTo, scope.Now)
+}
+
+// The Go half of the scope gate's && : a caller sees a catalog whose audience
+// overlaps the networks they asked for (A29).
+func visibleOn(audience, asked []string) bool {
+	return slices.ContainsFunc(audience, func(network string) bool {
+		return slices.Contains(asked, network)
+	})
 }
 
 // live is the validity half of the gate: the calendar range ANDed with the daily
@@ -309,7 +317,6 @@ func (r *Repository) hydrate(page []domain.Resource, scope domain.Scope) []domai
 			position[resource.CatalogID] = index
 			assembled = append(assembled, domain.Catalog{
 				ID:            stored.ID,
-				NetworkID:     stored.NetworkID,
 				Document:      stored.Document,
 				VisibleTo:     slices.Clone(stored.VisibleTo),
 				Active:        stored.Active,

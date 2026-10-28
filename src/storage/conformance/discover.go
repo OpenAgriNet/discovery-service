@@ -38,7 +38,7 @@ import (
 //     owes if it DECLARES the mode, and skips on one that does not.
 func DiscoverCases(resolution int) []Case {
 	return []Case{
-		anOmittedNetworkSearchesEveryNetwork(),
+		theScopeIsExactlyTheNetworksTheCallerNamed(),
 		theGateHidesWhatIsNotLive(),
 		aWindowThatWrapsMidnightIsLiveAndItsForwardTwinIsNot(),
 		schemaFilteringComparesContextAndTypeAsAPair(),
@@ -187,6 +187,11 @@ func searched(
 	if query.Limit == 0 {
 		query.Limit = pageLimit
 	}
+	// discover.Service fills this before a backend ever sees it, and these
+	// cases call the backend directly.
+	if len(query.NetworkIDs) == 0 {
+		query.NetworkIDs = []string{domain.NetworkWildcard}
+	}
 	result, err := backends.Search.Search(t.Context(), query, modes)
 	if err != nil {
 		t.Fatalf("searching %+v: %v", query, err)
@@ -265,39 +270,40 @@ func dateRange(from, to time.Time) *domain.TimePeriodPatch {
 // the cases
 // ---------------------------------------------------------------------------
 
-// An empty scope network is UNSCOPED, not a network id that matches nothing.
-//
-// Both halves are asserted because the two failures are indistinguishable at
-// the caller: a backend reading "" as a literal returns an empty page, and one
-// falling back to this service's own APP_NETWORK_ID returns a single network's
-// rows.
-func anOmittedNetworkSearchesEveryNetwork() Case {
+// The three scoping rules in one story, because a backend can get any one of
+// them right while breaking the next (A29).
+func theScopeIsExactlyTheNetworksTheCallerNamed() Case {
+	publish := func(id, resource string, audience ...string) Publish {
+		return Publish{
+			Patch: domain.CatalogPatch{
+				ID: id, NetworkID: "north.example.com", Active: true,
+				ProtocolVersion: beckn.Version,
+				VisibleTo:       audience,
+				Resources:       []domain.ResourcePatch{searchable(resource, resource, "", "", "")},
+			},
+			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
+		}
+	}
+
 	return Case{
-		Name: "an omitted network searches every network and a given one narrows",
-		Given: []Publish{{
-			Patch: domain.CatalogPatch{
-				ID: "c-north", NetworkID: "north.example.com", Active: true,
-				ProtocolVersion: beckn.Version,
-				VisibleTo:       []string{"north.example.com"},
-				Resources:       []domain.ResourcePatch{searchable("r-north", "north", "", "", "")},
-			},
-			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
-		}, {
-			Patch: domain.CatalogPatch{
-				ID: "c-south", NetworkID: "south.example.com", Active: true,
-				ProtocolVersion: beckn.Version,
-				VisibleTo:       []string{"south.example.com"},
-				Resources:       []domain.ResourcePatch{searchable("r-south", "south", "", "", "")},
-			},
-			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
-		}},
+		Name: "a search matches the networks it named and no others",
+		Given: []Publish{
+			publish("c-north", "r-north", "north.example.com"),
+			publish("c-south", "r-south", "south.example.com"),
+			publish("c-public", "r-public", domain.NetworkWildcard),
+		},
 		Then: func(t *testing.T, backends Backends) {
 			unscoped := searched(t, backends, domain.SearchQuery{}, lexical)
-			assertPage(t, unscoped, []string{"r-north", "r-south"})
+			assertPage(t, unscoped, []string{"r-public"})
 
-			scoped := searched(t, backends,
-				domain.SearchQuery{NetworkID: "south.example.com"}, lexical)
-			assertPage(t, scoped, []string{"r-south"})
+			one := searched(t, backends,
+				domain.SearchQuery{NetworkIDs: []string{"south.example.com"}}, lexical)
+			assertPage(t, one, []string{"r-south"})
+
+			both := searched(t, backends, domain.SearchQuery{
+				NetworkIDs: []string{"south.example.com", domain.NetworkWildcard},
+			}, lexical)
+			assertPage(t, both, []string{"r-public", "r-south"})
 		},
 	}
 }

@@ -254,6 +254,10 @@ type TimePeriodPatch struct {
 	EndTime   Nullable[TimeOfDay]
 }
 
+// NetworkWildcard in a VisibleTo list means every network matches it. It is
+// what an omitted or empty visibleTo resolves to.
+const NetworkWildcard = "*"
+
 // UpdateMode is how a CatalogPatch applies to what is stored (A8).
 type UpdateMode string
 

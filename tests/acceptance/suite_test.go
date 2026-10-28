@@ -234,6 +234,12 @@ func onNetwork(id string) func(map[string]any) {
 	return func(context map[string]any) { context["networkId"] = id }
 }
 
+// onNetworks is the array form of the same field, which is how a caller asks
+// for its own network and the public catalogs in one request.
+func onNetworks(ids ...string) func(map[string]any) {
+	return func(context map[string]any) { context["networkId"] = ids }
+}
+
 // ids are canonical UUIDs because the envelope rules require them to be (C6):
 // messageId and transactionId are checked for the 8-4-4-4-12 hex shape before
 // any handler runs, so an ordered counter — which would make a failing
@@ -329,14 +335,29 @@ func (s *service) discover(t *testing.T, intent map[string]any) []beckn.Catalog 
 	return body.Message.Catalogs
 }
 
-// discoverOn is discover scoped to one network, which is what makes a
-// visibleTo gate observable: an intent carrying no networkId searches every
-// network, so a scenario about visibility that omitted it would assert nothing.
+// discoverOn is discover scoped to one network, sent as the STRING form of
+// context.networkId. discoverOnAll below sends the array form.
 func (s *service) discoverOn(t *testing.T, networkID string, intent map[string]any) []beckn.Catalog {
 	t.Helper()
 
+	return s.discoverScoped(t, intent, onNetwork(networkID))
+}
+
+// discoverOnAll is the same request with the ARRAY form of networkId, which is
+// how a caller asks for its own network and the public catalogs at once.
+func (s *service) discoverOnAll(t *testing.T, ids []string, intent map[string]any) []beckn.Catalog {
+	t.Helper()
+
+	return s.discoverScoped(t, intent, onNetworks(ids...))
+}
+
+func (s *service) discoverScoped(
+	t *testing.T, intent map[string]any, scope func(map[string]any),
+) []beckn.Catalog {
+	t.Helper()
+
 	answer := s.post(t, "/discover",
-		envelope(beckn.ActionDiscover, map[string]any{"intent": intent}, onNetwork(networkID)))
+		envelope(beckn.ActionDiscover, map[string]any{"intent": intent}, scope))
 	if answer.status != http.StatusOK {
 		t.Fatalf("POST /discover = %d, want 200\nbody: %s", answer.status, answer.body)
 	}

@@ -103,7 +103,7 @@ func (s *SearchRepository) Search(
 
 	// A6: captured ONCE so every mode agrees on "now". Postgres ignores it and
 	// calls now(); it is for the backends that have none.
-	scope := domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()}
+	scope := domain.Scope{NetworkIDs: query.NetworkIDs, Now: time.Now().UTC()}
 
 	rankedModes, filtering, degraded := s.negotiate(modes)
 

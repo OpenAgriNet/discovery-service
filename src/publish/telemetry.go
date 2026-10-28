@@ -19,7 +19,7 @@ import (
 // would read REGULAR on every span that exists — a table saying nobody ever
 // tried. Whether the volume counts and publish.visible_to belong on a span at
 // all is a judgement call decided in opentelemetry.md.
-func observePublish(ctx context.Context, envelope beckn.Context, action beckn.CatalogPublishAction) {
+func observePublish(ctx context.Context, _ beckn.Context, action beckn.CatalogPublishAction) {
 	resources, offers, validity := volume(action.Catalogs)
 
 	fact.ObserveInt64(ctx, fact.PublishCatalogCount, int64(len(action.Catalogs)))
@@ -29,7 +29,7 @@ func observePublish(ctx context.Context, envelope beckn.Context, action beckn.Ca
 
 	fact.ObserveStrings(ctx, fact.PublishProviderIDs, publisherIDs(action.Catalogs))
 
-	types, modes, networks := directives(action, envelope.NetworkID)
+	types, modes, networks := directives(action)
 	fact.ObserveStrings(ctx, fact.PublishCatalogTypes, types)
 	fact.ObserveStrings(ctx, fact.PublishUpdateModes, modes)
 	fact.ObserveStrings(ctx, fact.PublishVisibleTo, networks)
@@ -70,12 +70,10 @@ func publisherIDs(catalogs []beckn.Catalog) []string {
 // would be invisible — the span would say MERGE while the row was replaced. The
 // loop walks the CATALOGS and looks the directive up, so a catalog with no
 // directive at all resolves the same way as one naming only catalogId.
-func directives(
-	action beckn.CatalogPublishAction, network string,
-) (types, modes, networks []string) {
+func directives(action beckn.CatalogPublishAction) (types, modes, networks []string) {
 	for _, catalog := range action.Catalogs {
 		sent, _ := directiveFor(action, catalog.ID)
-		directive := applyDirectiveDefaults(sent, catalog.ID, network)
+		directive := applyDirectiveDefaults(sent, catalog.ID, "")
 
 		types = add(types, directive.CatalogType)
 		modes = add(modes, directive.UpdateMode)

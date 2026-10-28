@@ -45,12 +45,10 @@ func (s *Service) Discover(
 	}
 	reportPartials(ctx, partial)
 
-	// From the ENVELOPE, and NOT defaulted to config.App.Network. Empty means
-	// EVERY network and the repository emits no network predicate at all.
-	// config.App.Network is publish's default for an empty visibleTo (C8) — a
-	// different field answering a different question — and reusing it here puts
-	// discover back to single-network scoping (scenario 29).
-	query.NetworkID = envelope.NetworkID
+	// From the ENVELOPE, and NOT defaulted to config.App.Network: naming no
+	// network means the public catalogs, not this deployment's own. Resolved
+	// HERE so no backend carries the rule a second time.
+	query.NetworkIDs = scopedNetworks(envelope.NetworkID)
 
 	modes, degraded, err := s.negotiate(query)
 	if err != nil {
@@ -287,4 +285,13 @@ func reportPartials(ctx context.Context, partial []domain.Fault) {
 			zap.String("code", fault.Code),
 			zap.String("reason", fault.Message))
 	}
+}
+
+// scopedNetworks is what the caller asked for, or the public catalogs when
+// they asked for nothing.
+func scopedNetworks(asked beckn.NetworkIDs) []string {
+	if networks := asked.Networks(); len(networks) > 0 {
+		return networks
+	}
+	return []string{domain.NetworkWildcard}
 }

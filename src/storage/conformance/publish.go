@@ -29,7 +29,7 @@ func PublishCases() []Case {
 		deriveWritesReachTheStore(),
 		mergeKeepsAnOmittedResource(),
 		fullRemovesAnOmittedResource(),
-		anEmptyVisibleToBecomesTheNetwork(),
+		anEmptyVisibleToBecomesPublic(),
 		theUpsertReturnsTheStoredRowOnConflict(),
 		fieldLevelMergeSurvivesTheRoundTrip(),
 		derivationRunsAfterTheMerge(),
@@ -56,10 +56,12 @@ func PublishCases() []Case {
 // the write path cannot produce.
 func catalogPatch(id string, resources ...domain.ResourcePatch) domain.CatalogPatch {
 	return domain.CatalogPatch{
-		ID:              id,
-		NetworkID:       network,
-		Active:          true,
-		VisibleTo:       []string{network},
+		ID:        id,
+		NetworkID: network,
+		Active:    true,
+		// Public: a case that is not about who can see a catalog must not be
+		// answered empty by the scope gate (A29).
+		VisibleTo:       []string{domain.NetworkWildcard},
 		ProtocolVersion: beckn.Version,
 		Resources:       resources,
 	}
@@ -268,27 +270,25 @@ func fullRemovesAnOmittedResource() Case {
 	}
 }
 
-// The fail-safe: a catalog visible to nobody reports success and is findable by
-// nobody, so the writer fills an empty list with the request's own network. The
-// mapper already did this (A9); this pins the repository's own copy, the one
-// that survives a mapper change.
-func anEmptyVisibleToBecomesTheNetwork() Case {
+// The writer's own copy of the default, the one that survives a mapper change.
+func anEmptyVisibleToBecomesPublic() Case {
 	patch := catalogPatch("c1", resourcePatch("r1", `{"grade":"A"}`))
 	patch.VisibleTo = nil
 
 	return Case{
-		Name:  "an empty visibleTo is filled with the publishing network",
+		Name:  "an empty visibleTo is filled with the wildcard",
 		Given: []Publish{{Patch: patch, Mode: domain.UpdateModeMerge, Derive: noDerive}},
 		Then: func(t *testing.T, backends Backends) {
 			stored := mustGet(t, backends, "c1")
 
-			if !slices.Equal(stored.VisibleTo, []string{network}) {
-				t.Errorf("the catalog is visible to %v, want [%s] — a catalog visible to "+
-					"nobody reports success and is findable by no one", stored.VisibleTo, network)
+			want := []string{domain.NetworkWildcard}
+			if !slices.Equal(stored.VisibleTo, want) {
+				t.Errorf("the catalog is visible to %v, want %v — a catalog visible to "+
+					"nobody reports success and is findable by no one", stored.VisibleTo, want)
 			}
-			if resource := resourceByID(t, stored.Resources, "r1"); !slices.Equal(resource.VisibleTo, []string{network}) {
-				t.Errorf("r1 is visible to %v, want [%s]; discover reads the copy on the "+
-					"resource and never joins to the catalog", resource.VisibleTo, network)
+			if resource := resourceByID(t, stored.Resources, "r1"); !slices.Equal(resource.VisibleTo, want) {
+				t.Errorf("r1 is visible to %v, want %v; discover reads the copy on the "+
+					"resource and never joins to the catalog", resource.VisibleTo, want)
 			}
 		},
 	}

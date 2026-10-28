@@ -334,13 +334,13 @@ func TestTwoDegradedModesAreBothReturned(t *testing.T) {
 	}
 }
 
-// Scenario 29, from the service's side: an omitted networkId searches EVERY
-// network, and does NOT fall back to APP_NETWORK_ID.
+// An omitted networkId becomes the wildcard HERE, not in a backend, and does
+// NOT fall back to APP_NETWORK_ID.
 //
 // The config carries a network id precisely so the assertion has something to
 // fail against: with App.Network empty, a service that wrongly defaulted would
 // pass this test by coincidence.
-func TestAnOmittedNetworkIDSearchesEveryNetwork(t *testing.T) {
+func TestAnOmittedNetworkIDBecomesTheWildcard(t *testing.T) {
 	repo := &stubRepo{capabilities: everything()}
 
 	cfg := settings()
@@ -351,24 +351,34 @@ func TestAnOmittedNetworkIDSearchesEveryNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if repo.gotQuery.NetworkID != "" {
-		t.Errorf("NetworkID = %q, want unscoped — publish's visibleTo default is a different question (C8)",
-			repo.gotQuery.NetworkID)
+	if !slices.Equal(repo.gotQuery.NetworkIDs, []string{domain.NetworkWildcard}) {
+		t.Errorf("NetworkIDs = %v, want [*]", repo.gotQuery.NetworkIDs)
 	}
 }
 
-// The other half: a networkId that IS sent scopes the search to it.
-func TestANetworkIDThatWasSentScopesTheSearch(t *testing.T) {
-	repo := &stubRepo{capabilities: everything()}
+// Both wire shapes reach the repository as the set the caller named.
+func TestTheNetworksThatWereSentScopeTheSearch(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		sent beckn.NetworkIDs
+		want []string
+	}{
+		{"a string", beckn.OneNetwork("bharatvistar"), []string{"bharatvistar"}},
+		{"an array", beckn.SomeNetworks("bharatvistar", "*"), []string{"bharatvistar", "*"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &stubRepo{capabilities: everything()}
 
-	_, _, err := discover.NewService(repo, settings()).Discover(
-		t.Context(), beckn.Context{NetworkID: "bharatvistar"},
-		beckn.Intent{TextSearch: "wheat"}, discover.Page{})
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	if repo.gotQuery.NetworkID != "bharatvistar" {
-		t.Errorf("NetworkID = %q, want the envelope's own", repo.gotQuery.NetworkID)
+			_, _, err := discover.NewService(repo, settings()).Discover(
+				t.Context(), beckn.Context{NetworkID: test.sent},
+				beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			if !slices.Equal(repo.gotQuery.NetworkIDs, test.want) {
+				t.Errorf("NetworkIDs = %v, want %v", repo.gotQuery.NetworkIDs, test.want)
+			}
+		})
 	}
 }
 
@@ -583,9 +593,11 @@ func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
 	repo := memory.New(geo.DefaultTestResolution)
 
 	if _, err := repo.UpsertCatalog(t.Context(), domain.CatalogPatch{
-		ID:        "c1",
-		Active:    true,
-		VisibleTo: []string{"mahavistar"},
+		ID:     "c1",
+		Active: true,
+		// Public: this case is about offers, and a narrow audience would make
+		// the search answer nothing and pass for the wrong reason.
+		VisibleTo: []string{domain.NetworkWildcard},
 		Resources: []domain.ResourcePatch{{ID: "wheat"}, {ID: "rice"}},
 		Offers: []domain.OfferPatch{{
 			ID:          "on-rice",

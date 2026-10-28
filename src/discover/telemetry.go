@@ -43,7 +43,7 @@ func observeIntent(ctx context.Context, envelope beckn.Context, intent beckn.Int
 		fact.ObserveStrings(ctx, fact.IntentSpatialOps, ops)
 	}
 
-	fact.ObserveBool(ctx, fact.IntentScoped, envelope.NetworkID != "")
+	fact.ObserveBool(ctx, fact.IntentScoped, !envelope.NetworkID.IsZero())
 	observeSchemaPredicate(ctx, envelope)
 }
 

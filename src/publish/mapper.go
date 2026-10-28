@@ -129,12 +129,11 @@ func catalogID(catalog beckn.Catalog, directive beckn.PublishDirective) string {
 	return catalog.ID
 }
 
-// visibleTo resolves C8: an omitted or empty visibleTo is the request's own
-// network, not every network. Publishing to every network by a typo is the worse
-// of the two failures.
-func visibleTo(directive beckn.PublishDirective, network string) []string {
+// visibleTo resolves C8: an omitted or empty visibleTo is every network, which
+// is what the spec says it means. Narrowing is the publisher's to ask for.
+func visibleTo(directive beckn.PublishDirective, _ string) []string {
 	if len(directive.VisibleTo) == 0 {
-		return []string{network}
+		return []string{domain.NetworkWildcard}
 	}
 	return directive.VisibleTo
 }

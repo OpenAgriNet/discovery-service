@@ -327,14 +327,14 @@ func TestLimitIsClampedAndAPagePastTheRetrievalDepthIsRefused(t *testing.T) {
 }
 
 // NetworkID is NOT set here. The service sets it from the envelope, and empty
-// means EVERY network; defaulting it in the mapper would quietly put discover
-// back to single-network scoping.
+// means the public catalogs; defaulting it in the mapper would quietly put
+// discover back to single-network scoping.
 func TestTheMapperLeavesNetworkScopingToTheService(t *testing.T) {
 	envelope := beckn.Context{SchemaContext: []string{"https://beckn.org/Agri"}}
 
 	query, _, _ := discover.MapIntent(beckn.Intent{}, envelope, discover.Page{}, settings())
-	if query.NetworkID != "" {
-		t.Errorf("NetworkID = %q, want empty", query.NetworkID)
+	if len(query.NetworkIDs) != 0 {
+		t.Errorf("NetworkIDs = %v, want empty", query.NetworkIDs)
 	}
 }
 
