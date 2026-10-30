@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 
 	"github.com/OpenAgriNet/discovery-service/src/platform/telemetry/fact"
@@ -50,7 +51,7 @@ func (p *Provider) EmitAudit(ctx context.Context, event fact.AuditEvent) {
 	record.SetSeverity(log.SeverityInfo4)
 	record.SetSeverityText("INFO")
 
-	record.SetBody(log.StringValue("catalog state changed"))
+	record.SetBody(attribute.StringValue("catalog state changed"))
 
 	// The five spec-Required names are LITERALS here, which is the one place in
 	// this service that an attribute key is not read from fact.
@@ -66,11 +67,11 @@ func (p *Provider) EmitAudit(ctx context.Context, event fact.AuditEvent) {
 		// Required by otel-specification.md §LOG. log_uuid is per-RECORD, not
 		// per-catalog: a consumer uses it to discard a redelivery rather than
 		// count the same transition twice.
-		log.String("log_uuid", uuid.NewString()),
-		log.String("item.id", event.ItemID),
-		log.String("item.type", event.ItemType),
-		log.String("item.prevstate", event.PrevState),
-		log.String("item.state", event.State),
+		attribute.String("log_uuid", uuid.NewString()),
+		attribute.String("item.id", event.ItemID),
+		attribute.String("item.type", event.ItemType),
+		attribute.String("item.prevstate", event.PrevState),
+		attribute.String("item.state", event.State),
 	)
 
 	// Emit reads the span context out of ctx itself, which is how the record

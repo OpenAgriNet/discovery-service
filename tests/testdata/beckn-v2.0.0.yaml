@@ -166,6 +166,41 @@ paths:
                         const: discover
                 message:
                   $ref: '#/components/schemas/DiscoverAction'
+            examples:
+              paginatedDiscover:
+                summary: Second page of results, counted in resources (limit/offset)
+                value:
+                  context:
+                    version: '2.0.0'
+                    action: discover
+                    messageId: 770e8400-e29b-41d4-a716-446655440004
+                    transactionId: 770e8400-e29b-41d4-a716-446655440005
+                    timestamp: '2026-03-04T11:00:00.000Z'
+                    bapId: bap.shoply.com
+                    bapUri: https://bap.shoply.com
+                    networkId: retail-network
+                  message:
+                    intent:
+                      textSearch: premium laptop
+                    limit: 3
+                    offset: 3
+              multiNetworkDiscover:
+                summary: Discover across two subnets using the array form of networkId
+                value:
+                  context:
+                    version: '2.0.0'
+                    action: discover
+                    messageId: 880e8400-e29b-41d4-a716-446655440006
+                    transactionId: 880e8400-e29b-41d4-a716-446655440007
+                    timestamp: '2026-03-04T11:05:00.000Z'
+                    bapId: bap.shoply.com
+                    bapUri: https://bap.shoply.com
+                    networkId:
+                    - retail-network
+                    - grocery-network
+                  message:
+                    intent:
+                      textSearch: organic coffee beans
       responses:
         '200':
           $ref: '#/components/responses/Ack'
@@ -220,6 +255,54 @@ paths:
                         const: on_discover
                 message:
                   $ref: '#/components/schemas/OnDiscoverAction'
+            examples:
+              paginatedOnDiscover:
+                summary: Second page of a result set paginated by resource. The
+                  three resources span two catalogs, and CAT-TECHMART-2026
+                  continues from the previous page.
+                value:
+                  context:
+                    version: '2.0.0'
+                    action: on_discover
+                    messageId: 770e8400-e29b-41d4-a716-446655440004
+                    transactionId: 770e8400-e29b-41d4-a716-446655440005
+                    timestamp: '2026-03-04T11:00:02.000Z'
+                    bapId: bap.shoply.com
+                    bapUri: https://bap.shoply.com
+                    bppId: bpp.techmart.com
+                    bppUri: https://bpp.techmart.com
+                    networkId: retail-network
+                  message:
+                    catalogs:
+                    - id: CAT-TECHMART-2026
+                      descriptor:
+                        name: TechMart Product Catalog
+                      provider:
+                        id: provider-techmart-001
+                        descriptor:
+                          name: TechMart Electronics
+                      resources:
+                      - id: ITEM-LAPTOP-004
+                        descriptor:
+                          name: Premium Laptop Pro 14
+                      - id: ITEM-LAPTOP-005
+                        descriptor:
+                          name: Premium Laptop Pro 16
+                    - id: CAT-GADGETHUB-2026
+                      descriptor:
+                        name: GadgetHub Catalog
+                      provider:
+                        id: provider-gadgethub-002
+                        descriptor:
+                          name: GadgetHub
+                      resources:
+                      - id: ITEM-LAPTOP-006
+                        descriptor:
+                          name: Premium Laptop Air
+                    pagination:
+                      total: 137
+                      limit: 3
+                      offset: 3
       responses:
         '200':
           $ref: '#/components/responses/Ack'
@@ -2290,6 +2373,24 @@ components:
       properties:
         intent:
           $ref: '#/components/schemas/Intent'
+        limit:
+          type: integer
+          minimum: 1
+          description: >-
+            Maximum number of resources the DS SHOULD return in the
+            on_discover page, summed across the catalogs array. If omitted,
+            the DS applies its own default. No ceiling is fixed here because
+            the maximum page size is DS policy; a DS clamps an oversize
+            limit to its own maximum and reports the applied value in
+            pagination.limit.
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Zero-based index, relative to the DS's full aggregated result
+            set, of the first resource the DS SHOULD return. Counted in
+            resources, not catalogs.
       additionalProperties: false
       required:
       - intent
@@ -2375,6 +2476,8 @@ components:
             Array of catalogs matching the discovery request.'
           items:
             $ref: '#/components/schemas/Catalog'
+        pagination:
+          $ref: '#/components/schemas/DiscoverPagination'
       additionalProperties: false
 
     OnInitAction:
@@ -2983,12 +3086,22 @@ components:
           type: string
           format: uuid
         networkId:
-          description: "The unique identifier of the Beckn subnet within which this\
-            \ transaction is occurring. Actors use this value to resolve the subnet's\
-            \ registry URL before performing identity and address lookups. The RECOMMENDED\
-            \ format is namespace_id followed by a slash followed by registry_id, for\
-            \ example acmenet.org/charge-net."
-          type: string
+          description: "The unique identifier(s) of the Beckn subnet(s) within which\
+            \ this transaction is occurring. Actors use this value to resolve the\
+            \ subnet's registry URL before performing identity and address lookups.\
+            \ The RECOMMENDED format is namespace_id followed by a slash followed\
+            \ by registry_id, for example acmenet.org/charge-net.\n\nMAY be a single\
+            \ string (single-network transaction) or an array of strings (multi-network\
+            \ transaction). When an array is provided, order is significant: actors\
+            \ MUST attempt registry resolution starting with the first entry, treating\
+            \ it as the primary network, and MAY fall back to subsequent entries if\
+            \ resolution against the primary fails."
+          oneOf:
+          - type: string
+          - type: array
+            items:
+              type: string
+            minItems: 1
         timestamp:
           description: The date and time at which this message was generated by the
             sender, expressed in RFC 3339 date-time format. The receiving actor MAY
@@ -4499,6 +4612,53 @@ components:
           description: >-
             ISO 8601 timestamp set by the CS each time the subscription record
             is modified.
+
+    DiscoverPagination:
+      type: object
+      description: "Pagination metadata accompanying an /on_discover callback,\
+        \ describing the window of results returned relative to the DS's full\
+        \ aggregated result set for the discovery intent.\n\nThe unit of pagination\
+        \ is the resource, not the catalog: total, limit, and offset all count\
+        \ entries of Catalog.resources summed across the catalogs array. A single\
+        \ Catalog MAY therefore be split across consecutive pages, repeating its\
+        \ id, provider, and bppId on each page while carrying a different subset\
+        \ of its resources.\n\nProduced by the DS; consumed by the CN to determine\
+        \ whether further pages exist and to construct the next /discover request.\
+        \ Distinct from Pagination, which is produced by the CS for the deprecated\
+        \ /catalog/search and /catalog/subscription endpoints."
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: >-
+            Number of resources reachable by paging, not the count in this
+            page. This is the count of matches the DS retained, which MAY be
+            capped at its retrieval depth: a DS that stops ranking after N
+            candidates reports at most N, because no page beyond that can be
+            fetched. A CN MUST therefore treat total as the end of what is
+            pageable and MUST NOT present it as an absolute match count.
+        limit:
+          type: integer
+          minimum: 1
+          description: >-
+            Page size the DS actually applied, which MAY differ from the
+            limit the CN requested because the DS clamped it. This is a
+            ceiling, not a count: the last page carries fewer resources
+            than limit, and limit does not shrink to match. A CN that
+            wants the number of resources returned counts the catalogs
+            array; it has reached the end of the results when offset plus
+            that count equals total.
+        offset:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based index of the first resource in this page relative to
+            the DS's full aggregated result set.
+      required:
+      - total
+      - limit
+      - offset
+      additionalProperties: false
 
     Pagination:
       type: object

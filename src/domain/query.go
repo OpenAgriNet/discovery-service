@@ -103,8 +103,8 @@ type AttributeFilter struct {
 type SearchQuery struct {
 	Text string
 
-	// "" means UNSCOPED — every network. See Scope.
-	NetworkID string
+	// Defaulted by discover.Service, so a backend never sees it empty.
+	NetworkIDs []string
 
 	// Empty means no schema predicate at all, NOT a predicate matching nothing.
 	Schemas []SchemaFilter
@@ -125,11 +125,17 @@ type SearchQuery struct {
 // SearchResult is one page of an answered query.
 //
 // Degraded names the retrieval modes that did not contribute and reaches the
-// caller as the X-Beckn-Degraded header, not a body key (C11). There is no
-// Total (A19).
+// caller as the X-Beckn-Degraded header, not a body key (C11).
+//
+// Total is the length of the ranked list the page was cut from, before paging.
+// It is NOT yet the number a caller can page to: a backend may rank deeper than
+// the retrieval depth, so the request layer caps it at Search.MaxCandidatesPerMode
+// before putting it on the wire (ADR-0017). Capping there rather than here is
+// what lets a backend that has no depth of its own still answer correctly.
 type SearchResult struct {
 	Catalogs []Catalog
 	Degraded []string
+	Total    int
 }
 
 // Scope is the request-wide gate every retrieval mode reads (A6).
@@ -138,13 +144,11 @@ type SearchResult struct {
 // on it. Postgres ignores it and calls now(); it exists for the backends that
 // have none — the memory store, and tests that ask what was live at 23:00.
 //
-// NetworkID == "" means UNSCOPED, which every backend must read as "emit no
-// network predicate" — never as a literal id, and never by falling back to
-// APP_NETWORK_ID, which is publish's visibleTo default (C8) answering a
-// different question.
+// NetworkIDs is the set a resource's audience must overlap. Never empty:
+// discover.Service turned "the caller named none" into the wildcard.
 type Scope struct {
-	NetworkID string
-	Now       time.Time
+	NetworkIDs []string
+	Now        time.Time
 }
 
 // Capability is one thing a backend can do. A backend that cannot do one

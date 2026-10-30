@@ -31,8 +31,8 @@ func TestParseEnvelopeReadsContextAndMessage(t *testing.T) {
 	if env.Context.Action != beckn.ActionPublish {
 		t.Errorf("Context.Action = %q, want %q", env.Context.Action, beckn.ActionPublish)
 	}
-	if env.Context.NetworkID != "mahavistar" {
-		t.Errorf("Context.NetworkID = %q, want mahavistar", env.Context.NetworkID)
+	if got := env.Context.NetworkID.Networks(); len(got) != 1 || got[0] != "mahavistar" {
+		t.Errorf("Context.NetworkID = %v, want [mahavistar]", env.Context.NetworkID.Networks())
 	}
 	// schemaContext is a Context field, not an Intent one — Intent is
 	// additionalProperties:false, so the reference implementation's placement

@@ -446,7 +446,7 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 
 | Variable | Default | What it decides |
 |---|---|---|
-| `APP_NETWORK_ID` | — (required) | this node's network; publish's default `visibleTo` |
+| `APP_NETWORK_ID` | — (required) | this node's network; the `network.id` every span reports |
 | `APP_SUBSCRIBER_ID` | — | this node's subscriber id |
 | `APP_DOMAIN` | — | the Beckn domain served |
 | `APP_DEFAULT_TIMEZONE` | `Asia/Kolkata` | the zone daily validity windows are read in |
@@ -480,11 +480,11 @@ matches no field fails the boot, so a typo cannot silently do nothing.
 
 Four of these are load-bearing enough to spell out:
 
-- **`APP_NETWORK_ID` is publish's default and not discover's.** A publish with
-  no `visibleTo` is visible to this network. A discover with no
-  `context.networkId` searches *every* network — a different field answering a
-  different question, and defaulting it here would quietly put discover back to
-  single-network scoping under a name suggesting it is unscoped.
+- **Neither endpoint defaults a network from `APP_NETWORK_ID`.** A publish with
+  no `visibleTo` is public, stored as `["*"]`. A discover sees exactly the
+  networks it names: `"n1"` gets n1's catalogs, `["n1","*"]` gets n1's and the
+  public ones, and naming none gets the public ones. `networkId` may be a
+  string or an array, and the response echoes back the shape that arrived.
 - **`EXT_ALLOW_NETWORK_FETCH=false`** is the whole statement that a configured
   registry URL is trusted and a URL arriving in a request body is not.
 - **`AUTH_ENABLE_SIGNATURE_VERIFICATION=true` refuses the boot.** The Ed25519

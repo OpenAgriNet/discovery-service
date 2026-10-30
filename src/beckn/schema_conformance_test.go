@@ -69,6 +69,7 @@ func bindings() []binding {
 
 		{"DiscoverAction", DiscoverAction{}, schemaPath("DiscoverAction")},
 		{"OnDiscoverAction", OnDiscoverAction{}, schemaPath("OnDiscoverAction")},
+		{"DiscoverPagination", DiscoverPagination{}, schemaPath("DiscoverPagination")},
 
 		{"Nack", Nack{}, schemaPath("NackBadRequest")},
 		{"NackMessage", NackMessage{}, schemaPath("NackBadRequest", "properties", "message")},
@@ -327,6 +328,10 @@ func TestEveryWireStructIsBound(t *testing.T) {
 	for _, b := range bindings() {
 		bound[b.name] = true
 	}
+
+	// NetworkIDs models a oneOf node, which declares no properties for the
+	// walk to compare its (zero) fields against.
+	bound["NetworkIDs"] = true
 
 	for _, name := range exportedStructNames(t) {
 		if !bound[name] {

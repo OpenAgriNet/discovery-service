@@ -93,7 +93,7 @@ type outcome struct {
 func (s *SearchRepository) Search(
 	ctx context.Context, query domain.SearchQuery, modes []domain.Capability,
 ) (domain.SearchResult, error) {
-	if err := s.withinRetrievalDepth(query); err != nil {
+	if err := s.ensureWithinRetrievalDepth(query); err != nil {
 		return domain.SearchResult{}, err
 	}
 
@@ -103,42 +103,44 @@ func (s *SearchRepository) Search(
 
 	// A6: captured ONCE so every mode agrees on "now". Postgres ignores it and
 	// calls now(); it is for the backends that have none.
-	scope := domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()}
+	scope := domain.Scope{NetworkIDs: query.NetworkIDs, Now: time.Now().UTC()}
 
-	ranked, filtering, degraded := s.negotiate(modes)
+	rankedModes, filtering, degraded := s.negotiate(modes)
 
-	lists, failed, fatal := fold(s.retrieve(ctx, query, ranked, scope))
+	rankedIDs, failed, fatal := partitionOutcomes(s.retrieve(ctx, query, rankedModes, scope))
 	if fatal != nil {
 		return domain.SearchResult{}, fatal
 	}
 	degraded = append(degraded, failed...)
 
-	if len(lists) == 0 && filtering {
+	if len(rankedIDs) == 0 && filtering {
 		ids, err := s.filterOnly(ctx, query, scope)
 		if err != nil {
 			return domain.SearchResult{}, err
 		}
-		lists = append(lists, ids)
+		rankedIDs = append(rankedIDs, ids)
 	}
 
-	fused := RRF(lists...)
+	// Capped before the page is cut, not after (ADR-0017).
+	fused := RRF(rankedIDs...)
+	fused = fused[:s.search.CapToDepth(len(fused))]
 	page := pageOf(fused, query.Offset, query.Limit)
 
 	catalogs, err := s.hydrator.Hydrate(ctx, page, scope)
 	if err != nil {
 		return domain.SearchResult{}, err
 	}
-	return domain.SearchResult{Catalogs: catalogs, Degraded: degraded}, nil
+	return domain.SearchResult{Catalogs: catalogs, Degraded: degraded, Total: len(fused)}, nil
 }
 
-// withinRetrievalDepth refuses a page past what any mode retrieves. Checked
+// ensureWithinRetrievalDepth refuses a page past what any mode retrieves. Checked
 // before anything runs, and named in the error so the caller can tell it from
 // the end of the results.
-func (s *SearchRepository) withinRetrievalDepth(query domain.SearchQuery) error {
-	if query.Offset+query.Limit > s.search.MaxCandidatesPerMode {
+func (s *SearchRepository) ensureWithinRetrievalDepth(query domain.SearchQuery) error {
+	if s.search.OffsetBeyondDepth(query.Offset) {
 		return fmt.Errorf(
-			"%w: offset %d plus limit %d passes the %d ids a mode retrieves",
-			domain.ErrRetrievalDepth, query.Offset, query.Limit, s.search.MaxCandidatesPerMode)
+			"%w: offset %d starts past the %d ids a mode retrieves",
+			domain.ErrRetrievalDepth, query.Offset, s.search.MaxCandidatesPerMode)
 	}
 	return nil
 }
@@ -159,9 +161,9 @@ func (s *SearchRepository) filterOnly(
 	return ids, nil
 }
 
-// fold splits the per-mode outcomes into the lists to fuse and the modes to
+// partitionOutcomes splits the per-mode outcomes into the lists to fuse and the modes to
 // report. A failed mode is RECORDED in X-Beckn-Degraded, not fatal.
-func fold(outcomes []outcome) (ranked [][]string, degraded []string, fatal error) {
+func partitionOutcomes(outcomes []outcome) (rankedIDs [][]string, degraded []string, fatal error) {
 	for _, result := range outcomes {
 		switch {
 		// The one failure that is not the deployment's, and it cannot be
@@ -173,10 +175,10 @@ func fold(outcomes []outcome) (ranked [][]string, degraded []string, fatal error
 		case result.err != nil:
 			degraded = append(degraded, string(result.mode))
 		default:
-			ranked = append(ranked, result.ids)
+			rankedIDs = append(rankedIDs, result.ids)
 		}
 	}
-	return ranked, degraded, nil
+	return rankedIDs, degraded, nil
 }
 
 // callersFilter re-labels the store's refusal of the caller's own attribute
@@ -223,7 +225,7 @@ func callersFilter(query domain.SearchQuery, err error) error {
 // aSpatialOnlyIntentIsAnsweredRatherThanDegraded holds the two to one answer.
 func (s *SearchRepository) negotiate(
 	modes []domain.Capability,
-) (ranked []domain.Capability, filtering bool, degraded []string) {
+) (rankedModes []domain.Capability, filtering bool, degraded []string) {
 	declared := s.Capabilities()
 	for _, mode := range modes {
 		switch {
@@ -239,10 +241,10 @@ func (s *SearchRepository) negotiate(
 			// ran.
 			degraded = append(degraded, string(mode))
 		default:
-			ranked = append(ranked, mode)
+			rankedModes = append(rankedModes, mode)
 		}
 	}
-	return ranked, filtering, degraded
+	return rankedModes, filtering, degraded
 }
 
 // retrieve fans the ranked modes out and waits for all of them — a barrier, not
@@ -278,9 +280,5 @@ func pageOf(fused []string, offset, limit int) []string {
 	if offset >= len(fused) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(fused) {
-		end = len(fused)
-	}
-	return fused[offset:end]
+	return fused[offset:min(offset+limit, len(fused))]
 }
