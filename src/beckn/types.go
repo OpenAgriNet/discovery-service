@@ -19,8 +19,76 @@ package beckn
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 )
+
+// NetworkIDs is context.networkId, which the spec declares as one network or a
+// non-empty array of them.
+//
+// It remembers which shape it arrived in, because the response echoes the
+// request's context and a caller that sent a string must not get an array back.
+type NetworkIDs struct {
+	ids    []string
+	scalar bool
+}
+
+// OneNetwork and SomeNetworks build the two shapes, for callers that did not
+// decode one off the wire.
+func OneNetwork(id string) NetworkIDs { return NetworkIDs{ids: []string{id}, scalar: true} }
+
+// SomeNetworks is the array shape, which stays an array even when it holds one.
+func SomeNetworks(ids ...string) NetworkIDs { return NetworkIDs{ids: ids} }
+
+// Networks is the only way the rest of the service reads this: a plain slice,
+// with no question about which shape it came from.
+func (n NetworkIDs) Networks() []string { return n.ids }
+
+// IsZero drives `omitzero`, so an absent networkId stays absent in the echo.
+func (n NetworkIDs) IsZero() bool { return len(n.ids) == 0 }
+
+// The spec declares no minLength on the string branch, so "" passes L1, becomes
+// a scope no row's visible_to holds, and answers 200 with an empty page that a
+// caller cannot tell from "nothing matched". This is the only place that sees
+// the value before the scope is built, so it is refused here.
+var errEmptyNetworkID = errors.New("networkId must not be an empty string")
+
+// UnmarshalJSON takes either shape and refuses anything else, so a caller
+// learns at the edge rather than by searching and finding nothing.
+func (n *NetworkIDs) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*n = NetworkIDs{}
+		return nil
+	}
+
+	var one string
+	if err := json.Unmarshal(data, &one); err == nil {
+		if one == "" {
+			return errEmptyNetworkID
+		}
+		*n = OneNetwork(one)
+		return nil
+	}
+
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return fmt.Errorf("networkId is a string or an array of strings: %w", err)
+	}
+	if slices.Contains(many, "") {
+		return errEmptyNetworkID
+	}
+	*n = SomeNetworks(many...)
+	return nil
+}
+
+// MarshalJSON writes back the shape that arrived.
+func (n NetworkIDs) MarshalJSON() ([]byte, error) {
+	if n.scalar && len(n.ids) == 1 {
+		return json.Marshal(n.ids[0])
+	}
+	return json.Marshal(n.ids)
+}
 
 // Context is the Beckn envelope header that accompanies every request and
 // callback.
@@ -49,10 +117,9 @@ type Context struct {
 	TransactionID string `json:"transactionId,omitempty"`
 	MessageID     string `json:"messageId,omitempty"`
 
-	// Optional on both paths, which read its absence differently: on publish it
-	// means APP_NETWORK_ID, used only to fill an empty visibleTo (C8), and on
-	// discover it means no network predicate at all. No shared fallback.
-	NetworkID string `json:"networkId,omitempty"`
+	// Optional. Publish ignores it; on discover, naming none means the public
+	// catalogs alone.
+	NetworkID NetworkIDs `json:"networkId,omitzero"`
 
 	// RFC 3339, kept as a string so a bad one comes back as a fault naming
 	// `$.context.timestamp` rather than a json.Unmarshal failure that tells the

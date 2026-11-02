@@ -81,11 +81,11 @@ func hasMode(modes []domain.Capability, wanted domain.Capability) bool {
 func codeOf(t *testing.T, err error) beckn.ErrorCode {
 	t.Helper()
 
-	fault := apperrors.FromError(err)
-	if fault == nil {
-		t.Fatalf("expected a fault, got nil")
+	if fault := apperrors.FromError(err); fault != nil {
+		return fault.Code
 	}
-	return fault.Code
+	t.Fatalf("expected a fault, got nil")
+	return ""
 }
 
 // A textSearch on a deployment with no semantic mode answers, and says what it
@@ -99,8 +99,9 @@ func TestAModeTheBackendLacksIsNamedRatherThanDropped(t *testing.T) {
 		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
 	}
 
-	catalogs, degraded, err := discover.NewService(repo, settings()).
+	answer, degraded, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat seeds"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -181,13 +182,14 @@ func TestSpatialStillAnswersWithTextSearchOff(t *testing.T) {
 	cfg := settings()
 	cfg.Search.EnableTextSearch = false
 
-	catalogs, _, err := discover.NewService(repo, cfg).Discover(
+	answer, _, err := discover.NewService(repo, cfg).Discover(
 		t.Context(), beckn.Context{},
 		beckn.Intent{Spatial: []beckn.SpatialConstraint{{
 			Op:       beckn.OpSIntersects,
 			Geometry: bengaluru(),
 		}}},
 		discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -214,12 +216,13 @@ func TestAFilterABackendCannotRunIsDegradedRatherThanIgnored(t *testing.T) {
 		result:       domain.SearchResult{Catalogs: []domain.Catalog{{ID: "c1"}}},
 	}
 
-	catalogs, degraded, err := discover.NewService(repo, settings()).Discover(
+	answer, degraded, err := discover.NewService(repo, settings()).Discover(
 		t.Context(), beckn.Context{},
 		beckn.Intent{Filters: &beckn.Filters{
 			Type: "jsonpath", Expression: `$.catalogs[*].resources[*] ? (@.grade == "A")`,
 		}},
 		discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -331,8 +334,8 @@ func TestTwoDegradedModesAreBothReturned(t *testing.T) {
 	}
 }
 
-// Scenario 29, from the service's side: an omitted networkId searches EVERY
-// network, and does NOT fall back to APP_NETWORK_ID.
+// An omitted networkId becomes the wildcard HERE, not in a backend, and does
+// NOT fall back to APP_NETWORK_ID.
 //
 // The config carries a network id precisely so the assertion has something to
 // fail against: with App.Network empty, a service that wrongly defaulted would
@@ -348,24 +351,34 @@ func TestAnOmittedNetworkIDSearchesEveryNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if repo.gotQuery.NetworkID != "" {
-		t.Errorf("NetworkID = %q, want unscoped — publish's visibleTo default is a different question (C8)",
-			repo.gotQuery.NetworkID)
+	if !slices.Equal(repo.gotQuery.NetworkIDs, []string{domain.NetworkWildcard}) {
+		t.Errorf("NetworkIDs = %v, want [*]", repo.gotQuery.NetworkIDs)
 	}
 }
 
-// The other half: a networkId that IS sent scopes the search to it.
+// Both wire shapes reach the repository as the set the caller named.
 func TestANetworkIDThatWasSentScopesTheSearch(t *testing.T) {
-	repo := &stubRepo{capabilities: everything()}
+	for _, test := range []struct {
+		name string
+		sent beckn.NetworkIDs
+		want []string
+	}{
+		{"a string", beckn.OneNetwork("bharatvistar"), []string{"bharatvistar"}},
+		{"an array", beckn.SomeNetworks("bharatvistar", "*"), []string{"bharatvistar", "*"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &stubRepo{capabilities: everything()}
 
-	_, _, err := discover.NewService(repo, settings()).Discover(
-		t.Context(), beckn.Context{NetworkID: "bharatvistar"},
-		beckn.Intent{TextSearch: "wheat"}, discover.Page{})
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	if repo.gotQuery.NetworkID != "bharatvistar" {
-		t.Errorf("NetworkID = %q, want the envelope's own", repo.gotQuery.NetworkID)
+			_, _, err := discover.NewService(repo, settings()).Discover(
+				t.Context(), beckn.Context{NetworkID: test.sent},
+				beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			if !slices.Equal(repo.gotQuery.NetworkIDs, test.want) {
+				t.Errorf("NetworkIDs = %v, want %v", repo.gotQuery.NetworkIDs, test.want)
+			}
+		})
 	}
 }
 
@@ -389,8 +402,24 @@ func TestAnOversizeLimitIsClampedAndAnUnreachablePageIsRefused(t *testing.T) {
 
 	if _, _, err := service.Discover(
 		t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"},
-		discover.Page{Limit: 20, Offset: 490}); err == nil {
+		discover.Page{Limit: 20, Offset: 500}); err == nil {
 		t.Error("a page past the retrieval depth was answered; want a refusal naming the boundary")
+	}
+}
+
+// A total past the retrieval depth would point the caller at a page it cannot fetch.
+func TestTheTotalIsReturnedAndCappedAtTheRetrievalDepth(t *testing.T) {
+	for matched, want := range map[int]int{42: 42, 900: settings().Search.MaxCandidatesPerMode} {
+		repo := &stubRepo{capabilities: everything(), result: domain.SearchResult{Total: matched}}
+
+		answer, _, err := discover.NewService(repo, settings()).Discover(
+			t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+		if err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		if got := answer.Pagination.Total; got != want {
+			t.Errorf("matched %d: Total = %d, want %d", matched, got, want)
+		}
 	}
 }
 
@@ -512,8 +541,9 @@ func TestARenderedCatalogCarriesItsDocumentsVerbatim(t *testing.T) {
 		}},
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -563,9 +593,11 @@ func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
 	repo := memory.New(geo.DefaultTestResolution)
 
 	if _, err := repo.UpsertCatalog(t.Context(), domain.CatalogPatch{
-		ID:        "c1",
-		Active:    true,
-		VisibleTo: []string{"mahavistar"},
+		ID:     "c1",
+		Active: true,
+		// Public: this case is about offers, and a narrow audience would make
+		// the search answer nothing and pass for the wrong reason.
+		VisibleTo: []string{domain.NetworkWildcard},
 		Resources: []domain.ResourcePatch{{ID: "wheat"}, {ID: "rice"}},
 		Offers: []domain.OfferPatch{{
 			ID:          "on-rice",
@@ -576,8 +608,9 @@ func TestNoOfferWhoseResourcesAreAllOffThePageIsRendered(t *testing.T) {
 		t.Fatalf("seeding: %v", err)
 	}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -657,8 +690,9 @@ func TestACatalogWithAnUnreadableDocumentIsDropped(t *testing.T) {
 		Document: json.RawMessage(`not json`),
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -679,8 +713,9 @@ func TestAResourceWithAnUnreadableDocumentIsDropped(t *testing.T) {
 		},
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -700,8 +735,9 @@ func TestAnOfferWithAnUnreadableDocumentIsDropped(t *testing.T) {
 		},
 	}}}}
 
-	catalogs, _, err := discover.NewService(repo, settings()).
+	answer, _, err := discover.NewService(repo, settings()).
 		Discover(t.Context(), beckn.Context{}, beckn.Intent{TextSearch: "wheat"}, discover.Page{})
+	catalogs := answer.Catalogs
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}

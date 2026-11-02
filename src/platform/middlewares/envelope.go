@@ -236,6 +236,11 @@ func correlate(ctx context.Context, envelope beckn.Context) context.Context {
 		fact.ObserveString(ctx, correlator.key, correlator.value)
 	}
 
+	// Outside the table because it is a list, not a value (A29).
+	if networks := envelope.NetworkID.Networks(); len(networks) > 0 {
+		fact.ObserveStrings(ctx, fact.BecknNetworkID, networks)
+	}
+
 	return logger.With(ctx, fields...)
 }
 
@@ -269,7 +274,6 @@ func correlators(envelope beckn.Context) []correlator {
 		// undetectably wrong (opentelemetry.md §Span attributes).
 		{envelope.SenderID, fact.SenderID, nil},
 		{envelope.Version, fact.BecknVersion, nil},
-		{envelope.NetworkID, fact.BecknNetworkID, nil},
 		{envelope.ReceiverID, fact.BecknReceiverID, nil},
 	}
 }

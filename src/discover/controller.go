@@ -2,10 +2,8 @@ package discover
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -68,19 +66,19 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	observeIntent(ctx, envelope.Context, action.Intent)
 
-	page, err := pageFrom(r.URL.Query())
+	if err := rejectQueryStringPagination(r.URL.Query()); err != nil {
+		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
+		return
+	}
+	page := pageFrom(action)
+
+	answer, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
 	if err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 		return
 	}
 
-	catalogs, degraded, err := c.service.Discover(ctx, envelope.Context, action.Intent, page)
-	if err != nil {
-		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
-		return
-	}
-
-	observeResult(ctx, catalogs)
+	observeResult(ctx, answer.Catalogs)
 
 	// Before the body: WriteJSON writes the status line, and a header set after
 	// that is a header nobody receives.
@@ -90,45 +88,26 @@ func (c *Controller) Discover(w http.ResponseWriter, r *http.Request) {
 
 	body := httpx.Envelope[beckn.OnDiscoverAction]{
 		Context: responseContext(envelope.Context),
-		Message: beckn.OnDiscoverAction{Catalogs: catalogs},
+		Message: answer,
 	}
 	if err := httpx.WriteJSON(ctx, w, http.StatusOK, body); err != nil {
 		httpx.WriteNack(ctx, w, c.errors, envelope.Context.MessageID, err)
 	}
 }
 
-// pageFrom reads pagination off the query string, where it lives rather than
-// inside the intent.
-//
-// An unreadable value is refused, not defaulted: zero already means "the default
-// page size" to the mapper, so reading `limit=twenty` as zero would answer a page
-// the caller never asked for and say nothing about it.
-func pageFrom(query url.Values) (Page, error) {
-	limit, err := intParam(query, "limit")
-	if err != nil {
-		return Page{}, err
+// rejectQueryStringPagination refuses a page the request signature does not
+// cover (ADR-0017).
+func rejectQueryStringPagination(query url.Values) error {
+	if query.Has("limit") || query.Has("offset") {
+		return apperrors.Schema(beckn.CodeSchemaInvalidFormat,
+			"pagination moved from the query string to message.limit and message.offset").At(messageRoot)
 	}
-	offset, err := intParam(query, "offset")
-	if err != nil {
-		return Page{}, err
-	}
-	return Page{Limit: limit, Offset: offset}, nil
+	return nil
 }
 
-// intParam reads one numeric query parameter. Absent is zero, which the mapper
-// resolves to its own default; present and unreadable is a refusal.
-func intParam(query url.Values, name string) (int, error) {
-	raw := query.Get(name)
-	if raw == "" {
-		return 0, nil
-	}
-
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, apperrors.Schema(beckn.CodeSchemaInvalidFormat,
-			fmt.Sprintf("%s is not a whole number", name)).At("$." + name)
-	}
-	return value, nil
+// pageFrom reads the page out of the signed body.
+func pageFrom(action beckn.DiscoverAction) Page {
+	return Page{Limit: action.Limit, Offset: action.Offset}
 }
 
 // responseContext turns the request's envelope into the response's. The

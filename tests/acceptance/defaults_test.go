@@ -57,10 +57,11 @@ func TestAnOmittedDefaultResetsInBothModes(t *testing.T) {
 				mode.directives...)
 
 			// Live again: isActive was false and the patch never mentions it.
-			onNew := svc.discoverOn(t, republishedOn, spatial(dwithin(providerGeoPath, majestic, 5000)))
+			// Unscoped, because the republish stated no audience either and an
+			// unstated audience is public.
+			onNew := svc.discover(t, spatial(dwithin(providerGeoPath, majestic, 5000)))
 			if got := resourceIDs(onNew); !slices.Equal(got, []string{"r-retired"}) {
-				t.Errorf("on %s = %v, want [r-retired]: an omitted isActive defaults to live",
-					republishedOn, got)
+				t.Error("the republished catalog answers nothing: an omitted isActive defaults to live")
 			}
 
 			// And visible only where the republish came FROM. The stored
@@ -95,8 +96,25 @@ func retired(t *testing.T, svc *service) {
 	// Stated rather than assumed: everything the republish then changes has to
 	// be a change from somewhere, and an inactive catalog answering nothing is
 	// the baseline both halves of the assertion are measured against.
-	if got := resourceIDs(svc.discoverOn(t, republishedOn,
+	if got := resourceIDs(svc.discover(t,
 		spatial(dwithin(providerGeoPath, majestic, 5000)))); len(got) != 0 {
 		t.Fatalf("the retired catalog answers = %v, want none: isActive is false", got)
+	}
+}
+
+// Scenario 26a. A publish that names no audience is public.
+//
+// Asserted from a search naming no network either, which is the request that
+// asks for exactly the public catalogs: a narrow catalog would answer nothing.
+func TestAPublishNamingNoAudienceIsPublic(t *testing.T) {
+	svc := newService(t)
+
+	svc.publishCatalogs(t, aCatalog("c-open",
+		availableAt(majestic),
+		resources(aResource("r-open", "wheat"))))
+
+	found := resourceIDs(svc.discover(t, spatial(dwithin(providerGeoPath, majestic, 5000))))
+	if !slices.Equal(found, []string{"r-open"}) {
+		t.Errorf("a publish stating no audience returned %v, want [r-open]", found)
 	}
 }

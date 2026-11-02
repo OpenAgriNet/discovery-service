@@ -38,6 +38,10 @@
 --
 --   NULL means NO predicate, not a predicate that matches nothing. An intent
 --   carrying no filter must not be narrowed by one.
+--
+--   `&&` is overlap, not containment: a row matches if its audience shares ANY
+--   network with the caller's set (A29). The set is never empty — naming none
+--   resolves to the wildcard '*' in domain.ScopeNetworks, not here.
 
 
 -- ---------------------------------------------------------------------------
@@ -60,8 +64,7 @@
 -- name: LexicalCandidates :many
 SELECT r.catalog_id, r.id
   FROM resources r
- WHERE (sqlc.narg('network_id')::text IS NULL
-        OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
+ WHERE r.visible_to && @network_ids::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -135,8 +138,7 @@ SELECT r.catalog_id, r.id
 -- name: FuzzyCandidates :many
 SELECT r.catalog_id, r.id
   FROM resources r
- WHERE (sqlc.narg('network_id')::text IS NULL
-        OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
+ WHERE r.visible_to && @network_ids::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -216,8 +218,7 @@ SELECT r.catalog_id, r.id
 -- name: SemanticCandidates :many
 SELECT r.catalog_id, r.id
   FROM resources r
- WHERE (sqlc.narg('network_id')::text IS NULL
-        OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
+ WHERE r.visible_to && @network_ids::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -299,8 +300,7 @@ SELECT r.catalog_id, r.id
           FROM unnest(@catalog_ids::text[])  WITH ORDINALITY AS c(v, n)
           JOIN unnest(@resource_ids::text[]) WITH ORDINALITY AS i(v, n) USING (n)) AS p
     ON r.catalog_id = p.catalog_id AND r.id = p.resource_id
- WHERE (sqlc.narg('network_id')::text IS NULL
-        OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
+ WHERE r.visible_to && @network_ids::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -326,8 +326,7 @@ SELECT r.catalog_id, r.id, r.visible_to, r.active,
           FROM unnest(@catalog_ids::text[])  WITH ORDINALITY AS c(v, n)
           JOIN unnest(@resource_ids::text[]) WITH ORDINALITY AS i(v, n) USING (n)) AS p
     ON r.catalog_id = p.catalog_id AND r.id = p.resource_id
- WHERE (sqlc.narg('network_id')::text IS NULL
-        OR r.visible_to @> ARRAY[sqlc.narg('network_id')::text])
+ WHERE r.visible_to && @network_ids::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())

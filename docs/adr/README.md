@@ -29,6 +29,7 @@ Start from [`0000-template.md`](0000-template.md).
 | [0014](0014-seams-that-ship-with-only-a-no-op.md) | `CatalogReplicator`: what a seam must carry to ship | A7 |
 | [0015](0015-master-catalogs-and-inheritance-refused.md) | Master catalogs and resource inheritance are refused at intake | A1 |
 | [0016](0016-router-net-http-servemux.md) | `net/http.ServeMux` for HTTP routing, superseding 0001 | D1 |
+| [0017](0017-discover-pagination.md) | Discover pagination: signed body, applied page, capped `total` | #51 |
 
 **Source** points at the design document: `D` rows are the Technology Decisions
 table, `T` rows are TRD Alignment, `A` rows are Amendments.

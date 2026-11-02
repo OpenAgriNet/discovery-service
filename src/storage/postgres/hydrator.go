@@ -40,7 +40,7 @@ func (h *Hydrator) ScopeFilter(
 	rows, err := h.queries.ScopeFilterResources(ctx, gen.ScopeFilterResourcesParams{
 		CatalogIds:  catalogIDs,
 		ResourceIds: resourceIDs,
-		NetworkID:   nullableText(scope.NetworkID),
+		NetworkIds:  scope.NetworkIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("apply the scope gate to a candidate set: %w", err)
@@ -80,7 +80,7 @@ func (h *Hydrator) Hydrate(
 	resources, err := h.queries.HydrateResources(ctx, gen.HydrateResourcesParams{
 		CatalogIds:  catalogIDs,
 		ResourceIds: resourceIDs,
-		NetworkID:   nullableText(scope.NetworkID),
+		NetworkIds:  scope.NetworkIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("hydrate the page's resources: %w", err)

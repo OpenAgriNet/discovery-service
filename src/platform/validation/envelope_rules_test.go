@@ -157,11 +157,11 @@ func TestATimestampThatIsNotRFC3339IsRejected(t *testing.T) {
 // would pass the absent case on its own.
 func TestTheOptionalContextFieldsAreNotRequired(t *testing.T) {
 	populated := valid()
-	populated.NetworkID = "mahavistar"
+	populated.NetworkID = beckn.OneNetwork("mahavistar")
 	populated.SenderID, populated.ReceiverID = "did:example:sender", "did:example:receiver"
 
 	cleared := valid()
-	cleared.NetworkID, cleared.SenderID, cleared.ReceiverID = "", "", ""
+	cleared.NetworkID, cleared.SenderID, cleared.ReceiverID = beckn.NetworkIDs{}, "", ""
 
 	for _, testcase := range []struct {
 		name     string

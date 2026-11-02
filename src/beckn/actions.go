@@ -137,16 +137,25 @@ type CatalogStats struct {
 // DiscoverAction is the `message` of a discover request.
 type DiscoverAction struct {
 	Intent Intent `json:"intent"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 }
 
-// OnDiscoverAction is the `message` of the discover response, and it is exactly
-// one field.
+// OnDiscoverAction is the `message` of the discover response.
 //
 // It must NOT grow a Degraded field. The v2.0.0 schema is
-// additionalProperties:false with `catalogs` as its only property, so an extra
+// additionalProperties:false with only `catalogs` and `pagination`, so an extra
 // key is a response that fails its own schema — and `omitempty` would hide that
 // on the ordinary path while shipping the invalid body on the degraded one, the
 // path that matters. The degraded list travels as X-Beckn-Degraded (C11).
 type OnDiscoverAction struct {
-	Catalogs []Catalog `json:"catalogs"`
+	Catalogs   []Catalog           `json:"catalogs"`
+	Pagination *DiscoverPagination `json:"pagination,omitempty"`
+}
+
+// DiscoverPagination is the page the answer applied (ADR-0017).
+type DiscoverPagination struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+	Total  int `json:"total"`
 }

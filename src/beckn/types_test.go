@@ -2,6 +2,7 @@ package beckn
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -120,5 +121,54 @@ func TestOfferMarshalJSONOfAGoBuiltValueMarshalsItsFields(t *testing.T) {
 	ids, ok := decoded["resourceIds"].([]any)
 	if !ok || len(ids) != 2 {
 		t.Errorf("offer = %s, want resourceIds [r1 r2]", encoded)
+	}
+}
+
+// NetworkIDs carries both wire shapes of context.networkId and echoes back the
+// one that arrived. The cases that matter are the shapes, the round trip, and
+// the empty id — which the spec's own oneOf accepts (it declares no minLength)
+// and which would otherwise become a scope matching no row at all.
+func TestNetworkIDsDecodesBothShapesAndRefusesAnEmptyID(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		wire     string
+		networks []string
+		echo     string
+		wantErr  bool
+	}{
+		{name: "a string", wire: `"mahavistar"`, networks: []string{"mahavistar"}, echo: `"mahavistar"`},
+		{name: "an array", wire: `["mahavistar","*"]`, networks: []string{"mahavistar", "*"}, echo: `["mahavistar","*"]`},
+		{name: "a one-element array stays an array", wire: `["mahavistar"]`, networks: []string{"mahavistar"}, echo: `["mahavistar"]`},
+		{name: "null is absent", wire: `null`, networks: nil, echo: `null`},
+		{name: "an empty string", wire: `""`, wantErr: true},
+		{name: "an empty string inside an array", wire: `["mahavistar",""]`, wantErr: true},
+		{name: "neither shape", wire: `7`, wantErr: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var decoded NetworkIDs
+			err := json.Unmarshal([]byte(testCase.wire), &decoded)
+			if testCase.wantErr {
+				if err == nil {
+					t.Fatalf("%s decoded to %v, want a refusal at the edge", testCase.wire, decoded.Networks())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decoding %s: %v", testCase.wire, err)
+			}
+
+			if got := decoded.Networks(); !slices.Equal(got, testCase.networks) {
+				t.Errorf("%s decoded to %v, want %v", testCase.wire, got, testCase.networks)
+			}
+
+			echoed, err := json.Marshal(decoded)
+			if err != nil {
+				t.Fatalf("marshalling %s back: %v", testCase.wire, err)
+			}
+			if string(echoed) != testCase.echo {
+				t.Errorf("%s echoed as %s, want %s; the response must spell networkId "+
+					"the way the request did", testCase.wire, echoed, testCase.echo)
+			}
+		})
 	}
 }

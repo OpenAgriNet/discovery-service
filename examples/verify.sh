@@ -366,15 +366,16 @@ refusal_case 18-discover-unparsable-jsonpath.json \
   "SCH_INVALID_JSONPATH" "\$.message.intent.filters.expression"
 
 printf '%s\n' "--- pagination"
-body="$(curl -sS -X POST "$BASE/discover?limit=1&offset=0" \
-          -H 'Content-Type: application/json' \
-          --data-binary @"$DIR/03-discover-schema-context.json")"
+body="$(python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); b["message"].update(limit=1, offset=0); print(json.dumps(b))' \
+          "$DIR/03-discover-schema-context.json" |
+        curl -sS -X POST "$BASE/discover" \
+          -H 'Content-Type: application/json' --data-binary @-)"
 got="$(resources "$body")"
 n="$(printf '%s' "$got" | awk -F, 'NF{print NF}')"
 if [ "${n:-0}" = "1" ]; then
-  ok "?limit=1 -> 1 resource [$got]"
+  ok "limit=1 -> 1 resource [$got]"
 else
-  bad "?limit=1 -> ${n:-0} resources [$got]"
+  bad "limit=1 -> ${n:-0} resources [$got]"
 fi
 echo
 

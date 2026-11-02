@@ -41,7 +41,7 @@ func (r *Repository) Search(
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	scope := domain.Scope{NetworkID: query.NetworkID, Now: time.Now().UTC()}
+	scope := domain.Scope{NetworkIDs: query.NetworkIDs, Now: time.Now().UTC()}
 
 	ranked, filtering, degraded := r.negotiate(modes)
 	matched := r.candidates(query, scope)
@@ -62,9 +62,12 @@ func (r *Repository) Search(
 		page = nil
 	}
 
+	// The full ranked length: this store has no retrieval depth to cap against,
+	// and domain.SearchResult.Total says the request layer caps it.
 	return domain.SearchResult{
 		Catalogs: r.hydrate(pageOf(page, query.Offset, query.Limit), scope),
 		Degraded: degraded,
+		Total:    len(page),
 	}, nil
 }
 
@@ -134,15 +137,23 @@ func (r *Repository) candidates(query domain.SearchQuery, scope domain.Scope) []
 // gate onto every resource unconditionally, and reading it from anywhere else
 // would let this backend answer correctly while the copy Postgres reads was wrong.
 //
-// An empty scope network is UNSCOPED and emits no predicate at all — never a
-// literal that matches nothing, and never this service's own network id.
+// The scope is always a non-empty set of networks — {'*'} when the caller named
+// none (A29) — so the gate is one overlap test and never an absent predicate.
 func admitted(resource domain.Resource, scope domain.Scope) bool {
-	if scope.NetworkID != "" && !slices.Contains(resource.VisibleTo, scope.NetworkID) {
+	if !visibleOn(resource.VisibleTo, scope.NetworkIDs) {
 		return false
 	}
 	return resource.Active && live(
 		resource.ValidFrom, resource.ValidTo,
 		resource.ValidTimeFrom, resource.ValidTimeTo, scope.Now)
+}
+
+// The Go half of the scope gate's && : a caller sees a catalog whose audience
+// overlaps the networks they asked for (A29).
+func visibleOn(audience, asked []string) bool {
+	return slices.ContainsFunc(audience, func(network string) bool {
+		return slices.Contains(asked, network)
+	})
 }
 
 // live is the validity half of the gate: the calendar range ANDed with the daily
@@ -285,11 +296,7 @@ func pageOf(ranked []domain.Resource, offset, limit int) []domain.Resource {
 	if offset >= len(ranked) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(ranked) {
-		end = len(ranked)
-	}
-	return ranked[offset:end]
+	return ranked[offset:min(offset+limit, len(ranked))]
 }
 
 // hydrate folds the page back into catalogs, in the PAGE's order.
@@ -310,7 +317,6 @@ func (r *Repository) hydrate(page []domain.Resource, scope domain.Scope) []domai
 			position[resource.CatalogID] = index
 			assembled = append(assembled, domain.Catalog{
 				ID:            stored.ID,
-				NetworkID:     stored.NetworkID,
 				Document:      stored.Document,
 				VisibleTo:     slices.Clone(stored.VisibleTo),
 				Active:        stored.Active,

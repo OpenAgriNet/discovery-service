@@ -75,7 +75,7 @@ func sameTimeOfDay(left, right *TimeOfDay) bool {
 // nobody while reporting success.
 func (c *Catalog) EnsureVisibleTo() {
 	if len(c.VisibleTo) == 0 {
-		c.VisibleTo = []string{c.NetworkID}
+		c.VisibleTo = []string{NetworkWildcard}
 	}
 }
 

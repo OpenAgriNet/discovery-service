@@ -22,8 +22,16 @@ const rrfK = 60.0
 // list, and intersecting would turn that into an empty page — at the caller,
 // indistinguishable from "nothing matched".
 func RRF(ranked ...[]string) []string {
-	scores := make(map[string]float64)
-	order := make([]string, 0)
+	// Sized for the worst case, every list disjoint. Fusing N modes at the
+	// retrieval depth is thousands of ids; letting the map and slice grow into
+	// that costs 32 allocations and 169KB against 6 and 79KB presized. Same
+	// wall time either way — this is for the garbage collector, not latency.
+	capacity := 0
+	for _, list := range ranked {
+		capacity += len(list)
+	}
+	scores := make(map[string]float64, capacity)
+	order := make([]string, 0, capacity)
 
 	for _, list := range ranked {
 		for index, id := range list {
@@ -36,11 +44,7 @@ func RRF(ranked ...[]string) []string {
 		}
 	}
 
-	// By score, then by id. The tiebreak is not cosmetic: the page is a SLICE of
-	// this list, so two equally-scored ids that swap between runs of the same
-	// query put one of them on both page 1 and page 2 and the other on neither.
-	// Ties are the common case — every id only one mode returned, at the same
-	// rank, scores identically.
+	// By score, then by id, so pages are stable (ADR-0017).
 	slices.SortFunc(order, func(left, right string) int {
 		if byScore := cmp.Compare(scores[right], scores[left]); byScore != 0 {
 			return byScore

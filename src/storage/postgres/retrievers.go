@@ -21,7 +21,7 @@ import (
 // per query for the quantifier XOR or the nil-cover rule to drift — invisibly,
 // since every query would still return rows, just a different set.
 type predicates struct {
-	networkID      pgtype.Text
+	networkIDs     []string
 	schemaContexts []string
 	schemaTypes    []string
 
@@ -43,10 +43,10 @@ type predicates struct {
 }
 
 // sharedPredicates reduces a SearchQuery to the parameters every read query
-// binds. NetworkID becomes NULL when unscoped — "" would match no visible_to
-// entry and empty every response.
+// binds. The network set is never empty: naming none means the public
+// catalogs (A29).
 func sharedPredicates(query domain.SearchQuery) predicates {
-	shared := predicates{networkID: nullableText(query.NetworkID)}
+	shared := predicates{networkIDs: query.NetworkIDs}
 
 	// A PAIR of equal-length, index-aligned arrays. Empty stays nil so the
 	// query's `IS NULL` arm fires and no schema predicate applies at all.
@@ -156,7 +156,7 @@ func (l *LexicalRetriever) Retrieve(
 ) ([]string, error) {
 	shared := sharedPredicates(query)
 	rows, err := l.queries.LexicalCandidates(ctx, gen.LexicalCandidatesParams{
-		NetworkID:       shared.networkID,
+		NetworkIds:      shared.networkIDs,
 		SchemaContexts:  shared.schemaContexts,
 		SchemaTypes:     shared.schemaTypes,
 		SpatialOp:       shared.spatialOp,
@@ -207,7 +207,7 @@ func (f *FuzzyRetriever) Retrieve(
 ) ([]string, error) {
 	shared := sharedPredicates(query)
 	rows, err := f.queries.FuzzyCandidates(ctx, gen.FuzzyCandidatesParams{
-		NetworkID:       shared.networkID,
+		NetworkIds:      shared.networkIDs,
 		SchemaContexts:  shared.schemaContexts,
 		SchemaTypes:     shared.schemaTypes,
 		SpatialOp:       shared.spatialOp,
@@ -267,7 +267,7 @@ func (s *SemanticRetriever) Retrieve(
 
 	shared := sharedPredicates(query)
 	rows, err := s.queries.SemanticCandidates(ctx, gen.SemanticCandidatesParams{
-		NetworkID:       shared.networkID,
+		NetworkIds:      shared.networkIDs,
 		SchemaContexts:  shared.schemaContexts,
 		SchemaTypes:     shared.schemaTypes,
 		SpatialOp:       shared.spatialOp,

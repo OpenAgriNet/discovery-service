@@ -30,8 +30,8 @@ import (
 //     not the order: Postgres ranks by ts_rank_cd, memory has no relevance to
 //     rank by. They agree on the stable (catalog_id, id) tail, which the one
 //     deliberately text-free pagination case pins.
-//   - No case asserts a total; there is none (A19). What a paginating caller
-//     depends on is pinned instead — the offset SLICES a stable order.
+//   - The pagination case asserts Total and that the offset SLICES a stable
+//     order.
 //   - No case names `jsonpath` to SEARCH with: since Task 22 Postgres executes
 //     the subset and memory declines it, which is what puts the filter's own
 //     tests on the Postgres side. The one case naming it asserts what a backend
@@ -187,6 +187,11 @@ func searched(
 	if query.Limit == 0 {
 		query.Limit = pageLimit
 	}
+	// discover.Service fills this before a backend ever sees it, and these
+	// cases call the backend directly.
+	if len(query.NetworkIDs) == 0 {
+		query.NetworkIDs = []string{domain.NetworkWildcard}
+	}
 	result, err := backends.Search.Search(t.Context(), query, modes)
 	if err != nil {
 		t.Fatalf("searching %+v: %v", query, err)
@@ -265,39 +270,40 @@ func dateRange(from, to time.Time) *domain.TimePeriodPatch {
 // the cases
 // ---------------------------------------------------------------------------
 
-// An empty scope network is UNSCOPED, not a network id that matches nothing.
-//
-// Both halves are asserted because the two failures are indistinguishable at
-// the caller: a backend reading "" as a literal returns an empty page, and one
-// falling back to this service's own APP_NETWORK_ID returns a single network's
-// rows.
+// The three scoping rules in one story, because a backend can get any one of
+// them right while breaking the next (A29).
 func anOmittedNetworkSearchesEveryNetwork() Case {
+	publish := func(id, resource string, audience ...string) Publish {
+		return Publish{
+			Patch: domain.CatalogPatch{
+				ID: id, NetworkID: "north.example.com", Active: true,
+				ProtocolVersion: beckn.Version,
+				VisibleTo:       audience,
+				Resources:       []domain.ResourcePatch{searchable(resource, resource, "", "", "")},
+			},
+			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
+		}
+	}
+
 	return Case{
-		Name: "an omitted network searches every network and a given one narrows",
-		Given: []Publish{{
-			Patch: domain.CatalogPatch{
-				ID: "c-north", NetworkID: "north.example.com", Active: true,
-				ProtocolVersion: beckn.Version,
-				VisibleTo:       []string{"north.example.com"},
-				Resources:       []domain.ResourcePatch{searchable("r-north", "north", "", "", "")},
-			},
-			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
-		}, {
-			Patch: domain.CatalogPatch{
-				ID: "c-south", NetworkID: "south.example.com", Active: true,
-				ProtocolVersion: beckn.Version,
-				VisibleTo:       []string{"south.example.com"},
-				Resources:       []domain.ResourcePatch{searchable("r-south", "south", "", "", "")},
-			},
-			Mode: domain.UpdateModeMerge, Derive: deriveSearchable,
-		}},
+		Name: "a search matches the networks it named and no others",
+		Given: []Publish{
+			publish("c-north", "r-north", "north.example.com"),
+			publish("c-south", "r-south", "south.example.com"),
+			publish("c-public", "r-public", domain.NetworkWildcard),
+		},
 		Then: func(t *testing.T, backends Backends) {
 			unscoped := searched(t, backends, domain.SearchQuery{}, lexical)
-			assertPage(t, unscoped, []string{"r-north", "r-south"})
+			assertPage(t, unscoped, []string{"r-public"})
 
-			scoped := searched(t, backends,
-				domain.SearchQuery{NetworkID: "south.example.com"}, lexical)
-			assertPage(t, scoped, []string{"r-south"})
+			one := searched(t, backends,
+				domain.SearchQuery{NetworkIDs: []string{"south.example.com"}}, lexical)
+			assertPage(t, one, []string{"r-south"})
+
+			both := searched(t, backends, domain.SearchQuery{
+				NetworkIDs: []string{"south.example.com", domain.NetworkWildcard},
+			}, lexical)
+			assertPage(t, both, []string{"r-public", "r-south"})
 		},
 	}
 }
@@ -642,10 +648,12 @@ func pageTwoDoesNotOverlapPageOne() Case {
 				t.Errorf("page two is %v, want [r-02 r-03]", got)
 			}
 
-			// There is no total to assert (A19). What remains is the property
-			// a caller walking pages actually depends on: the offset SLICES a
-			// stable order rather than re-ranking it, so page two holds the
-			// next two and not two of the same.
+			if first.Total != 5 || second.Total != 5 {
+				t.Errorf("Total = %d and %d, want 5 on both pages", first.Total, second.Total)
+			}
+
+			// The offset SLICES a stable order rather than re-ranking it, so
+			// page two holds the next two and not two of the same.
 		},
 	}
 }

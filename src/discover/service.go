@@ -38,28 +38,25 @@ func NewService(repo domain.SearchRepository, cfg config.Config) *Service {
 // rather than inside them, because it reaches the caller as a header (C11).
 func (s *Service) Discover(
 	ctx context.Context, envelope beckn.Context, intent beckn.Intent, page Page,
-) ([]beckn.Catalog, []string, error) {
+) (beckn.OnDiscoverAction, []string, error) {
 	query, fatal, partial := MapIntent(intent, envelope, page, s.cfg)
 	if len(fatal) > 0 {
-		return nil, nil, refusal(fatal)
+		return beckn.OnDiscoverAction{}, nil, refusal(fatal)
 	}
 	reportPartials(ctx, partial)
 
-	// From the ENVELOPE, and NOT defaulted to config.App.Network. Empty means
-	// EVERY network and the repository emits no network predicate at all.
-	// config.App.Network is publish's default for an empty visibleTo (C8) — a
-	// different field answering a different question — and reusing it here puts
-	// discover back to single-network scoping (scenario 29).
-	query.NetworkID = envelope.NetworkID
+	// From the ENVELOPE, never config.App.Network. Resolved here so no backend
+	// carries the rule a second time.
+	query.NetworkIDs = scopedNetworks(envelope.NetworkID)
 
 	modes, degraded, err := s.negotiate(query)
 	if err != nil {
-		return nil, nil, err
+		return beckn.OnDiscoverAction{}, nil, err
 	}
 
 	result, err := s.repo.Search(ctx, query, modes)
 	if err != nil {
-		return nil, nil, typedSearchFailure(ctx, err)
+		return beckn.OnDiscoverAction{}, nil, typedSearchFailure(ctx, err)
 	}
 
 	// Both halves, joined once: negotiate's are the modes this deployment cannot
@@ -68,7 +65,17 @@ func (s *Service) Discover(
 	degraded = append(degraded, result.Degraded...)
 	observeRetrieval(ctx, modes, degraded)
 
-	return render(result.Catalogs), degraded, nil
+	return beckn.OnDiscoverAction{
+		Catalogs: render(result.Catalogs),
+		// The applied page. Total is capped here, at the one place every
+		// backend's answer passes through, so a store that ranks deeper than
+		// the depth cannot report a total no caller can page to (ADR-0017).
+		Pagination: &beckn.DiscoverPagination{
+			Limit:  query.Limit,
+			Offset: query.Offset,
+			Total:  s.cfg.Search.CapToDepth(result.Total),
+		},
+	}, degraded, nil
 }
 
 // typedSearchFailure says whose mistake a failed search was.
@@ -277,4 +284,12 @@ func reportPartials(ctx context.Context, partial []domain.Fault) {
 			zap.String("code", fault.Code),
 			zap.String("reason", fault.Message))
 	}
+}
+
+// scopedNetworks is what the caller named, or the public catalogs if nothing.
+func scopedNetworks(asked beckn.NetworkIDs) []string {
+	if networks := asked.Networks(); len(networks) > 0 {
+		return networks
+	}
+	return []string{domain.NetworkWildcard}
 }

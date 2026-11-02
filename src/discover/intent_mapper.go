@@ -14,7 +14,7 @@ import (
 	"github.com/OpenAgriNet/discovery-service/src/platform/jsonpath"
 )
 
-// Page is the request's pagination, which arrives as HTTP query parameters
+// Page is the request's pagination, which arrives in the message body
 // rather than inside the intent. A struct rather than two adjacent ints, because
 // `limit, offset` and `offset, limit` compile identically.
 type Page struct {
@@ -207,12 +207,7 @@ func mapSchemaContext(envelope beckn.Context) ([]domain.SchemaFilter, []domain.F
 	return out, faults
 }
 
-// mapPage resolves the page, clamping what can be clamped honestly and refusing
-// what cannot.
-//
-// A limit over MaxPageSize is clamped, because the caller still gets the results
-// they asked about. A page past MaxCandidatesPerMode is refused, because it would
-// come back empty and an empty page 26 is indistinguishable from the end.
+// mapPage clamps an oversize limit, refuses a page past the depth (ADR-0017).
 func mapPage(page Page, search config.Search) (limit, offset int, faults []domain.Fault) {
 	limit = page.Limit
 	if limit <= 0 {
@@ -227,13 +222,13 @@ func mapPage(page Page, search config.Search) (limit, offset int, faults []domai
 		offset = 0
 	}
 
-	if offset+limit > search.MaxCandidatesPerMode {
+	if search.OffsetBeyondDepth(offset) {
 		faults = append(faults, domain.Fault{
 			Path: "$['offset']",
 			Code: string(beckn.CodeSchemaInvalidFormat),
 			Message: fmt.Sprintf(
-				"offset %d plus limit %d passes the retrieval depth of %d",
-				offset, limit, search.MaxCandidatesPerMode),
+				"offset %d starts past the retrieval depth of %d",
+				offset, search.MaxCandidatesPerMode),
 		})
 	}
 	return limit, offset, faults

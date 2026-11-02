@@ -356,10 +356,10 @@ var registry = [numKeys]Definition{
 		Name:        "BecknNetworkID",
 		SpanKey:     "beckn.networkId",
 		Signals:     Span,
-		Kind:        KindString,
+		Kind:        KindStrings,
 		Layer:       Local,
 		Cardinality: Unbounded,
-		Note: "The network the CALLER named, beside network.id which is the one this " +
+		Note: "The networks the CALLER named, beside network.id which is the one this " +
 			"deployment serves. Two keys because the two disagreeing is the interesting case.",
 	},
 	BecknTransactionID: {

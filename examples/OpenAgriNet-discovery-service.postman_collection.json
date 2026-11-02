@@ -169,7 +169,7 @@
             "description": "The statewide alert says 'Severe weather alerting' and must NOT match. It is the control: if the lexical index were being skipped, all three would come back.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000002\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000002\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"irrigation spraying advisory\"\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000002\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000002\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"irrigation spraying advisory\"\n    }\n  }\n}"
             }
           },
           "event": [
@@ -239,7 +239,7 @@
             "description": "'irrigation' appears only in the village and point resources; 'cyclone' only in the statewide alert. All three coming back is what proves lexical retrieval ORs its terms - under AND none would match. Case 02 cannot tell the two apart, so without this one the semantics were only assumed.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000009\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000009\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"irrigation cyclone\"\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000009\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000009\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"irrigation cyclone\"\n    }\n  }\n}"
             }
           },
           "event": [
@@ -309,7 +309,7 @@
             "description": "schemaContext is a CONTEXT field, not an intent one - Intent is additionalProperties:false, so sending it under message.intent is a body that fails its own schema. All three resources carry the same @context, so this case pins acceptance rather than discrimination.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000003\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000003\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\",\n    \"schemaContext\": [\n      \"https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld#openagrinet:WeatherAdvisoryCapability\"\n    ]\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather\"\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000003\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000003\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\",\n    \"schemaContext\": [\n      \"https://schemas.openagrinet.global/schema/WeatherAdvisoryCapability/v0.1/context.jsonld#openagrinet:WeatherAdvisoryCapability\"\n    ]\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather\"\n    }\n  }\n}"
             }
           },
           "event": [
@@ -379,7 +379,7 @@
             "description": "The Dharwad Point is ~2km away and the Belagavi Polygon contains the query coordinate. The statewide alert carries only an ISO-3166-2 area CODE and no coordinates, so nothing was cell-indexed for it and it is not spatially discoverable at all - by design.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000004\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000004\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ]\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000004\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000004\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ]\n    }\n  }\n}"
             }
           },
           "event": [
@@ -449,7 +449,7 @@
             "description": "(74.50, 16.00) is deep inside the Belagavi polygon and ~120km from the Dharwad point. This case and case 04 have to DISAGREE - that is what separates a working predicate from one matching the whole catalog.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000005\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000005\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"spatial\": [\n        {\n          \"op\": \"S_INTERSECTS\",\n          \"targets\": \"$['catalogs'][*]['resources'][*]['resourceAttributes']['coverageAreas'][*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              74.5,\n              16.0\n            ]\n          }\n        }\n      ]\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000005\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000005\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"spatial\": [\n        {\n          \"op\": \"S_INTERSECTS\",\n          \"targets\": \"$['catalogs'][*]['resources'][*]['resourceAttributes']['coverageAreas'][*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              74.5,\n              16.0\n            ]\n          }\n        }\n      ]\n    }\n  }\n}"
             }
           },
           "event": [
@@ -525,7 +525,7 @@
             "description": "A jsonpath filter rooted at the resource level.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000006\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000006\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather advisory\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000006\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000006\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather advisory\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -601,7 +601,7 @@
             "description": "Rooted at the OFFER level and yet it narrows RESOURCES. This exercises the single composite filter_doc column (A18): under the earlier three-column design an offer-rooted predicate could not select a resource at all. If this returns all three, the composite regressed.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000007\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000007\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"SUBSCRIPTION\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000007\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000007\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"SUBSCRIPTION\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -677,7 +677,7 @@
             "description": "Constraints INTERSECT. 'cotton' appears only in the point resource and 'cyclone' only in the alert, so text alone gives point+alert; the 25km circle alone gives point+village. Only the point is in both. Each dimension excludes something the other admits, which is what makes a dropped predicate visible here.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000010\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000010\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cotton cyclone\",\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ]\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000010\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000010\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cotton cyclone\",\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ]\n    }\n  }\n}"
             }
           },
           "event": [
@@ -747,7 +747,7 @@
             "description": "Geo alone gives point+village, the FREE-TIER offer covers village+alert. Village is the only overlap. Note there is no textSearch at all: a NULL query_text must admit every row the other predicates allow, not none, or a geo-only discover answers empty.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000011\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000011\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ],\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000011\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000011\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ],\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -823,7 +823,7 @@
             "description": "The third leg of the leave-one-out triangle around case 12. Drop the filter and you get case 10 (point); drop the text and you get case 11 (village); drop the GEOMETRY and you get this (alert).",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000014\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000014\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cotton cyclone\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000014\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000014\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cotton cyclone\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -899,7 +899,7 @@
             "description": "text -> point+alert, geo -> point+village, filter -> village+alert. Every PAIR overlaps in exactly one resource and all three share none, so removing ANY dimension changes the answer to a different single resource (10, 11, 14) and keeping all three gives EMPTY. That is what proves all three are applied and ANDed. An earlier version of this case came out empty whichever of two dimensions you dropped, so it only ever proved one of them mattered.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000012\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000012\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cotton cyclone\",\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ],\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000012\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000012\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cotton cyclone\",\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ],\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -969,7 +969,7 @@
             "description": "The same three dimensions with a text term reaching all three resources, so the answer is non-empty. Geometry and filter are each load-bearing here and the text is not: with three resources and only two geo-indexed, a non-empty three-way answer cannot make all three matter at once. Case 12 is where that proof lives.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000015\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000015\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cyclone irrigation\",\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ],\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000015\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000015\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"cyclone irrigation\",\n      \"spatial\": [\n        {\n          \"op\": \"S_DWITHIN\",\n          \"targets\": \"$.catalogs[*].resources[*].resourceAttributes.coverageAreas[*]\",\n          \"geometry\": {\n            \"type\": \"Point\",\n            \"coordinates\": [\n              75.02,\n              15.47\n            ]\n          },\n          \"distanceMeters\": 25000\n        }\n      ],\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].offers[*] ? (@.descriptor.code == \\\"FREE-TIER\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -1045,7 +1045,7 @@
             "description": "The only case that reaches the candidates path with a filter on it. An intent naming no ranked mode is answered by the lexical retriever with a NULL query_text; 04 and 05 exercise that path with a geometry, and nothing else exercises it with a filter. If the NULL-query fallthrough stopped applying filter_doc, this returns all three and every other case still passes.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000016\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000016\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000016\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000016\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -1115,7 +1115,7 @@
             "description": "Every term is misspelled, so the tsvector admits nothing. The resource comes back through the trigram index on `name`, which gates on similarity >= 0.3 (pg_trgm's default threshold) and NOT on the searchable text the lexical mode uses. Constraints intersect, but retrieval modes union - this is the case that tells them apart.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000013\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000013\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"Vilage weathr advisery Belgavi\"\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000013\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000013\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"Vilage weathr advisery Belgavi\"\n    }\n  }\n}"
             }
           },
           "event": [
@@ -1190,7 +1190,7 @@
             "description": "Expected to FAIL with 400. See the test script for why this shape is dangerous enough to refuse.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000008\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000008\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*].resourceAttributes.geographicGranularity == \\\"Village\\\"\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000008\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000008\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*].resources[*].resourceAttributes.geographicGranularity == \\\"Village\\\"\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [
@@ -1239,7 +1239,7 @@
             "description": "Expected to FAIL with 400. An empty page would be a plausible answer to a search that never ran.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000017\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000017\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {}\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000017\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000017\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {}\n  }\n}"
             }
           },
           "event": [
@@ -1288,7 +1288,7 @@
             "description": "Expected to FAIL with 400 rather than 500 - the dropped dot is the caller's to fix, and a 5xx asks them to retry it unchanged.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000018\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000018\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather advisory\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*]resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
+              "raw": "{\n  \"context\": {\n    \"domain\": \"agriculture\",\n    \"action\": \"discover\",\n    \"networkId\": [\n      \"local-network\"\n    ],\n    \"version\": \"2.0.0\",\n    \"transactionId\": \"a1000000-0000-4000-8000-000000000018\",\n    \"messageId\": \"b1000000-0000-4000-8000-000000000018\",\n    \"timestamp\": \"2026-08-27T06:30:00Z\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"textSearch\": \"weather advisory\",\n      \"filters\": {\n        \"type\": \"jsonpath\",\n        \"expression\": \"$.catalogs[*]resources[*] ? (@.resourceAttributes.geographicGranularity == \\\"Village\\\")\"\n      }\n    }\n  }\n}"
             }
           },
           "event": [

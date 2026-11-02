@@ -345,8 +345,8 @@ func TestADirectiveLessCatalogIsMergedNotReplaced(t *testing.T) {
 	if len(repo.modes) != 1 || repo.modes[0] != domain.UpdateModeMerge {
 		t.Errorf("mode = %v, want MERGE — FULL would delete what the payload omitted", repo.modes)
 	}
-	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != network {
-		t.Errorf("VisibleTo = %v, want the request's own network (C8)", got)
+	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != domain.NetworkWildcard {
+		t.Errorf("VisibleTo = %v, want the wildcard — an unstated audience is public", got)
 	}
 }
 
@@ -364,8 +364,8 @@ func TestAPartialDirectiveIsFilledFieldWise(t *testing.T) {
 	if len(repo.modes) != 1 || repo.modes[0] != domain.UpdateModeMerge {
 		t.Errorf("mode = %v, want MERGE", repo.modes)
 	}
-	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != network {
-		t.Errorf("VisibleTo = %v, want the defaulted single network", got)
+	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != domain.NetworkWildcard {
+		t.Errorf("VisibleTo = %v, want the same default as no directive at all", got)
 	}
 }
 
@@ -525,8 +525,8 @@ func TestDeriveRunsAgainstTheMergedDocument(t *testing.T) {
 	}
 }
 
-// C6's publish half: an omitted networkId falls back to APP_NETWORK_ID, and a
-// supplied one wins. Only visibleTo reads it, which is the whole of C8.
+// The envelope's network no longer decides the audience: an unstated one is
+// public whoever sent it.
 func TestTheEnvelopeNetworkWinsOverTheConfiguredOne(t *testing.T) {
 	repo := newRepo()
 	service := newService(t, repo, &recordingReplicator{})
@@ -535,10 +535,10 @@ func TestTheEnvelopeNetworkWinsOverTheConfiguredOne(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"catalogs":[{"id":"c1"}]}`), &action); err != nil {
 		t.Fatalf("decoding the fixture: %v", err)
 	}
-	service.Publish(t.Context(), beckn.Context{NetworkID: "bharatvistar"}, action)
+	service.Publish(t.Context(), beckn.Context{NetworkID: beckn.OneNetwork("bharatvistar")}, action)
 
-	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != "bharatvistar" {
-		t.Errorf("VisibleTo = %v, want the envelope's network", got)
+	if got := repo.patches[0].VisibleTo; len(got) != 1 || got[0] != domain.NetworkWildcard {
+		t.Errorf("VisibleTo = %v, want the wildcard — the sender's network is not the audience", got)
 	}
 }
 

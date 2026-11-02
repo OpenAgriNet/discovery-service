@@ -15,8 +15,7 @@ import (
 const fuzzyCandidates = `-- name: FuzzyCandidates :many
 SELECT r.catalog_id, r.id
   FROM resources r
- WHERE ($1::text IS NULL
-        OR r.visible_to @> ARRAY[$1::text])
+ WHERE r.visible_to && $1::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -82,7 +81,7 @@ SELECT r.catalog_id, r.id
 `
 
 type FuzzyCandidatesParams struct {
-	NetworkID       pgtype.Text
+	NetworkIds      []string
 	SchemaContexts  []string
 	SchemaTypes     []string
 	AttributeFilter pgtype.Text
@@ -116,7 +115,7 @@ type FuzzyCandidatesRow struct {
 // the 0.3 default, and a deployment that moves it moves what this mode admits.
 func (q *Queries) FuzzyCandidates(ctx context.Context, arg FuzzyCandidatesParams) ([]FuzzyCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, fuzzyCandidates,
-		arg.NetworkID,
+		arg.NetworkIds,
 		arg.SchemaContexts,
 		arg.SchemaTypes,
 		arg.AttributeFilter,
@@ -363,8 +362,7 @@ SELECT r.catalog_id, r.id, r.visible_to, r.active,
           FROM unnest($1::text[])  WITH ORDINALITY AS c(v, n)
           JOIN unnest($2::text[]) WITH ORDINALITY AS i(v, n) USING (n)) AS p
     ON r.catalog_id = p.catalog_id AND r.id = p.resource_id
- WHERE ($3::text IS NULL
-        OR r.visible_to @> ARRAY[$3::text])
+ WHERE r.visible_to && $3::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -375,7 +373,7 @@ SELECT r.catalog_id, r.id, r.visible_to, r.active,
 type HydrateResourcesParams struct {
 	CatalogIds  []string
 	ResourceIds []string
-	NetworkID   pgtype.Text
+	NetworkIds  []string
 }
 
 type HydrateResourcesRow struct {
@@ -404,7 +402,7 @@ type HydrateResourcesRow struct {
 // `search_tsv` is absent for the same reason it is absent from the publish
 // loader: nothing reads it back and it is the largest column on the table.
 func (q *Queries) HydrateResources(ctx context.Context, arg HydrateResourcesParams) ([]HydrateResourcesRow, error) {
-	rows, err := q.db.Query(ctx, hydrateResources, arg.CatalogIds, arg.ResourceIds, arg.NetworkID)
+	rows, err := q.db.Query(ctx, hydrateResources, arg.CatalogIds, arg.ResourceIds, arg.NetworkIds)
 	if err != nil {
 		return nil, err
 	}
@@ -444,8 +442,7 @@ const lexicalCandidates = `-- name: LexicalCandidates :many
 
 SELECT r.catalog_id, r.id
   FROM resources r
- WHERE ($1::text IS NULL
-        OR r.visible_to @> ARRAY[$1::text])
+ WHERE r.visible_to && $1::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -511,7 +508,7 @@ SELECT r.catalog_id, r.id
 `
 
 type LexicalCandidatesParams struct {
-	NetworkID       pgtype.Text
+	NetworkIds      []string
 	SchemaContexts  []string
 	SchemaTypes     []string
 	AttributeFilter pgtype.Text
@@ -578,6 +575,10 @@ type LexicalCandidatesRow struct {
 //	NULL means NO predicate, not a predicate that matches nothing. An intent
 //	carrying no filter must not be narrowed by one.
 //
+//	`&&` is overlap, not containment: a row matches if its audience shares ANY
+//	network with the caller's set (A29). The set is never empty — naming none
+//	resolves to the wildcard '*' in domain.ScopeNetworks, not here.
+//
 // ---------------------------------------------------------------------------
 // retrieval — one query per ranked mode, all sharing one WHERE
 // ---------------------------------------------------------------------------
@@ -595,7 +596,7 @@ type LexicalCandidatesRow struct {
 // text there is no relevance, so the ORDER BY falls through to the stable key.
 func (q *Queries) LexicalCandidates(ctx context.Context, arg LexicalCandidatesParams) ([]LexicalCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, lexicalCandidates,
-		arg.NetworkID,
+		arg.NetworkIds,
 		arg.SchemaContexts,
 		arg.SchemaTypes,
 		arg.AttributeFilter,
@@ -641,8 +642,7 @@ SELECT r.catalog_id, r.id
           FROM unnest($1::text[])  WITH ORDINALITY AS c(v, n)
           JOIN unnest($2::text[]) WITH ORDINALITY AS i(v, n) USING (n)) AS p
     ON r.catalog_id = p.catalog_id AND r.id = p.resource_id
- WHERE ($3::text IS NULL
-        OR r.visible_to @> ARRAY[$3::text])
+ WHERE r.visible_to && $3::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -653,7 +653,7 @@ SELECT r.catalog_id, r.id
 type ScopeFilterResourcesParams struct {
 	CatalogIds  []string
 	ResourceIds []string
-	NetworkID   pgtype.Text
+	NetworkIds  []string
 }
 
 type ScopeFilterResourcesRow struct {
@@ -671,7 +671,7 @@ type ScopeFilterResourcesRow struct {
 // no text, no geometry, no schema, because the caller has already applied those
 // and this answers only "may this caller see it now".
 func (q *Queries) ScopeFilterResources(ctx context.Context, arg ScopeFilterResourcesParams) ([]ScopeFilterResourcesRow, error) {
-	rows, err := q.db.Query(ctx, scopeFilterResources, arg.CatalogIds, arg.ResourceIds, arg.NetworkID)
+	rows, err := q.db.Query(ctx, scopeFilterResources, arg.CatalogIds, arg.ResourceIds, arg.NetworkIds)
 	if err != nil {
 		return nil, err
 	}
@@ -693,8 +693,7 @@ func (q *Queries) ScopeFilterResources(ctx context.Context, arg ScopeFilterResou
 const semanticCandidates = `-- name: SemanticCandidates :many
 SELECT r.catalog_id, r.id
   FROM resources r
- WHERE ($1::text IS NULL
-        OR r.visible_to @> ARRAY[$1::text])
+ WHERE r.visible_to && $1::text[]
    AND r.active
    AND (r.valid_from IS NULL OR r.valid_from <= now())
    AND (r.valid_to   IS NULL OR r.valid_to   >= now())
@@ -760,7 +759,7 @@ SELECT r.catalog_id, r.id
 `
 
 type SemanticCandidatesParams struct {
-	NetworkID       pgtype.Text
+	NetworkIds      []string
 	SchemaContexts  []string
 	SchemaTypes     []string
 	AttributeFilter pgtype.Text
@@ -800,7 +799,7 @@ type SemanticCandidatesRow struct {
 // is what turns that pool into candidates.
 func (q *Queries) SemanticCandidates(ctx context.Context, arg SemanticCandidatesParams) ([]SemanticCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, semanticCandidates,
-		arg.NetworkID,
+		arg.NetworkIds,
 		arg.SchemaContexts,
 		arg.SchemaTypes,
 		arg.AttributeFilter,
